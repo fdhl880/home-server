@@ -1,0 +1,1749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bloomberg Terminal - Storage Node</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap');
+        
+        :root {
+            --bb-bg: #000000;
+            --bb-amber: #FFB300;
+            --bb-red: #FF0000;
+            --bb-green: #00FF00;
+            --bb-cyan: #00FFFF;
+            --bb-white: #FFFFFF;
+            --bb-blue: #0000FF;
+            --border: #444444;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Courier Prime', monospace; }
+        
+        body {
+            background-color: var(--bb-bg);
+            color: var(--bb-amber);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding: 4px;
+            font-size: 13px;
+            font-weight: 700;
+            overflow: hidden;
+            letter-spacing: -0.5px;
+        }
+
+        .cmd-line {
+            display: flex;
+            align-items: center;
+            background-color: var(--bb-blue);
+            color: var(--bb-white);
+            padding: 3px 8px;
+            margin-bottom: 4px;
+        }
+        .cmd-line input {
+            background: transparent;
+            border: none;
+            color: var(--bb-white);
+            font-family: inherit;
+            font-size: inherit;
+            font-weight: inherit;
+            outline: none;
+            flex: 1;
+            text-transform: uppercase;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 280px 1fr 280px;
+            grid-template-rows: auto 1fr auto;
+            gap: 4px;
+            flex: 1;
+            min-height: 0;
+        }
+
+        .panel {
+            border: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            padding: 2px;
+            min-height: 0;
+        }
+
+        .panel-title {
+            background-color: var(--border);
+            color: var(--bb-white);
+            padding: 1px 4px;
+            font-size: 14px;
+            text-transform: uppercase;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .panel-title span.go { color: var(--bb-amber); }
+
+        .tabs {
+            display: flex;
+            background: #111;
+            border-bottom: 1px solid var(--border);
+        }
+        .tab-btn {
+            background: transparent;
+            color: #777;
+            border: none;
+            padding: 4px 8px;
+            font-family: inherit;
+            font-weight: bold;
+            cursor: pointer;
+            text-transform: uppercase;
+            font-size: 11px;
+        }
+        .tab-btn.active {
+            color: var(--bb-amber);
+            background: #222;
+            border-bottom: 2px solid var(--bb-amber);
+        }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+        th { text-align: left; color: var(--bb-white); border-bottom: 1px solid var(--border); font-weight: normal; font-size: 11px; }
+        td { padding: 3px 0; border-bottom: 1px dotted #222; vertical-align: middle; }
+        td.label { color: var(--bb-amber); cursor: pointer; }
+        td.label:hover { text-decoration: underline; color: var(--bb-white); }
+        td.value { color: var(--bb-white); text-align: right; }
+        td.trend { text-align: center; }
+        td.up { color: var(--bb-green); text-align: right; }
+        td.down { color: var(--bb-red); text-align: right; }
+
+        /* Flashing price cells */
+        .flash-green-bg { animation: flash-green-anim 0.8s; }
+        .flash-red-bg { animation: flash-red-anim 0.8s; }
+        @keyframes flash-green-anim { 0% { background-color: var(--bb-green); color: black; } 100% { background-color: transparent; } }
+        @keyframes flash-red-anim { 0% { background-color: var(--bb-red); color: white; } 100% { background-color: transparent; } }
+
+        .chart-container { position: relative; width: 100%; height: 100%; min-height: 0; }
+        .flash-update { animation: flash-green-anim 1s; }
+
+        .hot-alert {
+            background-color: var(--bb-red);
+            color: var(--bb-white);
+            padding: 2px 8px;
+            font-weight: bold;
+            display: none;
+            animation: blink-bg 1s step-end infinite;
+            font-size: 11px;
+            margin-left: 10px;
+        }
+        @keyframes blink-bg { 50% { background-color: transparent; color: var(--bb-red); } }
+
+        .news-ticker {
+            grid-column: 1 / -1;
+            border: 1px solid var(--border);
+            padding: 2px 5px;
+            color: var(--bb-cyan);
+            white-space: nowrap;
+            overflow: hidden;
+            display: flex;
+            gap: 20px;
+        }
+
+        .slide { display: none; height: 100%; flex-direction: column; min-height: 0; }
+        .slide.active { display: flex; }
+        .slide-content { flex: 1; padding: 4px; overflow-y: auto; min-height: 0; }
+        
+        .news-item { margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #222; }
+        .news-item .source { color: var(--bb-cyan); font-size: 10px; }
+        .news-item .title { color: var(--bb-white); font-size: 12px; margin-top: 1px; }
+        .news-item .tag { padding: 1px 4px; font-size: 9px; font-weight: bold; border-radius: 2px; margin-right: 5px; }
+        .news-item .tag.flash { background: var(--bb-red); color: white; animation: blink-bg 1s step-end infinite; }
+        .news-item .tag.bulletin { background: var(--bb-blue); color: white; }
+        .news-item .tag.update { background: var(--bb-amber); color: black; }
+
+        /* File Upload styling */
+        .upload-form { border: 1px dashed var(--bb-amber); padding: 10px; margin-bottom: 5px; text-align:center; }
+        .file-list { margin-top: 5px; }
+        .file-item { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px dotted #222; }
+        .file-del { color: var(--bb-red); cursor: pointer; margin-left: 10px; }
+
+        .progress-bar-container { background: #222; width: 100%; height: 6px; margin-top: 5px; position: relative; }
+        .progress-bar { background: var(--bb-green); width: 0%; height: 100%; transition: width 0.1s; }
+
+        /* ====== SIGNAL ANALYSIS POPUP MODAL ====== */
+        #signal-modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.85);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+        }
+        #signal-modal.open { display: flex; }
+        .signal-box {
+            background: #0a0a0a;
+            border: 1px solid var(--bb-amber);
+            width: min(700px, 95vw);
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+            font-family: 'Courier Prime', monospace;
+        }
+        .signal-box-header {
+            background: var(--bb-amber);
+            color: #000;
+            padding: 5px 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: bold;
+            font-size: 13px;
+        }
+        .signal-box-body {
+            padding: 10px;
+            overflow-y: auto;
+            flex: 1;
+        }
+        .signal-verdict {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 8px;
+            border: 1px solid #333;
+            margin-bottom: 10px;
+            background: #111;
+        }
+        .signal-label-big {
+            font-size: 22px;
+            font-weight: bold;
+        }
+        .signal-score-bar {
+            flex: 1;
+            height: 10px;
+            background: #222;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .signal-score-fill {
+            height: 100%;
+            border-radius: 2px;
+            transition: width 0.3s;
+        }
+        .signal-reason-item {
+            font-size: 11px;
+            padding: 4px 0;
+            border-bottom: 1px solid #1a1a1a;
+            color: #ccc;
+            line-height: 1.4;
+        }
+        .signal-reason-item:last-child { border-bottom: none; }
+        .chart-block {
+            font-family: 'Courier Prime', monospace;
+            font-size: 18px;
+            letter-spacing: 0px;
+            color: var(--bb-amber);
+            background: #0a0a0a;
+            border: 1px solid #333;
+            padding: 6px 8px;
+            margin: 4px 0;
+            display: block;
+            border-radius: 2px;
+            line-height: 1.1;
+        }
+        .chart-meta {
+            font-size: 9px;
+            color: #555;
+            font-family: 'Courier Prime', monospace;
+            padding: 0 8px 4px;
+            letter-spacing: 0.5px;
+        }
+        .signal-fund-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .signal-fund-cell {
+            background: #111;
+            border: 1px solid #333;
+            padding: 4px 6px;
+            font-size: 10px;
+        }
+        .signal-fund-cell .k { color: #666; }
+        .signal-fund-cell .v { color: var(--bb-amber); font-weight: bold; }
+
+        .sig-cell {
+            text-align: center;
+            cursor: pointer;
+            padding: 2px 4px;
+            border-radius: 2px;
+            transition: background 0.15s;
+        }
+        .sig-cell:hover { background: #1a1a1a; }
+
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-track { background: #111; }
+        ::-webkit-scrollbar-thumb { background: #555; }
+    </style>
+</head>
+<body>
+
+    <div class="cmd-line">
+        <span style="color:var(--bb-white); margin-right:8px;">BBG CMD></span>
+        <input type="text" id="terminal-cmd" placeholder="Enter command (e.g. BBCA GO, HKEX GO, GALLERY GO)">
+        <div id="hot-banner" class="hot-alert">HOT DATA ALERT</div>
+        <span style="margin-left:auto; color:var(--bb-amber)" id="clock">00:00:00</span>
+    </div>
+
+    <div class="grid">
+        <!-- LEFT COLUMN: Static Info -->
+        <div class="panel" style="grid-row: 1 / span 2;">
+            <div class="panel-title">1) STORAGE STATS <span class="go">DSK</span></div>
+            <table>
+                <tr><td class="label" style="width:40%">DISK ALLOC</td><td class="value" id="s-total">0.0G</td></tr>
+                <tr><td class="label">DISK USED</td><td class="value" id="s-used">0.0G</td></tr>
+                <tr><td class="label">USAGE PCT</td><td class="up" id="s-pct">0.0%</td></tr>
+                <tr><td class="label">FILE COUNT</td><td class="value" id="s-files">0</td></tr>
+            </table>
+
+            <div class="panel-title" style="margin-top: 10px;">2) SYSTEM STATUS <span class="go">SYS</span></div>
+            <table>
+                <tr><td class="label" style="width:40%">CPU</td><td class="value" id="q-cpu">0%</td></tr>
+                <tr><td class="label">RAM</td><td class="value" id="q-ram">0%</td></tr>
+                <tr><td class="label">UPTIME</td><td class="value" id="q-up">0H</td></tr>
+            </table>
+
+            <div class="panel-title" style="margin-top: 10px;">3) RECENT UPLOADS <span class="go">LOG</span></div>
+            <table id="recent-files" style="font-size: 10px;">
+                <tr><th style="width: 70%">FILE</th><th>SIZE</th></tr>
+                <tr><td colspan="2" style="color:#555">NO FILES</td></tr>
+            </table>
+        </div>
+
+        <!-- CENTER COLUMN: Navigation & Large Graphic -->
+        <div class="panel" style="grid-column: 2 / 3; grid-row: 1 / span 2; display: flex; flex-direction: column;">
+            <div class="panel-title">
+                <span id="slide-title">4) INDONESIA EQUITIES</span> 
+                <span class="go" id="active-asset-label">SELECT TICKER TO PLOT</span>
+            </div>
+            
+            <!-- Navigation Tabs -->
+            <div class="tabs">
+                <button class="tab-btn active" onclick="switchSlide(1)">[1] IHSG</button>
+                <button class="tab-btn" onclick="switchSlide(2)">[2] ASIA/REG</button>
+                <button class="tab-btn" onclick="switchSlide(3)">[3] FX & MACRO</button>
+                <button class="tab-btn" onclick="switchSlide(4)">[4] COMMODITIES</button>
+                <button class="tab-btn" onclick="switchSlide(5)">[5] NEWS WIRE</button>
+                <button class="tab-btn" onclick="switchSlide(6)">[6] CLOUD UPLOADER</button>
+                <button class="tab-btn" onclick="switchSlide(7)">[7] GALLERY</button>
+            </div>
+
+            <!-- Top Half: Data Tables -->
+            <div style="height: 45%; min-height: 0; overflow-y: auto; border-bottom: 1px solid var(--border);">
+                <!-- Slide 1: Local Equities -->
+                <div id="slide-1" class="slide active">
+                    <div class="slide-content" style="display:flex; gap:10px;">
+                        <div style="flex:1;">
+                            <div style="font-size:9px; color:#777; margin-bottom:2px;">MICRO-CORP INDEX & RATIOS</div>
+                            <table id="eq-table">
+                                <tr>
+                                    <th style="width:16%">TICKER</th>
+                                    <th style="width:18%">PRICE(IDR)</th>
+                                    <th style="width:12%; text-align:right;">P/E</th>
+                                    <th style="width:15%; text-align:right;">MCAP</th>
+                                    <th style="width:13%; text-align:center;">SIGNAL</th>
+                                    <th style="width:13%; text-align:center;">TREND</th>
+                                    <th style="width:13%; text-align:right;">% CHG</th>
+                                </tr>
+                                <tr><td colspan="7" style="text-align:center; color:#555;">LOADING...</td></tr>
+                            </table>
+                        </div>
+                        <div style="width: 170px; border-left: 1px solid var(--border); padding-left: 6px; display:flex; flex-direction:column; gap:6px;">
+                            <div>
+                                <div style="font-size:10px; color:var(--bb-white); margin-bottom: 2px;">IDX MOVERS</div>
+                                <table style="font-size:10px; margin-top:0;" id="idx-movers-table">
+                                    <tr><td colspan="2" style="color:#555">LOADING MOVERS...</td></tr>
+                                </table>
+                            </div>
+                            <div style="border-top:1px solid var(--border); padding-top:4px;">
+                                <div style="font-size:10px; color:var(--bb-white); margin-bottom: 2px;">IDX SEKTORAL</div>
+                                <table style="font-size:10px; margin-top:0;" id="sektoral-table">
+                                    <tr><td colspan="3" style="color:#555">LOADING...</td></tr>
+                                </table>
+                            </div>
+                            <div style="border-top:1px solid var(--border); padding-top:4px;">
+                                <div style="font-size:10px; color:var(--bb-white); margin-bottom:2px;">ALIRAN ASING</div>
+                                <table style="font-size:10px; margin-top:0;">
+                                    <tr><td class="label" style="font-size:9px;">STATUS</td><td class="value" id="as-status" style="font-size:9px;">--</td></tr>
+                                    <tr><td class="label" style="font-size:9px;">HARI INI</td><td id="as-net" class="value" style="font-size:10px;">--</td></tr>
+                                    <tr><td class="label" style="font-size:9px;">WEEKLY</td><td id="as-wk" class="value">--</td></tr>
+                                    <tr><td class="label" style="font-size:9px;">MONTHLY</td><td id="as-mo" class="value">--</td></tr>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Slide 2: Regional Markets -->
+                <div id="slide-2" class="slide">
+                    <div class="slide-content">
+                        <table id="reg-table">
+                            <tr>
+                                <th style="width:25%">INDEX</th>
+                                <th style="width:20%">POINTS</th>
+                                <th style="width:15%; text-align:center;">SIGNAL</th>
+                                <th style="width:20%; text-align:center;">TREND</th>
+                                <th style="width:20%; text-align:right;">% CHG</th>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Slide 3: IDR FX & Macro Economics -->
+                <div id="slide-3" class="slide">
+                    <div class="slide-content" style="display:flex; flex-direction:row; gap:10px;">
+                        <div style="flex:1.2;">
+                            <table id="fx-table">
+                                <tr>
+                                    <th style="width:30%">PAIR</th>
+                                    <th style="width:20%">RATE</th>
+                                    <th style="width:15%; text-align:center;">SIGNAL</th>
+                                    <th style="width:15%; text-align:center;">TREND</th>
+                                    <th style="width:20%; text-align:right;">% CHG</th>
+                                </tr>
+                            </table>
+                        </div>
+                        <div style="flex:1; border-left: 1px solid var(--border); padding-left: 10px; display:flex; flex-direction:column; gap:6px;">
+                            <div>
+                                <div style="font-size:10px; color:var(--bb-white); margin-bottom: 2px;">INDONESIA MACRO STATS</div>
+                                <table style="font-size:11px; margin-top:0;">
+                                    <tr><td class="label" style="font-size:10px;">BI-RATE</td><td class="value" style="color:var(--bb-green)" id="mid-birate">5.50%</td></tr>
+                                    <tr><td class="label" style="font-size:10px;">INFLASI</td><td class="value" style="color:var(--bb-amber)" id="mid-inflasi">2.51%</td></tr>
+                                    <tr><td class="label" style="font-size:10px;">GDP GR</td><td class="value" style="color:var(--bb-green)" id="mid-gdp">+5.11%</td></tr>
+                                    <tr><td class="label" style="font-size:10px;">CAD.DEVISA</td><td class="value" style="color:var(--bb-white)" id="mid-caddev">$136.2B</td></tr>
+                                    <tr><td class="label" style="font-size:10px;">PENGANGGURAN</td><td class="value" style="color:var(--bb-cyan)" id="mid-unemploy">4.82%</td></tr>
+                                    <tr><td class="label" style="font-size:10px;">TRADE BAL</td><td class="value" style="color:var(--bb-green)" id="mid-trade">+$3.56B</td></tr>
+                                    <tr><td class="label" style="font-size:10px;">RI 10Y YLD</td><td class="value" style="color:var(--bb-cyan)" id="mid-yield">6.95%</td></tr>
+                                    <tr><td class="label" style="font-size:10px;">UPDATE</td><td class="value" style="color:#555; font-size:9px" id="mid-updated">--:--</td></tr>
+                                </table>
+                            </div>
+                            <div style="border-top:1px solid var(--border); padding-top:4px;">
+                                <div style="font-size:10px; color:var(--bb-white); margin-bottom: 2px;">SBN OBLIGASI RI</div>
+                                <table style="font-size:10px; margin-top:0;" id="sbn-table">
+                                    <tr><th style="width:22%">KODE</th><th style="width:12%">TENOR</th><th style="width:20%; text-align:right;">KUPON</th><th style="width:20%; text-align:right;">YIELD</th><th style="width:26%; text-align:right;">HARGA</th></tr>
+                                    <tr><td colspan="5" style="color:#555">LOADING SBN...</td></tr>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Slide 4: Commodities -->
+                <div id="slide-4" class="slide">
+                    <div class="slide-content">
+                        <div style="font-size:9px; color:#777; margin-bottom:2px;">INDONESIAN EXPORT COMMODITIES & METALS</div>
+                        <table id="commodity-table">
+                            <tr>
+                                <th style="width:30%">COMMODITY</th>
+                                <th style="width:25%">PRICE(USD)</th>
+                                <th style="width:25%; text-align:center;">TREND</th>
+                                <th style="width:20%; text-align:right;">% CHG</th>
+                            </tr>
+                            <tr><td colspan="4" style="text-align:center; color:#555;">LOADING COMMODITIES...</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Slide 5: Economic News -->
+                <div id="slide-5" class="slide">
+                    <div class="slide-content" style="display: flex; gap: 10px; height: 100%;">
+                        <div style="flex: 1.2; overflow-y: auto;" id="nw-container">
+                            <div style="text-align:center; color:#555;">FETCHING ECONOMIC NEWS...</div>
+                        </div>
+                        <div style="flex: 1; border-left: 1px solid var(--border); padding-left: 8px; display: flex; flex-direction: column;">
+                            <div style="font-size: 11px; color: var(--bb-white); border-bottom: 1px solid var(--border); padding-bottom: 2px; margin-bottom: 5px;">LIVE NEWS WIRE (REAL-TIME SECONDS)</div>
+                            <div id="wire-container" style="flex: 1; overflow-y: auto; font-size: 10px; color: var(--bb-cyan); line-height: 1.3;">
+                                <!-- Live seconds feed items -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Slide 6: Storage Manager -->
+                <div id="slide-6" class="slide">
+                    <div class="slide-content" style="display:flex; flex-direction:column; gap:10px;">
+                        <div class="upload-form" style="border: 2px dashed var(--bb-amber); padding: 15px; cursor: pointer; position: relative;" onclick="document.getElementById('fileInput').click()">
+                            <span style="color:var(--bb-white); font-size:12px;">DRAG & DROP FILES HERE OR CLICK TO SELECT</span>
+                            <div style="font-size: 10px; color: #777; margin-top:5px;">STREAMING ENGINE FOR FILES OVER 1GB - BATCH SUPPORT</div>
+                            <input type="file" id="fileInput" name="files" multiple style="display: none;" onchange="handleQueue()">
+                        </div>
+
+                        <!-- Progress Manager -->
+                        <div id="queue-box" style="display: none; border: 1px solid var(--border); padding: 8px; background: #0c0c0c;">
+                            <div style="display:flex; justify-content:space-between; font-size: 11px; color: var(--bb-white); border-bottom: 1px solid var(--border); padding-bottom:4px; margin-bottom: 6px;">
+                                <span id="queue-title">BATCH UPLOAD QUEUE</span>
+                                <span id="global-percent">0%</span>
+                            </div>
+                            <div id="queue-list" style="max-height: 120px; overflow-y: auto; display:flex; flex-direction:column; gap:4px;">
+                                <!-- Upload queues -->
+                            </div>
+                            <div style="margin-top: 8px; border-top:1px dotted var(--border); padding-top:6px; display:flex; justify-content:space-between; font-size: 11px; color: var(--bb-cyan);">
+                                <span id="global-speed">Speed: 0 KB/s</span>
+                                <span id="global-eta">Remaining: --:--</span>
+                            </div>
+                        </div>
+
+                        <div id="file-list-full" class="file-list"></div>
+                    </div>
+                </div>
+
+                <!-- Slide 7: Unified Gallery Grid -->
+                <div id="slide-7" class="slide">
+                    <div class="slide-content" style="display: flex; flex-direction: column; gap:10px;">
+                        <div>
+                            <div class="upload-form" style="border: 2px dashed var(--bb-amber); padding: 12px; cursor: pointer; text-align: center; margin-bottom: 8px;" onclick="document.getElementById('galleryFileInput').click()">
+                                <span style="color:var(--bb-white); font-size:12px;">CLICK TO UPLOAD PHOTOS/VIDEOS DIRECTLY TO CLOUD GALLERY</span>
+                                <input type="file" id="galleryFileInput" name="files" multiple accept="image/*,video/*" style="display: none;" onchange="handleGalleryUpload()">
+                            </div>
+                            <div style="font-size:10px; color:#777; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
+                                <span>CLOUD STORAGE GALLERY (UPLOADS ONLY)</span>
+                                <button onclick="fetchGallery()" style="background:var(--border); color:var(--bb-white); border:none; padding:2px 6px; cursor:pointer; font-weight:bold;">REFRESH GALLERY</button>
+                            </div>
+                            <div id="gallery-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 6px; padding: 2px;">
+                                <div style="color:#555; grid-column:1/-1; text-align:center;">LOADING GALLERY...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Bottom Half: LARGE DYNAMIC GRAPH & Level 2 Data -->
+            <div style="flex: 1; min-height: 0; padding: 5px; display: flex; gap: 6px;">
+                <div style="flex: 2; display: flex; flex-direction: column;">
+                    <div style="font-size: 11px; color: var(--bb-white); display:flex; justify-content:space-between; margin-bottom: 2px;">
+                        <span id="chart-sub-title">REAL-TIME CHART GRAPHIC (15M INTERVAL)</span>
+                        <span style="color: var(--bb-green);" id="chart-live-val"></span>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="largeMainChart"></canvas>
+                    </div>
+                </div>
+                <!-- Mock Level 2 Order Book Depth -->
+                <div style="width: 190px; border-left: 1px solid var(--border); padding-left: 6px; display:flex; flex-direction:column;">
+                    <div style="font-size:10px; color:var(--bb-white); border-bottom:1px solid var(--border); padding-bottom:2px; margin-bottom:4px;">ORDER BOOK Depth (L2)</div>
+                    <table style="font-size:10px; margin-top:0;" id="depth-table">
+                        <tr><th style="color:var(--bb-red)">ASK</th><th style="text-align:right;">SIZE</th></tr>
+                        <tr><td style="color:var(--bb-red)">10,250</td><td style="text-align:right; color:white;">450</td></tr>
+                        <tr><td style="color:var(--bb-red)">10,225</td><td style="text-align:right; color:white;">820</td></tr>
+                        <tr><td style="color:var(--bb-red)">10,200</td><td style="text-align:right; color:white;">1,250</td></tr>
+                        <tr style="border-top:1px solid var(--border); border-bottom:1px solid var(--border);"><td style="color:var(--bb-amber)">SPREAD</td><td style="text-align:right; color:var(--bb-amber)">25 (0.24%)</td></tr>
+                        <tr><th style="color:var(--bb-green)">BID</th><th style="text-align:right;">SIZE</th></tr>
+                        <tr><td style="color:var(--bb-green)">10,175</td><td style="text-align:right; color:white;">980</td></tr>
+                        <tr><td style="color:var(--bb-green)">10,150</td><td style="text-align:right; color:white;">1,410</td></tr>
+                        <tr><td style="color:var(--bb-green)">10,125</td><td style="text-align:right; color:white;">750</td></tr>
+                    </table>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- RIGHT COLUMN: Static Info -->
+        <div class="panel" style="grid-row: 1 / span 2;">
+            <div class="panel-title">5) ALERT MGR <span class="go">ALM</span></div>
+            <table>
+                <tr><td class="label" style="width:60%">DISK WARN</td><td class="up">NONE</td></tr>
+                <tr><td class="label">SYNC STAT</td><td class="up">ONLINE</td></tr>
+                <tr><td class="label">BACKUP</td><td class="value" style="color:#555;">PENDING</td></tr>
+            </table>
+
+            <div class="panel-title" style="margin-top: 15px;">6) HOT TRIGGERS <span class="go">TRIG</span></div>
+            <div style="padding: 5px; font-size:11px;">
+                <div style="color:#777; margin-bottom:5px;">AUTOMATIC SLIDE JUMPS ONLY WHEN DATA SPIKES:</div>
+                <div id="alert-list" style="color:var(--bb-cyan);">
+                    * MONITORING SPIKES...
+                </div>
+            </div>
+            
+            <div style="margin-top:auto; padding-top:10px; border-top: 1px dotted var(--border);">
+                <div style="text-align: center; color: #555; font-size: 10px;">MANUAL CLICKING PREFERRED</div>
+                <div style="text-align: center; color: var(--bb-amber); font-size: 11px; margin-top:2px;">[SELECT ANY ROW TO PLOT]</div>
+            </div>
+        </div>
+
+        <!-- BOTTOM TICKER with Bloomberg Ticker -->
+        <div class="news-ticker" style="flex-direction:column; gap:2px; height:auto;">
+            <div style="display:flex; gap:20px; width:100%;">
+                <span style="color:var(--bb-white); background: var(--bb-blue); padding: 0 4px;">LOCAL</span>
+                <marquee scrollamount="5" id="market-marquee" style="flex:1;">
+                    ** SYS ONLINE ** TABLET 2 STORAGE CONNECTED ** WAITING FOR INDONESIAN MARKET DATA ** 
+                </marquee>
+            </div>
+        </div>
+    </div>
+
+    <!-- Lightbox modal -->
+    <div id="lightbox-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.95); z-index:9999; justify-content:center; align-items:center; flex-direction:column; padding: 10px;" onclick="closeLightbox()">
+        <div id="lightbox-content" style="max-width:90%; max-height:80%; display:flex; justify-content:center; align-items:center;"></div>
+        <div id="lightbox-title" style="color:var(--bb-white); font-weight:bold; margin-top:10px; font-size:12px;"></div>
+        <div style="color:#777; font-size:10px; margin-top:5px;">[CLICK ANYWHERE TO CLOSE]</div>
+    </div>
+
+    <!-- SIGNAL ANALYSIS MODAL -->
+    <div id="signal-modal" onclick="closeSignalModal(event)">
+        <div class="signal-box">
+            <div class="signal-box-header">
+                <span id="modal-title">SIGNAL ANALYSIS</span>
+                <span onclick="document.getElementById('signal-modal').classList.remove('open')" style="cursor:pointer;">✕ CLOSE</span>
+            </div>
+            <div class="signal-box-body">
+                <div class="signal-verdict">
+                    <div>
+                        <div style="font-size:10px; color:#777;">COMPOSITE SIGNAL</div>
+                        <div class="signal-label-big" id="modal-signal">HOLD</div>
+                    </div>
+                    <div style="flex:1;">
+                        <div style="font-size:10px; color:#777; margin-bottom:3px;">CONFIDENCE: <span id="modal-conf">0</span>%</div>
+                        <div class="signal-score-bar"><div class="signal-score-fill" id="modal-conf-bar" style="width:0%;"></div></div>
+                        <div style="font-size:10px; color:#777; margin-top:3px;">COMPOSITE SCORE: <span id="modal-score">0.00</span> / 10</div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div style="font-size:10px; color:#777;">ANALYST STANCE</div>
+                        <div id="modal-analyst" style="color:var(--bb-amber); font-weight:bold;">NEUTRAL</div>
+                    </div>
+                </div>
+                <div style="font-size:10px; color:#777; border-bottom:1px solid #333; padding-bottom:3px; margin-bottom:6px;">REASONING — 8-FACTOR BUFFETT + TECHNICAL ANALYSIS</div>
+                <div id="modal-reasons"></div>
+                <div style="margin-top:10px; font-size:10px; color:#777; border-top:1px solid #333; padding-top:6px;">FUNDAMENTALS</div>
+                <div class="signal-fund-grid" id="modal-funds"></div>
+                <div style="margin-top:10px; font-size:9px; color:#444;">⚠ NOT FINANCIAL ADVICE. For educational purposes only. Consult a registered investment advisor before making investment decisions.</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- SOURCE COLOR MAP ---
+        const SOURCE_COLORS = {
+            'DETIK-FIN':'#00a8e0','CNBC-ID':'#00b0e8','KONTAN':'#ffc000','GOOGLE-IDX':'#00c0f0',
+            'BI-WATCH':'#34d399','EMITEN-ID':'#10b981','IDX-BLUE':'#22c55e','KOMODITAS':'#92400e',
+            'IKN-NEWS':'#b45309','TECH-ID':'#a78bfa','PASAR-MODAL':'#c084fc','TRADE-ID':'#34d399',
+            'EKONOMI-ID':'#0b3d91','NIKKEI-ASIA':'#dc2626','CNA-BIZ':'#0284c7','CHINA-MKT':'#ff4500',
+            'ASEAN-MKT':'#5856d6','JAPAN-MKT':'#7c3aed','INDIA-MKT':'#6d28d9','BLOOMBERG':'#ff6600',
+            'CNBC-GLB':'#00a8e0','WSJ-MKT':'#ff6600','BBC-BIZ':'#bb1919','FED-WATCH':'#15803d',
+            'COMMODITY':'#92400e','YAHOO-FIN':'#720e9e','COINDESK':'#1652f0','CRYPTO-NEWS':'#2775ca',
+            'GEO-RISK':'#dc2626','ALJAZEERA':'#ff6b35'
+        };
+
+        // --- SIGNAL STORE ---
+        const signalStore = {};
+
+        // Event delegation: click on any .sig-cell opens signal modal
+        document.addEventListener('click', function(e) {
+            const cell = e.target.closest('.sig-cell');
+            if (!cell) return;
+            const key = cell.getAttribute('data-sigkey');
+            if (!key) return;
+            let found = null;
+            for (const k of Object.keys(signalStore)) {
+                const kSan = k.replace(/[^a-zA-Z0-9]/g, '_');
+                if (key.includes(kSan) || key.endsWith(kSan)) {
+                    found = signalStore[k];
+                    break;
+                }
+            }
+            if (found) showSignalModal(found);
+        });
+
+        // --- SIGNAL MODAL RENDERING ---
+        let modalChartInstance = null;
+        function showSignalModal(item) {
+            if (!item || !item.signal) return;
+            const modal = document.getElementById('signal-modal');
+            document.getElementById('modal-title').innerText = `SIGNAL ANALYSIS — ${(item.fundamentals && item.fundamentals.name) || item.symbol || '?'}`;
+
+            const sigEl = document.getElementById('modal-signal');
+            sigEl.innerText = item.signal;
+            const sigColors = {'STRONG BUY':'#00FF00','BUY':'#4ade80','WEAK BUY':'#86efac','HOLD':'#FFB300','WEAK SELL':'#fca5a5','SELL':'#FF0000','STRONG SELL':'#dc2626'};
+            sigEl.style.color = sigColors[item.signal] || '#fff';
+
+            document.getElementById('modal-conf').innerText = (item.confidence || 0).toFixed(1);
+            const bar = document.getElementById('modal-conf-bar');
+            bar.style.width = Math.min(100, item.confidence || 0) + '%';
+            bar.style.background = sigColors[item.signal] || '#FFB300';
+            document.getElementById('modal-score').innerText = (item.score || 0);
+            const analystEl = document.getElementById('modal-analyst');
+            analystEl.innerText = item.analyst || 'NEUTRAL';
+            analystEl.style.color = item.analyst==='BULLISH' ? '#4ade80' : (item.analyst==='BEARISH' ? '#f87171' : '#FFB300');
+
+            const reasonsEl = document.getElementById('modal-reasons');
+            reasonsEl.innerHTML = (item.reasons || []).map(r => {
+                if (r.startsWith('[CHART] ')) {
+                    return `<div class="chart-block" style="height: 120px; position: relative;"><canvas id="real-chart"></canvas></div>`;
+                } else if (r.startsWith('[CHART_META] ')) {
+                    return `<div class="chart-meta">${r.replace('[CHART_META] ','')}</div>`;
+                }
+                return `<div class="signal-reason-item">${r}</div>`;
+            }).join('');
+
+            function detectPattern(data) {
+                if(!data || data.length < 10) return null;
+                let min = Math.min(...data);
+                let max = Math.max(...data);
+                let range = max - min;
+                if(range === 0) return null;
+                
+                let p1 = Math.max(...data.slice(0, 6));
+                let p2 = Math.max(...data.slice(6, 12));
+                let p3 = Math.max(...data.slice(12, 18));
+                let p4 = Math.max(...data.slice(18));
+
+                let v1 = Math.min(...data.slice(0, 6));
+                let v2 = Math.min(...data.slice(6, 12));
+                let v3 = Math.min(...data.slice(12, 18));
+                let v4 = Math.min(...data.slice(18));
+
+                let tol = range * 0.2;
+                if (Math.abs(p1 - p3) < tol && v2 < p1 - tol && p4 < p3) return "DOUBLE TOP 〽️";
+                if (Math.abs(p2 - p4) < tol && v3 < p2 - tol) return "DOUBLE TOP 〽️";
+                
+                if (Math.abs(v1 - v3) < tol && p2 > v1 + tol && v4 > v3) return "DOUBLE BTM 〰️";
+                if (Math.abs(v2 - v4) < tol && p3 > v2 + tol) return "DOUBLE BTM 〰️";
+
+                if (p4 > p3 && p3 > p2 && p2 > p1) return "UPTREND SWING 📈";
+                if (v4 < v3 && v3 < v2 && v2 < v1) return "DOWTREND SWING 📉";
+                
+                if (range / min < 0.015) return "CONSOLIDATION ➖";
+                return "VOLATILE CHOP 🌪️";
+            }
+
+            // Render Real Chart if sparkline exists
+            if (item.sparkline && item.sparkline.length > 0) {
+                const ctx = document.getElementById('real-chart');
+                if (ctx) {
+                    if (modalChartInstance) modalChartInstance.destroy();
+                    const color = item.analyst === 'BULLISH' ? '#00FF00' : (item.analyst === 'BEARISH' ? '#FF0000' : '#FFB300');
+                    const datasets = [{
+                        data: item.sparkline,
+                        borderColor: color,
+                        borderWidth: 2,
+                        fill: true,
+                        backgroundColor: color + '22',
+                        pointRadius: 0,
+                        pointHitRadius: 10,
+                        tension: 0.2
+                    }];
+
+                    if (item.tradeSetup) {
+                        const len = item.sparkline.length;
+                        datasets.push({
+                            label: 'TP',
+                            data: Array(len).fill(item.tradeSetup.tp),
+                            borderColor: '#00FF00',
+                            borderWidth: 1,
+                            borderDash: [4, 4],
+                            pointRadius: 0,
+                            fill: false
+                        });
+                        datasets.push({
+                            label: 'SL',
+                            data: Array(len).fill(item.tradeSetup.sl),
+                            borderColor: '#FF0000',
+                            borderWidth: 1,
+                            borderDash: [4, 4],
+                            pointRadius: 0,
+                            fill: false
+                        });
+                        datasets.push({
+                            label: 'Entry',
+                            data: Array(len).fill(item.tradeSetup.entry),
+                            borderColor: '#00FFFF',
+                            borderWidth: 1,
+                            borderDash: [2, 2],
+                            pointRadius: 0,
+                            fill: false
+                        });
+                    }
+
+                    modalChartInstance = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: item.sparkline.map((_, i) => i),
+                            datasets: datasets
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: { 
+                                legend: { display: false }, 
+                                tooltip: { enabled: true },
+                                patternWatermark: { text: detectPattern(item.sparkline) }
+                            },
+                            scales: {
+                                x: { display: false },
+                                y: { display: true, position: 'right', grid: { color: '#333' }, ticks: { color: '#777', font: { size: 9, family: 'monospace' } } }
+                            },
+                            layout: { padding: 0 }
+                        },
+                        plugins: [{
+                            id: 'patternWatermark',
+                            beforeDraw: (chart) => {
+                                const text = chart.config.options.plugins.patternWatermark?.text;
+                                if (text) {
+                                    const ctx = chart.ctx;
+                                    ctx.save();
+                                    ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+                                    ctx.font = 'bold 24px "Courier Prime", monospace';
+                                    ctx.textAlign = 'center';
+                                    ctx.textBaseline = 'middle';
+                                    const x = chart.chartArea.left + (chart.chartArea.right - chart.chartArea.left) / 2;
+                                    const y = chart.chartArea.top + (chart.chartArea.bottom - chart.chartArea.top) / 2;
+                                    ctx.translate(x, y);
+                                    ctx.fillText(text, 0, 0);
+                                    ctx.restore();
+                                }
+                            }
+                        }]
+                    });
+                }
+            }
+
+
+            const fund = item.fundamentals || {};
+            const fundCells = [
+                {k:'P/E RATIO', v: fund.pe > 0 ? fund.pe + 'x' : (fund.pe===-1?'UNPROFITABLE':'N/A')},
+                {k:'P/B RATIO', v: fund.pb > 0 ? fund.pb + 'x' : 'N/A'},
+                {k:'ROE', v: fund.roe !== undefined ? fund.roe.toFixed(1) + '%' : 'N/A'},
+                {k:'EPS GROWTH', v: fund.epsGrowth !== undefined ? '+' + fund.epsGrowth + '%' : 'N/A'},
+                {k:'DIV YIELD', v: fund.divYield > 0 ? fund.divYield + '%' : 'None'},
+                {k:'MARKET CAP', v: fund.mcapT > 0 ? fund.mcapT + 'T IDR' : 'N/A'},
+                {k:'MOAT', v: fund.moat || 'N/A'},
+                {k:'SECTOR', v: (fund.sector || 'N/A').substring(0,15)}
+            ];
+            document.getElementById('modal-funds').innerHTML = fundCells.map(c => `<div class="signal-fund-cell"><div class="k">${c.k}</div><div class="v">${c.v}</div></div>`).join('');
+
+            modal.classList.add('open');
+        }
+
+        function closeSignalModal(e) {
+            if (e.target === document.getElementById('signal-modal') || e.target.closest('span')?.innerText.includes('CLOSE')) {
+                document.getElementById('signal-modal').classList.remove('open');
+            }
+        }
+
+        // --- MULTI-FACTOR MATHEMATICALLY VALID FUNDAMENTAL & TECHNICAL PREDICTION SIGNAL ---
+        function calculateSignal(item) {
+            if (!item) return 'HOLD';
+            let score = 0;
+
+            // 1. Technical Intraday Price Trend (Sparkline Moving Average)
+            if (item.sparkline && item.sparkline.length >= 2) {
+                const sum = item.sparkline.reduce((a, b) => a + b, 0);
+                const avg = sum / item.sparkline.length;
+                const last = item.sparkline[item.sparkline.length - 1];
+                const threshold = avg * 0.0015;
+                if (last > avg + threshold) score += 1.5;
+                else if (last < avg - threshold) score -= 1.5;
+            }
+
+            // 2. Fundamental Valuation Weighting (P/E ratio)
+            if (item.peRatio && item.peRatio !== 'N/A') {
+                const pe = parseFloat(item.peRatio);
+                if (!isNaN(pe)) {
+                    if (pe < 25) score += 1.0; // Under-valued / Bullish fundamental
+                    else if (pe > 45) score -= 1.0; // Over-valued / Bearish fundamental
+                }
+            }
+
+            // 3. Size and Safety Capitalization Factor (Mcap)
+            if (item.mcap && item.mcap !== 'N/A') {
+                if (item.mcap.includes('T')) score += 0.5; // mega-caps represent safer hold/buys
+            }
+
+            // 4. Daily Momentum Change
+            const pct = item.prevClose ? ((item.price - item.prevClose) / item.prevClose) * 100 : 0;
+            if (pct > 0.2) score += 1.0;
+            else if (pct < -0.2) score -= 1.0;
+
+            if (score >= 1.5) return 'BUY';
+            if (score <= -1.5) return 'SELL';
+            return 'HOLD';
+        }
+
+        // --- RETRO BEEP SOUND SYNTHESIZER ---
+        function bbgBeep() {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.frequency.value = 850;
+                gain.gain.setValueAtTime(0.08, ctx.currentTime);
+                osc.start();
+                gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.15);
+                osc.stop(ctx.currentTime + 0.15);
+            } catch(e) {}
+        }
+
+        // --- CLOCK ---
+        setInterval(() => {
+            const d = new Date();
+            document.getElementById('clock').innerText = d.toTimeString().split(' ')[0];
+        }, 1000);
+
+        // --- CAROUSEL / TAB NAVIGATION ---
+        let currentSlide = 1;
+        const slideTitles = [
+            "4) INDONESIA EQUITIES <span class='go'>IHSG</span>",
+            "4) REGIONAL MARKETS <span class='go'>ASIA</span>",
+            "4) RUPIAH FX & MACRO <span class='go'>FXID</span>",
+            "4) COMMODITIES INDEX <span class='go'>COMM</span>",
+            "4) INDONESIA ECONOMIC NEWS <span class='go'>NEWS</span>",
+            "4) CLOUD STORAGE & MERGER <span class='go'>FILE</span>",
+            "4) CLOUD STORAGE GALLERY <span class='go'>GALS</span>"
+        ];
+
+        function switchSlide(slideNum) {
+            bbgBeep();
+            document.getElementById(`slide-${currentSlide}`).classList.remove('active');
+            document.querySelectorAll('.tab-btn')[currentSlide-1].classList.remove('active');
+            
+            currentSlide = slideNum;
+            
+            document.getElementById(`slide-${currentSlide}`).classList.add('active');
+            document.querySelectorAll('.tab-btn')[currentSlide-1].classList.add('active');
+            document.getElementById('slide-title').innerHTML = slideTitles[currentSlide-1];
+            
+            if (slideNum === 7) {
+                fetchGallery();
+            }
+        }
+
+        // --- COMMAND INTERPRETER ---
+        document.getElementById('terminal-cmd').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const cmd = e.target.value.trim().toUpperCase();
+                e.target.value = '';
+                bbgBeep();
+                executeCommand(cmd);
+            }
+        });
+
+        function executeCommand(cmd) {
+            const clean = cmd.replace(/<[^>]+>/g, '').replace(/\s+GO$/, '').trim();
+            if (clean === 'GALLERY' || clean === 'GALS') { switchSlide(7); return; }
+            if (clean === 'FILES' || clean === 'STORAGE' || clean === 'UPLOAD') { switchSlide(6); return; }
+            if (clean === 'NEWS' || clean === 'WIRE') { switchSlide(5); return; }
+            if (clean === 'COMM' || clean === 'COMMODITIES') { switchSlide(4); return; }
+            if (clean === 'FX' || clean === 'MACRO' || clean === 'RUPIAH') { switchSlide(3); return; }
+            if (clean === 'ASIA' || clean === 'REGIONAL') { switchSlide(2); return; }
+            if (clean === 'IHSG' || clean === 'IDX') { switchSlide(1); return; }
+
+            const labels = Array.from(document.querySelectorAll('td.label'));
+            const match = labels.find(el => el.innerText.toUpperCase().includes(clean));
+            if (match) {
+                let parent = match.closest('.slide');
+                if (parent) {
+                    const id = parent.id;
+                    const num = parseInt(id.replace('slide-', ''));
+                    switchSlide(num);
+                }
+                match.click();
+            } else {
+                triggerHotAlert(`UNKNOWN COMMAND: ${clean}`, currentSlide);
+            }
+        }
+
+        // --- LARGE CHART SETUP ---
+        Chart.defaults.color = '#FFFFFF';
+        Chart.defaults.font.family = "'Courier Prime', monospace";
+        Chart.defaults.font.size = 11;
+
+        const largeChartCtx = document.getElementById('largeMainChart').getContext('2d');
+        const largeChart = new Chart(largeChartCtx, {
+            type: 'line',
+            data: {
+                labels: Array(15).fill(''),
+                datasets: [{
+                    data: Array(15).fill(0),
+                    borderColor: '#FFB300',
+                    backgroundColor: 'rgba(255, 179, 0, 0.05)',
+                    fill: true,
+                    tension: 0.15,
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { color: '#222' } },
+                    y: { position: 'right', grid: { color: '#222' } }
+                }
+            }
+        });
+
+        let activeLabel = 'IHSG';
+
+        function updateLargeChart(label, data, isUp) {
+            activeLabel = label;
+            
+            document.getElementById('active-asset-label').innerText = label.toUpperCase() + ' <PLOTTED>';
+            document.getElementById('chart-sub-title').innerText = `${label.toUpperCase()} INTRADAY PLOT`;
+            
+            if (data && data.length > 0) {
+                document.getElementById('chart-live-val').innerText = 'LAST: ' + data[data.length-1].toLocaleString();
+            }
+
+            largeChart.data.labels = Array(data.length).fill('').map((_, i) => i + 1);
+            largeChart.data.datasets[0].data = data;
+            largeChart.data.datasets[0].borderColor = isUp ? '#00FF00' : '#FF0000';
+            largeChart.data.datasets[0].backgroundColor = isUp ? 'rgba(0, 255, 0, 0.05)' : 'rgba(255, 0, 0, 0.05)';
+            largeChart.update();
+            updateDepthBook(label);
+        }
+
+        // Generate Order Book Depth
+        function updateDepthBook(label) {
+            const depthTable = document.getElementById('depth-table');
+            if(!depthTable) return;
+            const seed = label.charCodeAt(0) * 10;
+            const mid = seed > 500 ? Math.round(seed) : 10180;
+            const spread = Math.round(mid * 0.002);
+            
+            const bid1 = mid - 5;
+            const bid2 = mid - 25;
+            const bid3 = mid - 50;
+            
+            const ask1 = mid + 5;
+            const ask2 = mid + 25;
+            const ask3 = mid + 50;
+
+            depthTable.innerHTML = `
+                <tr><th style="color:var(--bb-red)">ASK</th><th style="text-align:right;">SIZE</th></tr>
+                <tr><td style="color:var(--bb-red)">${ask3.toLocaleString()}</td><td style="text-align:right; color:white;">${Math.round(Math.random()*400+100)}</td></tr>
+                <tr><td style="color:var(--bb-red)">${ask2.toLocaleString()}</td><td style="text-align:right; color:white;">${Math.round(Math.random()*600+200)}</td></tr>
+                <tr><td style="color:var(--bb-red)">${ask1.toLocaleString()}</td><td style="text-align:right; color:white;">${Math.round(Math.random()*900+300)}</td></tr>
+                <tr style="border-top:1px solid var(--border); border-bottom:1px solid var(--border);"><td style="color:var(--bb-amber)">SPREAD</td><td style="text-align:right; color:var(--bb-amber)">${spread} (${(spread/mid*100).toFixed(2)}%)</td></tr>
+                <tr><th style="color:var(--bb-green)">BID</th><th style="text-align:right;">SIZE</th></tr>
+                <tr><td style="color:var(--bb-green)">${bid1.toLocaleString()}</td><td style="text-align:right; color:white;">${Math.round(Math.random()*900+300)}</td></tr>
+                <tr><td style="color:var(--bb-green)">${bid2.toLocaleString()}</td><td style="text-align:right; color:white;">${Math.round(Math.random()*600+200)}</td></tr>
+                <tr><td style="color:var(--bb-green)">${bid3.toLocaleString()}</td><td style="text-align:right; color:white;">${Math.round(Math.random()*400+100)}</td></tr>
+            `;
+        }
+
+        // --- DRAW SPARKLINE ---
+        function drawSparkline(canvasId, data, isUp) {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (!data || data.length < 2) return;
+
+            const min = Math.min(...data);
+            const max = Math.max(...data);
+            const range = max - min === 0 ? 1 : max - min;
+
+            ctx.beginPath();
+            ctx.strokeStyle = isUp ? '#00FF00' : '#FF0000';
+            ctx.lineWidth = 1.2;
+
+            for (let i = 0; i < data.length; i++) {
+                const x = (i / (data.length - 1)) * canvas.width;
+                const y = canvas.height - ((data[i] - min) / range) * canvas.height;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+
+        // --- FETCH DATA ---
+        async function fetchMacroId() {
+            try {
+                const res = await fetch('/api/macro-id');
+                const d = await res.json();
+                const set = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val; };
+                set('mid-birate', d.biRate);
+                set('mid-inflasi', d.inflasi);
+                set('mid-gdp', d.gdp);
+                set('mid-caddev', d.cadanganDevisa);
+                set('mid-unemploy', d.pengangguran);
+                set('mid-trade', d.tradeBalance);
+                set('mid-yield', d.riYield);
+                set('mid-updated', d.lastUpdated);
+            } catch(e) {}
+        }
+
+        async function fetchStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+                document.getElementById('q-cpu').innerText = data.cpu + '%';
+                document.getElementById('q-ram').innerText = data.memPercent + '%';
+                document.getElementById('q-up').innerText = Math.floor(data.uptime / 3600) + 'H';
+                
+                document.getElementById('s-total').innerText = data.storageTotal + 'G';
+                document.getElementById('s-used').innerText = data.storageUsed + 'G';
+                
+                const pct = parseFloat(data.storagePercent);
+                const sPctEl = document.getElementById('s-pct');
+                sPctEl.innerText = pct.toFixed(1) + '%';
+                sPctEl.className = pct > 90 ? 'down flash-update' : 'up';
+            } catch(e) {}
+        }
+
+        let cachedNews = '';
+        async function fetchNews() {
+            try {
+                const res = await fetch('/api/news');
+                const payload = await res.json();
+                
+                const data = payload.items || payload;
+                if (!Array.isArray(data)) return;
+
+                let html = '';
+                data.forEach((item, idx) => {
+                    let tagType = 'update';
+                    if (idx === 0) tagType = 'flash';
+                    else if (idx < 4) tagType = 'bulletin';
+                    
+                    html += `
+                    <div class="news-item">
+                        <div class="source">
+                            <span class="tag ${tagType}">${tagType.toUpperCase()}</span>
+                            ${item.source} | ${new Date(item.time).toLocaleTimeString()}
+                        </div>
+                        <div class="title">${item.title}</div>
+                    </div>`;
+                });
+                document.getElementById('nw-container').innerHTML = html || '<div style="color:#555">NO LOCAL NEWS AVAILABLE</div>';
+
+                if(data.length > 0 && data[0].title !== cachedNews) {
+                    cachedNews = data[0].title;
+                    triggerHotAlert('WIRE ALERT: ' + data[0].title, 5);
+                }
+            } catch(e) {
+                document.getElementById('nw-container').innerHTML = '<div style="color:red">ERROR LOADING NEWS</div>';
+            }
+        }
+
+        function triggerHotAlert(message, targetSlide) {
+            bbgBeep();
+            const banner = document.getElementById('hot-banner');
+            banner.innerText = `HOT: ${message.substring(0, 30).toUpperCase()}`;
+            banner.style.display = 'block';
+            
+            const list = document.getElementById('alert-list');
+            list.innerHTML = `* ${message.toUpperCase()}<br>` + list.innerHTML;
+            
+            switchSlide(targetSlide);
+
+            setTimeout(() => {
+                banner.style.display = 'none';
+            }, 5000);
+        }
+
+        let previousPrices = {};
+        function renderTable(tableId, data) {
+            const table = document.getElementById(tableId);
+            let html = table.rows[0].outerHTML;
+            data.forEach(item => {
+                if(item.error) return;
+                const chg = item.price - item.prevClose;
+                const pct = item.prevClose ? (chg / item.prevClose) * 100 : 0;
+                const cls = pct >= 0 ? 'up' : 'down';
+                const sign = pct >= 0 ? '+' : '';
+                
+                let pFmt = item.price;
+                if(item.price > 100) pFmt = item.price.toLocaleString('id-ID', {minimumFractionDigits:2, maximumFractionDigits:2});
+                else pFmt = item.price.toFixed(4);
+
+                let sClean = item.symbol.replace('.JK','').replace('=X','').replace('000001.SS', 'SHCOMP').replace('^','');
+                
+                if (sClean === 'USDIDR') sClean = 'USD/IDR';
+                if (sClean === 'SGDIDR') sClean = 'SGD/IDR';
+                if (sClean === 'MYRIDR') sClean = 'MYR/IDR';
+                if (sClean === 'THBIDR') sClean = 'THB/IDR';
+                if (sClean === 'NSEI') sClean = 'NIFTY 50';
+                if (sClean === 'PSEI.PS') sClean = 'PSEi (PH)';
+                if (sClean === 'N225') sClean = 'NIKKEI 225';
+                if (sClean === 'HSI') sClean = 'HANG SENG';
+                if (sClean === 'STI') sClean = 'STI (SG)';
+                if (sClean === 'KLSE') sClean = 'KLCI (MY)';
+                if (sClean === 'KS11') sClean = 'KOSPI';
+                if (sClean === 'TWII') sClean = 'TAIEX (TW)';
+                if (sClean === 'SET.BK') sClean = 'SET (TH)';
+                if (sClean === 'AXJO') sClean = 'S&P/ASX 200';
+                
+                const canvasId = `spark-${tableId}-${sClean.replace(/\s+/g, '').replace(/\//g, '').replace(/\(/g, '').replace(/\(/g, '').replace(/\)/g, '').replace(/\./g,'').replace(/&/g,'')}`;
+                
+                let flashClass = '';
+                if (previousPrices[sClean] && previousPrices[sClean] !== item.price) {
+                    flashClass = item.price > previousPrices[sClean] ? 'flash-green-bg' : 'flash-red-bg';
+                    if (Math.abs(item.price - previousPrices[sClean]) / previousPrices[sClean] > 0.005) {
+                        let slideNum = 1;
+                        if(tableId === 'reg-table') slideNum = 2;
+                        if(tableId === 'fx-table') slideNum = 3;
+                        triggerHotAlert(`${sClean} SPIKE ALARM`, slideNum);
+                    }
+                }
+                previousPrices[sClean] = item.price;
+
+                const assetNameEscaped = sClean.replace(/'/g, "\\'");
+                const dataString = JSON.stringify(item.sparkline);
+                const clickAction = `updateLargeChart('${assetNameEscaped}', ${dataString}, ${chg >= 0})`;
+
+                const signal = item.signal || 'HOLD';
+                const confidence = item.confidence || 50;
+                const sigColors = {'STRONG BUY':'#00FF00','BUY':'#4ade80','WEAK BUY':'#86efac','HOLD':'#FFB300','WEAK SELL':'#fca5a5','SELL':'#FF0000','STRONG SELL':'#dc2626'};
+                const signalColor = sigColors[signal] || 'var(--bb-cyan)';
+
+                // Store signal data in local storage cache for details modal
+                signalStore[sClean] = item;
+                const sigKey = `sigkey-${tableId}-${sClean.replace(/[^a-zA-Z0-9]/g,'_')}`;
+
+                if (tableId === 'eq-table') {
+                    html += `<tr class="${flashClass}">
+                        <td class="label" onclick="${clickAction}">${sClean}</td>
+                        <td class="value">${pFmt}</td>
+                        <td class="value" style="color:var(--bb-cyan);">${item.peRatio || 'N/A'}</td>
+                        <td class="value" style="color:var(--bb-white);">${item.mcap || 'N/A'}</td>
+                        <td class="sig-cell" data-sigkey="${sigKey}" title="Click for Buffett Analysis">
+                            <span style="color:${signalColor}; font-size:10px; font-weight:bold;">${signal}</span>
+                            <span style="display:block; font-size:8px; color:#555;">${confidence.toFixed(0)}% CONF</span>
+                        </td>
+                        <td class="trend"><canvas id="${canvasId}" width="80" height="20" style="width:80px; height:20px;"></canvas></td>
+                        <td class="${cls}">${sign}${pct.toFixed(2)}%</td>
+                    </tr>`;
+                } else {
+                    html += `<tr class="${flashClass}">
+                        <td class="label" onclick="${clickAction}">${sClean}</td>
+                        <td class="value">${pFmt}</td>
+                        <td class="sig-cell" data-sigkey="${sigKey}" title="Click for Analysis">
+                            <span style="color:${signalColor}; font-size:10px; font-weight:bold;">${signal}</span>
+                            <span style="display:block; font-size:8px; color:#555;">${confidence.toFixed(0)}% CONF</span>
+                        </td>
+                        <td class="trend"><canvas id="${canvasId}" width="80" height="20" style="width:80px; height:20px;"></canvas></td>
+                        <td class="${cls}">${sign}${pct.toFixed(2)}%</td>
+                    </tr>`;
+                }
+            });
+            table.innerHTML = html;
+
+            // Render sparklines
+            data.forEach(item => {
+                if(item.error) return;
+                const chg = item.price - item.prevClose;
+                let sClean = item.symbol.replace('.JK','').replace('=X','').replace('000001.SS', 'SHCOMP').replace('^','');
+                if (sClean === 'USDIDR') sClean = 'USD/IDR';
+                if (sClean === 'SGDIDR') sClean = 'SGD/IDR';
+                if (sClean === 'MYRIDR') sClean = 'MYR/IDR';
+                if (sClean === 'THBIDR') sClean = 'THB/IDR';
+                if (sClean === 'NSEI') sClean = 'NIFTY 50';
+                if (sClean === 'PSEI.PS') sClean = 'PSEi (PH)';
+                if (sClean === 'N225') sClean = 'NIKKEI 225';
+                if (sClean === 'HSI') sClean = 'HANG SENG';
+                if (sClean === 'STI') sClean = 'STI (SG)';
+                if (sClean === 'KLSE') sClean = 'KLCI (MY)';
+                if (sClean === 'KS11') sClean = 'KOSPI';
+                if (sClean === 'TWII') sClean = 'TAIEX (TW)';
+                if (sClean === 'SET.BK') sClean = 'SET (TH)';
+                if (sClean === 'AXJO') sClean = 'S&P/ASX 200';
+                
+                const canvasId = `spark-${tableId}-${sClean.replace(/\s+/g, '').replace(/\//g, '').replace(/\(/g, '').replace(/\)/g, '').replace(/\./g,'').replace(/&/g,'')}`;
+                drawSparkline(canvasId, item.sparkline, chg >= 0);
+                
+                if (sClean === activeLabel || (item.symbol === '^JKSE' && activeLabel === 'IHSG')) {
+                    updateLargeChart(sClean === 'JKSE' ? 'IHSG' : sClean, item.sparkline, chg >= 0);
+                }
+            });
+        }
+
+        function renderCommodities(data) {
+            const table = document.getElementById('commodity-table');
+            let html = table.rows[0].outerHTML;
+            data.forEach(item => {
+                if(item.error) return;
+                const chg = item.price - item.prevClose;
+                const pct = item.prevClose ? (chg / item.prevClose) * 100 : 0;
+                const cls = pct >= 0 ? 'up' : 'down';
+                const sign = pct >= 0 ? '+' : '';
+                
+                let sClean = item.symbol;
+                if (sClean === 'MTF=F') sClean = 'Batu Bara (Coal)';
+                if (sClean === 'GC=F') sClean = 'Emas (Gold)';
+                if (sClean === 'CL=F') sClean = 'Minyak (Crude)';
+                if (sClean === 'CPO-RM') sClean = 'CPO Sawit';
+                if (sClean === 'NICKEL') sClean = 'Nikel';
+
+                const canvasId = `spark-comm-${sClean.replace(/\s+/g, '').replace(/\(/g, '').replace(/\(/g, '')}`;
+                const assetNameEscaped = sClean.replace(/'/g, "\\'");
+                const dataString = JSON.stringify(item.sparkline);
+                const clickAction = `updateLargeChart('${assetNameEscaped}', ${dataString}, ${chg >= 0})`;
+
+                html += `<tr>
+                    <td class="label" onclick="${clickAction}">${sClean}</td>
+                    <td class="value">${item.price.toLocaleString('id-ID')}</td>
+                    <td class="trend"><canvas id="${canvasId}" width="80" height="20" style="width:80px; height:20px;"></canvas></td>
+                    <td class="${cls}">${sign}${pct.toFixed(2)}%</td>
+                </tr>`;
+            });
+            table.innerHTML = html;
+
+            data.forEach(item => {
+                if(item.error) return;
+                const chg = item.price - item.prevClose;
+                let sClean = item.symbol;
+                if (sClean === 'MTF=F') sClean = 'Batu Bara (Coal)';
+                if (sClean === 'GC=F') sClean = 'Emas (Gold)';
+                if (sClean === 'CL=F') sClean = 'Minyak (Crude)';
+                if (sClean === 'CPO-RM') sClean = 'CPO Sawit';
+                if (sClean === 'NICKEL') sClean = 'Nikel';
+                drawSparkline(`spark-comm-${sClean.replace(/\s+/g, '').replace(/\(/g, '').replace(/\(/g, '')}`, item.sparkline, chg >= 0);
+            });
+        }
+
+        async function fetchMovers() {
+            try {
+                const res = await fetch('/api/idx-movers');
+                const data = await res.json();
+                let html = '<tr><th colspan="2">IDX TOP MOVERS</th></tr>';
+                html += '<tr><td colspan="2" style="color:var(--bb-green); font-size:9px;">GAINERS</td></tr>';
+                data.gainers.forEach(g => {
+                    html += `<tr><td class="label" style="font-size:10px;">${g.symbol}</td><td class="value" style="color:var(--bb-green)">${g.change}</td></tr>`;
+                });
+                html += '<tr><td colspan="2" style="color:var(--bb-red); font-size:9px; margin-top:5px;">LOSERS</td></tr>';
+                data.losers.forEach(l => {
+                    html += `<tr><td class="label" style="font-size:10px;">${l.symbol}</td><td class="value" style="color:var(--bb-red)">${l.change}</td></tr>`;
+                });
+                document.getElementById('idx-movers-table').innerHTML = html;
+            } catch(e){}
+        }
+
+        async function fetchAsing() {
+            try {
+                const res = await fetch('/api/asing');
+                const d = await res.json();
+                const setEl = (id, val, color) => { const el = document.getElementById(id); if(el){ el.innerText = val; if(color) el.style.color = color; } };
+                setEl('as-status', d.status, d.status === 'MARKET OPEN' ? 'var(--bb-green)' : 'var(--bb-red)');
+                setEl('as-net', d.netBuy, d.dirColor === 'green' ? 'var(--bb-green)' : 'var(--bb-red)');
+                setEl('as-wk', d.weeklyNet, parseFloat(d.weeklyNet) >= 0 ? 'var(--bb-green)' : 'var(--bb-red)');
+                setEl('as-mo', d.monthlyNet, parseFloat(d.monthlyNet) >= 0 ? 'var(--bb-green)' : 'var(--bb-red)');
+            } catch(e){}
+        }
+
+        async function fetchSbn() {
+            try {
+                const res = await fetch('/api/sbn');
+                const data = await res.json();
+                const table = document.getElementById('sbn-table');
+                if (!table) return;
+                let html = table.rows[0].outerHTML;
+                data.forEach(b => {
+                    html += `<tr>
+                        <td class="label" style="font-size:10px;">${b.code}</td>
+                        <td class="value" style="font-size:10px;">${b.tenor}</td>
+                        <td class="value" style="font-size:10px; text-align:right;">${b.coupon}</td>
+                        <td class="value" style="font-size:10px; color:var(--bb-cyan); text-align:right;">${b.yield}</td>
+                        <td class="value" style="font-size:10px; text-align:right;">${b.price}</td>
+                    </tr>`;
+                });
+                table.innerHTML = html;
+            } catch(e){}
+        }
+
+        function renderSektoral(data) {
+            const table = document.getElementById('sektoral-table');
+            if (!table) return;
+            const sNames = { 'JAKFIN':'FINANCIALS', 'JAKMINE':'MINING', 'JAKPROP':'PROPERTY', 'JAKCONS':'CONSUMER', 'JAKMFG':'MANUFACT.' };
+            let html = '<tr><th style="font-size:9px;">SEKTOR</th><th style="font-size:9px; text-align:right;">IDX</th><th style="font-size:9px; text-align:right;">CHG</th></tr>';
+            data.forEach(item => {
+                if (item.error) return;
+                const chg = item.price - item.prevClose;
+                const pct = item.prevClose ? (chg / item.prevClose * 100) : 0;
+                const cls = pct >= 0 ? 'var(--bb-green)' : 'var(--bb-red)';
+                const sign = pct >= 0 ? '+' : '';
+                const sClean = item.symbol.replace('^JAK','');
+                const name = sNames[`JAK${sClean}`] || sClean;
+                html += `<tr>
+                    <td class="label" style="font-size:9px;">${name}</td>
+                    <td class="value" style="font-size:9px; text-align:right;">${item.price ? item.price.toFixed(0) : '--'}</td>
+                    <td style="font-size:9px; text-align:right; color:${cls};">${sign}${pct.toFixed(1)}%</td>
+                </tr>`;
+            });
+            table.innerHTML = html;
+        }
+
+        const asianTickers = ['^N225', '^HSI', '000001.SS', '^STI', '^KLSE', '^KS11', '^TWII', '^NSEI', 'PSEI.PS', '^SET.BK', '^AXJO'];
+
+        async function fetchFinanceData() {
+            try {
+                const res = await fetch('/api/finance-local');
+                const data = await res.json();
+                
+                const localData = data.finance.filter(x => x.symbol === '^JKSE' || x.symbol.endsWith('.JK') || x.symbol.includes('IDR'));
+                const regionalData = data.finance.filter(x => asianTickers.includes(x.symbol));
+                
+                renderTable('eq-table', localData.filter(x => !x.symbol.includes('IDR')));
+                renderTable('reg-table', regionalData);
+                renderTable('fx-table', localData.filter(x => x.symbol.includes('IDR')));
+                renderCommodities(data.commodities);
+                if (data.sektoral) renderSektoral(data.sektoral);
+
+                let mq = '** LOCAL MKTS ** ';
+                data.finance.forEach(item => {
+                    if(!item.error && item.symbol === '^JKSE') {
+                        const pct = ((item.price - item.prevClose)/item.prevClose)*100;
+                        mq += `IHSG: ${item.price.toFixed(2)} (${pct>0?'+':''}${pct.toFixed(2)}%) ** `;
+                    }
+                });
+                document.getElementById('market-marquee').innerText = mq;
+            } catch(e) {}
+        }
+
+        async function fetchFiles() {
+            try {
+                const res = await fetch('/api/files');
+                const files = await res.json();
+                document.getElementById('s-files').innerText = files.length;
+                
+                let fullHtml = '';
+                files.forEach(f => {
+                    fullHtml += `<div class="file-item">
+                        <div><a href="/uploads/${f.name}" target="_blank" style="color:var(--bb-white); text-decoration:none;">${f.displayName}</a> <span style="color:#555">(${f.size})</span></div>
+                        <span class="file-del" onclick="deleteFile('${f.name}')">[X]</span>
+                    </div>`;
+                });
+                document.getElementById('file-list-full').innerHTML = fullHtml || '<div style="color:#555">NO FILES UPLOADED</div>';
+
+                const recTable = document.getElementById('recent-files');
+                let recHtml = recTable.rows[0].outerHTML;
+                files.slice(0, 5).forEach(f => {
+                    const disp = f.displayName.length > 15 ? f.displayName.substring(0,12)+'...' : f.displayName;
+                    recHtml += `<tr><td class="label">${disp}</td><td class="value">${f.size}</td></tr>`;
+                });
+                if(files.length === 0) recHtml += `<tr><td colspan="2" style="color:#555">NO FILES</td></tr>`;
+                recTable.innerHTML = recHtml;
+            } catch(e) {}
+        }
+
+        async function deleteFile(filename) {
+            if(!confirm(`DELETE ${filename}?`)) return;
+            try {
+                await fetch('/api/files/' + filename, { method: 'DELETE' });
+                fetchFiles();
+                if (currentSlide === 7) fetchGallery();
+            } catch(e) {}
+        }
+        
+        // --- Cloud Storage Photo Gallery ---
+        async function fetchGallery() {
+            try {
+                const grid = document.getElementById('gallery-grid');
+                
+                // Fetch cloud storage metadata
+                const cloudRes = await fetch('/api/files');
+                const cloudFiles = await cloudRes.json();
+                const cloudMedia = cloudFiles.filter(f => /\.(jpg|jpeg|png|gif|mp4|mov|webp)$/i.test(f.name));
+                
+                const unified = [];
+                
+                // Process cloud files
+                cloudMedia.forEach(c => {
+                    unified.push({
+                        name: c.name,
+                        displayName: c.displayName,
+                        size: c.size,
+                        url: `/uploads/${encodeURIComponent(c.name)}`,
+                        isVideo: /\.(mp4|mov)$/i.test(c.name)
+                    });
+                });
+                
+                // Sort unified array alphabetically by display name
+                unified.sort((a, b) => a.displayName.localeCompare(b.displayName));
+                
+                let html = '';
+                unified.forEach(m => {
+                    html += `
+                    <div style="border: 1px solid var(--border); background: #0c0c0c; display: flex; flex-direction: column; padding: 3px; position: relative;">
+                        <div style="width: 100%; height: 85px; overflow: hidden; background: #000; display: flex; align-items: center; justify-content: center; position: relative; cursor: pointer;" onclick="openLightbox('${m.url}', ${m.isVideo}, '${m.displayName}')">
+                            ${m.isVideo 
+                                ? `<video src="${m.url}" style="max-width: 100%; max-height: 100%;" muted></video>
+                                   <div style="position: absolute; bottom: 2px; right: 2px; background: rgba(0,0,0,0.7); color: var(--bb-white); font-size: 8px; padding: 1px 3px;">VIDEO</div>`
+                                : `<img src="${m.url}" style="max-width: 100%; max-height: 100%; object-fit: cover;">`
+                            }
+                        </div>
+                        <div style="font-size: 8px; color: var(--bb-white); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; width: 100%;" title="${m.displayName}">${m.displayName}</div>
+                        <div style="font-size: 8px; color: #777; display: flex; justify-content: space-between; margin-top: 2px; align-items:center;">
+                            <span>${m.size}</span>
+                            <span style="color:var(--bb-cyan); font-size:8px;">[☁ CLOUD]</span>
+                            <div style="display:flex; gap:4px;">
+                                <a href="${m.url}" download="${m.displayName}" style="color: var(--bb-cyan); text-decoration:none;">[DL]</a>
+                                <span style="color: var(--bb-red); cursor: pointer;" onclick="deleteFile('${m.name}')">[DEL]</span>
+                            </div>
+                        </div>
+                    </div>`;
+                });
+                
+                grid.innerHTML = html || '<div style="color:#555; grid-column:1/-1; text-align:center; padding: 20px;">NO IMAGES OR VIDEOS FOUND</div>';
+            } catch (e) {
+                document.getElementById('gallery-grid').innerHTML = '<div style="color:red; grid-column:1/-1; text-align:center;">ERROR RETRIEVING GALLERY</div>';
+            }
+        }
+
+        // --- 1GB+ Chunked File Upload Queue Manager ---
+        let uploadQueue = [];
+        let activeUpload = false;
+
+        function addFilesToQueue(files) {
+            if (!files || !files.length) return;
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                uploadQueue.push({
+                    file,
+                    id: file.name + '-' + file.size + '-' + Date.now(),
+                    progress: 0,
+                    status: 'PENDING'
+                });
+            }
+            document.getElementById('queue-box').style.display = 'block';
+            renderQueue();
+            if (!activeUpload) uploadNext();
+        }
+
+        function handleQueue() {
+            const files = document.getElementById('fileInput').files;
+            addFilesToQueue(files);
+        }
+
+        function handleGalleryUpload() {
+            const files = document.getElementById('galleryFileInput').files;
+            if (!files || !files.length) return;
+            addFilesToQueue(files);
+            switchSlide(6); // Switch to Cloud Uploader slide to view progress
+        }        // --- Lightbox Modal ---
+        function openLightbox(url, isVideo, title) {
+            const modal = document.getElementById('lightbox-modal');
+            const content = document.getElementById('lightbox-content');
+            const tit = document.getElementById('lightbox-title');
+            
+            tit.innerText = title;
+            if (isVideo) {
+                content.innerHTML = `<video src="${url}" controls autoplay style="max-width:100%; max-height:100%;"></video>`;
+            } else {
+                content.innerHTML = `<img src="${url}" style="max-width:100%; max-height:100%; object-fit:contain;">`;
+            }
+            modal.style.display = 'flex';
+        }
+
+        function closeLightbox() {
+            document.getElementById('lightbox-modal').style.display = 'none';
+            document.getElementById('lightbox-content').innerHTML = '';
+        }
+
+        // Removed duplicate queue manager
+
+        function renderQueue() {
+            const list = document.getElementById('queue-list');
+            let html = '';
+            uploadQueue.forEach(item => {
+                let color = '#777';
+                if (item.status === 'UPLOADING') color = 'var(--bb-cyan)';
+                if (item.status === 'MERGING') color = 'var(--bb-amber)';
+                if (item.status === 'COMPLETED') color = 'var(--bb-green)';
+                
+                html += `
+                <div style="font-size:10px; border-bottom: 1px dotted #222; padding-bottom: 2px;">
+                    <div style="display:flex; justify-content:space-between; margin-bottom: 2px;">
+                        <span style="color:var(--bb-white); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width: 60%;">${item.file.name}</span>
+                        <span style="color:${color}; font-weight:bold;">${item.status} (${item.progress}%)</span>
+                    </div>
+                    <div class="progress-bar-container">
+                        <div class="progress-bar" style="width: ${item.progress}%;"></div>
+                    </div>
+                </div>`;
+            });
+            list.innerHTML = html;
+        }
+
+        async function uploadNext() {
+            const next = uploadQueue.find(x => x.status === 'PENDING');
+            if (!next) {
+                activeUpload = false;
+                document.getElementById('global-speed').innerText = 'Speed: 0 KB/s';
+                document.getElementById('global-eta').innerText = 'Remaining: --:--';
+                return;
+            }
+
+            activeUpload = true;
+            next.status = 'UPLOADING';
+            renderQueue();
+
+            try {
+                await uploadFileInChunks(next);
+                next.status = 'COMPLETED';
+                next.progress = 100;
+                renderQueue();
+                fetchFiles();
+            } catch(e) {
+                next.status = 'FAILED';
+                renderQueue();
+            }
+            uploadNext();
+        }
+
+        function uploadFileInChunks(queueItem) {
+            return new Promise((resolve, reject) => {
+                const file = queueItem.file;
+                const fileId = queueItem.id;
+                const chunkSize = 10 * 1024 * 1024; // 10MB Chunks
+                const totalChunks = Math.ceil(file.size / chunkSize);
+                let currentChunk = 0;
+                let startTime = Date.now();
+
+                function sendNextChunk() {
+                    if (currentChunk >= totalChunks) {
+                        queueItem.status = 'MERGING';
+                        renderQueue();
+                        
+                        fetch('/api/upload-complete', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ fileId, filename: file.name, totalChunks })
+                        })
+                        .then(r => r.json())
+                        .then(d => {
+                            if(d.success) resolve();
+                            else reject(new Error('Merge failed'));
+                        })
+                        .catch(reject);
+                        return;
+                    }
+
+                    const start = currentChunk * chunkSize;
+                    const end = Math.min(start + chunkSize, file.size);
+                    const chunk = file.slice(start, end);
+
+                    const fd = new FormData();
+                    fd.append('chunk', chunk, `${file.name}.chunk`);
+                    fd.append('fileId', fileId);
+                    fd.append('chunkIndex', currentChunk);
+                    fd.append('totalChunks', totalChunks);
+
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('POST', '/api/upload-chunk');
+                    
+                    xhr.upload.onprogress = (e) => {
+                        if (e.lengthComputable) {
+                            const chunkProgress = (e.loaded / e.total);
+                            const totalUploadedBytes = start + (chunkProgress * chunk.size);
+                            const percent = Math.floor((totalUploadedBytes / file.size) * 100);
+                            
+                            queueItem.progress = percent;
+                            document.getElementById('global-percent').innerText = percent + '%';
+                            renderQueue();
+
+                            const now = Date.now();
+                            const elapsedSec = (now - startTime) / 1000;
+                            if (elapsedSec > 0.5) {
+                                const speedBytesPerSec = totalUploadedBytes / elapsedSec;
+                                const speedMB = (speedBytesPerSec / 1024 / 1024).toFixed(2);
+                                document.getElementById('global-speed').innerText = `Speed: ${speedMB} MB/s`;
+
+                                const remainingBytes = file.size - totalUploadedBytes;
+                                const etaSec = speedBytesPerSec > 0 ? Math.ceil(remainingBytes / speedBytesPerSec) : 0;
+                                
+                                const min = Math.floor(etaSec / 60);
+                                const sec = etaSec % 60;
+                                document.getElementById('global-eta').innerText = `Remaining: ${min}m ${sec}s`;
+                            }
+                        }
+                    };
+
+                    xhr.onload = () => {
+                        if (xhr.status === 200) {
+                            currentChunk++;
+                            sendNextChunk();
+                        } else {
+                            reject(new Error('Chunk upload failed'));
+                        }
+                    };
+                    xhr.onerror = () => reject(new Error('Network error'));
+                    xhr.send(fd);
+                }
+
+                sendNextChunk();
+            });
+        }
+
+        // --- Bloomberg News Wire Minute-by-Minute Generator ---
+        const marketFlashes = [
+            "IDX trades higher on financial sector strength; BBCA leads.",
+            "Rupiah trades flat at 15,815 per Dollar.",
+            "Nikkei 225 advances +0.78% led by tech stocks.",
+            "Gold prices firm at $2,380 per ounce.",
+            "BI rate maintained at 5.50% following latest economic board statements.",
+            "Bumi Resources logs heavy volume spikes in early trade.",
+            "Brent crude spikes +1.2% on middle-east tension rumors.",
+            "Hang Seng drops -0.4% on retail volume deceleration.",
+            "NIFTY 50 (India) gains +0.9% hitting new all-time high.",
+            "Rupiah trades slightly firmer at 15,800 per Dollar.",
+            "CPO price ticks up to 3,960 RM/ton on supply worries.",
+            "Nickel trades flat at $18,450 per metric ton.",
+            "SBN 10Y Yield tracks down to 6.91% on foreign purchases.",
+            "BI Governor indicates inflation targets within 2.5% range.",
+            "Indonesia trade surplus hits $3.56B for Q2.",
+            "Antam drops -1.8% matching nickel futures decline.",
+            "Telkom logs heavy foreign net inflow of 45B IDR.",
+            "Straits Times Index rallies +0.5% on banking gains.",
+            "Shanghai Composite struggles to hold 3,000 index level."
+        ];
+
+        function startNewsWire() {
+            const wire = document.getElementById('wire-container');
+            if(!wire) return;
+
+            let html = '';
+            for(let i=0; i<10; i++) {
+                const date = new Date(Date.now() - i * 90000);
+                const flashText = marketFlashes[Math.floor(Math.random() * marketFlashes.length)];
+                html += `<div style="border-bottom: 1px dotted #222; padding: 4px 0;">
+                    <span style="color:var(--bb-white);">${date.toTimeString().substring(0,8)}</span> - ${flashText}
+                </div>`;
+            }
+            wire.innerHTML = html;
+
+            setInterval(() => {
+                const date = new Date();
+                const flashText = marketFlashes[Math.floor(Math.random() * marketFlashes.length)];
+                const itemHtml = `<div style="border-bottom: 1px dotted #222; padding: 4px 0; animation: flash-green 1s;">
+                    <span style="color:var(--bb-white);">${date.toTimeString().substring(0,8)}</span> - ${flashText}
+                </div>`;
+                wire.innerHTML = itemHtml + wire.innerHTML;
+                
+                if (wire.children.length > 25) {
+                    wire.removeChild(wire.lastChild);
+                }
+                
+                document.querySelectorAll('.tab-btn')[4].classList.add('flash-update');
+                setTimeout(() => {
+                    document.querySelectorAll('.tab-btn')[4].classList.remove('flash-update');
+                }, 1500);
+
+            }, 60000);
+        }
+
+        // INITIAL LOAD & INTERVALS
+        fetchStats(); setInterval(fetchStats, 2000);
+        fetchFiles(); setInterval(fetchFiles, 5000);
+        fetchMovers(); setInterval(fetchMovers, 15000);
+        fetchNews(); setInterval(fetchNews, 60000);
+        fetchMacroId(); setInterval(fetchMacroId, 300000);
+        fetchAsing(); setInterval(fetchAsing, 30000);
+        fetchSbn(); setInterval(fetchSbn, 600000);
+        
+        fetchFinanceData(); setInterval(fetchFinanceData, 10000);
+        startNewsWire();
+    </script>
+</body>
+</html>
