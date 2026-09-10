@@ -277,11 +277,655 @@
         ::-webkit-scrollbar { width: 5px; }
         ::-webkit-scrollbar-track { background: #111; }
         ::-webkit-scrollbar-thumb { background: #555; }
+
+        /* ============================================================ */
+        /* TONY STARK-TECH & SPIDER-MAN HUD STYLING                     */
+        /* ============================================================ */
+        :root {
+            --tony-cyan: #00ffff;
+            --tony-blue: #0088ff;
+            --tony-gold: #ffb703;
+            --tony-red: #e63946;
+            --tony-dark: #080c14;
+            --tony-card-bg: rgba(12, 18, 30, 0.9);
+            --tony-border: #1e3a5f;
+            --tony-border-glow: rgba(0, 255, 255, 0.35);
+        }
+
+        .tony-master-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: linear-gradient(90deg, #050a12 0%, #0d1b2a 50%, #050a12 100%);
+            border-bottom: 2px solid var(--tony-cyan);
+            padding: 6px 12px;
+            box-shadow: 0 4px 20px rgba(0, 255, 255, 0.15);
+            margin-bottom: 4px;
+            gap: 10px;
+        }
+
+        .tony-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .arc-reactor-mini {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: 2px solid var(--tony-cyan);
+            background: radial-gradient(circle, #ffffff 10%, #00ffff 60%, transparent 80%);
+            box-shadow: 0 0 12px var(--tony-cyan), inset 0 0 8px var(--tony-cyan);
+            animation: arc-pulse 2s infinite ease-in-out;
+            position: relative;
+        }
+        @keyframes arc-pulse {
+            0%, 100% { transform: scale(1); box-shadow: 0 0 12px var(--tony-cyan); }
+            50% { transform: scale(1.08); box-shadow: 0 0 20px #00ffff, 0 0 30px #0088ff; }
+        }
+
+        .tony-brand-title {
+            font-size: 15px;
+            font-weight: bold;
+            color: var(--bb-white);
+            letter-spacing: 1px;
+            display: block;
+        }
+        .tony-brand-sub {
+            font-size: 9px;
+            color: var(--tony-cyan);
+            letter-spacing: 0.5px;
+            display: block;
+        }
+
+        .tony-mode-switch {
+            display: flex;
+            background: #000;
+            border: 1px solid var(--tony-border);
+            border-radius: 4px;
+            overflow: hidden;
+            padding: 2px;
+            gap: 2px;
+        }
+        .tony-nav-btn {
+            background: transparent;
+            color: #888;
+            border: none;
+            padding: 6px 14px;
+            font-family: inherit;
+            font-weight: bold;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-radius: 3px;
+        }
+        .tony-nav-btn.active {
+            background: linear-gradient(135deg, #005596, #00a8ff);
+            color: #fff;
+            box-shadow: 0 0 10px rgba(0, 168, 255, 0.5);
+        }
+
+        .tony-voice-ctrl {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tony-mic-btn {
+            background: linear-gradient(135deg, #1b2838, #0f172a);
+            border: 1px solid var(--tony-cyan);
+            color: var(--tony-cyan);
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-family: inherit;
+            font-weight: bold;
+            font-size: 11px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+            box-shadow: 0 0 8px rgba(0, 255, 255, 0.2);
+        }
+        .tony-mic-btn:hover {
+            background: var(--tony-cyan);
+            color: #000;
+            box-shadow: 0 0 16px var(--tony-cyan);
+        }
+        .tony-mic-btn.listening {
+            background: var(--tony-red) !important;
+            border-color: #ff4d6d !important;
+            color: #fff !important;
+            animation: mic-pulse 0.8s infinite alternate;
+        }
+        .tony-mic-btn.speaking {
+            background: var(--tony-gold) !important;
+            border-color: #ffd166 !important;
+            color: #000 !important;
+        }
+        @keyframes mic-pulse {
+            0% { box-shadow: 0 0 8px var(--tony-red); }
+            100% { box-shadow: 0 0 22px #ff4d6d, 0 0 35px #e63946; }
+        }
+
+        .waveform-container {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            height: 20px;
+            padding: 0 4px;
+        }
+        .wave-bar {
+            width: 3px;
+            height: 6px;
+            background: var(--tony-cyan);
+            border-radius: 2px;
+            transition: height 0.1s;
+        }
+        .waveform-container.active .wave-bar:nth-child(1) { animation: wave 0.5s infinite 0.1s; }
+        .waveform-container.active .wave-bar:nth-child(2) { animation: wave 0.5s infinite 0.2s; }
+        .waveform-container.active .wave-bar:nth-child(3) { animation: wave 0.5s infinite 0.3s; }
+        .waveform-container.active .wave-bar:nth-child(4) { animation: wave 0.5s infinite 0.4s; }
+        .waveform-container.active .wave-bar:nth-child(5) { animation: wave 0.5s infinite 0.25s; }
+        @keyframes wave {
+            0%, 100% { height: 4px; background: var(--tony-cyan); }
+            50% { height: 18px; background: #fff; }
+        }
+
+        .tony-clock-pill {
+            text-align: right;
+            font-size: 11px;
+            color: var(--tony-gold);
+            line-height: 1.2;
+        }
+
+        /* TONY HUD VIEW LAYOUT */
+        #tony-hud-view {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            overflow-y: auto;
+            padding-right: 2px;
+        }
+
+        .tony-banner-voice {
+            background: rgba(0, 20, 40, 0.7);
+            border: 1px solid var(--tony-border-glow);
+            border-radius: 4px;
+            padding: 8px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .voice-feedback-txt {
+            color: #d1e8ff;
+            font-size: 12px;
+            flex: 1;
+        }
+        .voice-quick-pills {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .quick-pill {
+            background: #112233;
+            border: 1px solid #234567;
+            color: var(--tony-cyan);
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .quick-pill:hover {
+            background: var(--tony-cyan);
+            color: #000;
+        }
+
+        /* DREAM BOARD GRID */
+        .dream-board-section {
+            background: var(--tony-card-bg);
+            border: 1px solid var(--tony-border);
+            border-radius: 4px;
+            padding: 8px;
+        }
+        .section-header-hud {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--tony-border);
+            padding-bottom: 4px;
+            margin-bottom: 8px;
+        }
+        .section-title-hud {
+            color: var(--tony-cyan);
+            font-size: 13px;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .univ-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 6px;
+        }
+        @media (max-width: 1024px) {
+            .univ-grid { grid-template-columns: repeat(3, 1fr); }
+        }
+        @media (max-width: 640px) {
+            .univ-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        .univ-card {
+            background: #0a111e;
+            border: 1px solid #1a2f48;
+            border-radius: 4px;
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            transition: all 0.2s;
+            position: relative;
+            overflow: hidden;
+        }
+        .univ-card:hover {
+            border-color: var(--tony-cyan);
+            box-shadow: 0 0 12px rgba(0, 255, 255, 0.25);
+            transform: translateY(-2px);
+        }
+        .univ-badge-top {
+            font-size: 8px;
+            padding: 1px 4px;
+            border-radius: 2px;
+            background: #172a3a;
+            color: var(--tony-cyan);
+            align-self: flex-start;
+            margin-bottom: 4px;
+            font-weight: bold;
+        }
+        .univ-crest {
+            font-size: 18px;
+            font-weight: 900;
+            letter-spacing: 1px;
+            margin-bottom: 2px;
+        }
+        .univ-name {
+            font-size: 11px;
+            color: #fff;
+            font-weight: bold;
+            margin-bottom: 2px;
+            line-height: 1.2;
+        }
+        .univ-prodi {
+            font-size: 10px;
+            color: var(--tony-gold);
+            margin-bottom: 4px;
+        }
+        .univ-scholarship {
+            font-size: 9px;
+            color: #94a3b8;
+            line-height: 1.2;
+            margin-top: auto;
+            border-top: 1px dashed #1e293b;
+            padding-top: 4px;
+        }
+
+        /* DUAL ACTION SENTINEL */
+        .dual-sentinel-row {
+            display: grid;
+            grid-template-columns: 340px 1fr;
+            gap: 6px;
+        }
+        @media (max-width: 900px) {
+            .dual-sentinel-row { grid-template-columns: 1fr; }
+        }
+
+        /* CHECK-IN CARD */
+        .checkin-card {
+            background: var(--tony-card-bg);
+            border: 1px solid var(--tony-border);
+            border-radius: 4px;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .checkin-btn {
+            background: linear-gradient(135deg, #059669, #10b981);
+            color: white;
+            border: none;
+            padding: 10px;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: all 0.2s;
+            box-shadow: 0 0 10px rgba(16, 185, 129, 0.4);
+        }
+        .checkin-btn:hover {
+            box-shadow: 0 0 18px rgba(16, 185, 129, 0.7);
+            transform: scale(1.02);
+        }
+        .checkin-status-box {
+            background: #0d1a29;
+            border: 1px solid #1e354e;
+            border-radius: 4px;
+            padding: 8px;
+            font-size: 11px;
+            color: #cbd5e1;
+            line-height: 1.4;
+        }
+
+        /* TASK MANAGER */
+        .task-mgr-card {
+            background: var(--tony-card-bg);
+            border: 1px solid var(--tony-border);
+            border-radius: 4px;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .task-input-bar {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .task-input-bar input, .task-input-bar select {
+            background: #0b1320;
+            border: 1px solid #22374e;
+            color: #fff;
+            padding: 5px 8px;
+            font-family: inherit;
+            font-size: 11px;
+            border-radius: 3px;
+            outline: none;
+        }
+        .task-input-bar input:focus {
+            border-color: var(--tony-cyan);
+        }
+        .task-add-btn {
+            background: var(--tony-cyan);
+            color: #000;
+            border: none;
+            padding: 5px 12px;
+            font-family: inherit;
+            font-weight: bold;
+            font-size: 11px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        .task-add-btn:hover {
+            background: #fff;
+        }
+
+        .task-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 220px;
+            overflow-y: auto;
+        }
+        .task-item {
+            background: #09121d;
+            border: 1px solid #1a2d42;
+            border-radius: 3px;
+            padding: 6px 8px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            font-size: 11px;
+            transition: all 0.15s;
+        }
+        .task-item:hover {
+            border-color: #2b496c;
+        }
+        .task-item.completed {
+            opacity: 0.5;
+            text-decoration: line-through;
+            border-color: #122131;
+        }
+        .task-item-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex: 1;
+        }
+        .task-sub-badge {
+            font-size: 9px;
+            padding: 1px 4px;
+            border-radius: 2px;
+            background: #18283b;
+            color: var(--tony-cyan);
+        }
+        .task-countdown {
+            font-size: 10px;
+            color: var(--tony-gold);
+            font-weight: bold;
+        }
+        .task-del-btn {
+            background: transparent;
+            color: #666;
+            border: none;
+            cursor: pointer;
+            padding: 2px 4px;
+        }
+        .task-del-btn:hover { color: var(--tony-red); }
+
+        /* ROADMAP HUD */
+        .roadmap-card {
+            background: var(--tony-card-bg);
+            border: 1px solid var(--tony-border);
+            border-radius: 4px;
+            padding: 10px;
+        }
+        .roadmap-timeline {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 6px;
+        }
+        @media (max-width: 1024px) {
+            .roadmap-timeline { grid-template-columns: repeat(3, 1fr); }
+        }
+        @media (max-width: 640px) {
+            .roadmap-timeline { grid-template-columns: 1fr; }
+        }
+        .roadmap-node {
+            background: #0a1322;
+            border: 1px solid #192b42;
+            border-radius: 4px;
+            padding: 6px;
+            font-size: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+        .roadmap-node.current {
+            border-color: var(--tony-cyan);
+            background: linear-gradient(180deg, rgba(0,255,255,0.08) 0%, #0a1322 100%);
+            box-shadow: 0 0 10px rgba(0,255,255,0.2);
+        }
+        .roadmap-sem {
+            font-weight: bold;
+            color: var(--tony-cyan);
+            font-size: 11px;
+            border-bottom: 1px solid #1e3550;
+            padding-bottom: 2px;
+        }
+        .roadmap-text {
+            color: #cbd5e1;
+            line-height: 1.3;
+        }
+        .roadmap-highlight {
+            color: var(--tony-gold);
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
 
-    <div class="cmd-line">
+    <!-- ============================================================ -->
+    <!-- MASTER STARK-TECH TONY HUD HEADER                            -->
+    <!-- ============================================================ -->
+    <div class="tony-master-header">
+        <div class="tony-brand">
+            <div class="arc-reactor-mini" id="arc-mini"></div>
+            <div>
+                <span class="tony-brand-title">TONY // STARK-TECH AI CORE</span>
+                <span class="tony-brand-sub">ELECTRICAL ENGINEERING • TARGET: MIT & ITB</span>
+            </div>
+        </div>
+        
+        <div class="tony-mode-switch">
+            <button id="btn-mode-tony" class="tony-nav-btn active" onclick="switchMainView('tony')">
+                🧠 TONY AI HUD
+            </button>
+            <button id="btn-mode-market" class="tony-nav-btn" onclick="switchMainView('market')">
+                📊 MARKET & ECONOMY
+            </button>
+        </div>
+
+        <div class="tony-voice-ctrl">
+            <button id="btn-tony-mic" class="tony-mic-btn" onclick="toggleTonyVoice()" title="Klik untuk bicara dengan Tony">
+                <span class="mic-icon" id="mic-icon">🎙️</span>
+                <span id="mic-text">BICARA DENGAN TONY</span>
+            </button>
+            <div id="tony-waveform" class="waveform-container">
+                <div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div>
+            </div>
+        </div>
+        
+        <div class="tony-clock-pill">
+            <span id="tony-time" style="font-weight:bold; font-size:13px; color:#fff;">00:00:00</span><br>
+            <span id="tony-date" style="font-size:9px; color:var(--tony-cyan);">SABTU, 2026</span>
+        </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- VIEW 1: TONY AI & STUDY SENTINEL HUD                         -->
+    <!-- ============================================================ -->
+    <div id="tony-hud-view">
+        <!-- Live Voice Feedback & Interaction Bar -->
+        <div class="tony-banner-voice">
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span style="color:var(--tony-cyan); font-weight:bold; font-size:11px;">[AI VOICE FEEDBACK]</span>
+                <span id="voice-feedback-text" class="voice-feedback-txt">"Halo Fadhil! Tony online. Tekan tombol mic untuk bicara, atau pilih perintah cepat:"</span>
+            </div>
+            <div class="voice-quick-pills">
+                <button class="quick-pill" onclick="simulateVoice('Aku udah pulang')">🏠 "Udah Pulang"</button>
+                <button class="quick-pill" onclick="simulateVoice('Semangatin aku Tony')">⚡ "Semangat Pagi"</button>
+                <button class="quick-pill" onclick="simulateVoice('Review tugas hari ini')">📝 "Cek Tugas"</button>
+                <button class="quick-pill" onclick="simulateVoice('Apa target semester 1?')">🗺️ "Target Semester 1"</button>
+                <button class="quick-pill" onclick="tonySpeakMotivational()">🔊 "Dengar Suara Tony"</button>
+            </div>
+        </div>
+
+        <!-- ROW 1: DREAM BOARD (MIT, TSINGHUA, NUS, NTU, ITB, KAIST) -->
+        <div class="dream-board-section">
+            <div class="section-header-hud">
+                <div class="section-title-hud">
+                    <span>🏛️ DREAM UNIVERSITY BOARD — ELECTRICAL ENGINEERING TARGET</span>
+                </div>
+                <div style="font-size:10px; color:var(--tony-gold);">
+                    SCHOLARSHIP TRACK: BIM / GARUDA • CGS • ASEAN • GKS
+                </div>
+            </div>
+            
+            <div class="univ-grid" id="univ-grid-container">
+                <!-- University Cards injected dynamically -->
+            </div>
+        </div>
+
+        <!-- ROW 2: DUAL ACTION (CHECK-IN & TASK MANAGER) -->
+        <div class="dual-sentinel-row">
+            <!-- Left: School Arrival Check-In -->
+            <div class="checkin-card">
+                <div class="section-title-hud">
+                    <span>🎒 STATUS KEPULANGAN SEKOLAH</span>
+                </div>
+                
+                <div id="checkin-prompt" style="font-size:12px; color:#e2e8f0; line-height:1.4;">
+                    <span id="greeting-time-text">Selamat Sore</span>, <strong>Fadhil</strong>!<br>
+                    Sudah sampai di rumah / kamar belum?
+                </div>
+
+                <button class="checkin-btn" id="btn-confirm-arrived" onclick="confirmArrival()">
+                    <span>🏠</span> <span>KONFIRMASI SUDAH PULANG</span>
+                </button>
+
+                <div class="checkin-status-box" id="checkin-status-display">
+                    <div style="color:#64748b;">STATUS SAAT INI:</div>
+                    <div id="checkin-status-badge" style="color:var(--tony-gold); font-weight:bold; font-size:12px;">MENUNGGU KONFIRMASI</div>
+                    <div id="checkin-time-badge" style="font-size:10px; color:#94a3b8; margin-top:2px;">Belum check-in hari ini</div>
+                </div>
+
+                <div style="border-top: 1px dashed var(--tony-border); padding-top: 6px; font-size: 10px; color: #94a3b8;">
+                    💡 <em>Protokol Tony:</em> Istirahat 20-30 menit setelah pulang, minum air putih, lalu mulai 1 jam fokus mengerjakan PR prioritas.
+                </div>
+            </div>
+
+            <!-- Right: Task & Deadline Keeper -->
+            <div class="task-mgr-card">
+                <div class="section-header-hud">
+                    <div class="section-title-hud">
+                        <span>📝 TUGAS & DEADLINE SENTINEL</span>
+                        <span id="task-badge-count" style="font-size:10px; background:var(--tony-cyan); color:#000; padding:1px 6px; border-radius:10px; margin-left:6px;">0 TERTUNDA</span>
+                    </div>
+                    <div style="font-size:10px; color:#777;">Ketik atau ucapkan "Tony, catat tugas..."</div>
+                </div>
+
+                <!-- Add Task Form -->
+                <div class="task-input-bar">
+                    <input type="text" id="new-task-title" placeholder="Nama Tugas / PR (contoh: PR Fisika Rangkaian RLC)" style="flex:2; min-width:180px;">
+                    <input type="text" id="new-task-subject" placeholder="Mapel (Fisika/Elektro/IELTS)" style="flex:1; min-width:100px;">
+                    <input type="datetime-local" id="new-task-deadline" style="width:165px;">
+                    <select id="new-task-priority" style="width:90px;">
+                        <option value="HIGH">🔥 TINGGI</option>
+                        <option value="MEDIUM" selected>⚡ SEDANG</option>
+                        <option value="LOW">🌱 NORMAL</option>
+                    </select>
+                    <button class="task-add-btn" onclick="addNewTaskManual()">+ TAMBAH</button>
+                </div>
+
+                <!-- Task List -->
+                <div class="task-list" id="task-list-container">
+                    <!-- Task items injected dynamically -->
+                </div>
+            </div>
+        </div>
+
+        <!-- ROW 3: ROADMAP SENTINEL 2026 - 2029 -->
+        <div class="roadmap-card">
+            <div class="section-header-hud">
+                <div class="section-title-hud">
+                    <span>🧭 2026 - 2029 STRATEGIC ROADMAP (ELECTRICAL ENGINEERING ADMISSION)</span>
+                </div>
+                <div style="font-size:10px; color:var(--tony-cyan);">
+                    FASE AKTIF: SEMESTER 1 (ADAPTASI & OSN FONDASI)
+                </div>
+            </div>
+
+            <div class="roadmap-timeline" id="roadmap-timeline-container">
+                <!-- Roadmap nodes injected dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- VIEW 2: MARKET & ECONOMY RADAR (ORIGINAL BLOOMBERG GRID)     -->
+    <!-- ============================================================ -->
+    <div id="market-radar-view" style="display:none; flex: 1; flex-direction: column; min-height: 0;">
+        <div class="cmd-line">
         <span style="color:var(--bb-white); margin-right:8px;">BBG CMD></span>
         <input type="text" id="terminal-cmd" placeholder="Enter command (e.g. AAPL GO, BTC GO, SOL GO)">
         <div id="hot-banner" class="hot-alert">HOT DATA ALERT</div>
@@ -541,6 +1185,7 @@
             </div>
         </div>
     </div>
+    </div> <!-- END #market-radar-view -->
 
     <!-- SIGNAL ANALYSIS MODAL -->
     <div id="signal-modal" onclick="closeSignalModal(event)">
@@ -1367,6 +2012,474 @@
             fetchFinance('space', 'space-table');
         };
         updateFin(); setInterval(updateFin, 15000);
+
+        // ============================================================
+        // TONY STARK-TECH VOICE & STUDY SENTINEL ENGINE
+        // ============================================================
+        let tonyData = null;
+        let isListening = false;
+        let speechRecognition = null;
+
+        // HUD View Switcher (Tony HUD <-> Bloomberg Market Radar)
+        function switchMainView(mode) {
+            const tonyView = document.getElementById('tony-hud-view');
+            const marketView = document.getElementById('market-radar-view');
+            const btnTony = document.getElementById('btn-mode-tony');
+            const btnMarket = document.getElementById('btn-mode-market');
+
+            if (mode === 'tony') {
+                if (tonyView) tonyView.style.display = 'flex';
+                if (marketView) marketView.style.display = 'none';
+                if (btnTony) btnTony.classList.add('active');
+                if (btnMarket) btnMarket.classList.remove('active');
+            } else {
+                if (tonyView) tonyView.style.display = 'none';
+                if (marketView) marketView.style.display = 'flex';
+                if (btnTony) btnTony.classList.remove('active');
+                if (btnMarket) btnMarket.classList.add('active');
+            }
+        }
+
+        // Live Clock & Date for Tony HUD
+        function updateTonyClock() {
+            const now = new Date();
+            const timeStr = now.toTimeString().split(' ')[0];
+            const dateStr = now.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' });
+            const timeEl = document.getElementById('tony-time');
+            const dateEl = document.getElementById('tony-date');
+            if (timeEl) timeEl.innerText = timeStr;
+            if (dateEl) dateEl.innerText = dateStr.toUpperCase();
+        }
+        setInterval(updateTonyClock, 1000);
+        updateTonyClock();
+
+        // Load Tony Data & Status
+        async function loadTonyStatus() {
+            try {
+                const res = await fetch('/api/tony/status');
+                if (!res.ok) return;
+                tonyData = await res.json();
+                
+                // Greeting & Check-in Display
+                const greetingEl = document.getElementById('greeting-time-text');
+                if (greetingEl && tonyData.timeGreeting) {
+                    greetingEl.innerText = tonyData.timeGreeting;
+                }
+
+                // Check-in status
+                const badgeEl = document.getElementById('checkin-status-badge');
+                const timeBadge = document.getElementById('checkin-time-badge');
+                const btnArrived = document.getElementById('btn-confirm-arrived');
+
+                if (tonyData.lastCheckIn && isToday(new Date(tonyData.lastCheckIn.timestamp))) {
+                    if (badgeEl) {
+                        badgeEl.innerText = "✅ SUDAH DI RUMAH (ARRIVED)";
+                        badgeEl.style.color = "var(--bb-green)";
+                    }
+                    if (timeBadge) {
+                        timeBadge.innerText = "Check-in: " + tonyData.lastCheckIn.dateString;
+                    }
+                    if (btnArrived) {
+                        btnArrived.style.background = "#1e293b";
+                        btnArrived.style.color = "#94a3b8";
+                        btnArrived.style.cursor = "default";
+                        btnArrived.innerHTML = `<span>✓</span> <span>SUDAH CHECK-IN HARI INI</span>`;
+                    }
+                } else {
+                    if (badgeEl) {
+                        badgeEl.innerText = "⏳ MENUNGGU KONFIRMASI";
+                        badgeEl.style.color = "var(--tony-gold)";
+                    }
+                    if (timeBadge) {
+                        timeBadge.innerText = "Belum check-in hari ini";
+                    }
+                }
+
+                // Render Universities Dream Board
+                renderDreamBoard(tonyData.universities || []);
+
+                // Render Tasks
+                renderTasks(tonyData.tasks || []);
+
+                // Render Roadmap
+                renderRoadmap(tonyData.currentRoadmap);
+
+            } catch (e) {
+                console.error('Error loading Tony status:', e);
+            }
+        }
+
+        function isToday(date) {
+            const today = new Date();
+            return date.getDate() === today.getDate() &&
+                   date.getMonth() === today.getMonth() &&
+                   date.getFullYear() === today.getFullYear();
+        }
+
+        // Render Dream Board Cards
+        function renderDreamBoard(univs) {
+            const container = document.getElementById('univ-grid-container');
+            if (!container) return;
+
+            container.innerHTML = univs.map(u => `
+                <div class="univ-card" style="border-top: 3px solid ${u.color || 'var(--tony-cyan)'};">
+                    <div class="univ-badge-top">${u.badge || 'TARGET'}</div>
+                    <div class="univ-crest" style="color:${u.color || '#fff'};">${u.logoText || u.short}</div>
+                    <div class="univ-name">${u.name}</div>
+                    <div class="univ-prodi">⚡ ${u.prodi}</div>
+                    <div class="univ-scholarship">
+                        <div style="color:${u.color || 'var(--tony-gold)'}; font-weight:bold;">${u.rank || u.country}</div>
+                        <div>🎓 ${u.scholarship}</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Render Tasks & Deadlines
+        function renderTasks(tasks) {
+            const container = document.getElementById('task-list-container');
+            const badgeCount = document.getElementById('task-badge-count');
+            if (!container) return;
+
+            const pending = tasks.filter(t => !t.completed);
+            if (badgeCount) badgeCount.innerText = `${pending.length} TERTUNDA`;
+
+            if (tasks.length === 0) {
+                container.innerHTML = `<div style="text-align:center; color:#555; padding:15px; font-size:11px;">Belum ada tugas tercatat. Tekan mic dan katakan: "Tony, catat tugas..."</div>`;
+                return;
+            }
+
+            container.innerHTML = tasks.map(t => {
+                const countdown = getCountdownText(t.deadline);
+                const isUrgent = countdown.includes('DEADLINE HARI') || countdown.includes('LEWAT') || t.priority === 'HIGH';
+                const prioColor = t.priority === 'HIGH' ? 'var(--tony-red)' : t.priority === 'MEDIUM' ? 'var(--tony-gold)' : 'var(--tony-cyan)';
+
+                return `
+                    <div class="task-item ${t.completed ? 'completed' : ''}">
+                        <div class="task-item-left">
+                            <input type="checkbox" ${t.completed ? 'checked' : ''} onchange="toggleTaskDone('${t.id}', this.checked)" style="cursor:pointer; accent-color:var(--tony-cyan);">
+                            <div>
+                                <span class="task-sub-badge" style="border-color:${prioColor}; color:${prioColor};">${t.subject}</span>
+                                <span style="font-weight:bold; color:#fff; margin-left:4px;">${t.title}</span>
+                            </div>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span class="task-countdown" style="color:${isUrgent ? 'var(--tony-red)' : 'var(--tony-gold)'};">${countdown}</span>
+                            <button class="task-del-btn" onclick="deleteTask('${t.id}')" title="Hapus tugas">✕</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function getCountdownText(deadlineStr) {
+            if (!deadlineStr) return '';
+            const diff = new Date(deadlineStr) - new Date();
+            if (diff < 0) return '⚠ LEWAT DEADLINE';
+            
+            const hours = Math.floor(diff / (1000 * 60 * 60));
+            const days = Math.floor(hours / 24);
+            const remHours = hours % 24;
+
+            if (days > 0) return `⏳ ${days}h ${remHours}j lagi`;
+            if (hours > 0) return `⚡ ${hours} jam lagi`;
+            const mins = Math.floor(diff / (1000 * 60));
+            return `🔥 ${mins} menit lagi!`;
+        }
+
+        // Render 2026-2029 Strategic Roadmap
+        async function loadRoadmap() {
+            try {
+                const res = await fetch('/api/tony/roadmap');
+                if (!res.ok) return;
+                const roadmap = await res.json();
+                const container = document.getElementById('roadmap-timeline-container');
+                if (!container) return;
+
+                container.innerHTML = roadmap.map(r => `
+                    <div class="roadmap-node ${r.status === 'CURRENT' ? 'current' : ''}">
+                        <div class="roadmap-sem">
+                            ${r.semester}
+                            ${r.status === 'CURRENT' ? '<span style="color:var(--tony-cyan); font-size:8px; float:right;">[AKTIF]</span>' : ''}
+                        </div>
+                        <div class="roadmap-text"><strong style="color:#fff;">Akademik:</strong> ${r.akademik}</div>
+                        <div class="roadmap-text"><strong style="color:var(--tony-gold);">Target:</strong> ${r.kompetisi}</div>
+                        <div class="roadmap-text"><strong style="color:var(--tony-cyan);">Bahasa:</strong> ${r.bahasa}</div>
+                        <div class="roadmap-highlight" style="font-size:9px; margin-top:2px;">📌 ${r.krusial}</div>
+                    </div>
+                `).join('');
+            } catch(e) {
+                console.error('Error loading roadmap:', e);
+            }
+        }
+
+        // School Arrival Check-In Action
+        async function confirmArrival() {
+            try {
+                const res = await fetch('/api/tony/checkin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ note: "Konfirmasi kepulangan dari tablet" })
+                });
+                if (res.ok) {
+                    loadTonyStatus();
+                    tonySpeak("Selamat datang kembali di rumah, bos! Tugas dan target hari ini sudah Tony siapkan. Istirahat sejenak 15 menit, lalu kita lanjut gempur target kita.");
+                }
+            } catch (e) {
+                console.error('Checkin failed:', e);
+            }
+        }
+
+        // Add Task Manual Form
+        async function addNewTaskManual() {
+            const titleInput = document.getElementById('new-task-title');
+            const subInput = document.getElementById('new-task-subject');
+            const deadInput = document.getElementById('new-task-deadline');
+            const prioInput = document.getElementById('new-task-priority');
+
+            const title = titleInput.value.trim();
+            if (!title) {
+                alert('Nama tugas tidak boleh kosong!');
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/tony/tasks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title,
+                        subject: subInput.value || "Umum",
+                        deadline: deadInput.value ? new Date(deadInput.value).toISOString() : new Date(Date.now() + 86400000).toISOString(),
+                        priority: prioInput.value
+                    })
+                });
+                if (res.ok) {
+                    titleInput.value = '';
+                    subInput.value = '';
+                    deadInput.value = '';
+                    loadTonyStatus();
+                    tonySpeak(`Tugas ${title} berhasil dicatat, bos!`);
+                }
+            } catch (e) {
+                console.error('Failed to add task:', e);
+            }
+        }
+
+        // Toggle Task Complete
+        async function toggleTaskDone(id, completed) {
+            try {
+                await fetch(`/api/tony/tasks/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ completed })
+                });
+                loadTonyStatus();
+                if (completed) {
+                    tonySpeak("Kerja bagus, satu tugas berhasil diselesaikan! Langkah nyata menuju MIT!");
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        // Delete Task
+        async function deleteTask(id) {
+            try {
+                await fetch(`/api/tony/tasks/${id}`, { method: 'DELETE' });
+                loadTonyStatus();
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        // ============================================================
+        // TONY VOICE SYNTHESIS (VOICE OUT) & RECOGNITION (VOICE IN)
+        // ============================================================
+        function tonySpeak(text) {
+            const feedbackEl = document.getElementById('voice-feedback-text');
+            const wave = document.getElementById('tony-waveform');
+            const micBtn = document.getElementById('btn-tony-mic');
+
+            if (feedbackEl) feedbackEl.innerText = `"${text}"`;
+            if (wave) wave.classList.add('active');
+            if (micBtn) micBtn.classList.add('speaking');
+
+            if (!('speechSynthesis' in window)) return;
+            window.speechSynthesis.cancel();
+
+            const utter = new SpeechSynthesisUtterance(text);
+            utter.lang = 'id-ID';
+            utter.rate = 1.05;
+            utter.pitch = 1.0;
+
+            const voices = window.speechSynthesis.getVoices();
+            const idVoice = voices.find(v => v.lang.includes('id') || v.lang.includes('ID'));
+            if (idVoice) utter.voice = idVoice;
+
+            utter.onend = () => {
+                if (wave) wave.classList.remove('active');
+                if (micBtn) micBtn.classList.remove('speaking');
+            };
+            utter.onerror = () => {
+                if (wave) wave.classList.remove('active');
+                if (micBtn) micBtn.classList.remove('speaking');
+            };
+
+            window.speechSynthesis.speak(utter);
+        }
+
+        // Speech Recognition Setup
+        function initSpeechRecognition() {
+            const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRec) {
+                console.warn('Speech Recognition tidak didukung di browser ini.');
+                return null;
+            }
+            const rec = new SpeechRec();
+            rec.lang = 'id-ID';
+            rec.continuous = false;
+            rec.interimResults = false;
+
+            rec.onstart = () => {
+                isListening = true;
+                const micBtn = document.getElementById('btn-tony-mic');
+                const micText = document.getElementById('mic-text');
+                const wave = document.getElementById('tony-waveform');
+                const feedbackEl = document.getElementById('voice-feedback-text');
+
+                if (micBtn) micBtn.classList.add('listening');
+                if (micText) micText.innerText = "MENDENGARKAN...";
+                if (wave) wave.classList.add('active');
+                if (feedbackEl) feedbackEl.innerText = "Tony sedang mendengarkan suaramu...";
+            };
+
+            rec.onresult = (event) => {
+                const speechResult = event.results[0][0].transcript;
+                console.log('Voice caught:', speechResult);
+                processVoiceCommand(speechResult);
+            };
+
+            rec.onerror = (e) => {
+                console.error('Speech error:', e.error);
+                resetMicBtn();
+            };
+
+            rec.onend = () => {
+                isListening = false;
+                resetMicBtn();
+            };
+
+            return rec;
+        }
+
+        function resetMicBtn() {
+            const micBtn = document.getElementById('btn-tony-mic');
+            const micText = document.getElementById('mic-text');
+            const wave = document.getElementById('tony-waveform');
+            if (micBtn) micBtn.classList.remove('listening');
+            if (micText) micText.innerText = "BICARA DENGAN TONY";
+            if (wave && !micBtn.classList.contains('speaking')) wave.classList.remove('active');
+        }
+
+        function toggleTonyVoice() {
+            if (!speechRecognition) {
+                speechRecognition = initSpeechRecognition();
+            }
+            if (!speechRecognition) {
+                alert('Browser Anda belum mengizinkan Web Speech Recognition. Gunakan tombol perintah cepat atau Google Chrome di tablet.');
+                return;
+            }
+
+            if (isListening) {
+                speechRecognition.stop();
+            } else {
+                speechRecognition.start();
+            }
+        }
+
+        // Simulate voice by clicking pills
+        function simulateVoice(text) {
+            processVoiceCommand(text);
+        }
+
+        // Process Voice Commands
+        function processVoiceCommand(cmd) {
+            const lower = cmd.toLowerCase();
+            const feedbackEl = document.getElementById('voice-feedback-text');
+            if (feedbackEl) feedbackEl.innerText = `Kamu: "${cmd}"`;
+
+            // 1. Check-in: Pulang sekolah
+            if (lower.includes('pulang') || lower.includes('sampai') || lower.includes('di rumah') || lower.includes('kamar')) {
+                confirmArrival();
+                return;
+            }
+
+            // 2. Semangat / Motivasi
+            if (lower.includes('semangat') || lower.includes('motivasi') || lower.includes('target') || lower.includes('mit') || lower.includes('itb')) {
+                tonySpeakMotivational();
+                return;
+            }
+
+            // 3. Catat Tugas
+            if (lower.includes('tugas') || lower.includes('pr') || lower.includes('catat')) {
+                const cleanTitle = cmd.replace(/tony|catat|tugas|pr|baru|tolong/gi, '').trim() || "Tugas Sekolah Baru";
+                fetch('/api/tony/tasks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title: cleanTitle,
+                        subject: "Akademik",
+                        deadline: new Date(Date.now() + 86400000 * 2).toISOString(),
+                        priority: "HIGH"
+                    })
+                }).then(() => {
+                    loadTonyStatus();
+                    tonySpeak(`Siap bos, ${cleanTitle} sudah Tony catat ke dalam daftar prioritas tugas.`);
+                });
+                return;
+            }
+
+            // 4. Buka Market / Ekonomi
+            if (lower.includes('pasar') || lower.includes('market') || lower.includes('ekonomi') || lower.includes('saham') || lower.includes('crypto')) {
+                switchMainView('market');
+                tonySpeak("Beralih ke radar pasar global dan tabel ekonomi Bloomberg.");
+                return;
+            }
+
+            // 5. Buka Tony HUD / Dream Board
+            if (lower.includes('hud') || lower.includes('kampus') || lower.includes('tony') || lower.includes('board')) {
+                switchMainView('tony');
+                tonySpeak("Kembali ke pusat komando Tony dan target kampus impian.");
+                return;
+            }
+
+            // 6. Roadmap Semester
+            if (lower.includes('roadmap') || lower.includes('semester') || lower.includes('osn') || lower.includes('beasiswa')) {
+                tonySpeak("Fase kita sekarang adalah Semester 1: Adaptasi fondasi akademik, seleksi OSN sekolah, dan pembiasaan Bahasa Inggris untuk KL-YES dan AFS.");
+                return;
+            }
+
+            // Default friendly AI response
+            tonySpeak(`Siap bos Fadhil! Tony selalu standby mengawal perjalananmu menuju Teknik Elektro MIT dan ITB. Apa yang mau kita tuntaskan hari ini?`);
+        }
+
+        // Daily Motivational Speech
+        function tonySpeakMotivational() {
+            const quotes = [
+                "Selamat pagi, bos! Hari ini adalah satu langkah nyata lagi menuju Electrical Engineering di MIT, Tsinghua, dan ITB. Kuasai konsep dasar, konsisten belajar, and let's make it happen!",
+                "Target kita jelas: Beasiswa Teknik Elektro di universitas terbaik dunia. Tetap disiplin, selesaikan 1 tugas prioritas hari ini, dan buktikan kemampuanmu!",
+                "Ingat Fadhil: OSN, riset OPSI, dan skor IELTS dibangun dari latihan 30 menit setiap hari. Tony percaya kamu bisa menembus kampus impian!",
+                "Stark Tech online! Fokus kita hari ini: kerjakan PR dengan cermat, jangan menunda, dan luangkan waktu review bahasa Inggris."
+            ];
+            const q = quotes[Math.floor(Math.random() * quotes.length)];
+            tonySpeak(q);
+        }
+
+        // Auto-initialize Tony Engine on load
+        loadTonyStatus();
+        loadRoadmap();
+        setInterval(loadTonyStatus, 30000);
     </script>
 </body>
 </html>

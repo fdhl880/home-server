@@ -767,7 +767,306 @@ app.get('/api/bonds', async (req, res) => {
     res.json({ us13w, us5y, us10y, us30y, spread_2y10y: spread, curveStatus: spread!=='N/A'?(parseFloat(spread)<0?'INVERTED':'NORMAL'):'N/A' });
 });
 
+// ============================================================
+// TONY AI STARK-TECH & STUDY SENTINEL CORE API
+// ============================================================
+const fs = require('fs');
+const TONY_DATA_FILE = path.join(__dirname, 'tony-data.json');
+
+const INITIAL_TONY_DATA = {
+    user: {
+        name: "Fadhil",
+        majorTarget: "Teknik Elektro (Electrical Engineering)",
+        yearGraduation: 2029
+    },
+    lastCheckIn: null,
+    tasks: [
+        {
+            id: "task-1",
+            title: "Latihan Soal Fisika / Rangkaian Listrik Dasar",
+            subject: "Fisika / Elektro",
+            deadline: new Date(Date.now() + 86400000 * 2).toISOString(),
+            priority: "HIGH",
+            completed: false,
+            createdAt: new Date().toISOString()
+        },
+        {
+            id: "task-2",
+            title: "Review Kosakata & Listening IELTS 15 Menit",
+            subject: "Bahasa Inggris",
+            deadline: new Date(Date.now() + 86400000).toISOString(),
+            priority: "MEDIUM",
+            completed: false,
+            createdAt: new Date().toISOString()
+        },
+        {
+            id: "task-3",
+            title: "Eksplorasi Ide Riset Awal OSN / OPSI (Energy / Robotics)",
+            subject: "Riset & Kompetisi",
+            deadline: new Date(Date.now() + 86400000 * 4).toISOString(),
+            priority: "HIGH",
+            completed: false,
+            createdAt: new Date().toISOString()
+        }
+    ],
+    roadmap: [
+        {
+            semester: "Semester 1 (Jul - Des 2026)",
+            status: "CURRENT",
+            akademik: "Adaptasi & Memperkuat Dasar Akademik",
+            kompetisi: "Seleksi OSN tingkat sekolah, Riset awal",
+            bahasa: "Memulai kebiasaan Bahasa Inggris harian",
+            krusial: "Agustus-Sept: Adaptasi awal; Sept: Pendaftaran KL-YES & AFS dibuka"
+        },
+        {
+            semester: "Semester 2 (Jan - Jun 2027)",
+            status: "UPCOMING",
+            akademik: "Mempertahankan Nilai untuk SNBP",
+            kompetisi: "OSN Kabupaten (OSN-K), Proposal OPSI/IRIFair",
+            bahasa: "Eksplorasi materi TOEFL/IELTS",
+            krusial: "Feb: Pendaftaran OSN-K; Mar: Pelaksanaan OSN-K"
+        },
+        {
+            semester: "Semester 3 (Jul - Des 2027)",
+            status: "UPCOMING",
+            akademik: "Persiapan UTBK (Soal HOTS) & Rapor",
+            kompetisi: "OPSI, IRIFAIR, Lomba Internasional",
+            bahasa: "Kursus persiapan IELTS/TOEFL dimulai",
+            krusial: "Agustus-Sept: Pendaftaran OPSI & IRIFAIR dibuka"
+        },
+        {
+            semester: "Semester 4 (Jan - Jun 2028)",
+            status: "UPCOMING",
+            akademik: "Fokus Rapor Kelas 11 & UTBK",
+            kompetisi: "OSN Provinsi, Finalisasi Lomba Internasional",
+            bahasa: "Latihan Mock Test IELTS/TOEFL berkala",
+            krusial: "Jan-Mar: Pendaftaran OSN-Provinsi"
+        },
+        {
+            semester: "Semester 5 (Jul - Des 2028)",
+            status: "UPCOMING",
+            akademik: "Puncaknya Nilai Rapor & Fokus Akhir SNBP",
+            kompetisi: "Penyelesaian portofolio & konfirmasi prestasi (kurasi PUSPRESNAS)",
+            bahasa: "Wawancara LPDP & Tes TOEFL/IELTS",
+            krusial: "Sept-Okt: Pendaftaran Beasiswa (LPDP / BIM)"
+        },
+        {
+            semester: "Semester 6 (Jan - Jun 2029)",
+            status: "UPCOMING",
+            akademik: "Penyelesaian Sekolah & Simulasi UTBK-SNBT",
+            kompetisi: "Evaluasi akhir & persiapan transisi kuliah",
+            bahasa: "Persiapan akhir administrasi kuliah & tindak lanjut beasiswa",
+            krusial: "Mei: Pelaksanaan UTBK-SNBT"
+        }
+    ],
+    universities: [
+        {
+            name: "Massachusetts Institute of Technology (MIT)",
+            short: "MIT",
+            prodi: "Electrical Engineering & CS",
+            country: "United States 🇺🇸",
+            rank: "#1 World University (QS)",
+            scholarship: "Need-Blind / Beasiswa Indonesia Maju / Garuda",
+            badge: "ULTIMATE GOAL",
+            color: "#A31F34",
+            logoText: "MIT",
+            motto: "Mens et Manus (Mind and Hand)"
+        },
+        {
+            name: "Tsinghua University",
+            short: "TSINGHUA",
+            prodi: "Electronic Engineering",
+            country: "Beijing, China 🇨🇳",
+            rank: "#1 in Asia (Engineering)",
+            scholarship: "Chinese Government Scholarship (CGS)",
+            badge: "ASIA TITAN",
+            color: "#660874",
+            logoText: "THU",
+            motto: "Self-Discipline and Social Commitment"
+        },
+        {
+            name: "National University of Singapore (NUS)",
+            short: "NUS",
+            prodi: "Electrical Engineering",
+            country: "Singapore 🇸🇬",
+            rank: "#8 World / #1 Asia",
+            scholarship: "ASEAN Undergraduate Scholarship",
+            badge: "GLOBAL PRESTIGE",
+            color: "#EF7C00",
+            logoText: "NUS",
+            motto: "Towards a Global Knowledge Enterprise"
+        },
+        {
+            name: "Nanyang Technological University (NTU)",
+            short: "NTU",
+            prodi: "Electrical & Electronic Engineering",
+            country: "Singapore 🇸🇬",
+            rank: "Top 15 World Engineering",
+            scholarship: "ASEAN Undergraduate Scholarship",
+            badge: "TECH PIONEER",
+            color: "#C1001F",
+            logoText: "NTU",
+            motto: "Co-creating a Smart Society"
+        },
+        {
+            name: "Institut Teknologi Bandung (ITB)",
+            short: "ITB",
+            prodi: "STEI - Teknik Elektro",
+            country: "Bandung, Indonesia 🇮🇩",
+            rank: "#1 Tech Indonesia",
+            scholarship: "SNBP / Beasiswa Unggulan / Prestasi",
+            badge: "NATIONAL CHAMPION",
+            color: "#005596",
+            logoText: "ITB",
+            motto: "In Harmonia Progressio"
+        },
+        {
+            name: "KAIST / Seoul National University",
+            short: "KAIST / SNU",
+            prodi: "Electrical Engineering",
+            country: "South Korea 🇰🇷",
+            rank: "Top Global Semiconductor Hub",
+            scholarship: "Global Korea Scholarship (GKS)",
+            badge: "HIGH-TECH BEACON",
+            color: "#004191",
+            logoText: "KAIST",
+            motto: "Innovating for Global Impact"
+        }
+    ]
+};
+
+function getTonyData() {
+    try {
+        if (fs.existsSync(TONY_DATA_FILE)) {
+            const raw = fs.readFileSync(TONY_DATA_FILE, 'utf8');
+            return JSON.parse(raw);
+        }
+    } catch (e) {
+        console.error('Error reading Tony data:', e.message);
+    }
+    fs.writeFileSync(TONY_DATA_FILE, JSON.stringify(INITIAL_TONY_DATA, null, 2));
+    return INITIAL_TONY_DATA;
+}
+
+function saveTonyData(data) {
+    try {
+        fs.writeFileSync(TONY_DATA_FILE, JSON.stringify(data, null, 2));
+        return true;
+    } catch (e) {
+        console.error('Error saving Tony data:', e.message);
+        return false;
+    }
+}
+
+// Get full Tony status & overview
+app.get('/api/tony/status', (req, res) => {
+    const data = getTonyData();
+    const now = new Date();
+    const hour = now.getHours();
+    
+    let timeGreeting = "Selamat Pagi";
+    if (hour >= 11 && hour < 15) timeGreeting = "Selamat Siang";
+    else if (hour >= 15 && hour < 18) timeGreeting = "Selamat Sore";
+    else if (hour >= 18 || hour < 5) timeGreeting = "Selamat Malam";
+
+    const isAfternoon = hour >= 14 && hour <= 21;
+    const isMorning = hour >= 5 && hour < 11;
+    
+    const pendingTasks = (data.tasks || []).filter(t => !t.completed);
+    const completedTasks = (data.tasks || []).filter(t => t.completed);
+
+    res.json({
+        user: data.user,
+        timeGreeting,
+        isAfternoon,
+        isMorning,
+        lastCheckIn: data.lastCheckIn,
+        pendingTasksCount: pendingTasks.length,
+        completedTasksCount: completedTasks.length,
+        tasks: data.tasks,
+        currentRoadmap: data.roadmap.find(r => r.status === 'CURRENT') || data.roadmap[0],
+        universities: data.universities
+    });
+});
+
+// Check-in: School Arrival ("Udah pulang")
+app.post('/api/tony/checkin', (req, res) => {
+    const data = getTonyData();
+    const checkinTime = new Date().toISOString();
+    const note = req.body.note || "Sudah sampai di rumah/kamar";
+    
+    data.lastCheckIn = {
+        timestamp: checkinTime,
+        dateString: new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+        status: "ARRIVED",
+        note
+    };
+    saveTonyData(data);
+    res.json({ success: true, checkIn: data.lastCheckIn });
+});
+
+// Tasks Endpoints
+app.get('/api/tony/tasks', (req, res) => {
+    const data = getTonyData();
+    res.json(data.tasks || []);
+});
+
+app.post('/api/tony/tasks', (req, res) => {
+    const data = getTonyData();
+    const { title, subject, deadline, priority } = req.body;
+    if (!title) return res.status(400).json({ error: "Title wajib diisi" });
+
+    const newTask = {
+        id: 'task-' + Date.now(),
+        title: title.trim(),
+        subject: subject ? subject.trim() : "Umum / Belajar",
+        deadline: deadline || new Date(Date.now() + 86400000).toISOString(),
+        priority: priority || "MEDIUM",
+        completed: false,
+        createdAt: new Date().toISOString()
+    };
+    data.tasks = data.tasks || [];
+    data.tasks.unshift(newTask);
+    saveTonyData(data);
+    res.json({ success: true, task: newTask });
+});
+
+app.put('/api/tony/tasks/:id', (req, res) => {
+    const data = getTonyData();
+    const taskId = req.params.id;
+    const task = (data.tasks || []).find(t => t.id === taskId);
+    if (!task) return res.status(404).json({ error: "Task tidak ditemukan" });
+
+    if (req.body.completed !== undefined) task.completed = req.body.completed;
+    if (req.body.title) task.title = req.body.title;
+    if (req.body.deadline) task.deadline = req.body.deadline;
+    if (req.body.priority) task.priority = req.body.priority;
+    if (req.body.subject) task.subject = req.body.subject;
+
+    saveTonyData(data);
+    res.json({ success: true, task });
+});
+
+app.delete('/api/tony/tasks/:id', (req, res) => {
+    const data = getTonyData();
+    const taskId = req.params.id;
+    data.tasks = (data.tasks || []).filter(t => t.id !== taskId);
+    saveTonyData(data);
+    res.json({ success: true, message: "Task berhasil dihapus" });
+});
+
+// Roadmap & Universities Endpoints
+app.get('/api/tony/roadmap', (req, res) => {
+    const data = getTonyData();
+    res.json(data.roadmap || []);
+});
+
+app.get('/api/tony/universities', (req, res) => {
+    const data = getTonyData();
+    res.json(data.universities || []);
+});
+
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Bloomberg Terminal — Tablet 1 running at http://localhost:${PORT}`);
+    console.log(`🚀 Bloomberg Terminal & TONY AI Node running at http://localhost:${PORT}`);
     console.log(`📡 Loading ${NEWS_FEEDS.length} news feeds...`);
 });

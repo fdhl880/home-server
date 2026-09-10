@@ -1,0 +1,175 @@
+{
+  "user": {
+    "name": "Fadhil",
+    "majorTarget": "Teknik Elektro (Electrical Engineering)",
+    "yearGraduation": 2029
+  },
+  "lastCheckIn": {
+    "timestamp": "2026-09-10T15:36:11.155Z",
+    "dateString": "Kamis, 10 September 2026 pukul 22.36",
+    "status": "ARRIVED",
+    "note": "Sudah sampai di rumah"
+  },
+  "tasks": [
+    {
+      "id": "task-1789054575889",
+      "title": "PR Fisika Rangkaian Listrik",
+      "subject": "Fisika",
+      "deadline": "2026-09-11T15:36:15.889Z",
+      "priority": "MEDIUM",
+      "completed": false,
+      "createdAt": "2026-09-10T15:36:15.889Z"
+    },
+    {
+      "id": "task-1",
+      "title": "Latihan Soal Fisika / Rangkaian Listrik Dasar",
+      "subject": "Fisika / Elektro",
+      "deadline": "2026-09-12T15:35:33.323Z",
+      "priority": "HIGH",
+      "completed": false,
+      "createdAt": "2026-09-10T15:35:33.338Z"
+    },
+    {
+      "id": "task-2",
+      "title": "Review Kosakata & Listening IELTS 15 Menit",
+      "subject": "Bahasa Inggris",
+      "deadline": "2026-09-11T15:35:33.338Z",
+      "priority": "MEDIUM",
+      "completed": false,
+      "createdAt": "2026-09-10T15:35:33.338Z"
+    },
+    {
+      "id": "task-3",
+      "title": "Eksplorasi Ide Riset Awal OSN / OPSI (Energy / Robotics)",
+      "subject": "Riset & Kompetisi",
+      "deadline": "2026-09-14T15:35:33.338Z",
+      "priority": "HIGH",
+      "completed": false,
+      "createdAt": "2026-09-10T15:35:33.338Z"
+    }
+  ],
+  "roadmap": [
+    {
+      "semester": "Semester 1 (Jul - Des 2026)",
+      "status": "CURRENT",
+      "akademik": "Adaptasi & Memperkuat Dasar Akademik",
+      "kompetisi": "Seleksi OSN tingkat sekolah, Riset awal",
+      "bahasa": "Memulai kebiasaan Bahasa Inggris harian",
+      "krusial": "Agustus-Sept: Adaptasi awal; Sept: Pendaftaran KL-YES & AFS dibuka"
+    },
+    {
+      "semester": "Semester 2 (Jan - Jun 2027)",
+      "status": "UPCOMING",
+      "akademik": "Mempertahankan Nilai untuk SNBP",
+      "kompetisi": "OSN Kabupaten (OSN-K), Proposal OPSI/IRIFair",
+      "bahasa": "Eksplorasi materi TOEFL/IELTS",
+      "krusial": "Feb: Pendaftaran OSN-K; Mar: Pelaksanaan OSN-K"
+    },
+    {
+      "semester": "Semester 3 (Jul - Des 2027)",
+      "status": "UPCOMING",
+      "akademik": "Persiapan UTBK (Soal HOTS) & Rapor",
+      "kompetisi": "OPSI, IRIFAIR, Lomba Internasional",
+      "bahasa": "Kursus persiapan IELTS/TOEFL dimulai",
+      "krusial": "Agustus-Sept: Pendaftaran OPSI & IRIFAIR dibuka"
+    },
+    {
+      "semester": "Semester 4 (Jan - Jun 2028)",
+      "status": "UPCOMING",
+      "akademik": "Fokus Rapor Kelas 11 & UTBK",
+      "kompetisi": "OSN Provinsi, Finalisasi Lomba Internasional",
+      "bahasa": "Latihan Mock Test IELTS/TOEFL berkala",
+      "krusial": "Jan-Mar: Pendaftaran OSN-Provinsi"
+    },
+    {
+      "semester": "Semester 5 (Jul - Des 2028)",
+      "status": "UPCOMING",
+      "akademik": "Puncaknya Nilai Rapor & Fokus Akhir SNBP",
+      "kompetisi": "Penyelesaian portofolio & konfirmasi prestasi (kurasi PUSPRESNAS)",
+      "bahasa": "Wawancara LPDP & Tes TOEFL/IELTS",
+      "krusial": "Sept-Okt: Pendaftaran Beasiswa (LPDP / BIM)"
+    },
+    {
+      "semester": "Semester 6 (Jan - Jun 2029)",
+      "status": "UPCOMING",
+      "akademik": "Penyelesaian Sekolah & Simulasi UTBK-SNBT",
+      "kompetisi": "Evaluasi akhir & persiapan transisi kuliah",
+      "bahasa": "Persiapan akhir administrasi kuliah & tindak lanjut beasiswa",
+      "krusial": "Mei: Pelaksanaan UTBK-SNBT"
+    }
+  ],
+  "universities": [
+    {
+      "name": "Massachusetts Institute of Technology (MIT)",
+      "short": "MIT",
+      "prodi": "Electrical Engineering & CS",
+      "country": "United States 🇺🇸",
+      "rank": "#1 World University (QS)",
+      "scholarship": "Need-Blind / Beasiswa Indonesia Maju / Garuda",
+      "badge": "ULTIMATE GOAL",
+      "color": "#A31F34",
+      "logoText": "MIT",
+      "motto": "Mens et Manus (Mind and Hand)"
+    },
+    {
+      "name": "Tsinghua University",
+      "short": "TSINGHUA",
+      "prodi": "Electronic Engineering",
+      "country": "Beijing, China 🇨🇳",
+      "rank": "#1 in Asia (Engineering)",
+      "scholarship": "Chinese Government Scholarship (CGS)",
+      "badge": "ASIA TITAN",
+      "color": "#660874",
+      "logoText": "THU",
+      "motto": "Self-Discipline and Social Commitment"
+    },
+    {
+      "name": "National University of Singapore (NUS)",
+      "short": "NUS",
+      "prodi": "Electrical Engineering",
+      "country": "Singapore 🇸🇬",
+      "rank": "#8 World / #1 Asia",
+      "scholarship": "ASEAN Undergraduate Scholarship",
+      "badge": "GLOBAL PRESTIGE",
+      "color": "#EF7C00",
+      "logoText": "NUS",
+      "motto": "Towards a Global Knowledge Enterprise"
+    },
+    {
+      "name": "Nanyang Technological University (NTU)",
+      "short": "NTU",
+      "prodi": "Electrical & Electronic Engineering",
+      "country": "Singapore 🇸🇬",
+      "rank": "Top 15 World Engineering",
+      "scholarship": "ASEAN Undergraduate Scholarship",
+      "badge": "TECH PIONEER",
+      "color": "#C1001F",
+      "logoText": "NTU",
+      "motto": "Co-creating a Smart Society"
+    },
+    {
+      "name": "Institut Teknologi Bandung (ITB)",
+      "short": "ITB",
+      "prodi": "STEI - Teknik Elektro",
+      "country": "Bandung, Indonesia 🇮🇩",
+      "rank": "#1 Tech Indonesia",
+      "scholarship": "SNBP / Beasiswa Unggulan / Prestasi",
+      "badge": "NATIONAL CHAMPION",
+      "color": "#005596",
+      "logoText": "ITB",
+      "motto": "In Harmonia Progressio"
+    },
+    {
+      "name": "KAIST / Seoul National University",
+      "short": "KAIST / SNU",
+      "prodi": "Electrical Engineering",
+      "country": "South Korea 🇰🇷",
+      "rank": "Top Global Semiconductor Hub",
+      "scholarship": "Global Korea Scholarship (GKS)",
+      "badge": "HIGH-TECH BEACON",
+      "color": "#004191",
+      "logoText": "KAIST",
+      "motto": "Innovating for Global Impact"
+    }
+  ]
+}
