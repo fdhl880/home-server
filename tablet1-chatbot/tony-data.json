@@ -5,47 +5,38 @@
     "yearGraduation": 2029
   },
   "lastCheckIn": {
-    "timestamp": "2026-09-10T15:36:11.155Z",
-    "dateString": "Kamis, 10 September 2026 pukul 22.36",
+    "timestamp": "2026-09-13T11:00:53.725Z",
+    "dateString": "Minggu, 13 September 2026 pukul 18.00 WIB",
     "status": "ARRIVED",
-    "note": "Sudah sampai di rumah"
+    "note": "Check-in otomatis via percakapan suara"
   },
   "tasks": [
     {
-      "id": "task-1789054575889",
-      "title": "PR Fisika Rangkaian Listrik",
-      "subject": "Fisika",
-      "deadline": "2026-09-11T15:36:15.889Z",
-      "priority": "MEDIUM",
-      "completed": false,
-      "createdAt": "2026-09-10T15:36:15.889Z"
-    },
-    {
-      "id": "task-1",
-      "title": "Latihan Soal Fisika / Rangkaian Listrik Dasar",
-      "subject": "Fisika / Elektro",
-      "deadline": "2026-09-12T15:35:33.323Z",
+      "id": "task-1789297316737",
+      "title": "Latihan Wawancara",
+      "subject": "Umum",
+      "deadline": "Minggu, 13 September 2026",
       "priority": "HIGH",
       "completed": false,
-      "createdAt": "2026-09-10T15:35:33.338Z"
+      "createdAt": "2026-09-13T11:01:56.737Z"
     },
     {
-      "id": "task-2",
-      "title": "Review Kosakata & Listening IELTS 15 Menit",
-      "subject": "Bahasa Inggris",
-      "deadline": "2026-09-11T15:35:33.338Z",
-      "priority": "MEDIUM",
-      "completed": false,
-      "createdAt": "2026-09-10T15:35:33.338Z"
-    },
-    {
-      "id": "task-3",
-      "title": "Eksplorasi Ide Riset Awal OSN / OPSI (Energy / Robotics)",
-      "subject": "Riset & Kompetisi",
-      "deadline": "2026-09-14T15:35:33.338Z",
+      "id": "task-1789291275951",
+      "title": "KL‑YES",
+      "subject": "Umum",
+      "deadline": "2026-09-15",
       "priority": "HIGH",
       "completed": false,
-      "createdAt": "2026-09-10T15:35:33.338Z"
+      "createdAt": "2026-09-13T09:21:15.951Z"
+    },
+    {
+      "id": "task-1789291241510",
+      "title": "Belajar Bio, Agama, dan Bahasa Arab",
+      "subject": "Umum",
+      "deadline": "2026-09-14",
+      "priority": "HIGH",
+      "completed": false,
+      "createdAt": "2026-09-13T09:20:41.510Z"
     }
   ],
   "roadmap": [
@@ -107,7 +98,7 @@
       "rank": "#1 World University (QS)",
       "scholarship": "Need-Blind / Beasiswa Indonesia Maju / Garuda",
       "badge": "ULTIMATE GOAL",
-      "color": "#A31F34",
+      "color": "#ef4444",
       "logoText": "MIT",
       "motto": "Mens et Manus (Mind and Hand)"
     },
@@ -119,7 +110,7 @@
       "rank": "#1 in Asia (Engineering)",
       "scholarship": "Chinese Government Scholarship (CGS)",
       "badge": "ASIA TITAN",
-      "color": "#660874",
+      "color": "#a855f7",
       "logoText": "THU",
       "motto": "Self-Discipline and Social Commitment"
     },
@@ -131,7 +122,7 @@
       "rank": "#8 World / #1 Asia",
       "scholarship": "ASEAN Undergraduate Scholarship",
       "badge": "GLOBAL PRESTIGE",
-      "color": "#EF7C00",
+      "color": "#f97316",
       "logoText": "NUS",
       "motto": "Towards a Global Knowledge Enterprise"
     },
@@ -143,7 +134,7 @@
       "rank": "Top 15 World Engineering",
       "scholarship": "ASEAN Undergraduate Scholarship",
       "badge": "TECH PIONEER",
-      "color": "#C1001F",
+      "color": "#dc2626",
       "logoText": "NTU",
       "motto": "Co-creating a Smart Society"
     },
@@ -155,7 +146,7 @@
       "rank": "#1 Tech Indonesia",
       "scholarship": "SNBP / Beasiswa Unggulan / Prestasi",
       "badge": "NATIONAL CHAMPION",
-      "color": "#005596",
+      "color": "#3b82f6",
       "logoText": "ITB",
       "motto": "In Harmonia Progressio"
     },
@@ -167,9 +158,191 @@
       "rank": "Top Global Semiconductor Hub",
       "scholarship": "Global Korea Scholarship (GKS)",
       "badge": "HIGH-TECH BEACON",
-      "color": "#004191",
+      "color": "#38bdf8",
       "logoText": "KAIST",
       "motto": "Innovating for Global Impact"
+    }
+  ],
+  "vitalHistory": [
+    {
+      "timestamp": "2026-09-13T11:39:27.997Z",
+      "energy": 4,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:42.036Z",
+      "energy": 1,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:41.992Z",
+      "energy": 2,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:41.960Z",
+      "energy": 3,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:41.943Z",
+      "energy": 4,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:41.898Z",
+      "energy": 5,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:41.835Z",
+      "energy": 6,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:41.827Z",
+      "energy": 7,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:41.713Z",
+      "energy": 8,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:41.691Z",
+      "energy": 9,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:41.067Z",
+      "energy": 10,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:41.043Z",
+      "energy": 9,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:40.974Z",
+      "energy": 7,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:40.882Z",
+      "energy": 5,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:40.876Z",
+      "energy": 4,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:40.798Z",
+      "energy": 3,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:40.758Z",
+      "energy": 2,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:40.752Z",
+      "energy": 1,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:40.706Z",
+      "energy": 2,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:40.693Z",
+      "energy": 3,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:40.261Z",
+      "energy": 4,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:39.965Z",
+      "energy": 5,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:39.943Z",
+      "energy": 6,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-13T09:10:39.913Z",
+      "energy": 7,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-10T17:17:35.615Z",
+      "energy": 2,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-10T17:17:35.487Z",
+      "energy": 4,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-10T17:17:35.454Z",
+      "energy": 5,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-10T17:17:35.347Z",
+      "energy": 3,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-10T17:17:35.300Z",
+      "energy": 6,
+      "mood": "Normal",
+      "note": ""
+    },
+    {
+      "timestamp": "2026-09-10T17:17:35.151Z",
+      "energy": 7,
+      "mood": "Normal",
+      "note": ""
     }
   ]
 }

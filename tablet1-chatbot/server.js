@@ -1,8 +1,13 @@
+require('dotenv').config();
 const express = require('express');
 const si = require('systeminformation');
 const path = require('path');
 const https = require('https');
 const Parser = require('rss-parser');
+const multer = require('multer');
+const pdf = require('pdf-parse');
+const { Blob, File } = require('node:buffer');
+const upload = multer({ limits: { fileSize: 25 * 1024 * 1024 } });
 
 const parser = new Parser({ timeout: 4000, headers: { 'User-Agent': 'Mozilla/5.0 Bloomberg-Terminal/1.0' } });
 const app = express();
@@ -995,9 +1000,12 @@ app.post('/api/tony/checkin', (req, res) => {
     const checkinTime = new Date().toISOString();
     const note = req.body.note || "Sudah sampai di rumah/kamar";
     
+    const now = new Date();
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
     data.lastCheckIn = {
         timestamp: checkinTime,
-        dateString: new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+        dateString: now.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) + ` pukul ${hours}.${minutes} WIB`,
         status: "ARRIVED",
         note
     };
@@ -1031,7 +1039,7 @@ app.post('/api/tony/tasks', (req, res) => {
     res.json({ success: true, task: newTask });
 });
 
-app.put('/api/tony/tasks/:id', (req, res) => {
+function handleTaskUpdate(req, res) {
     const data = getTonyData();
     const taskId = req.params.id;
     const task = (data.tasks || []).find(t => t.id === taskId);
@@ -1045,7 +1053,9 @@ app.put('/api/tony/tasks/:id', (req, res) => {
 
     saveTonyData(data);
     res.json({ success: true, task });
-});
+}
+app.put('/api/tony/tasks/:id', handleTaskUpdate);
+app.patch('/api/tony/tasks/:id', handleTaskUpdate);
 
 app.delete('/api/tony/tasks/:id', (req, res) => {
     const data = getTonyData();
@@ -1066,7 +1076,841 @@ app.get('/api/tony/universities', (req, res) => {
     res.json(data.universities || []);
 });
 
+// ============================================================
+// TONY 2.0: MULTI-TIER AI BRAIN (GEMINI 3.6 FLASH + GROQ WHISPER TURBO)
+// ============================================================
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
+
+async function generateGeminiJson(systemInstruction, contents, temperature = 0.6) {
+    const geminiModels = ['gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.6-flash'];
+    for (const m of geminiModels) {
+        try {
+            const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${GEMINI_API_KEY}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                signal: AbortSignal.timeout(15000),
+                body: JSON.stringify({
+                    systemInstruction: { parts: [{ text: systemInstruction }] },
+                    contents: contents,
+                    generationConfig: {
+                        responseMimeType: 'application/json',
+                        temperature: temperature
+                    }
+                })
+            });
+            if (resp.ok) {
+                const j = await resp.json();
+                const text = j.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (text) {
+                    return JSON.parse(text);
+                }
+            } else {
+                console.warn(`Gemini ${m} returned status: ${resp.status}`);
+            }
+        } catch (e) {
+            console.warn(`Gemini ${m} error:`, e.message);
+        }
+    }
+    return null;
+}
+
+
+app.post('/api/tony/vital', (req, res) => {
+    const data = getTonyData();
+    const { energy, mood, note } = req.body;
+    data.vitalHistory = data.vitalHistory || [];
+    const vital = {
+        timestamp: new Date().toISOString(),
+        energy: parseInt(energy, 10) || 7,
+        mood: mood || "Normal",
+        note: note || ""
+    };
+    data.vitalHistory.unshift(vital);
+    if (data.vitalHistory.length > 30) data.vitalHistory.pop();
+    saveTonyData(data);
+    res.json({ success: true, vital });
+});
+
+app.get('/api/tony/briefing', (req, res) => {
+    const data = getTonyData();
+    const now = new Date();
+    const hour = now.getHours();
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const hours = String(hour).padStart(2, '0');
+    const currentTimeStr = `${hours}:${minutes} WIB`;
+    
+    let timeGreeting = "Selamat pagi";
+    if (hour >= 11 && hour < 15) timeGreeting = "Selamat siang";
+    else if (hour >= 15 && hour < 18) timeGreeting = "Selamat sore";
+    else if (hour >= 18 || hour < 4) timeGreeting = "Selamat malam";
+    
+    const dayStr = now.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    const pendingTasks = (data.tasks || []).filter(t => !t.completed);
+    
+    const briefing = {
+        time: currentTimeStr,
+        date: dayStr,
+        greeting: `${timeGreeting}, Fadhil. Saat ini ${dayStr} pukul ${currentTimeStr}. Sistem aktif dan siap mendampingi target Teknik Elektro Anda.`,
+        pendingTasksCount: pendingTasks.length,
+        topTask: pendingTasks[0] || null,
+        targetMajor: "Teknik Elektro (Electrical Engineering)",
+        primaryTargets: ["MIT", "Tsinghua", "NUS", "NTU", "ITB", "KAIST"],
+        activeSemester: "Semester 1 (Jul - Des 2026)",
+        quote: "Konsistensi 30 menit latihan harian adalah jembatan nyata menuju Electrical Engineering di MIT dan ITB. Mari eksekusi target hari ini."
+    };
+    res.json(briefing);
+});
+
+// Real-time Chat with Llama 3.3 70B via Groq
+app.post('/api/tony/chat', async (req, res) => {
+    const { message, conversationHistory = [] } = req.body;
+    if (!message || !message.trim()) {
+        return res.status(400).json({ error: "Message is required" });
+    }
+
+    const data = getTonyData();
+    const pendingTasks = (data.tasks || []).filter(t => !t.completed);
+    const lastCheckIn = data.lastCheckIn;
+    const now = new Date();
+    const hour = now.getHours();
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const hours = String(hour).padStart(2, '0');
+    const timeOfDay = hour < 11 ? "Pagi" : hour < 15 ? "Siang" : hour < 18 ? "Sore" : "Malam";
+    const nowStr = now.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) + ` pukul ${hours}.${minutes} WIB (${timeOfDay})`;
+
+    const systemPrompt = `Kamu adalah TONY 2.0, asisten AI eksekutif pribadi Fadhil. Mirip JARVIS-nya Iron Man — cerdas, setia, tajam, dan bicara kayak kakak mentor yang sangat suportif dan serba bisa.
+Fadhil adalah siswa SMA yang lagi ngejar Teknik Elektro di kampus top dunia: MIT, Tsinghua, NUS, NTU, ITB STEI, KAIST.
+
+FLEKSIBILITAS & KAPABILITAS UTAMA (ASISTEN SERBA BISA):
+Sebagai asisten pribadi sejati, kamu BISA MELAKUKAN APA SAJA yang Fadhil butuhkan — tidak kaku dan tidak terbatas:
+1. BAHASA FLEKSIBEL (BILINGUAL FLUIDITY):
+   - Kamu bisa berbicara dalam Bahasa Indonesia (santai, gaul, atau formal) MAUPUN Bahasa Inggris (English) dengan sangat fasih dan natural.
+   - Jika Fadhil bicara dalam bahasa Inggris, atau meminta berbicara dalam bahasa Inggris, balas langsung dalam bahasa Inggris berkualitas tinggi!
+   - Kamu bisa code-switching (campur bahasa) sesuai gaya komunikasi Fadhil.
+2. LATIHAN WAWANCARA LANGSUNG DI CHAT (INTERACTIVE MOCK INTERVIEW):
+   - Jika Fadhil mengajak latihan wawancara ("wawancarai aku dong", "tes kepribadian aku", "tanya soal dinamika kelompok", "interview me in English", "coba tanya aku pertanyaan sulit"), JANGAN cuma kasih jawaban pasif!
+   - LANGSUNG BERPERAN SEBAGAI PEWAWANCARA (INTERVIEWER) handal di dalam chat: ajukan 1 pertanyaan tajam (tentang kepribadian, ketahanan mental, dinamika kelompok/tim, kepemimpinan, atau teknis elektro/sains), lalu tunggu jawaban Fadhil.
+   - Setelah Fadhil menjawab, berikan feedback/evaluasi singkat yang tajam, lalu ajukan pertanyaan lanjutan (follow-up question) seperti wawancara interaktif nyata!
+   - Jika Fadhil secara eksplisit bilang "buka portal wawancara" atau "buka layar interview sentinel", barulah beri action "open_interview".
+3. EKSPLORASI KEPRIBADIAN & DINAMIKA KELOMPOK:
+   - Fadhil bebas membahas apa pun: dinamika kelompok di sekolah/organisasi, cara menghadapi teman tim yang pasif, manajemen stres, refleksi diri, hingga strategi beasiswa dunia.
+4. MENGURUS TUGAS & TAMPILAN:
+   - "gw ada PR" / "tambah tugas" → action add_task
+   - "udah pulang" / "baru nyampe" → action checkin
+   - "buka kampus" / "univ" → action open_univ
+   - "buka market" / "bloomberg" → action open_market
+   - "buka wawancara" / "interview sentinel" → action open_interview
+
+SITUASI SEKARANG:
+- Waktu: ${nowStr}
+- Fadhil (Target: Teknik Elektro 2029, lagi di fase Semester 1 SMA)
+- Status kepulangan: ${lastCheckIn ? 'Sudah sampai di rumah (' + (lastCheckIn.dateString || 'Hari ini') + ')' : 'Belum konfirmasi kepulangan'}
+- Tugas pending (${pendingTasks.length}): ${pendingTasks.map(t => t.title + ' [' + t.subject + ']').join(', ') || 'Semua tugas beres'}
+
+ATURAN RESPONS:
+1. Sesuaikan bahasa dan tone dengan Fadhil (Indonesian / English / Gaul / Formal).
+2. Respons speech: 1-3 kalimat singkat natural yang enak diucapkan (untuk TTS). Jika sedang wawancara, speech adalah ucapan pewawancara.
+3. Respons text: boleh lebih panjang dan detail untuk tampil di layar (boleh markdown).
+4. Jika Fadhil minta diwawancarai, langsung tanyakan pertanyaan wawancara nomor 1.
+
+RESPON WAJIB FORMAT JSON VALID:
+{
+  "speech": "kalimat singkat untuk diucapkan via TTS (maks 2-3 kalimat)",
+  "text": "respons lengkap untuk ditampilkan di UI (boleh pake markdown)",
+  "action": "none" | "add_task" | "checkin" | "stealth_mode" | "open_market" | "open_tony" | "open_univ" | "open_interview" | "briefing",
+  "taskData": {
+     "title": "Judul Tugas Singkat",
+     "subject": "Fisika / Elektro / Matematika / Bahasa Inggris / Riset / Umum",
+     "deadline": "tanggal ISO atau perkiraan hari"
+  }
+}`;
+
+    const messages = [
+        { role: "system", content: systemPrompt },
+        ...conversationHistory.slice(-4),
+        { role: "user", content: message }
+    ];
+
+    try {
+        let parsed = null;
+        let contentStr = '';
+
+        // TIER 1 (PRIMARY): OpenRouter (meta-llama/llama-3.3-70b-instruct, sub-second latency)
+        if (OPENROUTER_API_KEY) {
+            try {
+                const orResp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                    method: 'POST',
+                    signal: AbortSignal.timeout(5000),
+                    headers: {
+                        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: 'deepseek/deepseek-chat',
+                        messages: messages,
+                        temperature: 0.6,
+                        max_tokens: 220
+                    })
+                });
+
+                if (orResp.ok) {
+                    const orJson = await orResp.json();
+                    contentStr = orJson.choices?.[0]?.message?.content || '{}';
+                    let clean = contentStr.trim();
+                    const match = clean.match(/\{[\s\S]*\}/);
+                    if (match) {
+                        try { parsed = JSON.parse(match[0]); } catch (e) {}
+                    }
+                    if (!parsed) {
+                        parsed = { speech: clean.slice(0, 150), text: clean, action: "none" };
+                    }
+                    console.log('[Chat] OpenRouter DeepSeek OK');
+                } else {
+                    console.warn('[Chat] OpenRouter status:', orResp.status, await orResp.text());
+                }
+            } catch (orErr) {
+                console.warn('[Chat] OpenRouter error:', orErr.message);
+            }
+        }
+
+        // TIER 2 (CADANGAN CEPAT): Groq (openai/gpt-oss-120b, ~800ms)
+        if (!parsed) {
+            try {
+                console.log('[Chat] Falling back to Groq Cadangan (gpt-oss-120b)...');
+                let groqResp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                    method: 'POST',
+                    signal: AbortSignal.timeout(5000),
+                    headers: {
+                        'Authorization': `Bearer ${GROQ_API_KEY}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: 'openai/gpt-oss-120b',
+                        messages: messages,
+                        temperature: 0.6,
+                        max_tokens: 600
+                    })
+                });
+
+                if (!groqResp.ok) {
+                    groqResp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                        method: 'POST',
+                        signal: AbortSignal.timeout(5000),
+                        headers: {
+                            'Authorization': `Bearer ${GROQ_API_KEY}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            model: 'openai/gpt-oss-20b',
+                            messages: messages,
+                            temperature: 0.6,
+                            max_tokens: 600
+                        })
+                    });
+                }
+
+                if (groqResp.ok) {
+                    const groqJson = await groqResp.json();
+                    contentStr = groqJson.choices?.[0]?.message?.content || '{}';
+                    let clean = contentStr.trim();
+                    const match = clean.match(/\{[\s\S]*\}/);
+                    if (match) {
+                        try { parsed = JSON.parse(match[0]); } catch (e) {}
+                    }
+                    if (!parsed) {
+                        parsed = { speech: contentStr.replace(/```[a-z]*|```/g, '').trim().slice(0, 150), text: contentStr, action: "none" };
+                    }
+                    console.log('[Chat] Groq OK');
+                }
+            } catch (groqErr) {
+                console.warn('[Chat] Groq error:', groqErr.message);
+            }
+        }
+
+        // TIER 3 (CADANGAN KETIGA): Google Gemini Flash
+        if (!parsed) {
+            try {
+                console.log('[Chat] Falling back to Gemini Tier 3...');
+                const geminiContents = [
+                    ...conversationHistory.slice(-4).map(m => ({
+                        role: m.role === 'assistant' ? 'model' : 'user',
+                        parts: [{ text: m.content }]
+                    })),
+                    { role: 'user', parts: [{ text: message }] }
+                ];
+                parsed = await generateGeminiJson(systemPrompt, geminiContents, 0.65);
+            } catch (geminiErr) {
+                console.warn('[Chat] Gemini tier error:', geminiErr.message);
+            }
+        }
+
+        if (!parsed) {
+            return res.json({
+                speech: "Maaf Fadhil, jaringan AI saya sedang mengalami gangguan singkat. Tapi saya tetap standby mendampingi Anda.",
+                text: "AI Provider error: Semua provider gagal merespons.",
+                action: "none"
+            });
+        }
+
+
+
+        // Execute side actions if requested by LLM
+        if (parsed.action === 'add_task' && parsed.taskData && parsed.taskData.title) {
+            const newTask = {
+                id: 'task-' + Date.now(),
+                title: parsed.taskData.title.trim(),
+                subject: parsed.taskData.subject || "Akademik",
+                deadline: parsed.taskData.deadline || new Date(Date.now() + 86400000 * 2).toISOString(),
+                priority: "HIGH",
+                completed: false,
+                createdAt: new Date().toISOString()
+            };
+            data.tasks = data.tasks || [];
+            data.tasks.unshift(newTask);
+            saveTonyData(data);
+            parsed.taskCreated = newTask;
+        } else if (parsed.action === 'checkin') {
+            const nowCheck = new Date();
+            const h = String(nowCheck.getHours()).padStart(2, '0');
+            const m = String(nowCheck.getMinutes()).padStart(2, '0');
+            data.lastCheckIn = {
+                timestamp: nowCheck.toISOString(),
+                dateString: nowCheck.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) + ` pukul ${h}.${m} WIB`,
+                status: "ARRIVED",
+                note: "Check-in otomatis via percakapan suara"
+            };
+            saveTonyData(data);
+            parsed.checkIn = data.lastCheckIn;
+        }
+
+        res.json({
+            speech: parsed.speech || "Siap, Fadhil. Saya mengerti.",
+            text: parsed.text || parsed.speech,
+            action: parsed.action || "none",
+            taskCreated: parsed.taskCreated || null,
+            checkIn: parsed.checkIn || null
+        });
+
+    } catch (error) {
+        console.error('Error in /api/tony/chat:', error.message);
+        res.status(500).json({
+            speech: "Terjadi kesalahan internal pada subsistem komunikasi saya.",
+            text: error.message,
+            action: "none"
+        });
+    }
+});
+// Native Indonesian High-Definition TTS Engine
+app.get('/api/tony/tts', async (req, res) => {
+    try {
+        const text = (req.query.text || '').trim();
+        if (!text) return res.status(400).send('No text provided');
+        const clean = text.replace(/[*#_`~]/g, '').slice(0, 300);
+        const encoded = encodeURIComponent(clean);
+        const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=id&client=tw-ob`;
+        
+        const fetchRes = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        });
+        if (!fetchRes.ok) throw new Error(`TTS upstream error: ${fetchRes.status}`);
+        
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        const buffer = await fetchRes.arrayBuffer();
+        res.send(Buffer.from(buffer));
+    } catch (e) {
+        console.error('Error in /api/tony/tts:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============================================================
+// AUDIO TRANSCRIPTION — Whisper Large v3 Turbo via Groq
+// ============================================================
+app.post('/api/tony/transcribe', upload.single('audio'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No audio file uploaded' });
+        }
+
+        const audioBuffer = req.file.buffer;
+        const mimeType = req.file.mimetype || 'audio/webm';
+        const ext = mimeType.includes('wav') ? 'wav' : (mimeType.includes('mp4') || mimeType.includes('m4a') ? 'm4a' : 'webm');
+
+        const form = new FormData();
+        form.append('file', new File([audioBuffer], `recording.${ext}`, { type: mimeType }));
+        form.append('model', 'whisper-large-v3-turbo');
+        // Setting 'id' ensures Whisper does not hallucinate Spanish or Portuguese on quiet/ambient audio
+        form.append('language', 'id');
+        form.append('prompt', 'Halo Tony, asisten AI cerdas, latihan simulasi wawancara beasiswa, kepribadian, kepemimpinan tim, teknologi, STAR method, bahasa Indonesia.');
+        form.append('temperature', '0.0');
+
+        const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+            method: 'POST',
+            signal: AbortSignal.timeout(15000),
+            headers: {
+                'Authorization': `Bearer ${GROQ_API_KEY}`
+            },
+            body: form
+        });
+
+        if (!groqRes.ok) {
+            const errText = await groqRes.text();
+            console.error('Groq Whisper Turbo error:', groqRes.status, errText);
+            return res.status(502).json({ error: 'Transcription failed: ' + errText });
+        }
+
+        const data = await groqRes.json();
+        let transcript = (data.text || '').trim();
+        console.log('Whisper Turbo transcribed raw:', transcript);
+
+        // Filter out notorious Whisper low-volume / silence hallucinations
+        const lower = transcript.toLowerCase().replace(/[.,!?;:"'—–\s]/g, '');
+        const hallucinations = [
+            'terimakasih', 'terimakasihbanyak', 'terimakasihsudahmenonton',
+            'thankyou', 'thankyouverymuch', 'thankyouforwatching',
+            'ididntknow', 'idontknow', 'you', 'subtitlesby', 'subtitleoleh', 
+            'perhatianmaupuncava', 'buencharla', 'buenasnoches', 'buenosdias'
+        ];
+        
+        const isHallucination = hallucinations.includes(lower);
+        if (isHallucination) {
+            console.warn('[Whisper] Detected silence hallucination token:', transcript);
+            return res.json({ success: false, text: '', isHallucination: true, raw: transcript });
+        }
+
+        res.json({ success: true, text: transcript });
+    } catch (err) {
+        console.error('Transcribe endpoint error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================================
+// INTERVIEW SENTINEL — Interactive Mock Interview Simulator
+// ============================================================
+app.post('/api/tony/interview', async (req, res) => {
+    try {
+        const { 
+            scenario = 'kl_yes', 
+            questionIndex = 0, 
+            userAnswer = '', 
+            history = [],
+            customTopic = '',
+            language = 'auto'
+        } = req.body;
+
+        const scenariosMeta = {
+            'kepribadian': {
+                id: 'kepribadian',
+                title: 'Eksplorasi Kepribadian & Karakter Diri (Personality & Resilience)',
+                role: 'Psikolog Pewawancara & Assessor Karakter Beasiswa Global',
+                target: 'Kedewasaan emosional, self-awareness, integritas, dan cara menghadapi kegagalan',
+                language: language === 'en' ? 'English' : 'Bilingual (Indonesia & English)',
+                focus: 'Kesadaran diri (self-awareness), nilai-nilai moral, cara merespons kegagalan/kritik, kerentanan (vulnerability), dan mekanisme mengelola stres berat.'
+            },
+            'dinamika_kelompok': {
+                id: 'dinamika_kelompok',
+                title: 'Dinamika Kelompok & Leadership (Teamwork & Conflict Resolution)',
+                role: 'Senior Assessor Dinamika Tim & Kepemimpinan Organisasi',
+                target: 'Kemampuan kolaborasi tim, resolusi konflik, dan memimpin rekan kerja',
+                language: language === 'en' ? 'English' : 'Bilingual (Indonesia & English)',
+                focus: 'Penyelesaian konflik internal kelompok, menghadapi rekan yang malas/dominan/pasif, empati tim, negosiasi, dan kepemimpinan partisipatif.'
+            },
+            'english_fluency': {
+                id: 'english_fluency',
+                title: 'Full English Behavioral & Situational Interview',
+                role: 'Global Admissions Officer & Native English Interviewer',
+                target: 'Global Scholarship & Top University Admission',
+                language: 'English',
+                focus: 'Spontaneous English fluency, structured storytelling with STAR method, intellectual curiosity, resilience, and personal uniqueness.'
+            },
+            'custom': {
+                id: 'custom',
+                title: customTopic || 'Wawancara Eksploratif Bebas',
+                role: 'Executive AI Interviewer & Mentor Karakter',
+                target: customTopic || 'Eksplorasi mendalam sesuai topik yang diminta kandidat',
+                language: language === 'en' ? 'English' : 'Bilingual / Indonesia',
+                focus: `Topik spesifik: "${customTopic || 'Eksplorasi bebas wawasan dan kepribadian'}" secara tajam, berbobot, dan menguji kedalaman berpikir kritis kandidat.`
+            },
+            'kl_yes': {
+                id: 'kl_yes',
+                title: 'Beasiswa KL-YES (Kennedy-Lugar Youth Exchange & Study USA)',
+                role: 'Panelis Pewawancara Seleksi Nasional Beasiswa KL-YES / Bina Antarbudaya',
+                target: 'Pertukaran pelajar SMA ke Amerika Serikat selama 1 tahun',
+                language: language === 'en' ? 'English' : 'Bilingual (Indonesia & Inggris)',
+                focus: 'Adaptabilitas, toleransi, kepemimpinan, duta budaya Indonesia, dan kesiapan tinggal bersama host family Amerika.'
+            },
+            'mit': {
+                id: 'mit',
+                title: 'MIT Admissions Interview (Educational Counselor)',
+                role: 'MIT Educational Counselor (Alumni Interviewer MIT)',
+                target: 'S1 Electrical Engineering & Computer Science (EECS) di MIT',
+                language: 'English (or bilingual)',
+                focus: 'Passion in Electrical Engineering, maker projects, handling failure/setbacks, collaboration, intellectual curiosity, and why MIT.'
+            },
+            'nus_ntu': {
+                id: 'nus_ntu',
+                title: 'NUS & NTU Singapore Admissions & ASEAN Scholarship',
+                role: 'Senior Admissions & Scholarship Board of Singapore Universities',
+                target: 'Bachelor of Engineering (Electrical Engineering) NUS/NTU',
+                language: language === 'en' ? 'English' : 'English / Bahasa Indonesia',
+                focus: 'Academic STEM excellence, physics/math foundation, research interest in semiconductor/hardware, long-term impact in Asia.'
+            },
+            'itb_bim': {
+                id: 'itb_bim',
+                title: 'ITB STEI & Beasiswa Indonesia Maju (BIM / Garuda)',
+                role: 'Panelis Dosen STEI ITB & Reviewer Beasiswa Indonesia Maju',
+                target: 'Teknik Elektro STEI ITB & Penerima Beasiswa Garuda/BIM',
+                language: 'Bahasa Indonesia formal & lugas',
+                focus: 'Visi kontribusi teknologi di Indonesia, ketahanan mental di lingkungan teknik elektro yang berat, rekam jejak prestasi sains.'
+            },
+            'pitch': {
+                id: 'pitch',
+                title: '60-Second Executive Elevator Pitch',
+                role: 'Executive Talent Scout & Mentor Global',
+                target: 'Mempromosikan diri, visi, dan keunikan secara memukau dalam 60 detik',
+                language: language === 'en' ? 'English' : 'Bahasa Indonesia atau English',
+                focus: 'Hook pembuka, keunikan diri (calon insinyur elektro), prestasi, dan call to action yang meyakinkan.'
+            }
+        };
+
+        const currentScenario = scenariosMeta[scenario] || (customTopic ? scenariosMeta['custom'] : scenariosMeta['kl_yes']);
+        const isEnglish = language === 'en' || currentScenario.language === 'English';
+
+        const systemPrompt = `Kamu adalah ${currentScenario.role}.
+Kamu sedang menguji Fadhil dalam sesi wawancara untuk: "${currentScenario.title}".
+Fokus penilaian: ${currentScenario.focus}.
+Bahasa yang digunakan: ${isEnglish ? 'WAJIB BAHASA INGGRIS (Full English) untuk semua pertanyaan, ucapan, tips, dan evaluasi.' : 'Bahasa Indonesia atau Bilingual (alami dan luwes).'}.
+
+TUGAS KAMU:
+Jika questionIndex == 0 (Awal Sesi):
+- Sambut kandidat dengan berwibawa dan hangat.
+- Ajukan PERTANYAAN 1 yang paling relevan dan menantang (bisa tentang kepribadian, situasi kelompok, atau topik yang diminta).
+- Berikan tips cara menyusun jawaban (misal metode STAR).
+
+Jika questionIndex > 0 dan ada userAnswer:
+1. Evaluasi jawaban Fadhil dengan jujur dan konstruktif:
+   - Skor (0 - 100).
+   - Kelebihan: Poin kuat yang berhasil ditonjolkan.
+   - Perbaikan: Hal yang kurang konkret, kurang STAR, atau perlu dipertajam.
+   - Contoh Jawaban Ideal: 1 paragraf contoh jawaban kelas dunia.
+2. Jika questionIndex < 4:
+   - Ajukan pertanyaan berikutnya (Pertanyaan ke-${questionIndex + 1}) yang menggali sisi lain (misal: dinamika kelompok, kepemimpinan, respons terhadap konflik/kegagalan).
+3. Jika questionIndex >= 4 (Ronde Terakhir Selesai):
+   - Nyatakan sesi selesai.
+   - Buat Rapor Ringkasan Wawancara (Overall Score, Kelebihan Utama, Area Perbaikan Kritis, Rekomendasi).
+
+FORMAT JSON WAJIB:
+{
+  "speech": "${isEnglish ? 'Short spoken sentence in English for TTS (max 2 sentences)' : 'Kalimat singkat untuk diucapkan via TTS (maks 2-3 kalimat)'}",
+  "questionText": "${isEnglish ? 'Full question text in English' : 'Teks pertanyaan lengkap untuk ditampilkan di UI'}",
+  "tips": "${isEnglish ? 'Tips for candidate in English' : 'Tips strategi menjawab untuk Fadhil'}",
+  "evaluation": {
+     "score": 85,
+     "strengths": "Poin kelebihan jawaban...",
+     "weaknesses": "Poin yang perlu ditingkatkan...",
+     "idealAnswer": "Contoh jawaban yang memukau..."
+  },
+  "isFinished": false,
+  "finalSummary": "Rangkuman rapor jika ronde terakhir, atau null"
+}`;
+
+        const promptInput = questionIndex === 0
+            ? `Mulai sesi wawancara untuk skenario "${currentScenario.title}". Ajukan pertanyaan pembuka nomor 1.`
+            : `Skenario: "${currentScenario.title}". Pertanyaan sebelumnya dijawab Fadhil sebagai berikut:
+Jawaban Fadhil: "${userAnswer}"
+Riwayat tanya jawab sebelumnya: ${JSON.stringify(history)}
+Ronde sekarang: Pertanyaan ke-${questionIndex}. Evaluasi jawaban Fadhil dan ajukan pertanyaan ke-${questionIndex + 1} (atau akhiri jika sudah ronde 4).`;
+
+        let parsed = null;
+
+        // TIER 1 — Primary: Groq (fastest ~1s, gpt-oss-120b)
+        try {
+            console.log('[Interview] Trying Groq gpt-oss-120b...');
+            const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                signal: AbortSignal.timeout(20000),
+                headers: {
+                    'Authorization': `Bearer ${GROQ_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: 'openai/gpt-oss-120b',
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: promptInput }
+                    ],
+                    temperature: 0.5,
+                    max_tokens: 1200
+                })
+            });
+            if (groqRes.ok) {
+                const groqJson = await groqRes.json();
+                let clean = (groqJson.choices?.[0]?.message?.content || '{}').trim();
+                const match = clean.match(/\{[\s\S]*\}/);
+                if (match) {
+                    try { parsed = JSON.parse(match[0]); } catch (e) {}
+                }
+                if (parsed) console.log('[Interview] Groq gpt-oss-120b OK');
+            } else {
+                console.warn('[Interview] Groq returned status:', groqRes.status);
+            }
+        } catch (groqErr) {
+            console.warn('[Interview] Groq error:', groqErr.message);
+        }
+
+        // TIER 2 — Fallback: Gemini (3.7 Flash -> 3.5 Flash -> 3.6 Flash)
+        if (!parsed) {
+            try {
+                console.log('[Interview] Trying Gemini...');
+                parsed = await generateGeminiJson(systemPrompt, [{ parts: [{ text: promptInput }] }], 0.6);
+                if (parsed) console.log('[Interview] Gemini OK');
+            } catch (e) {
+                console.warn('[Interview] Gemini error:', e.message);
+            }
+        }
+
+        // TIER 3 — Last Resort: OpenRouter
+        if (!parsed && OPENROUTER_API_KEY) {
+            try {
+                console.log('[Interview] Trying OpenRouter...');
+                const orRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                    method: 'POST',
+                    signal: AbortSignal.timeout(20000),
+                    headers: {
+                        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: 'nvidia/nemotron-3.5-lightning:free',
+                        messages: [
+                            { role: 'system', content: systemPrompt },
+                            { role: 'user', content: promptInput }
+                        ],
+                        temperature: 0.5,
+                        max_tokens: 1200
+                    })
+                });
+                if (orRes.ok) {
+                    const orJson = await orRes.json();
+                    let clean = (orJson.choices?.[0]?.message?.content || '{}').trim();
+                    const match = clean.match(/\{[\s\S]*\}/);
+                    if (match) {
+                        try { parsed = JSON.parse(match[0]); } catch (e) {}
+                    }
+                    if (!parsed) {
+                        parsed = {
+                            speech: clean.slice(0, 150),
+                            questionText: clean,
+                            tips: "Jawablah dengan percaya diri menggunakan metode STAR.",
+                            evaluation: null,
+                            isFinished: false
+                        };
+                    }
+                    if (parsed) console.log('[Interview] OpenRouter OK');
+                }
+            } catch (orErr) {
+                console.warn('[Interview] OpenRouter error:', orErr.message);
+            }
+        }
+
+        if (!parsed) {
+            return res.status(500).json({ error: 'Gagal memproses sesi wawancara AI.' });
+        }
+
+
+        res.json({
+            scenario: currentScenario,
+            questionIndex,
+            ...parsed
+        });
+
+    } catch (err) {
+        console.error('Interview endpoint error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
+
+// ============================================================
+// GOOGLE CALENDAR SENTINEL — Generate .ics file for GCal add
+// ============================================================
+app.post('/api/tony/calendar-add', (req, res) => {
+    try {
+        const { title, description, startDate, endDate, location } = req.body;
+        if (!title || !startDate) {
+            return res.status(400).json({ error: 'title and startDate required' });
+        }
+
+        // Format: YYYYMMDDTHHMMSSZ
+        const toIcsDate = (dateStr) => {
+            const d = new Date(dateStr);
+            return d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+        };
+
+        const dtStart = toIcsDate(startDate);
+        const dtEnd = endDate ? toIcsDate(endDate) : toIcsDate(new Date(new Date(startDate).getTime() + 3600000).toISOString());
+        const uid = `tony-${Date.now()}@fadhil-exec`;
+        const now = toIcsDate(new Date().toISOString());
+
+        const icsContent = [
+            'BEGIN:VCALENDAR',
+            'VERSION:2.0',
+            'PRODID:-//TONY 2.0 Executive AI//Fadhil//ID',
+            'CALSCALE:GREGORIAN',
+            'METHOD:PUBLISH',
+            'BEGIN:VEVENT',
+            `UID:${uid}`,
+            `DTSTAMP:${now}`,
+            `DTSTART:${dtStart}`,
+            `DTEND:${dtEnd}`,
+            `SUMMARY:${title}`,
+            `DESCRIPTION:${(description || '').replace(/\n/g, '\\n')}`,
+            `LOCATION:${location || ''}`,
+            'END:VEVENT',
+            'END:VCALENDAR'
+        ].join('\r\n');
+
+        res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="tony-event.ics"`);
+        res.send(icsContent);
+    } catch (e) {
+        console.error('Calendar ICS error:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// GCal Web Intent — returns a Google Calendar add URL
+app.post('/api/tony/calendar-link', (req, res) => {
+    try {
+        const { title, description, startDate, endDate, location } = req.body;
+        if (!title || !startDate) return res.status(400).json({ error: 'title and startDate required' });
+
+        const fmt = (d) => new Date(d).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z/, 'Z');
+        const end = endDate || new Date(new Date(startDate).getTime() + 3600000).toISOString();
+        const url = `https://calendar.google.com/calendar/render?action=TEMPLATE` +
+            `&text=${encodeURIComponent(title)}` +
+            `&dates=${fmt(startDate)}/${fmt(end)}` +
+            `&details=${encodeURIComponent(description || 'Dibuat oleh TONY 2.0 Executive AI')}` +
+            `&location=${encodeURIComponent(location || '')}`;
+
+        res.json({ url, message: 'GCal link generated' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============================================================
+// NEURAL DOSSIER — PDF Summarizer + AI Brief
+// ============================================================
+app.post('/api/tony/dossier', upload.single('pdf'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No PDF uploaded' });
+
+        // Extract text from PDF
+        const pdfData = await pdf(req.file.buffer);
+        const rawText = pdfData.text || '';
+        const wordCount = rawText.split(/\s+/).filter(Boolean).length;
+
+        if (wordCount < 20) {
+            return res.status(422).json({ error: 'PDF terlalu kosong atau tidak bisa dibaca. Pastikan PDF tidak terproteksi.' });
+        }
+
+        const excerpt = rawText.slice(0, 4000);
+        // AI summarization — Primary: Gemini 3.6 Flash, Fallback: Groq
+        let summary = '';
+        const dossierPrompt = `Kamu adalah TONY 2.0, Asisten Eksekutif AI Fadhil. 
+Tugas: Baca dokumen yang dikirim pengguna, buat ringkasan eksekutif yang tajam, singkat, dan actionable dalam Bahasa Indonesia.
+Format output:
+📄 RINGKASAN DOKUMEN
+[2-3 kalimat inti isi dokumen]
+
+🎯 POIN KUNCI:
+• [poin 1]
+• [poin 2]
+• [poin 3]
+
+⚡ REKOMENDASI TINDAKAN:
+[1-2 kalimat rekomendasi konkret berdasarkan dokumen]
+
+AUDIO BRIEF (untuk diucapkan):
+[1-2 kalimat ringkasan singkat untuk dibacakan]`;
+
+        try {
+            const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    systemInstruction: { parts: [{ text: dossierPrompt }] },
+                    contents: [{ parts: [{ text: `Ringkas dokumen berikut:\n\n${excerpt}` }] }],
+                    generationConfig: { temperature: 0.3 }
+                })
+            });
+            if (geminiRes.ok) {
+                const geminiData = await geminiRes.json();
+                summary = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            } else {
+                console.warn('Gemini dossier failed, trying Groq:', geminiRes.status);
+            }
+        } catch (e) {
+            console.warn('Gemini dossier error:', e.message);
+        }
+
+        if (!summary) {
+            const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${GROQ_API_KEY}`
+                },
+                body: JSON.stringify({
+                    model: 'openai/gpt-oss-120b',
+                    messages: [
+                        { role: 'system', content: dossierPrompt },
+                        { role: 'user', content: `Ringkas dokumen berikut:\n\n${excerpt}` }
+                    ],
+                    max_tokens: 800,
+                    temperature: 0.4
+                })
+            });
+
+            if (groqRes.ok) {
+                const groqData = await groqRes.json();
+                summary = groqData.choices?.[0]?.message?.content || 'Tidak bisa meringkas dokumen ini.';
+            } else {
+                const errBody = await groqRes.text();
+                throw new Error(`AI summarization failed: ${errBody.slice(0, 200)}`);
+            }
+        }
+
+
+        // Extract audio brief line
+        const audioBriefMatch = summary.match(/AUDIO BRIEF[^\n]*:\n(.+)/);
+        const audioBrief = audioBriefMatch ? audioBriefMatch[1].trim() : summary.split('\n')[1] || 'Dokumen telah dianalisis.';
+
+        res.json({
+            summary,
+            audioBrief,
+            wordCount,
+            pages: pdfData.numpages || 1,
+            filename: req.file.originalname
+        });
+
+    } catch (e) {
+        console.error('Neural Dossier error:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Bloomberg Terminal & TONY AI Node running at http://localhost:${PORT}`);
+    console.log(`🚀 Bloomberg Terminal & TONY 2.0 AI Node running at http://localhost:${PORT}`);
     console.log(`📡 Loading ${NEWS_FEEDS.length} news feeds...`);
 });
+

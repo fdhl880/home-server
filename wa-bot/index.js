@@ -43,6 +43,48 @@ app.get('/qr-image', (req, res) => {
     }
 });
 
+app.use(express.json());
+
+// API Status check
+app.get('/api/status', (req, res) => {
+    const fs = require('fs');
+    res.json({
+        ready: botReady,
+        qrAvailable: fs.existsSync(QR_PATH)
+    });
+});
+
+// Tony Executive WhatsApp Notification Dispatcher
+app.post('/api/send-tony', async (req, res) => {
+    try {
+        if (!botReady) {
+            return res.status(503).json({ success: false, error: 'WhatsApp bot belum terhubung. Silakan scan QR code di dashboard atau buka /qr.' });
+        }
+        let { to, message } = req.body;
+        if (!to || !message) {
+            return res.status(400).json({ success: false, error: 'Parameter "to" dan "message" wajib diisi.' });
+        }
+
+        // Clean and normalize Indonesian phone number to international format
+        let cleanPhone = to.toString().replace(/[^0-9]/g, '');
+        if (cleanPhone.startsWith('0')) {
+            cleanPhone = '62' + cleanPhone.slice(1);
+        } else if (!cleanPhone.startsWith('62')) {
+            cleanPhone = '62' + cleanPhone;
+        }
+
+        const chatId = cleanPhone + '@c.us';
+        console.log(`[TONY WA SENTINEL] Mengirim notifikasi ke ${chatId}...`);
+        await client.sendMessage(chatId, message);
+        console.log(`[TONY WA SENTINEL] Pesan berhasil dikirim ke ${chatId}`);
+
+        res.json({ success: true, to: cleanPhone });
+    } catch (err) {
+        console.error('[TONY WA SENTINEL ERROR]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🌍 Express server listening on port ${PORT}`));
 
