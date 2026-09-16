@@ -1,12 +1,44 @@
-require('dotenv').config();
+try { require('dotenv').config(); } catch (e) {}
 const express = require('express');
 const si = require('systeminformation');
 const path = require('path');
 const https = require('https');
 const Parser = require('rss-parser');
 const multer = require('multer');
-const pdf = require('pdf-parse');
-const { Blob, File } = require('node:buffer');
+
+// Polyfill DOMMatrix for PDF parsers running in headless Node.js / Termux
+if (typeof DOMMatrix === 'undefined') {
+    global.DOMMatrix = class DOMMatrix {
+        constructor() {
+            this.a = 1; this.b = 0; this.c = 0; this.d = 1; this.e = 0; this.f = 0;
+            this.is2D = true;
+            this.isIdentity = true;
+        }
+        static fromMatrix() { return new DOMMatrix(); }
+        multiply() { return this; }
+        translate() { return this; }
+        scale() { return this; }
+        rotate() { return this; }
+        inverse() { return this; }
+        transformPoint(p) { return p; }
+    };
+}
+
+let pdf = null;
+try {
+    pdf = require('pdf-parse');
+} catch (e) {
+    console.warn('⚠️ [PDF Parser] Optional module pdf-parse not loaded:', e.message);
+}
+
+let Blob = globalThis.Blob;
+let File = globalThis.File;
+try {
+    const nodeBuf = require('node:buffer');
+    if (!Blob && nodeBuf.Blob) Blob = nodeBuf.Blob;
+    if (!File && nodeBuf.File) File = nodeBuf.File;
+} catch (e) {}
+
 const upload = multer({ limits: { fileSize: 25 * 1024 * 1024 } });
 
 const parser = new Parser({ timeout: 4000, headers: { 'User-Agent': 'Mozilla/5.0 Bloomberg-Terminal/1.0' } });
@@ -1442,7 +1474,8 @@ app.post('/api/tony/transcribe', upload.single('audio'), async (req, res) => {
         const ext = mimeType.includes('wav') ? 'wav' : (mimeType.includes('mp4') || mimeType.includes('m4a') ? 'm4a' : 'webm');
 
         const form = new FormData();
-        form.append('file', new File([audioBuffer], `recording.${ext}`, { type: mimeType }));
+        const fileObj = File ? new File([audioBuffer], `recording.${ext}`, { type: mimeType }) : (Blob ? new Blob([audioBuffer], { type: mimeType }) : audioBuffer);
+        form.append('file', fileObj, `recording.${ext}`);
         form.append('model', 'whisper-large-v3-turbo');
         // Setting 'id' ensures Whisper does not hallucinate Spanish or Portuguese on quiet/ambient audio
         form.append('language', 'id');
@@ -1814,6 +1847,9 @@ app.post('/api/tony/dossier', upload.single('pdf'), async (req, res) => {
         if (!req.file) return res.status(400).json({ error: 'No PDF uploaded' });
 
         // Extract text from PDF
+        if (!pdf) {
+            return res.status(503).json({ error: 'Fitur PDF parser belum terpasang atau tidak didukung di sistem ini.' });
+        }
         const pdfData = await pdf(req.file.buffer);
         const rawText = pdfData.text || '';
         const wordCount = rawText.split(/\s+/).filter(Boolean).length;
