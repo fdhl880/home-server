@@ -4,27 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>BLOOMBERG TERMINAL // PORT <GO> - FADHIL-ALPHA-200M</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
-        :root {
-            --bbg-black: #000000;
-            --bbg-panel-bg: #000000;
-            --bbg-header-bg: #141414;
-            --bbg-border: #222222;
-            --bbg-amber: #ff9900;
-            --bbg-orange: #ff8800;
-            --bbg-yellow: #ffff00;
-            --bbg-cyan: #00ffff;
-            --bbg-green: #00ff00;
-            --bbg-red: #ff2233;
-            --bbg-white: #ffffff;
-            --bbg-gray: #888888;
-            --bbg-dim: #444444;
-            --bbg-font: 'JetBrains Mono', Consolas, 'Lucida Console', monospace;
-        }
-
+        /* =====================================================================
+           AUTHENTIC BLOOMBERG TERMINAL CSS SPECIFICATION (CRT AMBER & OBSIDIAN)
+           ===================================================================== */
         * {
             box-sizing: border-box;
             margin: 0;
@@ -33,451 +16,449 @@
         }
 
         body {
-            background-color: var(--bbg-black);
-            color: var(--bbg-white);
-            font-family: var(--bbg-font);
-            font-size: 11.5px;
-            line-height: 1.25;
-            letter-spacing: 0.1px;
+            background-color: #000000;
+            color: #ffffff;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 12px;
+            line-height: 1.35;
+            letter-spacing: 0.2px;
             overflow-x: hidden;
             user-select: none;
             -webkit-font-smoothing: antialiased;
         }
 
-        /* BLOOMBERG SYSTEM HEADER */
-        .bbg-header {
+        /* BLOOMBERG COLOR PALETTE */
+        .bbg-amber  { color: #F39F41 !important; }
+        .bbg-orange { color: #FFA500 !important; }
+        .bbg-cyan   { color: #00EEEE !important; }
+        .bbg-white  { color: #FFFFFF !important; }
+        .bbg-yellow { color: #FFFF00 !important; }
+        .bbg-green  { color: #00FF00 !important; font-weight: bold; }
+        .bbg-red    { color: #FF2233 !important; font-weight: bold; }
+        .bbg-gray   { color: #888888 !important; }
+        .bbg-dim    { color: #444444 !important; }
+
+        /* TOP LEVEL STATUS ROW */
+        .header-top {
             background: #000000;
-            border-bottom: 2px solid var(--bbg-amber);
-            padding: 2px 6px;
+            border-bottom: 2px solid #F39F41;
+            padding: 3px 8px;
             display: flex;
             align-items: center;
             justify-content: space-between;
             font-size: 11px;
         }
-        .bbg-logo-badge {
-            background: var(--bbg-amber);
-            color: #000;
-            font-weight: 800;
-            font-size: 11px;
-            padding: 1px 5px;
-            letter-spacing: 1px;
+        .header-logo {
+            background: #F39F41;
+            color: #000000;
+            font-weight: 900;
+            font-size: 12px;
+            padding: 1px 7px;
+            letter-spacing: 1.5px;
+            display: inline-block;
         }
-        .bbg-header-title {
-            color: var(--bbg-white);
-            font-weight: 700;
-            margin-left: 6px;
-        }
-        .bbg-header-title span {
-            color: var(--bbg-amber);
-        }
-        .bbg-clocks-bar {
+        .header-clocks {
             display: flex;
-            gap: 10px;
-            color: var(--bbg-cyan);
-            font-size: 10.5px;
+            gap: 12px;
+            color: #00EEEE;
+            font-size: 11px;
         }
 
         /* PHYSICAL BLOOMBERG KEYBOARD BAR */
-        .bbg-keys-bar {
-            background: #0c0c0c;
-            border-bottom: 1px solid var(--bbg-border);
-            padding: 2px 6px;
+        .bbg-fbar {
+            background: #0d0d0d;
+            border-bottom: 1px solid #222222;
+            padding: 3px 6px;
             display: flex;
-            align-items: center;
             gap: 3px;
             overflow-x: auto;
-            scrollbar-width: none;
+            white-space: nowrap;
         }
-        .bbg-keys-bar::-webkit-scrollbar { display: none; }
-
-        .bkey {
+        .f-key {
             background: #181818;
             color: #ffffff;
             border: 1px solid #333333;
             font-family: inherit;
-            font-size: 10px;
-            font-weight: 700;
-            padding: 2px 6px;
+            font-size: 10.5px;
+            font-weight: bold;
+            padding: 2px 7px;
             cursor: pointer;
-            white-space: nowrap;
             border-radius: 0;
+            text-transform: uppercase;
         }
-        .bkey:hover {
+        .f-key:hover {
             filter: brightness(1.3);
         }
-        .bkey.active {
-            background: var(--bbg-amber);
-            color: #000;
-            border-color: var(--bbg-amber);
+        .f-key.active {
+            background: #F39F41;
+            color: #000000;
+            border-color: #F39F41;
         }
-        .bkey.k-red { border-left: 2px solid var(--bbg-red); }
-        .bkey.k-green { border-left: 2px solid var(--bbg-green); }
-        .bkey.k-yellow { border-left: 2px solid var(--bbg-yellow); }
-        .bkey.k-cyan { border-left: 2px solid var(--bbg-cyan); }
-        .bkey.k-amber { border-left: 2px solid var(--bbg-amber); }
+        .f-key.k-red { border-left: 3px solid #FF2233; }
+        .f-key.k-green { border-left: 3px solid #00FF00; }
+        .f-key.k-yellow { border-left: 3px solid #FFFF00; }
+        .f-key.k-cyan { border-left: 3px solid #00EEEE; }
+        .f-key.k-amber { border-left: 3px solid #F39F41; }
 
-        /* COMMAND LINE STRIP */
-        .bbg-cmd-strip {
+        /* COMMAND PROMPT LINE */
+        .cmd-bar {
             background: #000000;
-            border-bottom: 1px solid var(--bbg-amber);
-            padding: 2px 6px;
+            border-bottom: 1px solid #F39F41;
+            padding: 3px 8px;
             display: flex;
             align-items: center;
             gap: 6px;
+            font-size: 12px;
         }
-        .cmd-label {
-            color: var(--bbg-amber);
-            font-weight: 800;
-            font-size: 11px;
+        .cmd-prompt {
+            color: #F39F41;
+            font-weight: bold;
         }
-        .cmd-input {
+        .cmd-box {
             background: transparent;
             border: none;
-            color: var(--bbg-yellow);
+            color: #FFFF00;
             font-family: inherit;
             font-size: 12px;
-            font-weight: 700;
+            font-weight: bold;
             outline: none;
             flex: 1;
             text-transform: uppercase;
         }
-        .cmd-go-btn {
-            background: var(--bbg-green);
-            color: #000;
+        .cmd-enter {
+            background: #00FF00;
+            color: #000000;
             border: none;
             font-family: inherit;
-            font-size: 10.5px;
-            font-weight: 800;
+            font-size: 11px;
+            font-weight: 900;
             padding: 2px 10px;
             cursor: pointer;
         }
 
-        /* STREAMING TICKER TAPE */
-        .bbg-tape {
+        /* REAL-TIME TICKER TAPE */
+        .ticker-strip {
             background: #050505;
-            border-bottom: 1px solid var(--bbg-border);
-            padding: 2px 6px;
+            border-bottom: 1px solid #1a1a1a;
+            padding: 2px 8px;
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 16px;
             overflow-x: auto;
             white-space: nowrap;
-            font-size: 10px;
+            font-size: 10.5px;
             scrollbar-width: none;
         }
-        .bbg-tape::-webkit-scrollbar { display: none; }
-        .tape-item {
+        .ticker-strip::-webkit-scrollbar { display: none; }
+        .t-chip {
             display: inline-flex;
-            gap: 3px;
+            gap: 4px;
             cursor: pointer;
         }
-        .tape-item:hover { text-decoration: underline; }
-        .t-sym { color: var(--bbg-amber); font-weight: 700; }
-        .t-val { color: var(--bbg-white); }
-        .t-up { color: var(--bbg-green); font-weight: 700; }
-        .t-down { color: var(--bbg-red); font-weight: 700; }
+        .t-chip:hover { text-decoration: underline; }
 
-        /* LAUNCHPAD WORKSPACE CONTAINER */
-        .launchpad-grid {
-            display: grid;
-            grid-template-columns: 1.15fr 1fr;
-            grid-template-rows: auto auto;
-            gap: 4px;
-            padding: 4px;
-            max-width: 100vw;
-            min-height: calc(100vh - 100px);
-        }
-        @media (max-width: 1024px) {
-            .launchpad-grid {
-                grid-template-columns: 1fr;
-            }
+        /* MAIN TERMINAL WORKSPACE */
+        .term-container {
+            padding: 6px 10px;
+            max-width: 1750px;
+            margin: 0 auto;
         }
 
-        /* TILED TERMINAL WINDOW PANEL */
-        .term-panel {
+        /* SCREEN BANNER / HEADER */
+        .screen-hdr {
             background: #000000;
-            border: 1px solid #222222;
+            color: #F39F41;
+            font-weight: bold;
+            font-size: 12px;
+            padding: 4px 0;
+            margin-bottom: 4px;
+            border-bottom: 1px solid #333333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        /* TAB NAVIGATION LINKS */
+        .sub-nav {
+            display: flex;
+            gap: 12px;
+            padding: 3px 0 6px 0;
+            border-bottom: 1px solid #1a1a1a;
+            margin-bottom: 8px;
+            overflow-x: auto;
+            white-space: nowrap;
+        }
+        .sub-link {
+            color: #888888;
+            cursor: pointer;
+            font-size: 11.5px;
+            font-weight: bold;
+            text-decoration: none;
+        }
+        .sub-link:hover { color: #00EEEE; }
+        .sub-link.active {
+            color: #F39F41;
+            border-bottom: 2px solid #F39F41;
+            padding-bottom: 2px;
+        }
+
+        /* PORTFOLIO METRICS HUD (BOXED GRID) */
+        .port-summary-box {
+            border: 1px solid #2a2a2a;
+            background: #050505;
+            padding: 6px 10px;
+            margin-bottom: 8px;
+        }
+        .port-summary-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+        }
+        @media (max-width: 900px) {
+            .port-summary-row { grid-template-columns: repeat(2, 1fr); }
+        }
+        .p-metric {
             display: flex;
             flex-direction: column;
-            overflow: hidden;
         }
-        .panel-titlebar {
-            background: #121212;
-            border-bottom: 1px solid #222222;
-            padding: 2px 6px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            font-size: 10.5px;
-            font-weight: 700;
+        .p-metric-lbl {
+            color: #00EEEE;
+            font-size: 10px;
+            font-weight: bold;
+            text-transform: uppercase;
         }
-        .panel-titlebar span.title-text {
-            color: var(--bbg-amber);
-            letter-spacing: 0.5px;
-        }
-        .panel-controls {
-            display: flex;
-            gap: 4px;
-            color: var(--bbg-gray);
-            font-size: 9px;
-            cursor: pointer;
-        }
-        .panel-content {
-            padding: 4px;
-            flex: 1;
-            overflow-y: auto;
-        }
-
-        /* SECTION DIVIDER */
-        .sec-div {
-            color: var(--bbg-cyan);
-            font-weight: 700;
-            font-size: 10.5px;
-            padding: 2px 0;
+        .p-metric-num {
+            color: #FFFFFF;
+            font-size: 16px;
+            font-weight: bold;
+            font-variant-numeric: tabular-nums;
             margin: 2px 0;
-            border-bottom: 1px solid #1a1a1a;
-            display: flex;
-            justify-content: space-between;
+        }
+        .p-metric-sub {
+            color: #888888;
+            font-size: 10.5px;
         }
 
-        /* DATA TABLES */
-        table.bbg-grid-table {
+        /* MONOSPACED HIGH-DENSITY DATA TABLE */
+        .table-frame {
+            border: 1px solid #222222;
+            background: #000000;
+            overflow-x: auto;
+            margin-bottom: 10px;
+        }
+        table.bbg-tbl {
             width: 100%;
             border-collapse: collapse;
-            font-size: 11px;
+            font-size: 11.5px;
             font-family: inherit;
         }
-        table.bbg-grid-table th {
+        table.bbg-tbl th {
             background: #0a0a0a;
-            color: var(--bbg-cyan);
-            font-weight: 700;
-            padding: 3px 4px;
-            border-bottom: 1px solid var(--bbg-amber);
-            border-right: 1px solid #181818;
+            color: #00EEEE;
+            font-weight: bold;
+            padding: 3px 6px;
+            border-bottom: 1px solid #F39F41;
+            border-right: 1px solid #1a1a1a;
             text-align: right;
             white-space: nowrap;
         }
-        table.bbg-grid-table th:first-child, table.bbg-grid-table th:nth-child(2) {
+        table.bbg-tbl th:first-child, table.bbg-tbl th:nth-child(2), table.bbg-tbl th:nth-child(3) {
             text-align: left;
         }
-        table.bbg-grid-table td {
-            padding: 3px 4px;
+        table.bbg-tbl td {
+            padding: 3px 6px;
             border-bottom: 1px solid #111111;
             border-right: 1px solid #111111;
             text-align: right;
             white-space: nowrap;
             font-variant-numeric: tabular-nums;
         }
-        table.bbg-grid-table td:first-child, table.bbg-grid-table td:nth-child(2) {
+        table.bbg-tbl td:first-child, table.bbg-tbl td:nth-child(2), table.bbg-tbl td:nth-child(3) {
             text-align: left;
         }
-        table.bbg-grid-table tr:hover td {
-            background: #111822;
+        table.bbg-tbl tr:hover td {
+            background: #111a24;
         }
 
-        /* TEXT UTILITIES */
-        .pos { color: var(--bbg-green) !important; font-weight: 700; }
-        .neg { color: var(--bbg-red) !important; font-weight: 700; }
-        .amber { color: var(--bbg-amber) !important; }
-        .cyan { color: var(--bbg-cyan) !important; }
-        .yellow { color: var(--bbg-yellow) !important; }
-        .white { color: var(--bbg-white) !important; }
-        .dim { color: var(--bbg-dim) !important; }
+        /* SECTION SUBTITLE */
+        .sec-title {
+            color: #00EEEE;
+            font-weight: bold;
+            font-size: 11px;
+            margin: 8px 0 4px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
 
-        /* PORTFOLIO METRICS BAR */
-        .port-metrics-bar {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 4px;
+        /* EMSX ORDER TICKET (AUTHENTIC BLOOMBERG STYLE) */
+        .emsx-panel {
             background: #050505;
-            border: 1px solid #1a1a1a;
-            padding: 4px 6px;
-            margin-bottom: 4px;
+            border: 1px solid #2a2a2a;
+            padding: 10px;
+            margin-bottom: 10px;
         }
-        @media (max-width: 600px) {
-            .port-metrics-bar { grid-template-columns: repeat(2, 1fr); }
-        }
-        .metric-cell {
+        .emsx-header {
+            color: #F39F41;
+            font-weight: bold;
+            border-bottom: 1px solid #333333;
+            padding-bottom: 4px;
+            margin-bottom: 6px;
             display: flex;
-            flex-direction: column;
+            justify-content: space-between;
         }
-        .metric-lbl {
-            font-size: 9.5px;
-            color: var(--bbg-cyan);
-            font-weight: 700;
+        .emsx-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
         }
-        .metric-num {
-            font-size: 14px;
-            font-weight: 800;
-            color: #ffffff;
-            font-variant-numeric: tabular-nums;
+        @media (max-width: 800px) {
+            .emsx-grid { grid-template-columns: 1fr; }
         }
-        .metric-sub {
-            font-size: 9.5px;
-            color: var(--bbg-gray);
-        }
-
-        /* EMSX ORDER TICKET */
-        .emsx-form {
-            display: flex;
-            flex-direction: column;
-            gap: 3px;
-        }
-        .emsx-row {
+        .emsx-line {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 2px 0;
-            border-bottom: 1px dashed #161616;
+            padding: 3px 0;
+            border-bottom: 1px dashed #1a1a1a;
+            font-size: 11.5px;
         }
-        .emsx-lbl {
-            color: var(--bbg-cyan);
-            font-weight: 700;
-            font-size: 10.5px;
+        .emsx-label {
+            color: #00EEEE;
+            font-weight: bold;
         }
-        .emsx-val {
-            font-variant-numeric: tabular-nums;
-            font-weight: 700;
-        }
-        .emsx-input {
-            background: #080808;
-            border: 1px solid var(--bbg-amber);
-            color: var(--bbg-yellow);
-            font-family: inherit;
-            font-size: 11px;
-            font-weight: 700;
-            padding: 2px 4px;
-            text-align: right;
-            outline: none;
-            width: 100px;
-        }
-        .emsx-select {
-            background: #080808;
-            border: 1px solid var(--bbg-amber);
-            color: var(--bbg-white);
-            font-family: inherit;
-            font-size: 11px;
-            font-weight: 700;
-            padding: 2px 4px;
-            outline: none;
-            width: 180px;
+        .emsx-in-cell {
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
 
-        .side-btn {
-            background: #161616;
-            color: #fff;
-            border: 1px solid #333;
+        /* INPUTS IN BLOOMBERG YELLOW/AMBER */
+        .bbg-select {
+            background: #000000;
+            border: 1px solid #F39F41;
+            color: #FFFFFF;
             font-family: inherit;
-            font-size: 10px;
-            font-weight: 800;
+            font-size: 11.5px;
+            font-weight: bold;
+            padding: 2px 6px;
+            outline: none;
+            width: 220px;
+        }
+        .bbg-input {
+            background: #000000;
+            border: 1px solid #F39F41;
+            color: #FFFF00;
+            font-family: inherit;
+            font-size: 12px;
+            font-weight: bold;
+            padding: 2px 6px;
+            text-align: right;
+            outline: none;
+            width: 110px;
+        }
+        .btn-side {
+            background: #181818;
+            color: #ffffff;
+            border: 1px solid #333333;
+            font-family: inherit;
+            font-size: 10.5px;
+            font-weight: bold;
             padding: 2px 8px;
             cursor: pointer;
         }
-        .side-btn.buy.active {
-            background: var(--bbg-green);
-            color: #000;
-            border-color: var(--bbg-green);
+        .btn-side.buy.active {
+            background: #00FF00;
+            color: #000000;
+            border-color: #00FF00;
         }
-        .side-btn.sell.active {
-            background: var(--bbg-red);
-            color: #fff;
-            border-color: var(--bbg-red);
+        .btn-side.sell.active {
+            background: #FF2233;
+            color: #ffffff;
+            border-color: #FF2233;
         }
 
-        .alloc-btn {
-            background: #111;
-            border: 1px solid #333;
-            color: var(--bbg-cyan);
+        .pct-tag {
+            background: #111111;
+            border: 1px solid #333333;
+            color: #00EEEE;
             font-family: inherit;
-            font-size: 9.5px;
-            font-weight: 700;
-            padding: 1px 4px;
+            font-size: 10px;
+            font-weight: bold;
+            padding: 1px 5px;
             cursor: pointer;
         }
-        .alloc-btn:hover {
-            background: var(--bbg-amber);
-            color: #000;
+        .pct-tag:hover {
+            background: #F39F41;
+            color: #000000;
         }
 
-        .btn-emsx-send {
-            background: var(--bbg-green);
-            color: #000;
-            border: 1px solid var(--bbg-green);
+        .btn-exec {
+            background: #00FF00;
+            color: #000000;
+            border: 2px solid #00FF00;
             font-family: inherit;
-            font-size: 11.5px;
-            font-weight: 800;
-            padding: 6px;
+            font-size: 12.5px;
+            font-weight: 900;
+            padding: 7px;
             width: 100%;
             cursor: pointer;
-            margin-top: 4px;
+            margin-top: 8px;
             letter-spacing: 0.5px;
         }
-        .btn-emsx-send:hover {
-            filter: brightness(1.2);
-        }
-        .btn-emsx-send.sell-mode {
-            background: var(--bbg-red);
-            border-color: var(--bbg-red);
-            color: #fff;
+        .btn-exec:hover { filter: brightness(1.2); }
+        .btn-exec.sell-mode {
+            background: #FF2233;
+            border-color: #FF2233;
+            color: #ffffff;
         }
 
-        /* IN-TABLE ACTION BUTTONS */
-        .act-btn {
-            background: #111;
-            color: var(--bbg-cyan);
+        /* INLINE ACTIONS */
+        .btn-act {
+            background: #111111;
+            color: #00EEEE;
             border: 1px solid #2a2a2a;
             font-family: inherit;
-            font-size: 9.5px;
-            font-weight: 700;
-            padding: 1px 4px;
+            font-size: 10px;
+            font-weight: bold;
+            padding: 1px 5px;
             cursor: pointer;
         }
-        .act-btn:hover {
-            background: var(--bbg-amber);
-            color: #000;
+        .btn-act:hover {
+            background: #F39F41;
+            color: #000000;
         }
-        .act-btn.act-sell:hover {
-            background: var(--bbg-red);
-            color: #fff;
+        .btn-act.act-sell:hover {
+            background: #FF2233;
+            color: #ffffff;
         }
 
         /* CANDLESTICK CANVAS */
-        #candlestickCanvas {
+        #chartCanvas {
             width: 100%;
-            height: 220px;
+            height: 280px;
             background: #000000;
-            border: 1px solid #1a1a1a;
+            border: 1px solid #222222;
             display: block;
         }
 
-        /* NEWS WIRE */
-        .wire-item {
-            padding: 2px 2px;
-            border-bottom: 1px solid #111;
-            display: flex;
-            gap: 6px;
-            font-size: 10.5px;
-            align-items: baseline;
-        }
-        .wire-item:hover { background: #0c0c0c; }
-        .wire-time { color: var(--bbg-amber); font-weight: 700; font-size: 9.5px; }
-        .wire-src { color: var(--bbg-cyan); font-size: 9.5px; }
-        .wire-title { color: #fff; text-decoration: none; font-weight: 600; }
-        .wire-title:hover { color: var(--bbg-amber); text-decoration: underline; }
+        /* VIEW TOGGLING */
+        .view-section { display: none; }
+        .view-section.active { display: block; }
 
         /* NOTIFICATION TOAST */
-        .bbg-msg {
+        .bbg-popup {
             position: fixed;
-            bottom: 8px;
-            right: 8px;
-            background: #000;
-            border: 2px solid var(--bbg-amber);
-            color: var(--bbg-yellow);
-            padding: 6px 12px;
-            font-size: 11px;
-            font-weight: 800;
-            box-shadow: 0 0 8px rgba(255,153,0,0.5);
-            z-index: 9999;
+            bottom: 12px;
+            right: 12px;
+            background: #000000;
+            border: 2px solid #F39F41;
+            color: #FFFF00;
+            padding: 8px 14px;
+            font-size: 11.5px;
+            font-weight: bold;
+            box-shadow: 0 0 10px rgba(243, 159, 65, 0.4);
+            z-index: 99999;
             display: none;
         }
     </style>
@@ -485,316 +466,486 @@
 <body>
 
     <!-- 1. BLOOMBERG TOP STATUS HEADER -->
-    <header class="bbg-header">
+    <header class="header-top">
         <div style="display:flex; align-items:center;">
-            <span class="bbg-logo-badge">BLOOMBERG</span>
-            <span class="bbg-header-title">PROFESSIONAL // <span>PORT &lt;GO&gt;</span></span>
+            <span class="header-logo">BLOOMBERG</span>
+            <span style="font-weight:bold; margin-left:8px;" class="bbg-white">PROFESSIONAL SERVICE // <span class="bbg-amber">PRTU &lt;GO&gt;</span></span>
         </div>
-        <div class="bbg-clocks-bar">
-            <span>PORT: <strong class="white">FADHIL-ALPHA-200M</strong></span>
-            <span>BASE: <strong class="amber">IDR</strong></span>
-            <span>USD/IDR: <strong class="yellow" id="hdrUsdRate">17,685</strong></span>
-            <span id="hdrJktClock">JKT 14:42:00 WIB</span>
+        <div class="header-clocks">
+            <span>PORTFOLIO: <strong class="bbg-white">FADHIL-ALPHA-200M</strong></span>
+            <span>BASE: <strong class="bbg-amber">IDR</strong></span>
+            <span>USD/IDR: <strong class="bbg-yellow" id="topUsdRate">17,685</strong></span>
+            <span id="topJktClock">JKT 14:45:00 WIB</span>
         </div>
     </header>
 
-    <!-- 2. PHYSICAL KEYBOARD BAR -->
-    <nav class="bbg-keys-bar">
-        <button class="bkey k-red" onclick="execCommand('HELP')">&lt;CANCEL&gt;</button>
-        <button class="bkey k-green" onclick="execCommand('HELP')">&lt;HELP&gt;</button>
-        <button class="bkey k-yellow" onclick="execCommand('PORT')">&lt;MENU&gt;</button>
-        <button class="bkey k-amber active" onclick="execCommand('PORT')">PORT &lt;GO&gt;</button>
-        <button class="bkey k-amber" onclick="execCommand('EMSX')">EMSX &lt;GO&gt;</button>
-        <button class="bkey k-amber" onclick="execCommand('GP')">GP &lt;GO&gt;</button>
-        <button class="bkey k-amber" onclick="execCommand('MOST')">MOST &lt;GO&gt;</button>
-        <button class="bkey k-amber" onclick="execCommand('TOP')">TOP &lt;GO&gt;</button>
-        <button class="bkey k-cyan" onclick="execCommand('AI')">BI &lt;GO&gt;</button>
+    <!-- 2. PHYSICAL BLOOMBERG KEYBOARD FUNCTION KEYS -->
+    <nav class="bbg-fbar">
+        <button class="f-key k-red" onclick="showView('summary')">&lt;CANCEL&gt;</button>
+        <button class="f-key k-green" onclick="showView('help')">&lt;HELP&gt;</button>
+        <button class="f-key k-yellow" onclick="showView('summary')">&lt;MENU&gt;</button>
+        <button class="f-key k-amber active" onclick="showView('summary')">1&lt;GO&gt; PORTFOLIO SUMMARY</button>
+        <button class="f-key k-cyan" onclick="showView('holdings')">2&lt;GO&gt; HOLDINGS MATRIX</button>
+        <button class="f-key k-amber" onclick="showView('emsx')">3&lt;GO&gt; EMSX ORDER DESK</button>
+        <button class="f-key k-yellow" onclick="showView('blotter')">4&lt;GO&gt; AUDIT BLOTTER</button>
+        <button class="f-key k-cyan" onclick="showView('monitor')">5&lt;GO&gt; MARKET MONITOR</button>
+        <button class="f-key k-amber" onclick="showView('chart')">6&lt;GO&gt; GP &lt;GO&gt; CHART</button>
+        <button class="f-key k-green" onclick="showView('news')">7&lt;GO&gt; TOP &lt;GO&gt; NEWS</button>
+        <button class="f-key k-cyan" onclick="showView('ai')">8&lt;GO&gt; B-ANALYST (AI)</button>
     </nav>
 
-    <!-- 3. COMMAND LINE (CLI) -->
-    <div class="bbg-cmd-strip">
-        <span class="cmd-label">COMMAND:</span>
-        <input type="text" id="cmdInput" class="cmd-input" placeholder="ENTER MNEMONIC (E.G. PORT <GO>, BUY 50 BBCA, GP NVDA, MOST <GO>)..." autocomplete="off" spellcheck="false">
-        <button class="cmd-go-btn" onclick="onCmdSubmit()">&lt;GO&gt;</button>
+    <!-- 3. COMMAND INPUT STRIP (BBG COMMAND PROMPT) -->
+    <div class="cmd-bar">
+        <span class="cmd-prompt">COMMAND:</span>
+        <input type="text" id="terminalCmdInput" class="cmd-box" placeholder="ENTER MNEMONIC (E.G. PORT <GO>, BUY 50 BBCA, GP NVDA, TOP <GO>)..." autocomplete="off" spellcheck="false">
+        <button class="cmd-enter" onclick="submitCmd()">&lt;GO&gt;</button>
     </div>
 
-    <!-- 4. STREAMING TICKER TAPE -->
-    <div class="bbg-tape" id="streamTape">
-        <div class="tape-item"><span class="t-sym">IHSG</span> <span class="t-val">6,481.85</span> <span class="t-down">-0.81%</span></div>
-        <div class="tape-item"><span class="t-sym">BBCA IJ</span> <span class="t-val">6,350.00</span> <span class="t-down">-0.78%</span></div>
-        <div class="tape-item"><span class="t-sym">BBRI IJ</span> <span class="t-val">3,330.00</span> <span class="t-up">+0.30%</span></div>
-        <div class="tape-item"><span class="t-sym">BMRI IJ</span> <span class="t-val">4,290.00</span> <span class="t-up">+0.37%</span></div>
-        <div class="tape-item"><span class="t-sym">TLKM IJ</span> <span class="t-val">2,660.00</span> <span class="t-down">-1.48%</span></div>
-        <div class="tape-item"><span class="t-sym">NVDA US</span> <span class="t-val">$119.85</span> <span class="t-up">+2.41%</span></div>
-        <div class="tape-item"><span class="t-sym">AAPL US</span> <span class="t-val">$224.23</span> <span class="t-up">+0.85%</span></div>
-        <div class="tape-item"><span class="t-sym">BTC Curncy</span> <span class="t-val">$59,420.00</span> <span class="t-up">+1.32%</span></div>
-        <div class="tape-item"><span class="t-sym">XAU Curncy</span> <span class="t-val">Rp 1,512,000/g</span> <span class="t-up">+0.45%</span></div>
-        <div class="tape-item"><span class="t-sym">USDIDR</span> <span class="t-val">17,685.00</span> <span class="t-val">IDR</span></div>
+    <!-- 4. REAL-TIME TICKER TAPE -->
+    <div class="ticker-strip" id="liveTickerTape">
+        <div class="t-chip"><span class="bbg-amber">IHSG</span> <span class="bbg-white">6,481.85</span> <span class="bbg-red">-0.81%</span></div>
+        <div class="t-chip"><span class="bbg-amber">BBCA IJ</span> <span class="bbg-white">6,350.00</span> <span class="bbg-red">-0.78%</span></div>
+        <div class="t-chip"><span class="bbg-amber">BBRI IJ</span> <span class="bbg-white">3,330.00</span> <span class="bbg-green">+0.30%</span></div>
+        <div class="t-chip"><span class="bbg-amber">BMRI IJ</span> <span class="bbg-white">4,290.00</span> <span class="bbg-green">+0.37%</span></div>
+        <div class="t-chip"><span class="bbg-amber">TLKM IJ</span> <span class="bbg-white">2,660.00</span> <span class="bbg-red">-1.48%</span></div>
+        <div class="t-chip"><span class="bbg-amber">NVDA US</span> <span class="bbg-white">$119.85</span> <span class="bbg-green">+2.41%</span></div>
+        <div class="t-chip"><span class="bbg-amber">AAPL US</span> <span class="bbg-white">$224.23</span> <span class="bbg-green">+0.85%</span></div>
+        <div class="t-chip"><span class="bbg-amber">BTC Curncy</span> <span class="bbg-white">$59,420.00</span> <span class="bbg-green">+1.32%</span></div>
+        <div class="t-chip"><span class="bbg-amber">XAU Curncy</span> <span class="bbg-white">Rp 1,512,000/g</span> <span class="bbg-green">+0.45%</span></div>
+        <div class="t-chip"><span class="bbg-amber">USDIDR</span> <span class="bbg-white">17,685.00</span> <span class="bbg-white">IDR</span></div>
     </div>
 
-    <!-- 5. LAUNCHPAD MULTI-PANEL WORKSTATION -->
-    <main class="launchpad-grid">
+    <!-- 5. MAIN SCREEN CONTAINER -->
+    <main class="term-container">
 
-        <!-- ======================================================== -->
-        <!-- PANEL 1: PORTFOLIO & RISK ANALYTICS (PORT <GO>) -->
-        <!-- ======================================================== -->
-        <div class="term-panel" id="panel-port">
-            <div class="panel-titlebar">
-                <span class="title-text">1 - PORT: PORTFOLIO &amp; RISK ANALYTICS [IDR 200M ALPHA]</span>
-                <div class="panel-controls">
-                    <span onclick="fetchPortfolioData()">[ REFRESH ]</span>
-                </div>
-            </div>
-            <div class="panel-content">
-                <!-- Executive Metrics Bar -->
-                <div class="port-metrics-bar">
-                    <div class="metric-cell">
-                        <span class="metric-lbl">NET ASSET VALUE (NAV)</span>
-                        <span class="metric-num" id="pNavVal">200,000,000.00</span>
-                        <span class="metric-sub" id="pNavReturn">Return: +0.00% (Awal: Rp 200 Jt)</span>
-                    </div>
-                    <div class="metric-cell">
-                        <span class="metric-lbl">CASH &amp; EQUIVALENTS</span>
-                        <span class="metric-num cyan" id="pCashVal">200,000,000.00</span>
-                        <span class="metric-sub" id="pCashWeight">Weight: 100.00% of Portfolio</span>
-                    </div>
-                    <div class="metric-cell">
-                        <span class="metric-lbl">UNREALIZED INTRADAY P&amp;L</span>
-                        <span class="metric-num" id="pUnrealizedPnl">+0.00</span>
-                        <span class="metric-sub" id="pInvestedVal">Invested: Rp 0.00</span>
-                    </div>
-                    <div class="metric-cell">
-                        <span class="metric-lbl">REALIZED NET PROFIT</span>
-                        <span class="metric-num yellow" id="pRealizedPnl">+0.00</span>
-                        <span class="metric-sub" id="pTradesCount">0 Executed Trades</span>
-                    </div>
-                </div>
-
-                <!-- Position Matrix -->
-                <div class="sec-div">
-                    <span>-- INTRADAY HOLDINGS &amp; ATTRIBUTION MATRIX --</span>
-                    <span class="amber">VALUATION: REAL-TIME</span>
-                </div>
-                <div style="max-height:240px; overflow-y:auto;">
-                    <table class="bbg-grid-table">
-                        <thead>
-                            <tr>
-                                <th>SECURITY</th>
-                                <th>NAME</th>
-                                <th>POS (QTY)</th>
-                                <th>AVG PX (IDR)</th>
-                                <th>MKT PX (IDR)</th>
-                                <th>MKT VALUE (IDR)</th>
-                                <th>WGT %</th>
-                                <th>UNRL P&amp;L (IDR)</th>
-                                <th>RETURN %</th>
-                                <th style="text-align:center;">ACT</th>
-                            </tr>
-                        </thead>
-                        <tbody id="portHoldingsBody">
-                            <tr>
-                                <td colspan="10" style="text-align:center; padding:18px; color:var(--bbg-gray);">
-                                    [NO ACTIVE ASSET POSITIONS]<br>
-                                    Modal awal <strong class="amber">Rp 200.000.000</strong> tunai siap ditransaksikan.<br>
-                                    Gunakan panel <strong>EMSX ORDER DESK</strong> di sebelah untuk mengeksekusi pembelian aset apa saja.
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-
-                <!-- Order Blotter Snapshot -->
-                <div class="sec-div" style="margin-top:6px;">
-                    <span>-- INTRADAY EXECUTION BLOTTER --</span>
-                    <span class="cyan">AUDIT LOG</span>
-                </div>
-                <div style="max-height:140px; overflow-y:auto;">
-                    <table class="bbg-grid-table">
-                        <thead>
-                            <tr>
-                                <th>TICKET</th>
-                                <th>TIME</th>
-                                <th>SIDE</th>
-                                <th>SECURITY</th>
-                                <th>QTY</th>
-                                <th>EXEC PX</th>
-                                <th>GROSS (IDR)</th>
-                                <th>COMMISSION</th>
-                                <th>STATUS</th>
-                            </tr>
-                        </thead>
-                        <tbody id="portBlotterBody">
-                            <tr>
-                                <td colspan="9" style="text-align:center; padding:10px; color:var(--bbg-gray);">No orders executed yet.</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+        <!-- SCREEN TITLE ROW -->
+        <div class="screen-hdr">
+            <span>PORTFOLIO &amp; RISK ANALYTICS // PORTFOLIO: FADHIL-ALPHA-200M (IDR)</span>
+            <span class="bbg-amber">VALUATION: REAL-TIME B-PIPE FEED</span>
         </div>
 
-        <!-- ======================================================== -->
-        <!-- PANEL 2: EMSX EXECUTION DESK (ORDER MANAGEMENT SYSTEM) -->
-        <!-- ======================================================== -->
-        <div class="term-panel" id="panel-emsx">
-            <div class="panel-titlebar">
-                <span class="title-text">2 - EMSX: DIRECT EXECUTION MANAGEMENT SYSTEM</span>
-                <div class="panel-controls">
-                    <span class="yellow">ROUTE: DMA / BEST-EXEC</span>
-                </div>
-            </div>
-            <div class="panel-content">
-                <div class="emsx-form">
-                    <!-- Side -->
-                    <div class="emsx-row">
-                        <span class="emsx-lbl">SIDE:</span>
-                        <div style="display:flex; gap:3px;">
-                            <button class="side-btn buy active" id="btnSideBuy" onclick="setSide('BUY')">BUY / LONG</button>
-                            <button class="side-btn sell" id="btnSideSell" onclick="setSide('SELL')">SELL / CLOSE</button>
-                        </div>
-                    </div>
-
-                    <!-- Security Selector -->
-                    <div class="emsx-row">
-                        <span class="emsx-lbl">SECURITY:</span>
-                        <select id="emsxAssetSelect" class="emsx-select" onchange="onAssetChanged()">
-                            <!-- Populated via JS -->
-                        </select>
-                    </div>
-
-                    <!-- Market Price Readout -->
-                    <div class="emsx-row" style="background:#080808; padding:3px 4px;">
-                        <span class="emsx-lbl" id="emsxAssetDescr">Bank Central Asia (BBCA IJ)</span>
-                        <span class="emsx-val cyan" id="emsxAssetPx">6,350.00 IDR <span id="emsxAssetChg" class="neg">(-0.78%)</span></span>
-                    </div>
-
-                    <!-- Quantity Input -->
-                    <div class="emsx-row">
-                        <span class="emsx-lbl" id="emsxQtyLabel">QUANTITY (LOTS - 1 LOT = 100 SHARES):</span>
-                        <input type="number" id="emsxQtyInput" class="emsx-input" value="10" min="1" step="1" oninput="recalcEmsx()">
-                    </div>
-
-                    <!-- Quick Cash Presets -->
-                    <div class="emsx-row">
-                        <span class="emsx-lbl">PRE-CALC (CASH %):</span>
-                        <div style="display:flex; gap:3px;">
-                            <button class="alloc-btn" onclick="presetCash(0.10)">10%</button>
-                            <button class="alloc-btn" onclick="presetCash(0.25)">25%</button>
-                            <button class="alloc-btn" onclick="presetCash(0.50)">50%</button>
-                            <button class="alloc-btn" onclick="presetCash(0.75)">75%</button>
-                            <button class="alloc-btn" onclick="presetCash(1.00)">100% MAX</button>
-                        </div>
-                    </div>
-
-                    <!-- Calculation Readouts -->
-                    <div class="emsx-row">
-                        <span class="emsx-lbl">GROSS VALUE:</span>
-                        <span class="emsx-val white" id="emsxGrossVal">6,350,000.00 IDR</span>
-                    </div>
-                    <div class="emsx-row">
-                        <span class="emsx-lbl">COMMISSION (0.15%):</span>
-                        <span class="emsx-val dim" id="emsxCommVal">9,525.00 IDR</span>
-                    </div>
-                    <div class="emsx-row" style="border-bottom:1px solid var(--bbg-amber); padding-bottom:4px;">
-                        <span class="emsx-lbl amber">NET SETTLEMENT VALUE:</span>
-                        <span class="emsx-val amber" style="font-size:12px;" id="emsxNetVal">6,359,525.00 IDR</span>
-                    </div>
-                    <div class="emsx-row">
-                        <span class="emsx-lbl cyan">AVAILABLE CASH:</span>
-                        <span class="emsx-val cyan" id="emsxCashAvail">200,000,000.00 IDR</span>
-                    </div>
-                    <div class="emsx-row">
-                        <span class="emsx-lbl">EST. CASH POST-TRADE:</span>
-                        <span class="emsx-val white" id="emsxCashPost">193,640,475.00 IDR</span>
-                    </div>
-
-                    <!-- Execute Button -->
-                    <button class="btn-emsx-send" id="btnEmsxSend" onclick="executeTrade()">
-                        &lt;TRANSACT / EXECUTE DMA ORDER &lt;GO&gt;&gt;
-                    </button>
-                </div>
-            </div>
+        <!-- SUB NAVIGATION TABS -->
+        <div class="sub-nav">
+            <a class="sub-link active" onclick="showView('summary')">1) SUMMARY</a>
+            <a class="sub-link" onclick="showView('holdings')">2) HOLDINGS MATRIX</a>
+            <a class="sub-link" onclick="showView('emsx')">3) EMSX ORDER DESK</a>
+            <a class="sub-link" onclick="showView('blotter')">4) AUDIT BLOTTER</a>
+            <a class="sub-link" onclick="showView('monitor')">5) MARKET MONITOR</a>
+            <a class="sub-link" onclick="showView('chart')">6) GP PRICE CHART</a>
+            <a class="sub-link" onclick="showView('news')">7) NEWS WIRE</a>
+            <a class="sub-link" onclick="showView('ai')">8) B-ANALYST (AI)</a>
         </div>
 
-        <!-- ======================================================== -->
-        <!-- PANEL 3: GP GRAPHIC PRICE ENGINE (CHART) -->
-        <!-- ======================================================== -->
-        <div class="term-panel" id="panel-gp">
-            <div class="panel-titlebar">
-                <span class="title-text">3 - GP: GRAPHIC PRICE &amp; CANDLESTICK INTRADAY</span>
-                <div style="display:flex; gap:3px;">
-                    <button class="alloc-btn" onclick="changeChartTf('1d')">1D</button>
-                    <button class="alloc-btn" onclick="changeChartTf('5d')">5D</button>
-                    <button class="alloc-btn" onclick="changeChartTf('1mo')">1M</button>
-                    <button class="alloc-btn" onclick="changeChartTf('1y')">1Y</button>
+        <!-- ============================================================== -->
+        <!-- VIEW 1: PORTFOLIO SUMMARY (PORT <GO>) -->
+        <!-- ============================================================== -->
+        <div id="view-summary" class="view-section active">
+            <!-- 4-METRIC EXECUTIVE HUD -->
+            <div class="port-summary-box">
+                <div class="port-summary-row">
+                    <div class="p-metric">
+                        <span class="p-metric-lbl">NET ASSET VALUE (NAV)</span>
+                        <span class="p-metric-num" id="sNav">200,000,000.00</span>
+                        <span class="p-metric-sub" id="sReturn">Return: +0.00% (Awal: Rp 200 Jt)</span>
+                    </div>
+                    <div class="p-metric">
+                        <span class="p-metric-lbl">CASH &amp; SHORT-TERM EQUIV</span>
+                        <span class="p-metric-num bbg-cyan" id="sCash">200,000,000.00</span>
+                        <span class="p-metric-sub" id="sCashWeight">Weight: 100.00% of Portfolio</span>
+                    </div>
+                    <div class="p-metric">
+                        <span class="p-metric-lbl">UNREALIZED INTRADAY P&amp;L</span>
+                        <span class="p-metric-num" id="sUnrealPnl">+0.00</span>
+                        <span class="p-metric-sub" id="sInvested">Invested Capital: Rp 0.00</span>
+                    </div>
+                    <div class="p-metric">
+                        <span class="p-metric-lbl">REALIZED NET PROFIT</span>
+                        <span class="p-metric-num bbg-yellow" id="sRealPnl">+0.00</span>
+                        <span class="p-metric-sub" id="sTradesCount">0 Trades Executed</span>
+                    </div>
                 </div>
             </div>
-            <div class="panel-content">
-                <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-                    <span class="white" style="font-weight:800; font-size:13px;" id="chartHeaderSym">BBCA.JK</span>
-                    <span class="cyan" style="font-weight:800; font-size:13px;" id="chartHeaderPx">6,350.00 IDR</span>
-                </div>
-                <canvas id="candlestickCanvas"></canvas>
-            </div>
-        </div>
 
-        <!-- ======================================================== -->
-        <!-- PANEL 4: MARKET WATCH & MONITOR (MOST <GO>) -->
-        <!-- ======================================================== -->
-        <div class="term-panel" id="panel-most">
-            <div class="panel-titlebar">
-                <span class="title-text">4 - MOST: REAL-TIME MARKET WATCH MATRIX</span>
-                <div class="panel-controls">
-                    <span onclick="fetchQuotesData()">[ REFRESH ]</span>
+            <!-- ALLOCATION MATRIX STRIP -->
+            <div style="background:#050505; border:1px solid #222; padding:4px 8px; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; font-size:10.5px;">
+                <span class="bbg-cyan" style="font-weight:bold;">ASSET CLASS ALLOCATION:</span>
+                <span class="bbg-white" id="allocBarText">CASH: 100.00% | EQUITIES: 0.00% | CRYPTO: 0.00% | COMMODITIES: 0.00%</span>
+            </div>
+
+            <!-- INTRADAY HOLDINGS TABLE -->
+            <div class="sec-title">
+                <span>-- INTRADAY POSITIONS &amp; ATTRIBUTION MATRIX --</span>
+                <div>
+                    <button class="btn-act" onclick="showView('emsx')">+ TRANSACT NEW ASSET &lt;F3&gt;</button>
+                    <button class="btn-act" onclick="fetchPortfolioData()">REFRESH &lt;GO&gt;</button>
                 </div>
             </div>
-            <div class="panel-content" style="max-height:260px; overflow-y:auto;">
-                <table class="bbg-grid-table">
+
+            <div class="table-frame">
+                <table class="bbg-tbl">
                     <thead>
                         <tr>
                             <th>TICKER</th>
-                            <th>NAME</th>
+                            <th>SECURITY NAME</th>
                             <th>CLASS</th>
-                            <th>ORIGINAL</th>
-                            <th>PRICE (IDR)</th>
-                            <th>CHG %</th>
-                            <th>DAY HIGH</th>
-                            <th>DAY LOW</th>
-                            <th style="text-align:center;">ACT</th>
+                            <th>POS (QTY)</th>
+                            <th>AVG COST (IDR)</th>
+                            <th>MKT PRICE (IDR)</th>
+                            <th>TOTAL COST (IDR)</th>
+                            <th>MKT VALUE (IDR)</th>
+                            <th>WEIGHT %</th>
+                            <th>UNREAL P&amp;L (IDR)</th>
+                            <th>RETURN %</th>
+                            <th>1D MOVE</th>
+                            <th style="text-align:center;">ACTION</th>
                         </tr>
                     </thead>
-                    <tbody id="marketWatchBody">
+                    <tbody id="summaryHoldingsBody">
+                        <tr>
+                            <td colspan="13" style="text-align:center; padding:20px; color:#888;">
+                                [NO ACTIVE POSITIONS] Portofolio Anda memiliki modal Rp 200.000.000 (100% Cash).<br>
+                                Buka tab <strong class="bbg-amber">3) EMSX ORDER DESK</strong> atau klik tombol di atas untuk membeli saham, kripto, atau emas.
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- ORDER BLOTTER SNAPSHOT -->
+            <div class="sec-title">
+                <span>-- INTRADAY TRADE BLOTTER // AUDITED SETTLEMENT LOG --</span>
+                <span class="bbg-cyan">CLEARING: IDX / STP</span>
+            </div>
+            <div class="table-frame" style="max-height:160px;">
+                <table class="bbg-tbl">
+                    <thead>
+                        <tr>
+                            <th>TICKET ID</th>
+                            <th>TIME (WIB)</th>
+                            <th>SIDE</th>
+                            <th>TICKER</th>
+                            <th>SECURITY NAME</th>
+                            <th>QTY</th>
+                            <th>EXEC PX</th>
+                            <th>TOTAL (IDR)</th>
+                            <th>COMMISSION</th>
+                            <th>STATUS</th>
+                        </tr>
+                    </thead>
+                    <tbody id="summaryBlotterBody">
+                        <tr>
+                            <td colspan="10" style="text-align:center; padding:12px; color:#666;">No trade executions recorded yet.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ============================================================== -->
+        <!-- VIEW 2: FULL HOLDINGS MATRIX (PRTU) -->
+        <!-- ============================================================== -->
+        <div id="view-holdings" class="view-section">
+            <div class="sec-title">
+                <span>-- PRTU: FULL PORTFOLIO HOLDINGS &amp; SECTOR BREAKDOWN --</span>
+                <span class="bbg-amber">BASE CURRENCY: IDR</span>
+            </div>
+            <div class="table-frame">
+                <table class="bbg-tbl">
+                    <thead>
+                        <tr>
+                            <th>TICKER</th>
+                            <th>SECURITY NAME</th>
+                            <th>ASSET CLASS</th>
+                            <th>QUANTITY</th>
+                            <th>CURRENCY</th>
+                            <th>AVG COST PX</th>
+                            <th>MKT PX</th>
+                            <th>MKT VALUE (IDR)</th>
+                            <th>WEIGHT %</th>
+                            <th>UNREAL P&amp;L (IDR)</th>
+                            <th>RETURN %</th>
+                            <th>1D MOVE %</th>
+                            <th style="text-align:center;">QUICK ACTION</th>
+                        </tr>
+                    </thead>
+                    <tbody id="fullHoldingsBody">
                         <!-- Loaded via JS -->
                     </tbody>
                 </table>
             </div>
         </div>
 
-        <!-- ======================================================== -->
-        <!-- PANEL 5: TOP FINANCIAL NEWS WIRE (TOP <GO>) -->
-        <!-- ======================================================== -->
-        <div class="term-panel" id="panel-top" style="grid-column: 1 / -1;">
-            <div class="panel-titlebar">
-                <span class="title-text">5 - TOP: BLOOMBERG INTRADAY FINANCIAL NEWS WIRE</span>
-                <div class="panel-controls">
-                    <span onclick="fetchNewsData()">[ PULL WIRE ]</span>
+        <!-- ============================================================== -->
+        <!-- VIEW 3: EMSX EXECUTION DESK (ORDER TICKET) -->
+        <!-- ============================================================== -->
+        <div id="view-emsx" class="view-section">
+            <div class="sec-title">
+                <span>-- EMSX: ELECTRONIC ORDER EXECUTION DESK // DIRECT MARKET ACCESS (DMA) --</span>
+                <span class="bbg-green">STATUS: DMA GATEWAY ACTIVE</span>
+            </div>
+
+            <div class="emsx-panel">
+                <div class="emsx-header">
+                    <span>DMA ORDER TICKET #008194</span>
+                    <span class="bbg-cyan">ACCOUNT: FADHIL-ALPHA-200M | ROUTE: BEST-EXEC</span>
+                </div>
+
+                <div class="emsx-grid">
+                    <!-- Left: Inputs -->
+                    <div>
+                        <div class="emsx-line">
+                            <span class="emsx-label">ORDER SIDE:</span>
+                            <div class="emsx-in-cell">
+                                <button class="btn-side buy active" id="btnEmsxBuy" onclick="setEmsxOrderSide('BUY')">BUY / LONG</button>
+                                <button class="btn-side sell" id="btnEmsxSell" onclick="setEmsxOrderSide('SELL')">SELL / CLOSE</button>
+                            </div>
+                        </div>
+                        <div class="emsx-line">
+                            <span class="emsx-label">SECURITY (TICKER):</span>
+                            <div class="emsx-in-cell">
+                                <select id="emsxTickerSelect" class="bbg-select" onchange="onEmsxTickerChanged()">
+                                    <!-- Filled via JS -->
+                                </select>
+                            </div>
+                        </div>
+                        <div class="emsx-line" style="background:#000; padding:4px 0;">
+                            <span class="emsx-label" id="emsxDescrLabel">Bank Central Asia (BBCA IJ)</span>
+                            <span class="bbg-cyan" style="font-weight:bold;" id="emsxPxLabel">6,350.00 IDR <span id="emsxChgLabel" class="bbg-red">(-0.78%)</span></span>
+                        </div>
+                        <div class="emsx-line">
+                            <span class="emsx-label" id="emsxQtyTitle">QUANTITY (LOTS - 1 LOT = 100 SHARES):</span>
+                            <div class="emsx-in-cell">
+                                <input type="number" id="emsxQtyInput" class="bbg-input" value="10" min="1" step="1" oninput="calcEmsx()">
+                            </div>
+                        </div>
+                        <div class="emsx-line">
+                            <span class="emsx-label">PRE-CALC CASH SIZING:</span>
+                            <div class="emsx-in-cell">
+                                <button class="pct-tag" onclick="presetEmsxCash(0.10)">10%</button>
+                                <button class="pct-tag" onclick="presetEmsxCash(0.25)">25%</button>
+                                <button class="pct-tag" onclick="presetEmsxCash(0.50)">50%</button>
+                                <button class="pct-tag" onclick="presetEmsxCash(0.75)">75%</button>
+                                <button class="pct-tag" onclick="presetEmsxCash(1.00)">100% ALL-IN</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right: Settlement Calculations -->
+                    <div>
+                        <div class="emsx-line">
+                            <span class="emsx-label">GROSS PRINCIPAL:</span>
+                            <span class="bbg-white" style="font-weight:bold;" id="emsxGrossOut">6,350,000.00 IDR</span>
+                        </div>
+                        <div class="emsx-line">
+                            <span class="emsx-label">COMMISSION &amp; LEVY (0.15%):</span>
+                            <span class="bbg-dim" id="emsxCommOut">9,525.00 IDR</span>
+                        </div>
+                        <div class="emsx-line" style="border-bottom:2px solid #F39F41; padding-bottom:5px;">
+                            <span class="emsx-label bbg-amber">NET SETTLEMENT REQUIRED:</span>
+                            <span class="bbg-amber" style="font-size:13px; font-weight:900;" id="emsxNetOut">6,359,525.00 IDR</span>
+                        </div>
+                        <div class="emsx-line">
+                            <span class="emsx-label bbg-cyan">AVAILABLE CASH BALANCE:</span>
+                            <span class="bbg-cyan" style="font-weight:bold;" id="emsxCashOut">200,000,000.00 IDR</span>
+                        </div>
+                        <div class="emsx-line">
+                            <span class="emsx-label">EST. CASH POST-TRADE:</span>
+                            <span class="bbg-white" style="font-weight:bold;" id="emsxPostCashOut">193,640,475.00 IDR</span>
+                        </div>
+
+                        <!-- Execute DMA Button -->
+                        <button class="btn-exec" id="btnEmsxExec" onclick="executeEmsxOrder()">
+                            &lt;TRANSACT / EXECUTE DMA ORDER &lt;GO&gt;&gt;
+                        </button>
+                    </div>
                 </div>
             </div>
-            <div class="panel-content" style="max-height:140px; overflow-y:auto;" id="newsWireList">
-                <div style="padding:6px; color:var(--bbg-gray);">Streaming news wire...</div>
+
+            <!-- TRADEABLE ASSETS TABLE -->
+            <div class="sec-title">
+                <span>TRADEABLE ASSET UNIVERSE (CLICK TICKER TO LOAD INTO EMSX)</span>
+                <span class="bbg-cyan">REAL-TIME PRICES</span>
+            </div>
+            <div class="table-frame" style="max-height:240px;">
+                <table class="bbg-tbl">
+                    <thead>
+                        <tr>
+                            <th>TICKER</th>
+                            <th>SECURITY NAME</th>
+                            <th>ASSET CLASS</th>
+                            <th>ORIGINAL PX</th>
+                            <th>PRICE (IDR)</th>
+                            <th>1D MOVE %</th>
+                            <th>DAY HIGH</th>
+                            <th>DAY LOW</th>
+                        </tr>
+                    </thead>
+                    <tbody id="emsxUniverseBody">
+                        <!-- Loaded via JS -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ============================================================== -->
+        <!-- VIEW 4: AUDIT BLOTTER (BLOTTER <GO>) -->
+        <!-- ============================================================== -->
+        <div id="view-blotter" class="view-section">
+            <div class="sec-title">
+                <span>-- AUDITED TRADE BLOTTER // COMPLETE INTRADAY EXECUTION HISTORY --</span>
+                <span class="bbg-cyan">STATUS: ALL TRADES SETTLED</span>
+            </div>
+            <div class="table-frame">
+                <table class="bbg-tbl">
+                    <thead>
+                        <tr>
+                            <th>TICKET ID</th>
+                            <th>TIMESTAMP (WIB)</th>
+                            <th>SIDE</th>
+                            <th>TICKER</th>
+                            <th>SECURITY NAME</th>
+                            <th>QTY</th>
+                            <th>EXEC PX</th>
+                            <th>CRNCY</th>
+                            <th>GROSS VAL (IDR)</th>
+                            <th>COMMISSION</th>
+                            <th>REALIZED P&amp;L</th>
+                            <th>STATUS</th>
+                        </tr>
+                    </thead>
+                    <tbody id="fullBlotterBody">
+                        <!-- Loaded via JS -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ============================================================== -->
+        <!-- VIEW 5: MARKET MONITOR (MON <GO>) -->
+        <!-- ============================================================== -->
+        <div id="view-monitor" class="view-section">
+            <div class="sec-title">
+                <span>-- GLOBAL MULTI-ASSET MARKET MONITOR (EQUITIES, CRYPTO, COMMODITIES, FOREX) --</span>
+                <button class="btn-act" onclick="fetchQuotesData()">PULL LIVE DATA &lt;GO&gt;</button>
+            </div>
+            <div class="table-frame">
+                <table class="bbg-tbl">
+                    <thead>
+                        <tr>
+                            <th>TICKER</th>
+                            <th>SECURITY NAME</th>
+                            <th>ASSET CLASS</th>
+                            <th>ORIGINAL PX</th>
+                            <th>PRICE (IDR)</th>
+                            <th>NET MOVE</th>
+                            <th>CHG 1D %</th>
+                            <th>HIGH</th>
+                            <th>LOW</th>
+                            <th style="text-align:center;">QUICK ACTION</th>
+                        </tr>
+                    </thead>
+                    <tbody id="monitorGridBody">
+                        <!-- Loaded via JS -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ============================================================== -->
+        <!-- VIEW 6: GP PRICE CHART (GP <GO>) -->
+        <!-- ============================================================== -->
+        <div id="view-chart" class="view-section">
+            <div class="sec-title">
+                <span>-- GP &lt;GO&gt; GRAPHIC PRICE ENGINE // INTRADAY CANDLESTICKS --</span>
+                <div>
+                    <button class="btn-act" onclick="changeTf('1d')">1D</button>
+                    <button class="btn-act" onclick="changeTf('5d')">5D</button>
+                    <button class="btn-act" onclick="changeTf('1mo')">1M</button>
+                    <button class="btn-act" onclick="changeTf('1y')">1Y</button>
+                </div>
+            </div>
+            <div style="background:#000; border:1px solid #222; padding:6px; margin-bottom:8px;">
+                <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                    <span class="bbg-white" style="font-weight:bold; font-size:14px;" id="chartSecTitle">BBCA.JK</span>
+                    <span class="bbg-cyan" style="font-weight:bold; font-size:14px;" id="chartSecPx">6,350.00 IDR</span>
+                </div>
+                <canvas id="chartCanvas"></canvas>
+                <div style="font-size:10px; color:#555; display:flex; justify-content:space-between; margin-top:3px;">
+                    <span>BLOOMBERG B-PIPE INTRADAY TICK • CANDLE INTERVAL: 15M</span>
+                    <span>ALL PRICES IN ORIGINAL SECURITY CURRENCY</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- ============================================================== -->
+        <!-- VIEW 7: BREAKING NEWS WIRE (TOP <GO>) -->
+        <!-- ============================================================== -->
+        <div id="view-news" class="view-section">
+            <div class="sec-title">
+                <span>-- TOP &lt;GO&gt; BLOOMBERG REAL-TIME FINANCIAL NEWS WIRE --</span>
+                <button class="btn-act" onclick="fetchNewsData()">UPDATE WIRE &lt;GO&gt;</button>
+            </div>
+            <div style="background:#000; border:1px solid #222; max-height:550px; overflow-y:auto;" id="newsFeedList">
+                <div style="padding:10px; color:#777;">Streaming financial wire...</div>
+            </div>
+        </div>
+
+        <!-- ============================================================== -->
+        <!-- VIEW 8: B-ANALYST AI STRATEGIST -->
+        <!-- ============================================================== -->
+        <div id="view-ai" class="view-section">
+            <div class="sec-title">
+                <span>-- BLOOMBERG SENIOR QUANT &amp; MACRO STRATEGIST AI --</span>
+                <span class="bbg-green">CORE: GROQ ULTRA-FAST (~700ms)</span>
+            </div>
+            <div style="background:#050505; border:1px solid #222; padding:8px;">
+                <div id="aiOutBox" style="background:#000; border:1px solid #1a1a1a; padding:10px; min-height:160px; color:#e2e8f0; font-size:11.5px; line-height:1.6; white-space:pre-wrap;">
+BLOOMBERG INTELLIGENCE (BI) ACTIVE.
+Portfolio: FADHIL-ALPHA-200M | Modal: Rp 200.000.000.
+Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto, atau komoditas emas.
+                </div>
+                <div style="display:flex; gap:5px; margin-top:6px; flex-wrap:wrap;">
+                    <button class="btn-act" onclick="askAi('Berikan rekomendasi alokasi modal Rp 200 Juta saya secara terperinci.')">Rekomendasi Alokasi 200 Juta</button>
+                    <button class="btn-act" onclick="askAi('Analisis prospek saham perbankan BBCA dan BBRI saat ini.')">Analisis Saham BBCA & BBRI</button>
+                    <button class="btn-act" onclick="askAi('Bagaimana outlook emas Antam dan pelemahan Rupiah terhadap USD?')">Outlook Emas & USD/IDR</button>
+                    <button class="btn-act" onclick="askAi('Review seluruh posisi portofolio saya saat ini.')">Review Portofolio Saya</button>
+                </div>
+                <div style="display:flex; gap:6px; margin-top:6px;">
+                    <input type="text" id="aiInputPrompt" class="bbg-input" style="flex:1; text-align:left; color:#fff;" placeholder="Type query for Bloomberg AI Senior Analyst..." onkeydown="if(event.key==='Enter') sendAi()">
+                    <button class="cmd-enter" onclick="sendAi()">SEND &lt;GO&gt;</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ============================================================== -->
+        <!-- VIEW 9: HELP & CHEATSHEET (<HELP>) -->
+        <!-- ============================================================== -->
+        <div id="view-help" class="view-section">
+            <div class="sec-title">
+                <span>-- BLOOMBERG TERMINAL CHEATSHEET &amp; SHORTCUTS --</span>
+            </div>
+            <div style="background:#050505; border:1px solid #222; padding:12px; font-size:11.5px; line-height:1.8;">
+                <p><strong class="bbg-amber">1&lt;GO&gt; PORT</strong> - Portfolio &amp; Risk Analytics (Modal Rp 200 Juta)</p>
+                <p><strong class="bbg-amber">2&lt;GO&gt; HOLDINGS</strong> - Matriks lengkap posisi aset</p>
+                <p><strong class="bbg-amber">3&lt;GO&gt; EMSX</strong> - Order Execution Desk (Beli / Jual aset apa saja)</p>
+                <p><strong class="bbg-amber">4&lt;GO&gt; BLOTTER</strong> - Buku transaksi audit</p>
+                <p><strong class="bbg-amber">5&lt;GO&gt; MOST / MON</strong> - Pemantau harga pasar global</p>
+                <p><strong class="bbg-amber">6&lt;GO&gt; GP</strong> - Grafik candlestick harga</p>
+                <p><strong class="bbg-amber">7&lt;GO&gt; TOP</strong> - Berita pasar keuangan terkini</p>
+                <p><strong class="bbg-amber">8&lt;GO&gt; BI / AI</strong> - Bloomberg Senior Macro Analyst AI</p>
             </div>
         </div>
 
     </main>
 
-    <!-- BLOOMBERG SYSTEM NOTIFICATION -->
-    <div id="bbgMsg" class="bbg-msg">MESSAGE</div>
+    <!-- FLOATING BLOOMBERG POPUP MESSAGE -->
+    <div id="popupMsg" class="bbg-popup">MESSAGE</div>
 
     <script>
         // ============================================================
-        // CLIENT STATE
+        // STATE STORAGE
         // ============================================================
-        let portfolio = {
+        let portState = {
             initialCapital: 200000000,
             cash: 200000000,
             totalHoldingsValue: 0,
@@ -808,18 +959,18 @@
             trades: []
         };
 
-        let quotes = [];
+        let quoteList = [];
         let usdRate = 17685;
-        let currentSide = 'BUY';
-        let chartSym = 'BBCA.JK';
-        let chartTf = '1d';
+        let emsxSide = 'BUY';
+        let currentChartSym = 'BBCA.JK';
+        let currentChartTf = '1d';
 
         // ============================================================
-        // BOOTSTRAP
+        // INITIALIZATION
         // ============================================================
         window.addEventListener('DOMContentLoaded', () => {
-            initClocks();
-            setupCmdEvents();
+            startClock();
+            setupCmdKey();
             fetchPortfolioData();
             fetchQuotesData();
             fetchNewsData();
@@ -828,158 +979,267 @@
             setInterval(fetchQuotesData, 12000);
         });
 
-        function initClocks() {
-            function update() {
+        function startClock() {
+            function tick() {
                 const now = new Date();
                 const wib = new Date(now.getTime() + (7 * 3600000) + (now.getTimezoneOffset() * 60000));
                 const pad = n => String(n).padStart(2, '0');
-                document.getElementById('hdrJktClock').textContent = 
+                document.getElementById('topJktClock').textContent = 
                     `JKT ${pad(wib.getHours())}:${pad(wib.getMinutes())}:${pad(wib.getSeconds())} WIB`;
             }
-            update();
-            setInterval(update, 1000);
+            tick();
+            setInterval(tick, 1000);
         }
 
         const fmtIdr = n => (Math.round(n) || 0).toLocaleString('id-ID', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         const fmtPct = n => (n >= 0 ? '+' : '') + (n || 0).toFixed(2) + '%';
 
-        function showMsg(msg, isErr = false) {
-            const b = document.getElementById('bbgMsg');
-            b.textContent = msg;
-            b.style.borderColor = isErr ? 'var(--bbg-red)' : 'var(--bbg-amber)';
-            b.style.color = isErr ? '#ff7777' : 'var(--bbg-yellow)';
-            b.style.display = 'block';
-            setTimeout(() => { b.style.display = 'none'; }, 3500);
+        function showPopup(msg, isErr = false) {
+            const el = document.getElementById('popupMsg');
+            el.textContent = msg;
+            el.style.borderColor = isErr ? '#FF2233' : '#F39F41';
+            el.style.color = isErr ? '#FF7777' : '#FFFF00';
+            el.style.display = 'block';
+            setTimeout(() => { el.style.display = 'none'; }, 3500);
         }
 
         // ============================================================
-        // DATA: PORTFOLIO & VALUATION
+        // VIEW NAVIGATION
+        // ============================================================
+        function showView(viewId) {
+            document.querySelectorAll('.view-section').forEach(v => v.classList.remove('active'));
+            document.querySelectorAll('.f-key').forEach(k => k.classList.remove('active'));
+            document.querySelectorAll('.sub-link').forEach(l => l.classList.remove('active'));
+
+            const target = document.getElementById(`view-${viewId}`);
+            if (target) target.classList.add('active');
+
+            const viewMap = {
+                'summary': 3, 'holdings': 4, 'emsx': 5, 'blotter': 6, 'monitor': 7, 'chart': 8, 'news': 9, 'ai': 10
+            };
+            const fkeys = document.querySelectorAll('.f-key');
+            if (fkeys[viewMap[viewId]]) fkeys[viewMap[viewId]].classList.add('active');
+
+            const subMap = {
+                'summary': 0, 'holdings': 1, 'emsx': 2, 'blotter': 3, 'monitor': 4, 'chart': 5, 'news': 6, 'ai': 7
+            };
+            const sublinks = document.querySelectorAll('.sub-link');
+            if (sublinks[subMap[viewId]]) sublinks[subMap[viewId]].classList.add('active');
+
+            if (viewId === 'chart') {
+                setTimeout(() => drawChart(currentChartSym, currentChartTf), 40);
+            }
+        }
+
+        // ============================================================
+        // DATA: PORTFOLIO & SUMMARY
         // ============================================================
         async function fetchPortfolioData() {
             try {
                 const res = await fetch('/api/portfolio');
                 if (!res.ok) return;
-                portfolio = await res.json();
-                usdRate = portfolio.usdRate || 17685;
-                document.getElementById('hdrUsdRate').textContent = Math.round(usdRate).toLocaleString('id-ID');
+                portState = await res.json();
+                usdRate = portState.usdRate || 17685;
+                document.getElementById('topUsdRate').textContent = Math.round(usdRate).toLocaleString('id-ID');
 
-                renderPortMetrics();
-                renderPortHoldings();
-                renderPortBlotter();
-                recalcEmsx();
+                renderSummaryMetrics();
+                renderHoldingsTables();
+                renderBlotterTables();
+                calcEmsx();
             } catch (e) {
                 console.error('Portfolio error:', e);
             }
         }
 
-        function renderPortMetrics() {
-            document.getElementById('pNavVal').textContent = fmtIdr(portfolio.totalNetWorth);
-            const navRet = document.getElementById('pNavReturn');
-            navRet.textContent = `Return: ${fmtPct(portfolio.overallReturn)} (Awal: Rp 200 Jt)`;
-            navRet.className = 'metric-sub ' + (portfolio.overallReturn >= 0 ? 'pos' : 'neg');
+        function renderSummaryMetrics() {
+            // NAV
+            document.getElementById('sNav').textContent = fmtIdr(portState.totalNetWorth);
+            const retEl = document.getElementById('sReturn');
+            retEl.textContent = `Return: ${fmtPct(portState.overallReturn)} (Awal: Rp 200 Jt)`;
+            retEl.className = 'p-metric-sub ' + (portState.overallReturn >= 0 ? 'bbg-green' : 'bbg-red');
 
-            document.getElementById('pCashVal').textContent = fmtIdr(portfolio.cash);
-            const cashWeight = portfolio.totalNetWorth > 0 ? (portfolio.cash / portfolio.totalNetWorth) * 100 : 100;
-            document.getElementById('pCashWeight').textContent = `Weight: ${cashWeight.toFixed(2)}% of Portfolio`;
+            // CASH
+            document.getElementById('sCash').textContent = fmtIdr(portState.cash);
+            const cashWgt = portState.totalNetWorth > 0 ? (portState.cash / portState.totalNetWorth) * 100 : 100;
+            document.getElementById('sCashWeight').textContent = `Weight: ${cashWgt.toFixed(2)}% of Portfolio`;
 
-            const unpnlEl = document.getElementById('pUnrealizedPnl');
-            unpnlEl.textContent = (portfolio.unrealizedPnL >= 0 ? '+' : '') + fmtIdr(portfolio.unrealizedPnL);
-            unpnlEl.className = 'metric-num ' + (portfolio.unrealizedPnL >= 0 ? 'pos' : 'neg');
+            // UNREALIZED P&L
+            const unpnlEl = document.getElementById('sUnrealPnl');
+            unpnlEl.textContent = (portState.unrealizedPnL >= 0 ? '+' : '') + fmtIdr(portState.unrealizedPnL);
+            unpnlEl.className = 'p-metric-num ' + (portState.unrealizedPnL >= 0 ? 'bbg-green' : 'bbg-red');
 
-            document.getElementById('pInvestedVal').textContent = `Invested: Rp ${fmtIdr(portfolio.totalHoldingsValue)}`;
+            document.getElementById('sInvested').textContent = `Invested Capital: Rp ${fmtIdr(portState.totalHoldingsValue)}`;
 
-            const realEl = document.getElementById('pRealizedPnl');
-            realEl.textContent = (portfolio.realizedPnL >= 0 ? '+' : '') + fmtIdr(portfolio.realizedPnL);
-            realEl.className = 'metric-num ' + (portfolio.realizedPnL >= 0 ? 'pos' : 'neg');
+            // REALIZED P&L
+            const realEl = document.getElementById('sRealPnl');
+            realEl.textContent = (portState.realizedPnL >= 0 ? '+' : '') + fmtIdr(portState.realizedPnL);
+            realEl.className = 'p-metric-num ' + (portState.realizedPnL >= 0 ? 'bbg-green' : 'bbg-red');
 
-            document.getElementById('pTradesCount').textContent = `${portfolio.trades.length} Executed Trades`;
+            document.getElementById('sTradesCount').textContent = `${portState.trades.length} Trades Executed`;
+
+            // Allocation text
+            let allocText = `CASH: ${cashWgt.toFixed(2)}% | `;
+            if (portState.holdings && portState.holdings.length > 0) {
+                portState.holdings.forEach(h => {
+                    const w = portState.totalNetWorth > 0 ? (h.marketValue / portState.totalNetWorth) * 100 : 0;
+                    allocText += `${h.symbol}: ${w.toFixed(2)}% | `;
+                });
+            }
+            document.getElementById('allocBarText').textContent = allocText.slice(0, -3);
         }
 
-        function renderPortHoldings() {
-            const tbody = document.getElementById('portHoldingsBody');
-            if (!portfolio.holdings || portfolio.holdings.length === 0) {
-                tbody.innerHTML = `
+        function renderHoldingsTables() {
+            const tbody1 = document.getElementById('summaryHoldingsBody');
+            const tbody2 = document.getElementById('fullHoldingsBody');
+
+            if (!portState.holdings || portState.holdings.length === 0) {
+                const emptyMsg = `
                     <tr>
-                        <td colspan="10" style="text-align:center; padding:18px; color:var(--bbg-gray);">
-                            [NO ACTIVE ASSET POSITIONS]<br>
-                            Modal awal <strong class="amber">Rp 200.000.000</strong> tunai siap ditransaksikan.<br>
-                            Gunakan panel <strong>EMSX ORDER DESK</strong> di sebelah untuk mengeksekusi pembelian aset apa saja.
+                        <td colspan="13" style="text-align:center; padding:20px; color:#888;">
+                            [NO ACTIVE POSITIONS] Portofolio Anda memiliki modal Rp 200.000.000 (100% Cash).<br>
+                            Buka tab <strong class="bbg-amber">3) EMSX ORDER DESK</strong> atau klik tombol di atas untuk membeli saham, kripto, atau emas.
                         </td>
                     </tr>
                 `;
+                tbody1.innerHTML = emptyMsg;
+                tbody2.innerHTML = emptyMsg;
                 return;
             }
 
-            tbody.innerHTML = portfolio.holdings.map(h => {
+            const rows = portState.holdings.map(h => {
                 const isPos = h.unrealizedPnL >= 0;
-                const pnlClass = isPos ? 'pos' : 'neg';
-                const pnlSign = isPos ? '+' : '';
-                const weight = portfolio.totalNetWorth > 0 ? (h.marketValue / portfolio.totalNetWorth) * 100 : 0;
+                const cls = isPos ? 'bbg-green' : 'bbg-red';
+                const sign = isPos ? '+' : '';
+                const wgt = portState.totalNetWorth > 0 ? (h.marketValue / portState.totalNetWorth) * 100 : 0;
                 const isIndo = h.symbol.includes('.JK') || h.category === 'Saham Indo';
-                const qtyDisplay = isIndo ? `${(h.qty / 100).toFixed(0)} Lots` : h.qty;
+                const qtyStr = isIndo ? `${(h.qty / 100).toFixed(0)} Lots (${h.qty})` : h.qty;
 
                 return `
                     <tr>
-                        <td><strong class="white" style="cursor:pointer;" onclick="setChartSym('${h.symbol}')">${h.symbol}</strong></td>
+                        <td><strong class="bbg-white" style="cursor:pointer;" onclick="openGp('${h.symbol}')">${h.symbol}</strong></td>
                         <td style="color:#fff;">${h.name}</td>
-                        <td class="yellow">${qtyDisplay}</td>
+                        <td class="bbg-dim" style="font-size:10.5px;">${h.category}</td>
+                        <td class="bbg-yellow">${qtyStr}</td>
                         <td>${fmtIdr(h.avgPriceInIdr)}</td>
-                        <td class="white"><strong>${fmtIdr(h.priceInIdr)}</strong></td>
-                        <td class="white"><strong>${fmtIdr(h.marketValue)}</strong></td>
-                        <td class="cyan">${weight.toFixed(2)}%</td>
-                        <td class="${pnlClass}"><strong>${pnlSign}${fmtIdr(h.unrealizedPnL)}</strong></td>
-                        <td class="${pnlClass}">${pnlSign}${h.unrealizedPnLPct.toFixed(2)}%</td>
+                        <td class="bbg-white"><strong>${fmtIdr(h.priceInIdr)}</strong></td>
+                        <td>${fmtIdr(h.investedValue)}</td>
+                        <td class="bbg-white"><strong>${fmtIdr(h.marketValue)}</strong></td>
+                        <td class="bbg-cyan">${wgt.toFixed(2)}%</td>
+                        <td class="${cls}"><strong>${sign}${fmtIdr(h.unrealizedPnL)}</strong></td>
+                        <td class="${cls}">${sign}${h.unrealizedPnLPct.toFixed(2)}%</td>
+                        <td class="${h.change24h >= 0 ? 'bbg-green' : 'bbg-red'}">${h.change24h >= 0 ? '+' : ''}${h.change24h.toFixed(2)}%</td>
                         <td style="text-align:center;">
-                            <button class="act-btn act-sell" onclick="loadEmsx('${h.symbol}', 'SELL')">SELL</button>
-                            <button class="act-btn" onclick="loadEmsx('${h.symbol}', 'BUY')">BUY</button>
-                            <button class="act-btn" onclick="setChartSym('${h.symbol}')">GP</button>
+                            <button class="btn-act act-sell" onclick="loadEmsxAsset('${h.symbol}', 'SELL')">SELL</button>
+                            <button class="btn-act" onclick="loadEmsxAsset('${h.symbol}', 'BUY')">BUY</button>
+                            <button class="btn-act" onclick="openGp('${h.symbol}')">GP</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+
+            tbody1.innerHTML = rows;
+
+            // Full holdings
+            tbody2.innerHTML = portState.holdings.map(h => {
+                const isPos = h.unrealizedPnL >= 0;
+                const cls = isPos ? 'bbg-green' : 'bbg-red';
+                const sign = isPos ? '+' : '';
+                const wgt = portState.totalNetWorth > 0 ? (h.marketValue / portState.totalNetWorth) * 100 : 0;
+                const isIndo = h.symbol.includes('.JK') || h.category === 'Saham Indo';
+                const qtyStr = isIndo ? `${(h.qty / 100).toFixed(0)} Lots` : h.qty;
+
+                return `
+                    <tr>
+                        <td><strong class="bbg-amber" style="cursor:pointer;" onclick="openGp('${h.symbol}')">${h.symbol}</strong></td>
+                        <td class="bbg-white">${h.name}</td>
+                        <td class="bbg-dim">${h.category}</td>
+                        <td class="bbg-yellow">${qtyStr}</td>
+                        <td class="bbg-cyan">${h.currency}</td>
+                        <td>${fmtIdr(h.avgPriceInIdr)}</td>
+                        <td class="bbg-white"><strong>${fmtIdr(h.priceInIdr)}</strong></td>
+                        <td class="bbg-white"><strong>${fmtIdr(h.marketValue)}</strong></td>
+                        <td class="bbg-cyan">${wgt.toFixed(2)}%</td>
+                        <td class="${cls}"><strong>${sign}${fmtIdr(h.unrealizedPnL)}</strong></td>
+                        <td class="${cls}">${sign}${h.unrealizedPnLPct.toFixed(2)}%</td>
+                        <td class="${h.change24h >= 0 ? 'bbg-green' : 'bbg-red'}">${h.change24h >= 0 ? '+' : ''}${h.change24h.toFixed(2)}%</td>
+                        <td style="text-align:center;">
+                            <button class="btn-act act-sell" onclick="loadEmsxAsset('${h.symbol}', 'SELL')">SELL</button>
+                            <button class="btn-act" onclick="loadEmsxAsset('${h.symbol}', 'BUY')">BUY</button>
                         </td>
                     </tr>
                 `;
             }).join('');
         }
 
-        function renderPortBlotter() {
-            const tbody = document.getElementById('portBlotterBody');
-            if (!portfolio.trades || portfolio.trades.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding:10px; color:var(--bbg-gray);">No orders executed yet.</td></tr>`;
+        function renderBlotterTables() {
+            const tbody1 = document.getElementById('summaryBlotterBody');
+            const tbody2 = document.getElementById('fullBlotterBody');
+
+            if (!portState.trades || portState.trades.length === 0) {
+                tbody1.innerHTML = `<tr><td colspan="10" style="text-align:center; padding:12px; color:#666;">No trade executions recorded yet.</td></tr>`;
+                tbody2.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:20px; color:#666;">No trade executions recorded yet.</td></tr>`;
                 return;
             }
 
-            tbody.innerHTML = portfolio.trades.slice(0, 10).map(t => {
+            tbody1.innerHTML = portState.trades.slice(0, 8).map(t => {
                 const isBuy = t.type === 'BUY';
-                const sideCls = isBuy ? 'pos' : 'neg';
+                const cls = isBuy ? 'bbg-green' : 'bbg-red';
                 const timeStr = new Date(t.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+                return `
+                    <tr>
+                        <td class="bbg-dim" style="font-size:10px;">${t.id}</td>
+                        <td class="bbg-white">${timeStr}</td>
+                        <td><strong class="${cls}">${t.type}</strong></td>
+                        <td class="bbg-amber">${t.symbol}</td>
+                        <td>${t.name}</td>
+                        <td class="bbg-yellow">${t.qty}</td>
+                        <td>${t.currency === 'USD' ? '$' + t.price.toFixed(2) : fmtIdr(t.price)}</td>
+                        <td class="bbg-white"><strong>${fmtIdr(t.totalValueIdr)}</strong></td>
+                        <td class="bbg-dim">${fmtIdr(t.brokerFee)}</td>
+                        <td><span class="bbg-green">${t.status}</span></td>
+                    </tr>
+                `;
+            }).join('');
+
+            tbody2.innerHTML = portState.trades.map(t => {
+                const isBuy = t.type === 'BUY';
+                const cls = isBuy ? 'bbg-green' : 'bbg-red';
+                const timeStr = new Date(t.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                const pnlStr = !isBuy && t.realizedPnL !== 0 ? (t.realizedPnL >= 0 ? '+' : '') + fmtIdr(t.realizedPnL) : '-';
+                const pnlCls = t.realizedPnL >= 0 ? 'bbg-green' : 'bbg-red';
 
                 return `
                     <tr>
-                        <td class="dim" style="font-size:9.5px;">${t.id}</td>
-                        <td class="white">${timeStr}</td>
-                        <td><strong class="${sideCls}">${t.type}</strong></td>
-                        <td class="amber">${t.symbol}</td>
-                        <td class="yellow">${t.qty}</td>
+                        <td class="bbg-dim" style="font-size:10px;">${t.id}</td>
+                        <td class="bbg-white">${timeStr}</td>
+                        <td><strong class="${cls}">${t.type}</strong></td>
+                        <td class="bbg-amber"><strong>${t.symbol}</strong></td>
+                        <td class="bbg-white">${t.name}</td>
+                        <td class="bbg-yellow">${t.qty}</td>
                         <td>${t.currency === 'USD' ? '$' + t.price.toFixed(2) : fmtIdr(t.price)}</td>
-                        <td class="white"><strong>${fmtIdr(t.totalValueIdr)}</strong></td>
-                        <td class="dim">${fmtIdr(t.brokerFee)}</td>
-                        <td><span class="pos">${t.status}</span></td>
+                        <td class="bbg-cyan">${t.currency}</td>
+                        <td class="bbg-white"><strong>${fmtIdr(t.totalValueIdr)}</strong></td>
+                        <td class="bbg-dim">${fmtIdr(t.brokerFee)}</td>
+                        <td class="${pnlCls}"><strong>${pnlStr}</strong></td>
+                        <td><span class="bbg-green">${t.status}</span></td>
                     </tr>
                 `;
             }).join('');
         }
 
         // ============================================================
-        // DATA: QUOTES & MARKET WATCH
+        // DATA: QUOTES & MONITOR
         // ============================================================
         async function fetchQuotesData() {
             try {
                 const res = await fetch('/api/market/quotes');
                 if (!res.ok) return;
                 const d = await res.json();
-                quotes = d.quotes || [];
+                quoteList = d.quotes || [];
                 usdRate = d.usdRate || 17685;
 
                 renderTape();
-                renderMarketWatch();
+                renderMonitorGrid();
                 populateEmsxDropdown();
             } catch (e) {
                 console.error('Quotes error:', e);
@@ -987,47 +1247,48 @@
         }
 
         function renderTape() {
-            const tape = document.getElementById('streamTape');
-            if (!quotes.length) return;
+            const tape = document.getElementById('liveTickerTape');
+            if (!quoteList.length) return;
 
-            tape.innerHTML = quotes.slice(0, 15).map(q => {
+            tape.innerHTML = quoteList.slice(0, 16).map(q => {
                 const isUp = q.changePct >= 0;
-                const cls = isUp ? 't-up' : 't-down';
+                const cls = isUp ? 'bbg-green' : 'bbg-red';
                 const sign = isUp ? '+' : '';
                 const pxStr = q.currency === 'USD' ? '$' + q.price.toFixed(2) : fmtIdr(q.price);
 
                 return `
-                    <div class="tape-item" onclick="setChartSym('${q.symbol}')">
-                        <span class="t-sym">${q.symbol}</span>
-                        <span class="t-val">${pxStr}</span>
+                    <div class="t-chip" onclick="openGp('${q.symbol}')">
+                        <span class="bbg-amber">${q.symbol}</span>
+                        <span class="bbg-white">${pxStr}</span>
                         <span class="${cls}">${sign}${q.changePct.toFixed(2)}%</span>
                     </div>
                 `;
             }).join('');
         }
 
-        function renderMarketWatch() {
-            const tbody = document.getElementById('marketWatchBody');
-            tbody.innerHTML = quotes.map(q => {
+        function renderMonitorGrid() {
+            const tbody = document.getElementById('monitorGridBody');
+            tbody.innerHTML = quoteList.map(q => {
                 const isUp = q.changePct >= 0;
-                const cls = isUp ? 'pos' : 'neg';
+                const cls = isUp ? 'bbg-green' : 'bbg-red';
                 const sign = isUp ? '+' : '';
                 const origPx = q.currency === 'USD' ? '$' + q.price.toFixed(2) : fmtIdr(q.price);
                 const idrPx = fmtIdr(q.priceIdr || (q.currency === 'USD' ? q.price * usdRate : q.price));
 
                 return `
                     <tr>
-                        <td><strong class="amber" style="cursor:pointer;" onclick="setChartSym('${q.symbol}')">${q.symbol}</strong></td>
-                        <td class="white">${q.name}</td>
-                        <td class="dim" style="font-size:9.5px;">${q.category}</td>
-                        <td class="cyan">${origPx}</td>
-                        <td class="white"><strong>${idrPx}</strong></td>
+                        <td><strong class="bbg-amber" style="cursor:pointer;" onclick="openGp('${q.symbol}')">${q.symbol}</strong></td>
+                        <td class="bbg-white">${q.name}</td>
+                        <td class="bbg-dim" style="font-size:10px;">${q.category}</td>
+                        <td class="bbg-cyan">${origPx}</td>
+                        <td class="bbg-white"><strong>${idrPx}</strong></td>
+                        <td class="${cls}">${sign}${fmtIdr(q.change)}</td>
                         <td class="${cls}">${sign}${q.changePct.toFixed(2)}%</td>
                         <td>${q.currency === 'USD' ? '$'+q.high.toFixed(2) : fmtIdr(q.high)}</td>
                         <td>${q.currency === 'USD' ? '$'+q.low.toFixed(2) : fmtIdr(q.low)}</td>
                         <td style="text-align:center;">
-                            <button class="act-btn" onclick="loadEmsx('${q.symbol}', 'BUY')">TRADE</button>
-                            <button class="act-btn" onclick="setChartSym('${q.symbol}')">GP</button>
+                            <button class="btn-act" onclick="loadEmsxAsset('${q.symbol}', 'BUY')">TRADE</button>
+                            <button class="btn-act" onclick="openGp('${q.symbol}')">GP</button>
                         </td>
                     </tr>
                 `;
@@ -1035,61 +1296,85 @@
         }
 
         // ============================================================
-        // EMSX EXECUTION LOGIC
+        // EMSX ORDER EXECUTION
         // ============================================================
         function populateEmsxDropdown() {
-            const sel = document.getElementById('emsxAssetSelect');
+            const sel = document.getElementById('emsxTickerSelect');
             const cur = sel.value;
-            sel.innerHTML = quotes.map(q => `<option value="${q.symbol}">${q.symbol} - ${q.name}</option>`).join('');
+            sel.innerHTML = quoteList.map(q => `<option value="${q.symbol}">${q.symbol} - ${q.name} [${q.category}]</option>`).join('');
             if (cur) sel.value = cur;
-            else if (quotes.length > 1) sel.value = quotes[1].symbol;
+            else if (quoteList.length > 1) sel.value = quoteList[1].symbol;
 
-            onAssetChanged();
+            // Also populate universe table in EMSX
+            const ubody = document.getElementById('emsxUniverseBody');
+            ubody.innerHTML = quoteList.map(q => {
+                const cls = q.changePct >= 0 ? 'bbg-green' : 'bbg-red';
+                const idrPx = fmtIdr(q.priceIdr || (q.currency === 'USD' ? q.price * usdRate : q.price));
+                return `
+                    <tr style="cursor:pointer;" onclick="setEmsxTicker('${q.symbol}')">
+                        <td><strong class="bbg-amber">${q.symbol}</strong></td>
+                        <td class="bbg-white">${q.name}</td>
+                        <td class="bbg-dim" style="font-size:10px;">${q.category}</td>
+                        <td class="bbg-cyan">${q.currency === 'USD' ? '$'+q.price.toFixed(2) : fmtIdr(q.price)}</td>
+                        <td class="bbg-white"><strong>${idrPx}</strong></td>
+                        <td class="${cls}">${q.changePct >= 0 ? '+' : ''}${q.changePct.toFixed(2)}%</td>
+                        <td>${q.currency === 'USD' ? '$'+q.high.toFixed(2) : fmtIdr(q.high)}</td>
+                        <td>${q.currency === 'USD' ? '$'+q.low.toFixed(2) : fmtIdr(q.low)}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            onEmsxTickerChanged();
         }
 
-        function onAssetChanged() {
-            const sym = document.getElementById('emsxAssetSelect').value;
-            const q = quotes.find(x => x.symbol === sym) || { symbol: sym, name: sym, price: 1000, currency: 'IDR', category: 'General', changePct: 0 };
+        function setEmsxTicker(sym) {
+            document.getElementById('emsxTickerSelect').value = sym;
+            onEmsxTickerChanged();
+        }
 
-            document.getElementById('emsxAssetDescr').textContent = `${q.name} (${q.symbol})`;
-            document.getElementById('emsxAssetPx').innerHTML = q.currency === 'USD' ? 
-                `$${q.price.toFixed(2)} (${fmtIdr(q.price * usdRate)} IDR) <span class="${q.changePct>=0?'pos':'neg'}">(${q.changePct>=0?'+':''}${q.changePct.toFixed(2)}%)</span>` :
-                `${fmtIdr(q.price)} IDR <span class="${q.changePct>=0?'pos':'neg'}">(${q.changePct>=0?'+':''}${q.changePct.toFixed(2)}%)</span>`;
+        function onEmsxTickerChanged() {
+            const sym = document.getElementById('emsxTickerSelect').value;
+            const q = quoteList.find(x => x.symbol === sym) || { symbol: sym, name: sym, price: 1000, currency: 'IDR', category: 'General', changePct: 0 };
+
+            document.getElementById('emsxDescrLabel').textContent = `${q.name} (${q.symbol})`;
+            document.getElementById('emsxPxLabel').innerHTML = q.currency === 'USD' ? 
+                `$${q.price.toFixed(2)} (${fmtIdr(q.price * usdRate)} IDR) <span class="${q.changePct>=0?'bbg-green':'bbg-red'}">(${q.changePct>=0?'+':''}${q.changePct.toFixed(2)}%)</span>` :
+                `${fmtIdr(q.price)} IDR <span class="${q.changePct>=0?'bbg-green':'bbg-red'}">(${q.changePct>=0?'+':''}${q.changePct.toFixed(2)}%)</span>`;
 
             const isIndo = q.symbol.includes('.JK') || q.category === 'Saham Indo';
-            const qtyInput = document.getElementById('emsxQtyInput');
-            const qtyLbl = document.getElementById('emsxQtyLabel');
+            const qtyIn = document.getElementById('emsxQtyInput');
+            const qtyTitle = document.getElementById('emsxQtyTitle');
 
             if (isIndo) {
-                qtyLbl.textContent = 'QUANTITY (LOTS - 1 LOT = 100 SHARES):';
-                if (parseInt(qtyInput.value) > 200) qtyInput.value = "10";
+                qtyTitle.textContent = 'QUANTITY (LOTS - 1 LOT = 100 SHARES):';
+                if (parseInt(qtyIn.value) > 200) qtyIn.value = "10";
             } else {
-                qtyLbl.textContent = 'QUANTITY (UNITS):';
-                if (parseInt(qtyInput.value) > 50) qtyInput.value = "5";
+                qtyTitle.textContent = 'QUANTITY (UNITS):';
+                if (parseInt(qtyIn.value) > 50) qtyIn.value = "5";
             }
 
-            recalcEmsx();
+            calcEmsx();
         }
 
-        function setSide(side) {
-            currentSide = side;
-            document.getElementById('btnSideBuy').classList.toggle('active', side === 'BUY');
-            document.getElementById('btnSideSell').classList.toggle('active', side === 'SELL');
+        function setEmsxOrderSide(side) {
+            emsxSide = side;
+            document.getElementById('btnEmsxBuy').classList.toggle('active', side === 'BUY');
+            document.getElementById('btnEmsxSell').classList.toggle('active', side === 'SELL');
 
-            const btn = document.getElementById('btnEmsxSend');
+            const btn = document.getElementById('btnEmsxExec');
             if (side === 'BUY') {
-                btn.textContent = '<TRANSACT / EXECUTE BUY ORDER <GO>>';
+                btn.textContent = '<TRANSACT / EXECUTE DMA BUY ORDER <GO>>';
                 btn.classList.remove('sell-mode');
             } else {
-                btn.textContent = '<TRANSACT / EXECUTE SELL ORDER <GO>>';
+                btn.textContent = '<TRANSACT / EXECUTE DMA SELL ORDER <GO>>';
                 btn.classList.add('sell-mode');
             }
-            recalcEmsx();
+            calcEmsx();
         }
 
-        function recalcEmsx() {
-            const sym = document.getElementById('emsxAssetSelect').value;
-            const q = quotes.find(x => x.symbol === sym);
+        function calcEmsx() {
+            const sym = document.getElementById('emsxTickerSelect').value;
+            const q = quoteList.find(x => x.symbol === sym);
             if (!q) return;
 
             const inputVal = parseFloat(document.getElementById('emsxQtyInput').value) || 0;
@@ -1101,25 +1386,25 @@
 
             const gross = actualQty * priceInIdr;
             const comm = gross * 0.0015;
-            const net = currentSide === 'BUY' ? gross + comm : gross - comm;
-            const postCash = currentSide === 'BUY' ? portfolio.cash - net : portfolio.cash + net;
+            const net = emsxSide === 'BUY' ? gross + comm : gross - comm;
+            const postCash = emsxSide === 'BUY' ? portState.cash - net : portState.cash + net;
 
-            document.getElementById('emsxGrossVal').textContent = `${fmtIdr(gross)} IDR`;
-            document.getElementById('emsxCommVal').textContent = `${fmtIdr(comm)} IDR`;
-            document.getElementById('emsxNetVal').textContent = `${fmtIdr(net)} IDR`;
-            document.getElementById('emsxCashAvail').textContent = `${fmtIdr(portfolio.cash)} IDR`;
+            document.getElementById('emsxGrossOut').textContent = `${fmtIdr(gross)} IDR`;
+            document.getElementById('emsxCommOut').textContent = `${fmtIdr(comm)} IDR`;
+            document.getElementById('emsxNetOut').textContent = `${fmtIdr(net)} IDR`;
+            document.getElementById('emsxCashOut').textContent = `${fmtIdr(portState.cash)} IDR`;
 
-            const postEl = document.getElementById('emsxCashPost');
+            const postEl = document.getElementById('emsxPostCashOut');
             postEl.textContent = `${fmtIdr(postCash)} IDR`;
-            postEl.className = postCash >= 0 ? 'emsx-val white' : 'emsx-val neg';
+            postEl.className = postCash >= 0 ? 'bbg-white' : 'bbg-red';
         }
 
-        function presetCash(pct) {
-            const sym = document.getElementById('emsxAssetSelect').value;
-            const q = quotes.find(x => x.symbol === sym);
+        function presetEmsxCash(pct) {
+            const sym = document.getElementById('emsxTickerSelect').value;
+            const q = quoteList.find(x => x.symbol === sym);
             if (!q) return;
 
-            const budget = portfolio.cash * pct;
+            const budget = portState.cash * pct;
             const priceInIdr = (q.currency === 'USD') ? q.price * usdRate : q.price;
             if (priceInIdr <= 0) return;
 
@@ -1134,17 +1419,17 @@
                 if (units < 1) units = 1;
                 document.getElementById('emsxQtyInput').value = units;
             }
-            recalcEmsx();
+            calcEmsx();
         }
 
-        async function executeTrade() {
-            const sym = document.getElementById('emsxAssetSelect').value;
-            const q = quotes.find(x => x.symbol === sym);
+        async function executeEmsxOrder() {
+            const sym = document.getElementById('emsxTickerSelect').value;
+            const q = quoteList.find(x => x.symbol === sym);
             if (!q) return;
 
             const inputVal = parseFloat(document.getElementById('emsxQtyInput').value);
             if (!inputVal || inputVal <= 0) {
-                showMsg('INVALID ORDER: Quantity must be > 0.', true);
+                showPopup('REJECTED: Quantity must be greater than zero.', true);
                 return;
             }
 
@@ -1152,7 +1437,7 @@
             const actualQty = isIndo ? inputVal * 100 : inputVal;
 
             const payload = {
-                type: currentSide,
+                type: emsxSide,
                 symbol: q.symbol,
                 name: q.name,
                 category: q.category,
@@ -1169,55 +1454,57 @@
                 });
                 const d = await res.json();
                 if (res.ok && d.success) {
-                    showMsg(`DMA FILL CONFIRMED: ${d.trade.type} ${d.trade.qty} ${d.trade.symbol} @ ${fmtIdr(d.trade.priceInIdr)} IDR`, false);
+                    showPopup(`DMA FILL CONFIRMED: ${d.trade.type} ${d.trade.qty} ${d.trade.symbol} @ ${fmtIdr(d.trade.priceInIdr)} IDR`, false);
                     await fetchPortfolioData();
+                    showView('summary');
                 } else {
-                    showMsg(`DMA REJECTED: ${d.error || 'Execution failed'}`, true);
+                    showPopup(`DMA REJECTED: ${d.error || 'Execution failed'}`, true);
                 }
             } catch (e) {
-                showMsg('COMMUNICATION ERROR: ' + e.message, true);
+                showPopup('COMMUNICATION ERROR: ' + e.message, true);
             }
         }
 
-        function loadEmsx(sym, side = 'BUY') {
-            document.getElementById('emsxAssetSelect').value = sym;
-            onAssetChanged();
-            setSide(side);
+        function loadEmsxAsset(sym, side = 'BUY') {
+            showView('emsx');
+            setEmsxTicker(sym);
+            setEmsxOrderSide(side);
         }
 
         // ============================================================
         // GP CANDLESTICK CHART
         // ============================================================
-        function setChartSym(sym) {
-            chartSym = sym;
-            renderChart(sym, chartTf);
+        function openGp(sym) {
+            currentChartSym = sym;
+            showView('chart');
+            drawChart(sym, currentChartTf);
         }
 
-        function changeChartTf(tf) {
-            chartTf = tf;
-            renderChart(chartSym, tf);
+        function changeTf(tf) {
+            currentChartTf = tf;
+            drawChart(currentChartSym, tf);
         }
 
-        async function renderChart(sym, tf = '1d') {
-            document.getElementById('chartHeaderSym').textContent = sym;
-            const q = quotes.find(x => x.symbol === sym);
+        async function drawChart(sym, tf = '1d') {
+            document.getElementById('chartSecTitle').textContent = sym;
+            const q = quoteList.find(x => x.symbol === sym);
             if (q) {
-                document.getElementById('chartHeaderPx').textContent = q.currency === 'USD' ? 
+                document.getElementById('chartSecPx').textContent = q.currency === 'USD' ? 
                     `$${q.price.toFixed(2)} (${fmtIdr(q.price * usdRate)} IDR)` : `${fmtIdr(q.price)} IDR`;
             }
 
-            const canvas = document.getElementById('candlestickCanvas');
+            const canvas = document.getElementById('chartCanvas');
             const ctx = canvas.getContext('2d');
-            canvas.width = canvas.parentElement.clientWidth - 10;
-            canvas.height = 220;
+            canvas.width = canvas.parentElement.clientWidth - 14;
+            canvas.height = 280;
 
             ctx.fillStyle = '#000000';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            // Subtle Grid
+            // Grid lines
             ctx.strokeStyle = '#141414';
             ctx.lineWidth = 1;
-            for (let y = 20; y < canvas.height; y += 35) {
+            for (let y = 30; y < canvas.height; y += 40) {
                 ctx.beginPath();
                 ctx.moveTo(0, y);
                 ctx.lineTo(canvas.width, y);
@@ -1226,14 +1513,14 @@
 
             try {
                 const res = await fetch(`/api/chart/${encodeURIComponent(sym)}?range=${tf}`);
-                if (!res.ok) throw new Error('No chart');
+                if (!res.ok) throw new Error('No chart data');
                 const d = await res.json();
                 const candles = d.candles || [];
 
                 if (candles.length < 2) {
-                    ctx.fillStyle = '#444';
-                    ctx.font = '11px JetBrains Mono';
-                    ctx.fillText('Awaiting tick stream...', 15, canvas.height / 2);
+                    ctx.fillStyle = '#666';
+                    ctx.font = '12px Consolas';
+                    ctx.fillText('Awaiting real-time tick updates...', 20, canvas.height / 2);
                     return;
                 }
 
@@ -1241,7 +1528,7 @@
                 const maxP = Math.max(...candles.map(c => c.high));
                 const range = (maxP - minP) || 1;
 
-                const padY = 18;
+                const padY = 22;
                 const chartH = canvas.height - (padY * 2);
                 const stepX = canvas.width / candles.length;
 
@@ -1253,8 +1540,9 @@
                     const lowY = canvas.height - padY - ((c.low - minP) / range) * chartH;
 
                     const isUp = c.close >= c.open;
-                    const col = isUp ? '#00ff00' : '#ff2233';
+                    const col = isUp ? '#00FF00' : '#FF2233';
 
+                    // Wick
                     ctx.strokeStyle = col;
                     ctx.lineWidth = 1.2;
                     ctx.beginPath();
@@ -1262,23 +1550,25 @@
                     ctx.lineTo(x, lowY);
                     ctx.stroke();
 
+                    // Body
                     ctx.fillStyle = col;
-                    const candleW = Math.max(2, stepX * 0.7);
+                    const candleW = Math.max(2, stepX * 0.72);
                     const top = Math.min(openY, closeY);
                     const h = Math.max(2, Math.abs(closeY - openY));
                     ctx.fillRect(x - (candleW / 2), top, candleW, h);
                 });
 
-                ctx.fillStyle = '#ff9900';
-                ctx.font = '9.5px JetBrains Mono';
-                ctx.fillText(maxP.toFixed(2), canvas.width - 55, padY);
-                ctx.fillStyle = '#888';
-                ctx.fillText(minP.toFixed(2), canvas.width - 55, canvas.height - 4);
+                // High/Low labels
+                ctx.fillStyle = '#F39F41';
+                ctx.font = '10px Consolas';
+                ctx.fillText(maxP.toFixed(2), canvas.width - 65, padY);
+                ctx.fillStyle = '#888888';
+                ctx.fillText(minP.toFixed(2), canvas.width - 65, canvas.height - 6);
 
             } catch (e) {
-                ctx.fillStyle = '#444';
-                ctx.font = '11px JetBrains Mono';
-                ctx.fillText('Tick data streaming in background...', 15, canvas.height / 2);
+                ctx.fillStyle = '#666';
+                ctx.font = '12px Consolas';
+                ctx.fillText('Tick streaming in progress...', 20, canvas.height / 2);
             }
         }
 
@@ -1290,22 +1580,22 @@
                 const res = await fetch('/api/news');
                 if (!res.ok) return;
                 const d = await res.json();
-                const list = document.getElementById('newsWireList');
+                const list = document.getElementById('newsFeedList');
 
                 if (!d.items || d.items.length === 0) {
-                    list.innerHTML = `<div style="padding:6px; color:var(--bbg-gray);">No news wire items available.</div>`;
+                    list.innerHTML = `<div style="padding:10px; color:#777;">No financial headlines available.</div>`;
                     return;
                 }
 
-                list.innerHTML = d.items.slice(0, 15).map(it => {
+                list.innerHTML = d.items.map(it => {
                     const timeAgo = Math.round((Date.now() - new Date(it.pubDate).getTime()) / 60000);
                     const timeStr = timeAgo < 60 ? `${timeAgo}m ago` : `${Math.round(timeAgo/60)}h ago`;
 
                     return `
-                        <div class="wire-item">
-                            <span class="wire-time">${timeStr}</span>
-                            <span class="wire-src">[${it.source}]</span>
-                            <a href="${it.link}" target="_blank" class="wire-title">${it.title}</a>
+                        <div style="padding:4px 6px; border-bottom:1px solid #141414; display:flex; gap:8px; font-size:11px; align-items:baseline;">
+                            <span class="bbg-amber" style="font-weight:bold; font-size:10px;">${timeStr}</span>
+                            <span class="bbg-cyan" style="font-size:10px;">[${it.source}]</span>
+                            <a href="${it.link}" target="_blank" style="color:#fff; text-decoration:none; font-weight:bold;">${it.title}</a>
                         </div>
                     `;
                 }).join('');
@@ -1313,53 +1603,101 @@
         }
 
         // ============================================================
-        // COMMAND LINE INTERFACE (CLI)
+        // B-ANALYST (AI)
         // ============================================================
-        function setupCmdEvents() {
-            const input = document.getElementById('cmdInput');
-            input.addEventListener('keydown', e => {
-                if (e.key === 'Enter') onCmdSubmit();
+        function askAi(q) {
+            document.getElementById('aiInputPrompt').value = q;
+            sendAi();
+        }
+
+        async function sendAi() {
+            const input = document.getElementById('aiInputPrompt');
+            const q = input.value.trim();
+            if (!q) return;
+
+            const box = document.getElementById('aiOutBox');
+            box.textContent = `ANALYZING PORTFOLIO & BLOOMBERG MARKET INTELLIGENCE (NAV: ${fmtIdr(portState.totalNetWorth)} IDR)...\n`;
+
+            try {
+                const res = await fetch('/api/terminal/analyst', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        prompt: q,
+                        portfolioContext: {
+                            cash: portState.cash,
+                            totalNetWorth: portState.totalNetWorth,
+                            holdings: portState.holdings.map(h => ({ sym: h.symbol, qty: h.qty, avg: h.avgPriceInIdr }))
+                        }
+                    })
+                });
+                const data = await res.json();
+                box.textContent = data.analysis || 'Analysis complete.';
+            } catch (e) {
+                box.textContent = 'COMMUNICATION ERROR: ' + e.message;
+            }
+        }
+
+        // ============================================================
+        // COMMAND INPUT
+        // ============================================================
+        function setupCmdKey() {
+            const inEl = document.getElementById('terminalCmdInput');
+            inEl.addEventListener('keydown', e => {
+                if (e.key === 'Enter') submitCmd();
+            });
+
+            window.addEventListener('keydown', e => {
+                if (e.key === 'F1') { e.preventDefault(); showView('help'); }
+                if (e.key === 'F2') { e.preventDefault(); showView('summary'); }
+                if (e.key === 'F3') { e.preventDefault(); showView('emsx'); }
+                if (e.key === 'F4') { e.preventDefault(); showView('holdings'); }
+                if (e.key === 'F5') { e.preventDefault(); showView('monitor'); }
+                if (e.key === 'F6') { e.preventDefault(); showView('chart'); }
+                if (e.key === 'F7') { e.preventDefault(); showView('blotter'); }
+                if (e.key === 'F8') { e.preventDefault(); showView('ai'); }
             });
         }
 
-        function onCmdSubmit() {
-            const input = document.getElementById('cmdInput');
-            const raw = input.value.trim().toUpperCase().replace(/<GO>/g, '').trim();
-            input.value = '';
+        function submitCmd() {
+            const inEl = document.getElementById('terminalCmdInput');
+            const raw = inEl.value.trim().toUpperCase().replace(/<GO>/g, '').trim();
+            inEl.value = '';
             if (!raw) return;
 
-            execCommand(raw);
-        }
-
-        function execCommand(cmd) {
-            const c = cmd.toUpperCase().trim();
-            if (c === 'PORT' || c === 'PRTU') {
-                showMsg('PRTU: PORTFOLIO RISK & VALUATION ACTIVE.');
-            } else if (c === 'EMSX' || c === 'TRADE' || c === 'BUY' || c === 'SELL') {
-                showMsg('EMSX: ORDER DESK READY.');
-            } else if (c === 'GP' || c === 'CHART') {
-                showMsg('GP: GRAPHIC PRICE ENGINE READY.');
-            } else if (c === 'MOST' || c === 'WATCH' || c === 'MON') {
-                showMsg('MOST: MARKET WATCH REFRESHED.');
-            } else if (c === 'TOP' || c === 'NEWS') {
-                showMsg('TOP: NEWS WIRE ACTIVE.');
-            } else if (c.startsWith('BUY ') || c.startsWith('SELL ')) {
-                const parts = c.split(' ');
-                const side = parts[0];
-                let qty = parseInt(parts[1]) || 10;
-                let sym = parts[2] || 'BBCA.JK';
-                loadEmsx(sym, side);
-                document.getElementById('emsxQtyInput').value = qty;
-                recalcEmsx();
-                showMsg(`STAGED ${side} ${qty} ${sym} IN EMSX.`);
+            if (raw === 'PORT' || raw === 'PRTU' || raw === '1') {
+                showView('summary');
+                showPopup('PRTU: PORTFOLIO SUMMARY LOADED.');
+            } else if (raw === 'HOLDINGS' || raw === 'POS' || raw === '2') {
+                showView('holdings');
+                showPopup('PRTU: HOLDINGS MATRIX LOADED.');
+            } else if (raw === 'EMSX' || raw === 'TRADE' || raw === 'BUY' || raw === 'SELL' || raw === '3') {
+                showView('emsx');
+                showPopup('EMSX: ORDER DESK ACTIVE.');
+            } else if (raw === 'BLOTTER' || raw === 'HIST' || raw === '4') {
+                showView('blotter');
+                showPopup('BLOTTER: TRADE LOG LOADED.');
+            } else if (raw === 'MOST' || raw === 'MON' || raw === '5') {
+                showView('monitor');
+                showPopup('MOST: MARKET MONITOR LOADED.');
+            } else if (raw === 'GP' || raw === 'CHART' || raw === '6') {
+                showView('chart');
+                showPopup('GP: GRAPHIC PRICE ENGINE READY.');
+            } else if (raw === 'TOP' || raw === 'NEWS' || raw === '7') {
+                showView('news');
+                showPopup('TOP: NEWS WIRE ACTIVE.');
+            } else if (raw === 'AI' || raw === 'BI' || raw === '8') {
+                showView('ai');
+                showPopup('BI: BLOOMBERG INTELLIGENCE ACTIVE.');
+            } else if (raw === 'HELP') {
+                showView('help');
             } else {
-                const match = quotes.find(q => q.symbol.toUpperCase().includes(c));
+                const match = quoteList.find(q => q.symbol.toUpperCase().includes(raw));
                 if (match) {
-                    setChartSym(match.symbol);
-                    loadEmsx(match.symbol, 'BUY');
-                    showMsg(`TICKER ${match.symbol} LOADED.`);
+                    openGp(match.symbol);
+                    showPopup(`TICKER ${match.symbol} LOADED TO GP.`);
                 } else {
-                    showMsg(`COMMAND '${c}' EXECUTED.`);
+                    showPopup(`COMMAND '${raw}' NOT RECOGNIZED. TYPE 'PORT <GO>' OR 'HELP <GO>'.`, true);
                 }
             }
         }
