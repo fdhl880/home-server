@@ -1111,9 +1111,16 @@ app.get('/api/tony/universities', (req, res) => {
 // ============================================================
 // TONY 2.0: MULTI-TIER AI BRAIN (GEMINI 3.6 FLASH + GROQ WHISPER TURBO)
 // ============================================================
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ['AQ.', 'Ab8RN6JesOeiEb5Vq98EYQw', 'MocMh7M6yn_KrehRDGMQgUGVihw'].join('');
-const GROQ_API_KEY = process.env.GROQ_API_KEY || ['gsk_', 'lauS30DGXaOxe7KHF', 'xKZWGdyb3FYtkc70X8FaUG1', 'yWzKhBZ5Z4Jj'].join('');
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ['sk-or', '-v1-0d32b61fc93884c7', '7a2611c436b7aff9abd7f7bef', 'd74838837bd8b0d6f144ea6'].join('');
+function getValidKey(envVal, defaultVal) {
+    if (envVal && typeof envVal === 'string' && envVal.trim().length > 20 && !envVal.includes('your_') && !envVal.includes('xxx')) {
+        return envVal.trim();
+    }
+    return defaultVal;
+}
+
+const GEMINI_API_KEY = getValidKey(process.env.GEMINI_API_KEY, ['AQ.', 'Ab8RN6JesOeiEb5Vq98EYQw', 'MocMh7M6yn_KrehRDGMQgUGVihw'].join(''));
+const GROQ_API_KEY = getValidKey(process.env.GROQ_API_KEY, ['gsk_', 'lauS30DGXaOxe7KHF', 'xKZWGdyb3FYtkc70X8FaUG1', 'yWzKhBZ5Z4Jj'].join(''));
+const OPENROUTER_API_KEY = getValidKey(process.env.OPENROUTER_API_KEY, ['sk-or', '-v1-0d32b61fc93884c7', '7a2611c436b7aff9abd7f7bef', 'd74838837bd8b0d6f144ea6'].join(''));
 
 async function generateGeminiJson(systemInstruction, contents, temperature = 0.6) {
     const geminiModels = ['gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.6-flash'];
@@ -1269,51 +1276,12 @@ RESPON WAJIB FORMAT JSON VALID:
         let parsed = null;
         let contentStr = '';
 
-        // TIER 1 (PRIMARY): OpenRouter (meta-llama/llama-3.3-70b-instruct, sub-second latency)
-        if (OPENROUTER_API_KEY) {
+        // TIER 1 (PRIMARY): Groq (openai/gpt-oss-120b, ~700ms ultra-fast)
+        if (GROQ_API_KEY) {
             try {
-                const orResp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                    method: 'POST',
-                    signal: AbortSignal.timeout(5000),
-                    headers: {
-                        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        model: 'deepseek/deepseek-chat',
-                        messages: messages,
-                        temperature: 0.6,
-                        max_tokens: 220
-                    })
-                });
-
-                if (orResp.ok) {
-                    const orJson = await orResp.json();
-                    contentStr = orJson.choices?.[0]?.message?.content || '{}';
-                    let clean = contentStr.trim();
-                    const match = clean.match(/\{[\s\S]*\}/);
-                    if (match) {
-                        try { parsed = JSON.parse(match[0]); } catch (e) {}
-                    }
-                    if (!parsed) {
-                        parsed = { speech: clean.slice(0, 150), text: clean, action: "none" };
-                    }
-                    console.log('[Chat] OpenRouter DeepSeek OK');
-                } else {
-                    console.warn('[Chat] OpenRouter status:', orResp.status, await orResp.text());
-                }
-            } catch (orErr) {
-                console.warn('[Chat] OpenRouter error:', orErr.message);
-            }
-        }
-
-        // TIER 2 (CADANGAN CEPAT): Groq (openai/gpt-oss-120b, ~800ms)
-        if (!parsed) {
-            try {
-                console.log('[Chat] Falling back to Groq Cadangan (gpt-oss-120b)...');
                 let groqResp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
                     method: 'POST',
-                    signal: AbortSignal.timeout(5000),
+                    signal: AbortSignal.timeout(6000),
                     headers: {
                         'Authorization': `Bearer ${GROQ_API_KEY}`,
                         'Content-Type': 'application/json'
@@ -1329,7 +1297,7 @@ RESPON WAJIB FORMAT JSON VALID:
                 if (!groqResp.ok) {
                     groqResp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
                         method: 'POST',
-                        signal: AbortSignal.timeout(5000),
+                        signal: AbortSignal.timeout(6000),
                         headers: {
                             'Authorization': `Bearer ${GROQ_API_KEY}`,
                             'Content-Type': 'application/json'
@@ -1354,12 +1322,54 @@ RESPON WAJIB FORMAT JSON VALID:
                     if (!parsed) {
                         parsed = { speech: contentStr.replace(/```[a-z]*|```/g, '').trim().slice(0, 150), text: contentStr, action: "none" };
                     }
-                    console.log('[Chat] Groq OK');
+                    console.log('[Chat] Groq OK (~700ms)');
+                } else {
+                    console.warn('[Chat] Groq status:', groqResp.status, await groqResp.text());
                 }
             } catch (groqErr) {
                 console.warn('[Chat] Groq error:', groqErr.message);
             }
         }
+
+        // TIER 2 (CADANGAN CEPAT): OpenRouter (deepseek/deepseek-chat)
+        if (!parsed && OPENROUTER_API_KEY) {
+            try {
+                console.log('[Chat] Trying OpenRouter fallback...');
+                const orResp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                    method: 'POST',
+                    signal: AbortSignal.timeout(6000),
+                    headers: {
+                        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: 'deepseek/deepseek-chat',
+                        messages: messages,
+                        temperature: 0.6,
+                        max_tokens: 220
+                    })
+                });
+
+                if (orResp.ok) {
+                    const orJson = await orResp.json();
+                    contentStr = orJson.choices?.[0]?.message?.content || '{}';
+                    let clean = contentStr.trim();
+                    const match = clean.match(/\{[\s\S]*\}/);
+                    if (match) {
+                        try { parsed = JSON.parse(match[0]); } catch (e) {}
+                    }
+                    if (!parsed) {
+                        parsed = { speech: clean.slice(0, 150), text: clean, action: "none" };
+                    }
+                    console.log('[Chat] OpenRouter OK');
+                } else {
+                    console.warn('[Chat] OpenRouter status:', orResp.status, await orResp.text());
+                }
+            } catch (orErr) {
+                console.warn('[Chat] OpenRouter error:', orErr.message);
+            }
+        }
+
 
         // TIER 3 (CADANGAN KETIGA): Google Gemini Flash
         if (!parsed) {
