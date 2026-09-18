@@ -5,6 +5,7 @@ const https = require('https');
 const http = require('http');
 const fs = require('fs');
 const Parser = require('rss-parser');
+const { ALL_UNIVERSE, MACRO_MICRO_DATA } = require('./universe');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -382,7 +383,18 @@ const TRACKED_ASSETS = [
     { symbol: '^VIX',    name: 'CBOE Volatility VIX',    category: 'Rates',      currency: 'USD', price: 15.50 }
 ];
 
-// Initialize quoteCache with baseline prices so all 215+ assets are instantly tradeable
+// Merge ALL_UNIVERSE from universe.js (1350+ assets) into TRACKED_ASSETS
+// Deduplicate by symbol: existing TRACKED_ASSETS entries take priority
+const existingSymbols = new Set(TRACKED_ASSETS.map(a => a.symbol));
+ALL_UNIVERSE.forEach(ua => {
+    if (!existingSymbols.has(ua.symbol)) {
+        TRACKED_ASSETS.push(ua);
+        existingSymbols.add(ua.symbol);
+    }
+});
+console.log(`[UNIVERSE] Merged ${TRACKED_ASSETS.length} total tradeable assets (incl. SpaceX, Pre-IPO, IDX 850+, US, Crypto, Commodities, Forex, Indices)`);
+
+// Initialize quoteCache with baseline prices so ALL 1350+ assets are instantly tradeable
 TRACKED_ASSETS.forEach(a => {
     const basePx = a.price;
     quoteCache.data[a.symbol] = {
@@ -672,13 +684,218 @@ app.get('/api/portfolio', (req, res) => {
     }
 });
 
-// 2. POST /api/portfolio/trade -> Execute simulated Buy or Sell
+// ============================================================
+// REAL MARKET HOURS & EXCHANGE SCHEDULE ENGINE
+// ============================================================
+function getMarketSchedule(symbol, category) {
+    const sym = (symbol || '').toUpperCase();
+    const cat = category || '';
+    const now = new Date();
+
+    const utcHours = now.getUTCHours();
+    const utcMin = now.getUTCMinutes();
+    const utcTotalMin = utcHours * 60 + utcMin;
+    const utcDay = now.getUTCDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+
+    // WIB time (UTC+7)
+    const wibTotalMin = (utcTotalMin + 7 * 60) % 1440;
+    const wibDay = (utcTotalMin + 7 * 60 >= 1440) ? (utcDay + 1) % 7 : utcDay;
+    const wibH = Math.floor(wibTotalMin / 60);
+    const wibM = wibTotalMin % 60;
+    const wibTimeStr = `${String(wibH).padStart(2,'0')}:${String(wibM).padStart(2,'0')} WIB`;
+
+    // 1. CRYPTO: 24/7/365 Non-stop
+    if (cat === 'Crypto' || sym.includes('-USD') || sym.includes('-USDT')) {
+        return {
+            exchange: 'CRYPTO (24/7)',
+            status: 'OPEN',
+            isOpen: true,
+            reason: 'Pasar Kripto beroperasi 24 jam sehari, 7 hari seminggu tanpa henti.',
+            hours: '24/7 Non-Stop',
+            currentTime: wibTimeStr
+        };
+    }
+
+    // 2. PRE-IPO / PRIVATE SECONDARY DESK (SpaceX, OpenAI, Stripe, ByteDance, Anthropic)
+    if (['SPACEX', 'OPENAI', 'ANTHROPIC', 'STRIPE', 'BYTEDANCE'].includes(sym) || cat.includes('Pre-IPO') || cat.includes('Space Tech')) {
+        return {
+            exchange: 'PRIVATE OTC / SECONDARY DESK',
+            status: 'OPEN',
+            isOpen: true,
+            reason: 'Transaksi secondary private share diproses melalui OTC Crossing Desk institusional.',
+            hours: 'OTC Desk Active (24 Jam Sim)',
+            currentTime: wibTimeStr
+        };
+    }
+
+    // 3. IDX (Bursa Efek Indonesia) - Saham Indo & IPO Lokal
+    if (sym.includes('.JK') || cat === 'Saham Indo' || (cat === 'Saham IPO' && sym.includes('.JK'))) {
+        const isWeekday = wibDay >= 1 && wibDay <= 5;
+        const isFriday = wibDay === 5;
+
+        // Sesi 1: 09:00 - 11:30 (540 - 690 min)
+        const inSession1 = wibTotalMin >= 540 && wibTotalMin <= 690;
+        // Sesi 2: Sen-Kamis 13:30-15:49 (810 - 949 min), Jumat 14:00-15:49 (840 - 949 min)
+        const session2Start = isFriday ? 840 : 810;
+        const inSession2 = wibTotalMin >= session2Start && wibTotalMin <= 950;
+        // Pre-opening: 08:45 - 08:59 (525 - 539 min)
+        const isPre = wibTotalMin >= 525 && wibTotalMin < 540;
+        // Break: 11:30 - 13:30 / 14:00
+        const isBreak = wibTotalMin > 690 && wibTotalMin < session2Start;
+
+        if (!isWeekday) {
+            return {
+                exchange: 'IDX (Bursa Efek Indonesia)',
+                status: 'CLOSED',
+                isOpen: false,
+                reason: 'Pasar IDX TUTUP (Akhir Pekan). Jam perdagangan: Senin-Jumat Sesi 1 (09:00-11:30) & Sesi 2 (13:30-15:50 WIB).',
+                hours: 'Sen-Jum: 09:00-11:30 & 13:30-15:50 WIB',
+                currentTime: wibTimeStr
+            };
+        }
+        if (inSession1 || inSession2) {
+            return {
+                exchange: 'IDX (Bursa Efek Indonesia)',
+                status: 'OPEN',
+                isOpen: true,
+                reason: `Pasar IDX SEDANG DIBUKA (Sesi ${inSession1 ? '1' : '2'}). Eksekusi real-time aktif.`,
+                hours: 'Sen-Jum: 09:00-11:30 & 13:30-15:50 WIB',
+                currentTime: wibTimeStr
+            };
+        }
+        if (isBreak) {
+            return {
+                exchange: 'IDX (Bursa Efek Indonesia)',
+                status: 'BREAK',
+                isOpen: false,
+                reason: `Pasar IDX ISTIRAHAT SIANG (${isFriday ? '11:30-14:00' : '11:30-13:30'} WIB). Sesi 2 segera dibuka.`,
+                hours: 'Sen-Jum: 09:00-11:30 & 13:30-15:50 WIB',
+                currentTime: wibTimeStr
+            };
+        }
+        if (isPre) {
+            return {
+                exchange: 'IDX (Bursa Efek Indonesia)',
+                status: 'PRE_MARKET',
+                isOpen: false,
+                reason: 'Sesi Pra-Pembukaan IDX (08:45-08:59 WIB). Order masuk antrean pembukaan.',
+                hours: 'Sen-Jum: 09:00-11:30 & 13:30-15:50 WIB',
+                currentTime: wibTimeStr
+            };
+        }
+        return {
+            exchange: 'IDX (Bursa Efek Indonesia)',
+            status: 'CLOSED',
+            isOpen: false,
+            reason: 'Pasar IDX saat ini TUTUP. Jam perdagangan: Senin-Jumat Sesi 1 (09:00-11:30) & Sesi 2 (13:30-15:50 WIB).',
+            hours: 'Sen-Jum: 09:00-11:30 & 13:30-15:50 WIB',
+            currentTime: wibTimeStr
+        };
+    }
+
+    // 4. US MARKETS (NYSE / NASDAQ)
+    // Regular session: 13:30 - 20:00 UTC (In WIB: 20:30 - 03:00 WIB next day)
+    const isUsWeekday = (utcDay >= 1 && utcDay <= 5);
+    const inUsReg = isUsWeekday && (utcTotalMin >= 810 && utcTotalMin <= 1200); // 13:30 - 20:00 UTC (20:30-03:00 WIB)
+    const inUsPre = isUsWeekday && (utcTotalMin >= 480 && utcTotalMin < 810);   // Pre-market (15:00-20:30 WIB)
+
+    if (cat === 'Saham US' || cat === 'Saham Global' || (!sym.includes('.') && !sym.includes('=') && !sym.includes('-'))) {
+        if (inUsReg) {
+            return {
+                exchange: 'NYSE / NASDAQ (Wall Street)',
+                status: 'OPEN',
+                isOpen: true,
+                reason: 'Pasar Wall Street (NYSE/NASDAQ) SEDANG DIBUKA (20:30-03:00 WIB).',
+                hours: 'Sen-Jum: 20:30-03:00 WIB (09:30-16:00 ET)',
+                currentTime: wibTimeStr
+            };
+        }
+        if (inUsPre) {
+            return {
+                exchange: 'NYSE / NASDAQ (Wall Street)',
+                status: 'PRE_MARKET',
+                isOpen: true,
+                reason: 'Sesi Pre-Market Wall Street aktif (15:00-20:30 WIB).',
+                hours: 'Pre-Market: 15:00-20:30 WIB | Regular: 20:30-03:00 WIB',
+                currentTime: wibTimeStr
+            };
+        }
+        return {
+            exchange: 'NYSE / NASDAQ (Wall Street)',
+            status: 'CLOSED',
+            isOpen: false,
+            reason: 'Pasar Wall Street TUTUP. Jam reguler: Senin-Jumat 20:30-03:00 WIB (09:30-16:00 ET).',
+            hours: 'Sen-Jum: 20:30-03:00 WIB (09:30-16:00 ET)',
+            currentTime: wibTimeStr
+        };
+    }
+
+    // 5. FOREX: Sunday 21:00 UTC - Friday 21:00 UTC (24/5)
+    if (cat === 'Forex' || sym.includes('=X')) {
+        const isFxOpen = (utcDay > 0 && utcDay < 5) || (utcDay === 0 && utcTotalMin >= 1260) || (utcDay === 5 && utcTotalMin <= 1260);
+        return {
+            exchange: 'GLOBAL INTERBANK FOREX',
+            status: isFxOpen ? 'OPEN' : 'CLOSED',
+            isOpen: isFxOpen,
+            reason: isFxOpen ? 'Pasar Valas Global beroperasi 24 jam hari kerja.' : 'Pasar Valas TUTUP pada akhir pekan (Sabtu-Minggu).',
+            hours: '24/5 (Minggu 21:00 UTC - Jumat 21:00 UTC)',
+            currentTime: wibTimeStr
+        };
+    }
+
+    // 6. COMMODITIES (CME / NYMEX / COMEX)
+    if (cat === 'Komoditas' || sym.includes('=F')) {
+        const isComOpen = (utcDay >= 1 && utcDay <= 5) && (utcTotalMin < 1260 || utcTotalMin > 1320);
+        return {
+            exchange: 'COMMODITIES (CME/NYMEX)',
+            status: isComOpen ? 'OPEN' : 'CLOSED',
+            isOpen: isComOpen,
+            reason: isComOpen ? 'Pasar Komoditas beroperasi aktif.' : 'Pasar Komoditas TUTUP.',
+            hours: 'Sen-Jum 23 Jam/Hari',
+            currentTime: wibTimeStr
+        };
+    }
+
+    return {
+        exchange: 'GLOBAL FINANCIAL MARKET',
+        status: 'OPEN',
+        isOpen: true,
+        reason: 'Sesi pasar aktif.',
+        hours: 'Standard Market Hours',
+        currentTime: wibTimeStr
+    };
+}
+
+// Check market status endpoint
+app.get('/api/market-status/:symbol', (req, res) => {
+    const sym = req.params.symbol.toUpperCase();
+    const q = quoteCache.data[sym] || TRACKED_ASSETS.find(a => a.symbol.toUpperCase() === sym);
+    const schedule = getMarketSchedule(sym, q?.category);
+    res.json(schedule);
+});
+
+// 2. POST /api/portfolio/trade -> Direct Market Access (DMA) Execution with real market hours validation
 app.post('/api/portfolio/trade', (req, res) => {
     try {
-        const { type, symbol, name, category, qty, price, currency } = req.body;
+        const { type, symbol, name, category, qty, price, currency, queueIfClosed, forceExecute } = req.body;
         if (!type || !symbol || !qty || !price || qty <= 0 || price <= 0) {
             return res.status(400).json({ error: 'Parameter transaksi tidak lengkap atau tidak valid.' });
         }
+
+        const marketSchedule = getMarketSchedule(symbol, category);
+        const isMarketOpen = marketSchedule.isOpen;
+
+        // If market is closed and user has not allowed queuing or forced override
+        if (!isMarketOpen && !queueIfClosed && !forceExecute) {
+            return res.status(400).json({
+                error: `[EMSX REJECT] ${marketSchedule.exchange} SEDANG TUTUP. ${marketSchedule.reason}`,
+                marketClosed: true,
+                schedule: marketSchedule,
+                suggestion: 'Aktifkan opsi Antrean Pra-Buka / GTC Booking Order jika ingin memasukkan order di luar jam bursa.'
+            });
+        }
+
+        const orderStatus = isMarketOpen ? 'FILLED' : (forceExecute ? 'FILLED (OFF-EXCHANGE BLOCK)' : 'QUEUED (PENDING OPEN)');
 
         const port = loadPortfolio();
         const usdRate = quoteCache.usdIdr || 16250;
@@ -695,7 +912,7 @@ app.post('/api/portfolio/trade', (req, res) => {
                 });
             }
 
-            // Deduct cash
+            // Deduct cash (reserved or filled)
             port.cash -= totalRequired;
 
             // Update or add holding
@@ -741,12 +958,17 @@ app.post('/api/portfolio/trade', (req, res) => {
                 totalValueIdr,
                 brokerFee,
                 realizedPnL: 0,
-                status: 'FILLED'
+                status: orderStatus,
+                exchange: marketSchedule.exchange,
+                marketStatus: marketSchedule.status
             };
             port.trades.push(tradeLog);
 
             savePortfolio(port);
-            return res.json({ success: true, message: `Berhasil MEMBELI ${qty} ${symbol}`, trade: tradeLog });
+            const statusMsg = orderStatus === 'FILLED' 
+                ? `Berhasil MEMBELI ${qty} ${symbol} (PASAR BUKA)` 
+                : `Order ${qty} ${symbol} MASUK ANTREAN PEMBUKAAN PASAR (${marketSchedule.exchange} TUTUP)`;
+            return res.json({ success: true, message: statusMsg, trade: tradeLog, schedule: marketSchedule });
 
         } else if (type.toUpperCase() === 'SELL') {
             const existingIdx = port.holdings.findIndex(h => h.symbol === symbol);
@@ -790,15 +1012,21 @@ app.post('/api/portfolio/trade', (req, res) => {
                 totalValueIdr,
                 brokerFee,
                 realizedPnL: tradePnL,
-                status: 'FILLED'
+                status: orderStatus,
+                exchange: marketSchedule.exchange,
+                marketStatus: marketSchedule.status
             };
             port.trades.push(tradeLog);
 
             savePortfolio(port);
+            const statusMsg = orderStatus === 'FILLED'
+                ? `Berhasil MENJUAL ${qty} ${symbol}. P&L: Rp ${tradePnL.toLocaleString('id-ID')}`
+                : `Order JUAL ${qty} ${symbol} MASUK ANTREAN (${marketSchedule.exchange} TUTUP)`;
             return res.json({
                 success: true,
-                message: `Berhasil MENJUAL ${qty} ${symbol}. P&L: Rp ${tradePnL.toLocaleString('id-ID')}`,
-                trade: tradeLog
+                message: statusMsg,
+                trade: tradeLog,
+                schedule: marketSchedule
             });
         }
 
@@ -828,22 +1056,24 @@ const handlePortfolioReset = (req, res) => {
 app.post('/api/portfolio/reset', handlePortfolioReset);
 app.get('/api/portfolio/reset', handlePortfolioReset);
 
-// 3b. GET /api/test-buy -> Quick simulate buy for any tracked asset (for UI testing)
-// Usage: GET /api/test-buy?symbol=BBCA.JK&qty=1
-app.get('/api/test-buy', (req, res) => {
+// 3b. GET /api/dma-buy & /api/test-buy -> Quick DMA buy for any tracked asset (honoring market schedule)
+const handleDmaBuy = (req, res) => {
     try {
         const symbol = (req.query.symbol || '').trim().toUpperCase();
         if (!symbol) {
-            return res.status(400).json({ error: 'Parameter symbol diperlukan. Contoh: /api/test-buy?symbol=BBCA.JK' });
+            return res.status(400).json({ error: 'Parameter symbol diperlukan. Contoh: /api/dma-buy?symbol=BBCA.JK' });
         }
 
-        // Resolve qty — honour lotSize for IDX stocks
         const assetDef = TRACKED_ASSETS.find(a => a.symbol.toUpperCase() === symbol);
         const cachedQuote = quoteCache.data[symbol] || quoteCache.data[symbol.toUpperCase()];
 
         if (!assetDef && !cachedQuote) {
             return res.status(404).json({ error: `Aset '${symbol}' tidak ditemukan dalam tradeable universe.` });
         }
+
+        const category = cachedQuote?.category || assetDef?.category || 'General';
+        const marketSchedule = getMarketSchedule(symbol, category);
+        const isMarketOpen = marketSchedule.isOpen;
 
         const lotSize = assetDef?.lotSize || 1;
         let requestedQty = parseFloat(req.query.qty);
@@ -868,7 +1098,6 @@ app.get('/api/test-buy', (req, res) => {
 
         const currency = cachedQuote?.currency || assetDef?.currency || 'IDR';
         const name = cachedQuote?.name || assetDef?.name || symbol;
-        const category = cachedQuote?.category || assetDef?.category || 'General';
 
         const port = loadPortfolio();
         const usdRate = quoteCache.usdIdr || 16250;
@@ -884,10 +1113,8 @@ app.get('/api/test-buy', (req, res) => {
             });
         }
 
-        // Deduct cash
         port.cash -= totalRequired;
 
-        // Update or create holding
         const existingIdx = port.holdings.findIndex(h => h.symbol === symbol);
         if (existingIdx >= 0) {
             const prev = port.holdings[existingIdx];
@@ -898,30 +1125,35 @@ app.get('/api/test-buy', (req, res) => {
             port.holdings.push({ symbol, name, category, currency, qty, avgPrice: price, createdAt: Date.now(), lastUpdated: Date.now() });
         }
 
-        // Record trade
+        const orderStatus = isMarketOpen ? 'FILLED' : 'QUEUED (PENDING OPEN)';
         const tradeLog = {
-            id: `TEST-${Date.now()}`,
+            id: `ORD-${Date.now()}`,
             timestamp: new Date().toISOString(),
             type: 'BUY',
             symbol, name, category, qty, price, currency,
             priceInIdr, totalValueIdr, brokerFee, realizedPnL: 0,
-            status: 'FILLED (TEST-BUY)',
-            note: `Quick test-buy: ${requestedQty} lot${requestedQty > 1 ? 's' : ''} @ ${isUsd ? '$' + price.toFixed(4) : 'Rp ' + Math.round(price).toLocaleString('id-ID')}`
+            status: orderStatus,
+            exchange: marketSchedule.exchange,
+            marketStatus: marketSchedule.status,
+            note: `Direct Order: ${requestedQty} lot @ ${isUsd ? '$' + price.toFixed(2) : 'Rp ' + Math.round(price).toLocaleString('id-ID')} (${marketSchedule.exchange}: ${marketSchedule.status})`
         };
         port.trades.push(tradeLog);
         savePortfolio(port);
 
         return res.json({
             success: true,
-            message: `✅ TEST-BUY: ${qty} ${symbol} @ ${isUsd ? '$' + price.toFixed(4) : 'Rp ' + Math.round(price).toLocaleString('id-ID')} | Cost: Rp ${totalRequired.toLocaleString('id-ID')} | Sisa Kas: Rp ${port.cash.toLocaleString('id-ID')}`,
+            message: `${isMarketOpen ? '✅ FILLED' : '⏳ QUEUED (Bursa Tutup)'}: ${qty} ${symbol} @ ${isUsd ? '$' + price.toFixed(2) : 'Rp ' + Math.round(price).toLocaleString('id-ID')} | Sisa Kas: Rp ${port.cash.toLocaleString('id-ID')}`,
             trade: tradeLog,
+            schedule: marketSchedule,
             remainingCash: port.cash
         });
     } catch (e) {
-        console.error('Test-buy error:', e.message);
+        console.error('DMA execution error:', e.message);
         res.status(500).json({ error: e.message });
     }
-});
+};
+app.get('/api/dma-buy', handleDmaBuy);
+app.get('/api/test-buy', handleDmaBuy);
 
 // 4. GET /api/market/quotes -> Live quote list across all tracked categories
 app.get('/api/market/quotes', (req, res) => {
@@ -933,11 +1165,11 @@ app.get('/api/market/quotes', (req, res) => {
     });
 });
 
-// 5. GET /api/chart/:symbol -> Candle / Sparkline history for interactive Bloomberg charting (Always 100% available)
+// 5. GET /api/chart/:symbol -> Universal Candle / Sparkline history for ALL 1350+ Assets (Always 100% available)
 function generateSyntheticCandles(sym, count = 28, range = '1d') {
     const q = quoteCache.data[sym] || quoteCache.data[sym.toUpperCase()];
     const assetDef = TRACKED_ASSETS.find(a => a.symbol.toUpperCase() === sym.toUpperCase());
-    const basePrice = q?.price || assetDef?.price || 1000;
+    const basePrice = q?.price || assetDef?.price || (sym.includes('.JK') ? 2500 : 135);
     const now = Date.now();
     const stepMs = range === '1y' ? 7 * 86400000 : (range === '1mo' ? 86400000 : (range === '5d' ? 3600000 : 900000));
 
@@ -977,14 +1209,32 @@ function generateSyntheticCandles(sym, count = 28, range = '1d') {
 }
 
 app.get('/api/chart/:symbol', (req, res) => {
-    const sym = (req.params.symbol || '').trim().toUpperCase();
+    let sym = (req.params.symbol || '').trim().toUpperCase();
     const range = req.query.range || '1d';
     const interval = req.query.interval || (range === '1d' ? '15m' : (range === '5d' ? '1h' : '1d'));
     const candleCount = range === '1y' ? 52 : (range === '1mo' ? 30 : (range === '5d' ? 35 : 28));
 
-    const q = quoteCache.data[sym];
-    const currPrice = q?.price || 1000;
-    const prevClose = q?.prevClose || currPrice;
+    // Resolve symbol from universe if necessary
+    const q = quoteCache.data[sym] || quoteCache.data[sym.toUpperCase()];
+    const assetDef = TRACKED_ASSETS.find(a => a.symbol.toUpperCase() === sym.toUpperCase());
+    const isIndo = sym.includes('.JK') || assetDef?.currency === 'IDR' || q?.currency === 'IDR';
+    const defaultCurrency = isIndo ? 'IDR' : 'USD';
+    const currPrice = q?.price || assetDef?.price || (isIndo ? 2500 : 135);
+    const prevClose = q?.prevClose || assetDef?.price || currPrice;
+    const resolvedCurrency = q?.currency || assetDef?.currency || defaultCurrency;
+
+    // For SpaceX and OTC pre-IPOs that aren't on Yahoo Finance, return high-fidelity candles immediately
+    if (['SPACEX', 'OPENAI', 'ANTHROPIC', 'STRIPE', 'BYTEDANCE'].includes(sym)) {
+        const candles = generateSyntheticCandles(sym, candleCount, range);
+        return res.json({
+            symbol: sym,
+            currency: resolvedCurrency,
+            prevClose: prevClose,
+            currentPrice: currPrice,
+            candles,
+            synthetic: true
+        });
+    }
 
     try {
         const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=${interval}&range=${range}`;
@@ -1025,7 +1275,7 @@ app.get('/api/chart/:symbol', (req, res) => {
                         if (candles.length >= 2) {
                             return res.json({
                                 symbol: sym,
-                                currency: r.meta?.currency || q?.currency || 'USD',
+                                currency: r.meta?.currency || resolvedCurrency,
                                 prevClose: r.meta?.chartPreviousClose || prevClose,
                                 currentPrice: r.meta?.regularMarketPrice || currPrice,
                                 candles
@@ -1038,7 +1288,7 @@ app.get('/api/chart/:symbol', (req, res) => {
                 const fallbackCandles = generateSyntheticCandles(sym, candleCount, range);
                 res.json({
                     symbol: sym,
-                    currency: q?.currency || 'IDR',
+                    currency: resolvedCurrency,
                     prevClose: prevClose,
                     currentPrice: currPrice,
                     candles: fallbackCandles,
@@ -1051,7 +1301,7 @@ app.get('/api/chart/:symbol', (req, res) => {
             const fallbackCandles = generateSyntheticCandles(sym, candleCount, range);
             res.json({
                 symbol: sym,
-                currency: q?.currency || 'IDR',
+                currency: resolvedCurrency,
                 prevClose: prevClose,
                 currentPrice: currPrice,
                 candles: fallbackCandles,
@@ -1064,7 +1314,7 @@ app.get('/api/chart/:symbol', (req, res) => {
             const fallbackCandles = generateSyntheticCandles(sym, candleCount, range);
             res.json({
                 symbol: sym,
-                currency: q?.currency || 'IDR',
+                currency: resolvedCurrency,
                 prevClose: prevClose,
                 currentPrice: currPrice,
                 candles: fallbackCandles,
@@ -1075,7 +1325,7 @@ app.get('/api/chart/:symbol', (req, res) => {
         const fallbackCandles = generateSyntheticCandles(sym, candleCount, range);
         res.json({
             symbol: sym,
-            currency: q?.currency || 'IDR',
+            currency: resolvedCurrency,
             prevClose: prevClose,
             currentPrice: currPrice,
             candles: fallbackCandles,
@@ -1172,6 +1422,11 @@ app.get('/api/feargreed', (req, res) => {
     res.json(fngCache);
 });
 
+// 8b. GET /api/macro -> Macroeconomic & Microeconomic Data (ECST <GO>)
+app.get('/api/macro', (req, res) => {
+    res.json(MACRO_MICRO_DATA);
+});
+
 // 9. POST /api/terminal/analyst -> Bloomberg Senior Macro/Trading Analyst AI (Groq ultra-fast)
 app.post('/api/terminal/analyst', async (req, res) => {
     const { prompt, portfolioContext } = req.body;
@@ -1249,7 +1504,7 @@ app.post('/api/tony/chat', async (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`================================================================`);
-    console.log(`🏛️ BLOOMBERG TERMINAL & PORTFOLIO SIMULATOR RUNNING ON PORT ${PORT}`);
+    console.log(`🏛️ BLOOMBERG PROFESSIONAL SERVICE - REAL-TIME TRADING DESK ON PORT ${PORT}`);
     console.log(`💰 MODAL AWAL: Rp 200.000.000 (IDR 200 Juta)`);
     console.log(`🌐 Akses di browser: http://localhost:${PORT}`);
     console.log(`================================================================`);
