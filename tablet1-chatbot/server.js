@@ -35,6 +35,7 @@ function loadPortfolio() {
             if (!data.initialCapital) data.initialCapital = INITIAL_CAPITAL;
             if (data.cash === undefined) data.cash = INITIAL_CAPITAL;
             if (!Array.isArray(data.holdings)) data.holdings = [];
+            if (!Array.isArray(data.workingOrders)) data.workingOrders = [];
             if (!Array.isArray(data.trades)) data.trades = [];
             if (data.realizedPnL === undefined) data.realizedPnL = 0;
             return data;
@@ -47,6 +48,7 @@ function loadPortfolio() {
         cash: INITIAL_CAPITAL,
         realizedPnL: 0,
         holdings: [],
+        workingOrders: [],
         trades: []
     };
     savePortfolio(defaultData);
@@ -383,16 +385,14 @@ const TRACKED_ASSETS = [
     { symbol: '^VIX',    name: 'CBOE Volatility VIX',    category: 'Rates',      currency: 'USD', price: 15.50 }
 ];
 
-// Merge ALL_UNIVERSE from universe.js (1350+ assets) into TRACKED_ASSETS
-// Deduplicate by symbol: existing TRACKED_ASSETS entries take priority
-const existingSymbols = new Set(TRACKED_ASSETS.map(a => a.symbol));
-ALL_UNIVERSE.forEach(ua => {
-    if (!existingSymbols.has(ua.symbol)) {
-        TRACKED_ASSETS.push(ua);
-        existingSymbols.add(ua.symbol);
-    }
-});
-console.log(`[UNIVERSE] Merged ${TRACKED_ASSETS.length} total tradeable assets (incl. SpaceX, Pre-IPO, IDX 850+, US, Crypto, Commodities, Forex, Indices)`);
+// Merge ALL_UNIVERSE from universe.js (5,300+ assets) into TRACKED_ASSETS
+// universe.js entries take precedence so SPACEX=$185.50, SPCX=$151.20
+const assetMap = new Map();
+TRACKED_ASSETS.forEach(a => assetMap.set(a.symbol.toUpperCase(), a));
+ALL_UNIVERSE.forEach(ua => assetMap.set(ua.symbol.toUpperCase(), ua));
+TRACKED_ASSETS.length = 0;
+TRACKED_ASSETS.push(...Array.from(assetMap.values()));
+console.log(`[UNIVERSE] Master Universe loaded: ${TRACKED_ASSETS.length} total tradeable assets (SPACEX $185.50, SPCX $151.20, IDX 850+, US 2700+, Crypto 550+, etc.)`);
 
 // Initialize quoteCache with baseline prices so ALL 1350+ assets are instantly tradeable
 TRACKED_ASSETS.forEach(a => {
@@ -498,6 +498,18 @@ async function refreshQuotes() {
                         q.name = asset.name;
                         q.category = asset.category;
                         q.lotSize = asset.lotSize || 1;
+                    }
+
+                    if (q.symbol === 'SPACEX') {
+                        q.price = 185.50;
+                        q.prevClose = 182.20;
+                        q.change = 3.30;
+                        q.changePct = 1.81;
+                    } else if (q.symbol === 'SPCX') {
+                        q.price = 151.20;
+                        q.prevClose = 149.80;
+                        q.change = 1.40;
+                        q.changePct = 0.93;
                     }
 
                     // Price in IDR calculation
@@ -676,6 +688,7 @@ app.get('/api/portfolio', (req, res) => {
             overallReturn,
             usdRate,
             holdings: enrichedHoldings,
+            workingOrders: port.workingOrders || [],
             trades: port.trades.slice(-50).reverse() // newest first
         });
     } catch (e) {
@@ -874,102 +887,181 @@ app.get('/api/market-status/:symbol', (req, res) => {
     res.json(schedule);
 });
 
-// 2. POST /api/portfolio/trade -> Direct Market Access (DMA) Execution with real market hours validation
+// 2. POST /api/portfolio/trade -> Direct Market Access (DMA) Execution with Order Types (MARKET, LIMIT, STOP, STOP_LIMIT)
 app.post('/api/portfolio/trade', (req, res) => {
     try {
-        const { type, symbol, name, category, qty, price, currency, queueIfClosed, forceExecute } = req.body;
+        const {
+            type, symbol, name, category, qty, price, currency,
+            queueIfClosed, forceExecute,
+            orderType = 'MARKET',
+            limitPrice, stopPrice, trailPct,
+            tif = 'GTC'
+        } = req.body;
+
         if (!type || !symbol || !qty || !price || qty <= 0 || price <= 0) {
             return res.status(400).json({ error: 'Parameter transaksi tidak lengkap atau tidak valid.' });
         }
 
+        const normalizedOrderType = (orderType || 'MARKET').toUpperCase();
+        const normalizedTif = (tif || 'GTC').toUpperCase();
+        const effectiveLimitPrice = parseFloat(limitPrice) || price;
+        const effectiveStopPrice = parseFloat(stopPrice) || null;
+
         const marketSchedule = getMarketSchedule(symbol, category);
         const isMarketOpen = marketSchedule.isOpen;
-
-        // If market is closed and user has not allowed queuing or forced override
-        if (!isMarketOpen && !queueIfClosed && !forceExecute) {
-            return res.status(400).json({
-                error: `[EMSX REJECT] ${marketSchedule.exchange} SEDANG TUTUP. ${marketSchedule.reason}`,
-                marketClosed: true,
-                schedule: marketSchedule,
-                suggestion: 'Aktifkan opsi Antrean Pra-Buka / GTC Booking Order jika ingin memasukkan order di luar jam bursa.'
-            });
-        }
-
-        const orderStatus = isMarketOpen ? 'FILLED' : (forceExecute ? 'FILLED (OFF-EXCHANGE BLOCK)' : 'QUEUED (PENDING OPEN)');
 
         const port = loadPortfolio();
         const usdRate = quoteCache.usdIdr || 16250;
         const isUsd = (currency === 'USD');
-        const priceInIdr = isUsd ? price * usdRate : price;
+
+        // Determine immediate execution vs working order
+        let willFillImmediately = false;
+        let executionPrice = price;
+
+        if (normalizedOrderType === 'MARKET') {
+            if (isMarketOpen || forceExecute) {
+                willFillImmediately = true;
+                executionPrice = price;
+            }
+        } else if (normalizedOrderType === 'LIMIT') {
+            if (type.toUpperCase() === 'BUY') {
+                if (price <= effectiveLimitPrice && (isMarketOpen || forceExecute)) {
+                    willFillImmediately = true;
+                    executionPrice = price; // Best execution
+                }
+            } else if (type.toUpperCase() === 'SELL') {
+                if (price >= effectiveLimitPrice && (isMarketOpen || forceExecute)) {
+                    willFillImmediately = true;
+                    executionPrice = price;
+                }
+            }
+        }
+
+        const priceInIdr = isUsd ? executionPrice * usdRate : executionPrice;
         const totalValueIdr = Math.round(qty * priceInIdr);
         const brokerFee = Math.round(totalValueIdr * 0.0015); // 0.15% fee
 
         if (type.toUpperCase() === 'BUY') {
-            const totalRequired = totalValueIdr + brokerFee;
+            const pricingPx = normalizedOrderType === 'LIMIT' ? effectiveLimitPrice : executionPrice;
+            const requiredPriceInIdr = isUsd ? pricingPx * usdRate : pricingPx;
+            const requiredTotalIdr = Math.round(qty * requiredPriceInIdr);
+            const requiredBrokerFee = Math.round(requiredTotalIdr * 0.0015);
+            const totalRequired = requiredTotalIdr + requiredBrokerFee;
+
             if (port.cash < totalRequired) {
                 return res.status(400).json({
                     error: `Saldo kas tidak mencukupi! Butuh Rp ${totalRequired.toLocaleString('id-ID')}, saldo tersedia Rp ${port.cash.toLocaleString('id-ID')}`
                 });
             }
 
-            // Deduct cash (reserved or filled)
-            port.cash -= totalRequired;
+            if (willFillImmediately) {
+                port.cash -= totalRequired;
+                const existingIdx = port.holdings.findIndex(h => h.symbol === symbol);
+                if (existingIdx >= 0) {
+                    const prev = port.holdings[existingIdx];
+                    const totalExistingCost = prev.qty * prev.avgPrice;
+                    const newCost = qty * executionPrice;
+                    const newQty = prev.qty + qty;
+                    const newAvgPrice = (totalExistingCost + newCost) / newQty;
+                    port.holdings[existingIdx] = {
+                        ...prev,
+                        qty: newQty,
+                        avgPrice: newAvgPrice,
+                        lastUpdated: Date.now()
+                    };
+                } else {
+                    port.holdings.push({
+                        symbol,
+                        name: name || symbol,
+                        category: category || 'General',
+                        currency: currency || 'IDR',
+                        qty,
+                        avgPrice: executionPrice,
+                        createdAt: Date.now(),
+                        lastUpdated: Date.now()
+                    });
+                }
 
-            // Update or add holding
-            const existingIdx = port.holdings.findIndex(h => h.symbol === symbol);
-            if (existingIdx >= 0) {
-                const prev = port.holdings[existingIdx];
-                const totalExistingCost = prev.qty * prev.avgPrice;
-                const newCost = qty * price;
-                const newQty = prev.qty + qty;
-                const newAvgPrice = (totalExistingCost + newCost) / newQty;
-
-                port.holdings[existingIdx] = {
-                    ...prev,
-                    qty: newQty,
-                    avgPrice: newAvgPrice,
-                    lastUpdated: Date.now()
-                };
-            } else {
-                port.holdings.push({
+                const tradeLog = {
+                    id: `ORD-${Date.now()}`,
+                    timestamp: new Date().toISOString(),
+                    type: 'BUY',
+                    orderType: normalizedOrderType,
+                    tif: normalizedTif,
                     symbol,
                     name: name || symbol,
                     category: category || 'General',
-                    currency: currency || 'IDR',
                     qty,
-                    avgPrice: price,
-                    createdAt: Date.now(),
-                    lastUpdated: Date.now()
+                    price: executionPrice,
+                    limitPrice: normalizedOrderType === 'LIMIT' ? effectiveLimitPrice : null,
+                    currency: currency || 'IDR',
+                    priceInIdr,
+                    totalValueIdr,
+                    brokerFee,
+                    realizedPnL: 0,
+                    status: 'FILLED',
+                    exchange: marketSchedule.exchange,
+                    marketStatus: marketSchedule.status,
+                    note: `Eksekusi DMA ${normalizedOrderType}: ${qty} @ ${isUsd ? '$' + executionPrice.toFixed(2) : 'Rp ' + Math.round(executionPrice).toLocaleString('id-ID')}`
+                };
+                port.trades.push(tradeLog);
+                savePortfolio(port);
+
+                return res.json({
+                    success: true,
+                    message: `Order BUY ${normalizedOrderType} ${qty} ${symbol} BERHASIL DIEKSEKUSI (FILLED)`,
+                    trade: tradeLog,
+                    schedule: marketSchedule
+                });
+            } else {
+                if (!isMarketOpen && !queueIfClosed && !forceExecute && normalizedOrderType === 'MARKET') {
+                    return res.status(400).json({
+                        error: `[EMSX REJECT] ${marketSchedule.exchange} SEDANG TUTUP. ${marketSchedule.reason}`,
+                        marketClosed: true,
+                        schedule: marketSchedule,
+                        suggestion: 'Aktifkan opsi Antrean Pra-Buka / GTC Booking Order jika ingin memasukkan order di luar jam bursa.'
+                    });
+                }
+
+                // Reserve cash for working limit / queued order
+                port.cash -= totalRequired;
+                const orderStatus = isMarketOpen ? `WORKING (${normalizedOrderType} BUY)` : 'QUEUED (PENDING OPEN)';
+                const workingOrder = {
+                    id: `ORD-${Date.now()}-${Math.floor(Math.random()*1000)}`,
+                    timestamp: new Date().toISOString(),
+                    type: 'BUY',
+                    orderType: normalizedOrderType,
+                    tif: normalizedTif,
+                    symbol,
+                    name: name || symbol,
+                    category: category || 'General',
+                    qty,
+                    price: executionPrice,
+                    limitPrice: normalizedOrderType === 'LIMIT' ? effectiveLimitPrice : null,
+                    stopPrice: effectiveStopPrice,
+                    trailPct: parseFloat(trailPct) || null,
+                    currency: currency || 'IDR',
+                    priceInIdr: requiredPriceInIdr,
+                    totalValueIdr: requiredTotalIdr,
+                    brokerFee: requiredBrokerFee,
+                    reservedCash: totalRequired,
+                    status: orderStatus,
+                    exchange: marketSchedule.exchange,
+                    marketStatus: marketSchedule.status,
+                    note: `${normalizedOrderType} BUY pada ${isUsd ? '$' + effectiveLimitPrice.toFixed(2) : 'Rp ' + Math.round(effectiveLimitPrice).toLocaleString('id-ID')} (${normalizedTif})`
+                };
+                port.workingOrders.push(workingOrder);
+                port.trades.push(workingOrder);
+                savePortfolio(port);
+
+                return res.json({
+                    success: true,
+                    message: `Order BUY ${normalizedOrderType} ${qty} ${symbol} AKTIF DI ORDER BLOTTER [${orderStatus}]`,
+                    order: workingOrder,
+                    trade: workingOrder,
+                    schedule: marketSchedule
                 });
             }
-
-            // Record trade
-            const tradeLog = {
-                id: `TRD-${Date.now()}`,
-                timestamp: new Date().toISOString(),
-                type: 'BUY',
-                symbol,
-                name: name || symbol,
-                category: category || 'General',
-                qty,
-                price,
-                currency: currency || 'IDR',
-                priceInIdr,
-                totalValueIdr,
-                brokerFee,
-                realizedPnL: 0,
-                status: orderStatus,
-                exchange: marketSchedule.exchange,
-                marketStatus: marketSchedule.status
-            };
-            port.trades.push(tradeLog);
-
-            savePortfolio(port);
-            const statusMsg = orderStatus === 'FILLED' 
-                ? `Berhasil MEMBELI ${qty} ${symbol} (PASAR BUKA)` 
-                : `Order ${qty} ${symbol} MASUK ANTREAN PEMBUKAAN PASAR (${marketSchedule.exchange} TUTUP)`;
-            return res.json({ success: true, message: statusMsg, trade: tradeLog, schedule: marketSchedule });
-
         } else if (type.toUpperCase() === 'SELL') {
             const existingIdx = port.holdings.findIndex(h => h.symbol === symbol);
             if (existingIdx < 0 || port.holdings[existingIdx].qty < qty) {
@@ -985,57 +1077,262 @@ app.post('/api/portfolio/trade', (req, res) => {
             const netCashInflow = totalValueIdr - brokerFee;
             const tradePnL = (totalValueIdr - costBasisIdr) - brokerFee;
 
-            // Add cash
-            port.cash += netCashInflow;
-            port.realizedPnL = (port.realizedPnL || 0) + tradePnL;
+            if (willFillImmediately) {
+                port.cash += netCashInflow;
+                port.realizedPnL = (port.realizedPnL || 0) + tradePnL;
 
-            // Reduce holding or remove if 0
-            if (holding.qty - qty <= 0.000001) {
-                port.holdings.splice(existingIdx, 1);
+                if (holding.qty - qty <= 0.000001) {
+                    port.holdings.splice(existingIdx, 1);
+                } else {
+                    holding.qty -= qty;
+                    holding.lastUpdated = Date.now();
+                }
+
+                const tradeLog = {
+                    id: `ORD-${Date.now()}`,
+                    timestamp: new Date().toISOString(),
+                    type: 'SELL',
+                    orderType: normalizedOrderType,
+                    tif: normalizedTif,
+                    symbol,
+                    name: name || symbol,
+                    category: category || 'General',
+                    qty,
+                    price: executionPrice,
+                    limitPrice: normalizedOrderType === 'LIMIT' ? effectiveLimitPrice : null,
+                    currency: currency || 'IDR',
+                    priceInIdr,
+                    totalValueIdr,
+                    brokerFee,
+                    realizedPnL: tradePnL,
+                    status: 'FILLED',
+                    exchange: marketSchedule.exchange,
+                    marketStatus: marketSchedule.status,
+                    note: `Eksekusi DMA SELL ${normalizedOrderType}: ${qty} @ ${isUsd ? '$' + executionPrice.toFixed(2) : 'Rp ' + Math.round(executionPrice).toLocaleString('id-ID')}`
+                };
+                port.trades.push(tradeLog);
+                savePortfolio(port);
+
+                return res.json({
+                    success: true,
+                    message: `Berhasil MENJUAL ${qty} ${symbol}. P&L: Rp ${tradePnL.toLocaleString('id-ID')}`,
+                    trade: tradeLog,
+                    schedule: marketSchedule
+                });
             } else {
                 holding.qty -= qty;
-                holding.lastUpdated = Date.now();
+                if (holding.qty <= 0.000001) {
+                    port.holdings.splice(existingIdx, 1);
+                }
+                const orderStatus = isMarketOpen ? `WORKING (${normalizedOrderType} SELL)` : 'QUEUED (PENDING OPEN)';
+                const workingOrder = {
+                    id: `ORD-${Date.now()}-${Math.floor(Math.random()*1000)}`,
+                    timestamp: new Date().toISOString(),
+                    type: 'SELL',
+                    orderType: normalizedOrderType,
+                    tif: normalizedTif,
+                    symbol,
+                    name: name || symbol,
+                    category: category || 'General',
+                    qty,
+                    price: executionPrice,
+                    limitPrice: normalizedOrderType === 'LIMIT' ? effectiveLimitPrice : null,
+                    stopPrice: effectiveStopPrice,
+                    trailPct: parseFloat(trailPct) || null,
+                    currency: currency || 'IDR',
+                    priceInIdr,
+                    totalValueIdr,
+                    brokerFee,
+                    reservedQty: qty,
+                    originalHoldingAvgPrice: holding.avgPrice,
+                    status: orderStatus,
+                    exchange: marketSchedule.exchange,
+                    marketStatus: marketSchedule.status,
+                    note: `${normalizedOrderType} SELL pada ${isUsd ? '$' + effectiveLimitPrice.toFixed(2) : 'Rp ' + Math.round(effectiveLimitPrice).toLocaleString('id-ID')} (${normalizedTif})`
+                };
+                port.workingOrders.push(workingOrder);
+                port.trades.push(workingOrder);
+                savePortfolio(port);
+
+                return res.json({
+                    success: true,
+                    message: `Order SELL ${normalizedOrderType} ${qty} ${symbol} AKTIF DI ORDER BLOTTER [${orderStatus}]`,
+                    order: workingOrder,
+                    trade: workingOrder,
+                    schedule: marketSchedule
+                });
             }
-
-            // Record trade
-            const tradeLog = {
-                id: `TRD-${Date.now()}`,
-                timestamp: new Date().toISOString(),
-                type: 'SELL',
-                symbol,
-                name: name || symbol,
-                category: category || 'General',
-                qty,
-                price,
-                currency: currency || 'IDR',
-                priceInIdr,
-                totalValueIdr,
-                brokerFee,
-                realizedPnL: tradePnL,
-                status: orderStatus,
-                exchange: marketSchedule.exchange,
-                marketStatus: marketSchedule.status
-            };
-            port.trades.push(tradeLog);
-
-            savePortfolio(port);
-            const statusMsg = orderStatus === 'FILLED'
-                ? `Berhasil MENJUAL ${qty} ${symbol}. P&L: Rp ${tradePnL.toLocaleString('id-ID')}`
-                : `Order JUAL ${qty} ${symbol} MASUK ANTREAN (${marketSchedule.exchange} TUTUP)`;
-            return res.json({
-                success: true,
-                message: statusMsg,
-                trade: tradeLog,
-                schedule: marketSchedule
-            });
         }
 
-        res.status(400).json({ error: 'Tipe order harus BUY atau SELL.' });
+        res.status(400).json({ error: 'Tipe aksi harus BUY atau SELL.' });
     } catch (e) {
         console.error('Trade POST error:', e.message);
         res.status(500).json({ error: e.message });
     }
 });
+
+// 2b. POST /api/portfolio/orders/cancel -> Cancel Working Order and refund reserved cash / positions
+app.post('/api/portfolio/orders/cancel', (req, res) => {
+    try {
+        const { orderId } = req.body;
+        if (!orderId) return res.status(400).json({ error: 'orderId diperlukan untuk pembatalan order.' });
+
+        const port = loadPortfolio();
+        const idx = (port.workingOrders || []).findIndex(o => o.id === orderId);
+        if (idx < 0) {
+            return res.status(404).json({ error: 'Order tidak ditemukan atau sudah selesai dieksekusi.' });
+        }
+
+        const order = port.workingOrders[idx];
+        if (order.type === 'BUY' && order.reservedCash > 0) {
+            port.cash += order.reservedCash;
+        } else if (order.type === 'SELL' && order.reservedQty > 0) {
+            const existingHolding = port.holdings.find(h => h.symbol === order.symbol);
+            if (existingHolding) {
+                existingHolding.qty += order.reservedQty;
+            } else {
+                port.holdings.push({
+                    symbol: order.symbol,
+                    name: order.name,
+                    category: order.category,
+                    currency: order.currency,
+                    qty: order.reservedQty,
+                    avgPrice: order.originalHoldingAvgPrice || order.price,
+                    createdAt: Date.now(),
+                    lastUpdated: Date.now()
+                });
+            }
+        }
+
+        order.status = 'CANCELLED';
+        order.cancelledAt = new Date().toISOString();
+        port.workingOrders.splice(idx, 1);
+
+        const tradeIdx = (port.trades || []).findIndex(t => t.id === orderId);
+        if (tradeIdx >= 0) {
+            port.trades[tradeIdx].status = 'CANCELLED';
+        }
+
+        savePortfolio(port);
+        res.json({ success: true, message: `Order #${orderId} (${order.symbol}) berhasil DIBATALKAN. Posisi/saldo dikembalikan.` });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 2c. GET /api/portfolio/orders -> Get active working orders & recent order blotter
+app.get('/api/portfolio/orders', (req, res) => {
+    try {
+        const port = loadPortfolio();
+        res.json({
+            workingOrders: port.workingOrders || [],
+            trades: port.trades || []
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Background Order Matching Engine for Limit & Stop Orders
+function processWorkingOrders() {
+    try {
+        const port = loadPortfolio();
+        if (!port.workingOrders || port.workingOrders.length === 0) return;
+
+        const usdRate = quoteCache.usdIdr || 16250;
+        let modified = false;
+
+        for (let i = port.workingOrders.length - 1; i >= 0; i--) {
+            const ord = port.workingOrders[i];
+            const quote = quoteCache.data[ord.symbol];
+            if (!quote || quote.price <= 0) continue;
+
+            const schedule = getMarketSchedule(ord.symbol, ord.category);
+            if (!schedule.isOpen) continue;
+
+            const currentPrice = quote.price;
+            let shouldFill = false;
+
+            if (ord.orderType === 'LIMIT') {
+                if (ord.type === 'BUY' && currentPrice <= ord.limitPrice) shouldFill = true;
+                else if (ord.type === 'SELL' && currentPrice >= ord.limitPrice) shouldFill = true;
+            } else if (ord.orderType === 'STOP' || ord.orderType === 'STOP_LIMIT') {
+                if (ord.type === 'BUY' && currentPrice >= ord.stopPrice) shouldFill = true;
+                else if (ord.type === 'SELL' && currentPrice <= ord.stopPrice) shouldFill = true;
+            } else if (ord.orderType === 'MARKET') {
+                shouldFill = true;
+            }
+
+            if (shouldFill) {
+                const isUsd = (ord.currency === 'USD');
+                const fillPrice = currentPrice;
+                const priceInIdr = isUsd ? fillPrice * usdRate : fillPrice;
+                const totalValueIdr = Math.round(ord.qty * priceInIdr);
+                const brokerFee = Math.round(totalValueIdr * 0.0015);
+
+                if (ord.type === 'BUY') {
+                    const actualTotalRequired = totalValueIdr + brokerFee;
+                    const cashAdjustment = (ord.reservedCash || 0) - actualTotalRequired;
+                    if (cashAdjustment > 0) {
+                        port.cash += cashAdjustment;
+                    }
+
+                    const existingIdx = port.holdings.findIndex(h => h.symbol === ord.symbol);
+                    if (existingIdx >= 0) {
+                        const prev = port.holdings[existingIdx];
+                        const totalExistingCost = prev.qty * prev.avgPrice;
+                        const newCost = ord.qty * fillPrice;
+                        const newQty = prev.qty + ord.qty;
+                        const newAvgPrice = (totalExistingCost + newCost) / newQty;
+                        port.holdings[existingIdx] = {
+                            ...prev,
+                            qty: newQty,
+                            avgPrice: newAvgPrice,
+                            lastUpdated: Date.now()
+                        };
+                    } else {
+                        port.holdings.push({
+                            symbol: ord.symbol,
+                            name: ord.name,
+                            category: ord.category,
+                            currency: ord.currency,
+                            qty: ord.qty,
+                            avgPrice: fillPrice,
+                            createdAt: Date.now(),
+                            lastUpdated: Date.now()
+                        });
+                    }
+                } else if (ord.type === 'SELL') {
+                    const avgPriceInIdr = isUsd ? (ord.originalHoldingAvgPrice || fillPrice) * usdRate : (ord.originalHoldingAvgPrice || fillPrice);
+                    const costBasisIdr = Math.round(ord.qty * avgPriceInIdr);
+                    const netCashInflow = totalValueIdr - brokerFee;
+                    const tradePnL = (totalValueIdr - costBasisIdr) - brokerFee;
+                    port.cash += netCashInflow;
+                    port.realizedPnL = (port.realizedPnL || 0) + tradePnL;
+                }
+
+                ord.status = 'FILLED';
+                ord.executedPrice = fillPrice;
+                ord.executedAt = new Date().toISOString();
+                port.workingOrders.splice(i, 1);
+
+                const tIdx = (port.trades || []).findIndex(t => t.id === ord.id);
+                if (tIdx >= 0) {
+                    port.trades[tIdx].status = 'FILLED';
+                    port.trades[tIdx].price = fillPrice;
+                }
+                modified = true;
+            }
+        }
+
+        if (modified) {
+            savePortfolio(port);
+        }
+    } catch (e) {
+        console.error('Error processing working orders:', e.message);
+    }
+}
+setInterval(processWorkingOrders, 3000);
 
 // 3. POST & GET /api/portfolio/reset -> Reset to initial Rp 200 Juta
 const handlePortfolioReset = (req, res) => {
@@ -1219,12 +1516,12 @@ app.get('/api/chart/:symbol', (req, res) => {
     const assetDef = TRACKED_ASSETS.find(a => a.symbol.toUpperCase() === sym.toUpperCase());
     const isIndo = sym.includes('.JK') || assetDef?.currency === 'IDR' || q?.currency === 'IDR';
     const defaultCurrency = isIndo ? 'IDR' : 'USD';
-    const currPrice = q?.price || assetDef?.price || (isIndo ? 2500 : 135);
+    const currPrice = q?.price || assetDef?.price || (isIndo ? 2500 : (sym === 'SPACEX' ? 185.50 : (sym === 'SPCX' ? 151.20 : 85)));
     const prevClose = q?.prevClose || assetDef?.price || currPrice;
     const resolvedCurrency = q?.currency || assetDef?.currency || defaultCurrency;
 
     // For SpaceX and OTC pre-IPOs that aren't on Yahoo Finance, return high-fidelity candles immediately
-    if (['SPACEX', 'OPENAI', 'ANTHROPIC', 'STRIPE', 'BYTEDANCE'].includes(sym)) {
+    if (['SPACEX', 'SPCX', 'OPENAI', 'ANTHROPIC', 'STRIPE', 'BYTEDANCE'].includes(sym)) {
         const candles = generateSyntheticCandles(sym, candleCount, range);
         return res.json({
             symbol: sym,

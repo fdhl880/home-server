@@ -378,6 +378,49 @@
             border-color: #FF2233;
         }
 
+        .btn-ordertype {
+            background: #181818;
+            color: #888888;
+            border: 1px solid #333333;
+            font-family: inherit;
+            font-size: 10px;
+            font-weight: bold;
+            padding: 2px 7px;
+            cursor: pointer;
+        }
+        .btn-ordertype.active {
+            background: #F39F41;
+            color: #000000;
+            border-color: #F39F41;
+        }
+        .btn-tif {
+            background: #111111;
+            color: #888888;
+            border: 1px solid #282828;
+            font-size: 9.5px;
+            font-weight: bold;
+            padding: 1px 6px;
+            cursor: pointer;
+        }
+        .btn-tif.active {
+            background: #004455;
+            color: #00FFFF;
+            border-color: #00EEEE;
+        }
+        .delta-btn {
+            background: #1a1a1a;
+            color: #ffb000;
+            border: 1px solid #444;
+            font-size: 9.5px;
+            font-weight: bold;
+            padding: 1px 5px;
+            cursor: pointer;
+        }
+        .delta-btn:hover {
+            background: #332200;
+            border-color: #ffb000;
+        }
+
         .pct-tag {
             background: #111111;
             border: 1px solid #333333;
@@ -807,6 +850,42 @@
                             <span id="emsxMarketHoursInfo" class="bbg-dim" style="font-size:10px;">-</span>
                         </div>
                         <div class="emsx-line">
+                            <span class="emsx-label">ORDER TYPE:</span>
+                            <div class="emsx-in-cell" style="flex-wrap:wrap; gap:3px;">
+                                <button type="button" class="btn-ordertype active" id="btnOtMarket" onclick="setEmsxOrderType('MARKET')">MARKET</button>
+                                <button type="button" class="btn-ordertype" id="btnOtLimit" onclick="setEmsxOrderType('LIMIT')">LIMIT</button>
+                                <button type="button" class="btn-ordertype" id="btnOtStop" onclick="setEmsxOrderType('STOP')">STOP</button>
+                                <button type="button" class="btn-ordertype" id="btnOtStopLimit" onclick="setEmsxOrderType('STOP_LIMIT')">STOP-LIMIT</button>
+                                <button type="button" class="btn-ordertype" id="btnOtTrail" onclick="setEmsxOrderType('TRAILING_STOP')">TRAIL STOP</button>
+                            </div>
+                        </div>
+                        <div class="emsx-line" id="emsxLimitPriceRow" style="display:none; background:#120e05; padding:3px 0; border:1px solid #442a00;">
+                            <span class="emsx-label bbg-amber" style="font-weight:bold;">LIMIT PRICE:</span>
+                            <div class="emsx-in-cell" style="gap:4px; flex-wrap:wrap;">
+                                <input type="number" id="emsxLimitPriceInput" class="bbg-input" step="any" style="width:110px; font-weight:bold; color:#ffcc00;" oninput="calcEmsx()">
+                                <button type="button" class="delta-btn" onclick="adjustLimitPct(-0.02)">-2%</button>
+                                <button type="button" class="delta-btn" onclick="adjustLimitPct(-0.01)">-1%</button>
+                                <button type="button" class="delta-btn" onclick="resetLimitToMarket()">MKT</button>
+                                <button type="button" class="delta-btn" onclick="adjustLimitPct(0.01)">+1%</button>
+                                <button type="button" class="delta-btn" onclick="adjustLimitPct(0.02)">+2%</button>
+                            </div>
+                        </div>
+                        <div class="emsx-line" id="emsxStopPriceRow" style="display:none; background:#140505; padding:3px 0; border:1px solid #440000;">
+                            <span class="emsx-label bbg-red" style="font-weight:bold;">STOP TRIGGER:</span>
+                            <div class="emsx-in-cell">
+                                <input type="number" id="emsxStopPriceInput" class="bbg-input" step="any" style="width:120px; font-weight:bold; color:#ff4444;" placeholder="Trigger Px...">
+                            </div>
+                        </div>
+                        <div class="emsx-line">
+                            <span class="emsx-label">TIME IN FORCE:</span>
+                            <div class="emsx-in-cell" style="gap:3px;">
+                                <button type="button" class="btn-tif active" id="btnTifGtc" onclick="setEmsxTif('GTC')">GTC</button>
+                                <button type="button" class="btn-tif" id="btnTifDay" onclick="setEmsxTif('DAY')">DAY</button>
+                                <button type="button" class="btn-tif" id="btnTifIoc" onclick="setEmsxTif('IOC')">IOC</button>
+                                <button type="button" class="btn-tif" id="btnTifFok" onclick="setEmsxTif('FOK')">FOK</button>
+                            </div>
+                        </div>
+                        <div class="emsx-line">
                             <span class="emsx-label" id="emsxQtyTitle">QUANTITY (LOTS - 1 LOT = 100 SHARES):</span>
                             <div class="emsx-in-cell">
                                 <input type="number" id="emsxQtyInput" class="bbg-input" value="10" min="1" step="1" oninput="calcEmsx()">
@@ -868,9 +947,38 @@
                 </div>
             </div>
 
+            <!-- EMSX LIVE WORKING ORDERS BLOTTER -->
+            <div class="sec-title" style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; border-left:3px solid #FF8800;">
+                <span class="bbg-amber">EMSX ACTIVE WORKING ORDERS // LIMIT &amp; STOP ORDER BOOK</span>
+                <span class="bbg-white" id="workingOrdersCount" style="font-size:10.5px;">0 WORKING ORDERS</span>
+            </div>
+            <div class="table-frame" style="max-height:160px; margin-bottom:10px;">
+                <table class="bbg-tbl">
+                    <thead>
+                        <tr>
+                            <th>ORDER ID</th>
+                            <th>TIME</th>
+                            <th>TICKER</th>
+                            <th>SECURITY NAME</th>
+                            <th>SIDE</th>
+                            <th>ORDER TYPE</th>
+                            <th>LIMIT / STOP PX</th>
+                            <th>LAST MKT PX</th>
+                            <th>QTY</th>
+                            <th>TIF</th>
+                            <th>STATUS</th>
+                            <th style="text-align:center;">ACTION</th>
+                        </tr>
+                    </thead>
+                    <tbody id="emsxWorkingOrdersBody">
+                        <tr><td colspan="12" style="text-align:center; color:#666; padding:8px;">[ORDER BOOK CLEAR] No active working limit or stop orders. All orders filled or blotter clean.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
             <!-- TRADEABLE ASSETS TABLE -->
             <div class="sec-title" style="display:flex; justify-content:space-between; align-items:center;">
-                <span>TRADEABLE ASSET UNIVERSE // 1,350+ INSTRUMENTS (CLICK TICKER ATAU +BUY)</span>
+                <span>TRADEABLE ASSET UNIVERSE // 5,300+ GLOBAL ASSETS &amp; INSTRUMENTS</span>
                 <div style="display:flex; gap:8px; align-items:center;">
                     <input type="text" id="emsxSearchInput" oninput="filterEmsxUniverse()" class="bbg-input"
                         placeholder="FILTER UNIVERSE..."
@@ -879,17 +987,34 @@
                 </div>
             </div>
             <div class="cat-pill-bar">
-                <button class="cat-pill active" onclick="setUniverseFilter('ALL')">ALL (1,350+)</button>
-                <button class="cat-pill" style="border-color:#FF8800; color:#FF8800; font-weight:bold;" onclick="setUniverseFilter('Space Tech')">🚀 SPACE TECH &amp; PRE-IPO (16)</button>
-                <button class="cat-pill" style="border-color:#00EEEE; color:#00EEEE;" onclick="setUniverseFilter('Saham IPO')">HOT IPOs (40)</button>
-                <button class="cat-pill" onclick="setUniverseFilter('Saham Indo')">IDX INDONESIA (850+)</button>
-                <button class="cat-pill" onclick="setUniverseFilter('Saham US')">WALL STREET (100+)</button>
-                <button class="cat-pill" onclick="setUniverseFilter('Saham Global')">GLOBAL ADRs (10)</button>
-                <button class="cat-pill" onclick="setUniverseFilter('Crypto')">CRYPTO (100+)</button>
-                <button class="cat-pill" onclick="setUniverseFilter('Komoditas')">KOMODITAS (16)</button>
-                <button class="cat-pill" onclick="setUniverseFilter('Forex')">FOREX (15)</button>
-                <button class="cat-pill" onclick="setUniverseFilter('Index')">INDICES &amp; RATES (11)</button>
-                <span class="cat-pill-count" id="emsxAssetCount">SHOWING: 1,350+ ASSETS</span>
+                <button type="button" class="cat-pill active" onclick="setUniverseFilter('ALL')">ALL (5,300+)</button>
+                <button type="button" class="cat-pill" style="border-color:#FF8800; color:#FF8800; font-weight:bold;" onclick="setUniverseFilter('Space Tech')">🚀 SPACE TECH &amp; PRE-IPO (75)</button>
+                <button type="button" class="cat-pill" style="border-color:#00EEEE; color:#00EEEE;" onclick="setUniverseFilter('Saham IPO')">HOT IPOs (60)</button>
+                <button type="button" class="cat-pill" onclick="setUniverseFilter('Saham Indo')">IDX INDONESIA (880+)</button>
+                <button type="button" class="cat-pill" onclick="setUniverseFilter('Saham US')">WALL STREET (3,250+)</button>
+                <button type="button" class="cat-pill" onclick="setUniverseFilter('Saham Global')">GLOBAL EQUITIES (700+)</button>
+                <button type="button" class="cat-pill" onclick="setUniverseFilter('Crypto')">CRYPTO (550+)</button>
+                <button type="button" class="cat-pill" onclick="setUniverseFilter('Komoditas')">KOMODITAS (100+)</button>
+                <button type="button" class="cat-pill" onclick="setUniverseFilter('Forex')">FOREX (100+)</button>
+                <button type="button" class="cat-pill" onclick="setUniverseFilter('Index')">INDICES &amp; RATES (150+)</button>
+                <span class="cat-pill-count" id="emsxAssetCount">TOTAL: 5,300+ ASSETS</span>
+            </div>
+            <!-- EMSX PAGINATION BAR -->
+            <div style="display:flex; justify-content:space-between; align-items:center; background:#0c0c0c; border:1px solid #222; border-bottom:none; padding:3px 8px; font-size:10px;">
+                <div>
+                    <span id="emsxPageInfo" class="bbg-amber" style="font-weight:bold;">PAGE 1 OF 54 (5,335 ASSETS)</span>
+                </div>
+                <div style="display:flex; gap:6px; align-items:center;">
+                    <button type="button" class="btn-act" onclick="changeEmsxPage(-1)">&lt; PREV</button>
+                    <button type="button" class="btn-act" onclick="changeEmsxPage(1)">NEXT &gt;</button>
+                    <span class="bbg-dim">PER PAGE:</span>
+                    <select class="bbg-select" style="width:65px; font-size:10px; padding:1px;" onchange="changeEmsxPageSize(this.value)">
+                        <option value="50">50</option>
+                        <option value="100" selected>100</option>
+                        <option value="250">250</option>
+                        <option value="500">500</option>
+                    </select>
+                </div>
             </div>
             <div class="table-frame" style="max-height:240px;">
                 <table class="bbg-tbl">
@@ -951,26 +1076,43 @@
         <!-- ============================================================== -->
         <div id="view-monitor" class="view-section">
             <div class="sec-title" style="display:flex; justify-content:space-between; align-items:center;">
-                <span>-- GLOBAL MULTI-ASSET MARKET MONITOR (1,350+ ASSETS ACROSS ALL EXCHANGES) --</span>
+                <span>-- GLOBAL MULTI-ASSET MARKET MONITOR (5,300+ ASSETS ACROSS ALL EXCHANGES) --</span>
                 <div style="display:flex; gap:8px; align-items:center;">
                     <input type="text" id="monitorSearchInput" oninput="renderMonitorGrid()" class="bbg-input"
                         placeholder="FILTER MONITOR..."
                         style="width:200px; font-size:10.5px; padding:2px 6px; text-transform:uppercase;">
-                    <button class="btn-act" onclick="fetchQuotesData()">PULL LIVE DATA &lt;GO&gt;</button>
+                    <button type="button" class="btn-act" onclick="fetchQuotesData()">PULL LIVE DATA &lt;GO&gt;</button>
                 </div>
             </div>
             <div class="cat-pill-bar">
-                <button class="cat-pill active" onclick="setMonitorFilter('ALL')">ALL (1,350+)</button>
-                <button class="cat-pill" style="border-color:#FF8800; color:#FF8800; font-weight:bold;" onclick="setMonitorFilter('Space Tech')">🚀 SPACE TECH &amp; PRE-IPO (16)</button>
-                <button class="cat-pill" style="border-color:#00EEEE; color:#00EEEE;" onclick="setMonitorFilter('Saham IPO')">HOT IPOs (40)</button>
-                <button class="cat-pill" onclick="setMonitorFilter('Saham Indo')">IDX INDONESIA (850+)</button>
-                <button class="cat-pill" onclick="setMonitorFilter('Saham US')">WALL STREET (100+)</button>
-                <button class="cat-pill" onclick="setMonitorFilter('Saham Global')">GLOBAL ADRs (10)</button>
-                <button class="cat-pill" onclick="setMonitorFilter('Crypto')">CRYPTO (100+)</button>
-                <button class="cat-pill" onclick="setMonitorFilter('Komoditas')">KOMODITAS (16)</button>
-                <button class="cat-pill" onclick="setMonitorFilter('Forex')">FOREX (15)</button>
-                <button class="cat-pill" onclick="setMonitorFilter('Index')">INDICES &amp; RATES (11)</button>
-                <span class="cat-pill-count" id="monAssetCount">SHOWING: 1,350+ ASSETS</span>
+                <button type="button" class="cat-pill active" onclick="setMonitorFilter('ALL')">ALL (5,300+)</button>
+                <button type="button" class="cat-pill" style="border-color:#FF8800; color:#FF8800; font-weight:bold;" onclick="setMonitorFilter('Space Tech')">🚀 SPACE TECH &amp; PRE-IPO (75)</button>
+                <button type="button" class="cat-pill" style="border-color:#00EEEE; color:#00EEEE;" onclick="setMonitorFilter('Saham IPO')">HOT IPOs (60)</button>
+                <button type="button" class="cat-pill" onclick="setMonitorFilter('Saham Indo')">IDX INDONESIA (880+)</button>
+                <button type="button" class="cat-pill" onclick="setMonitorFilter('Saham US')">WALL STREET (3,250+)</button>
+                <button type="button" class="cat-pill" onclick="setMonitorFilter('Saham Global')">GLOBAL EQUITIES (700+)</button>
+                <button type="button" class="cat-pill" onclick="setMonitorFilter('Crypto')">CRYPTO (550+)</button>
+                <button type="button" class="cat-pill" onclick="setMonitorFilter('Komoditas')">KOMODITAS (100+)</button>
+                <button type="button" class="cat-pill" onclick="setMonitorFilter('Forex')">FOREX (100+)</button>
+                <button type="button" class="cat-pill" onclick="setMonitorFilter('Index')">INDICES &amp; RATES (150+)</button>
+                <span class="cat-pill-count" id="monAssetCount">TOTAL: 5,300+ ASSETS</span>
+            </div>
+            <!-- MONITOR PAGINATION BAR -->
+            <div style="display:flex; justify-content:space-between; align-items:center; background:#0c0c0c; border:1px solid #222; border-bottom:none; padding:3px 8px; font-size:10px;">
+                <div>
+                    <span id="monPageInfo" class="bbg-amber" style="font-weight:bold;">PAGE 1 OF 54 (5,335 ASSETS)</span>
+                </div>
+                <div style="display:flex; gap:6px; align-items:center;">
+                    <button type="button" class="btn-act" onclick="changeMonPage(-1)">&lt; PREV</button>
+                    <button type="button" class="btn-act" onclick="changeMonPage(1)">NEXT &gt;</button>
+                    <span class="bbg-dim">PER PAGE:</span>
+                    <select class="bbg-select" style="width:65px; font-size:10px; padding:1px;" onchange="changeMonPageSize(this.value)">
+                        <option value="50">50</option>
+                        <option value="100" selected>100</option>
+                        <option value="250">250</option>
+                        <option value="500">500</option>
+                    </select>
+                </div>
             </div>
             <div class="table-frame">
                 <table class="bbg-tbl">
@@ -1131,7 +1273,10 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                             <tr><td class="bbg-white">Sovereign 10-Year Bond Yield:</td><td class="bbg-amber" style="text-align:right;" id="macroIndoYield">6.68%</td></tr>
                             <tr><td class="bbg-white">Central Government Debt / GDP:</td><td class="bbg-white" style="text-align:right;" id="macroDebtGdp">38.6% (Prudent)</td></tr>
                             <tr><td class="bbg-white">Current Account Deficit:</td><td class="bbg-yellow" style="text-align:right;" id="macroCad">-0.9% of GDP</td></tr>
-                            <tr><td class="bbg-white">Bank Indonesia JISDOR Rate:</td><td class="bbg-amber" style="font-weight:bold; text-align:right;" id="macroJisdor">Rp 16,250 / USD</td></tr>
+                            <tr><td class="bbg-white">Bank Indonesia JISDOR Rate:</td><td class="bbg-amber" style="font-weight:bold; text-align:right;" id="macroJisdor">Rp 15,385 / USD</td></tr>
+                            <tr><td class="bbg-white">IHSG Average P/E Multiple:</td><td class="bbg-cyan" style="font-weight:bold; text-align:right;" id="macroIhsgPe">14.8x</td></tr>
+                            <tr><td class="bbg-white">IHSG Average P/BV Ratio:</td><td class="bbg-white" style="text-align:right;" id="macroIhsgPbv">1.95x</td></tr>
+                            <tr><td class="bbg-white">IHSG Dividend Yield (FY24E):</td><td class="bbg-green" style="font-weight:bold; text-align:right;" id="macroIhsgDiv">3.85%</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -1144,15 +1289,16 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     <table class="bbg-tbl" style="margin-top:4px;">
                         <tbody>
                             <tr><td class="bbg-white">Federal Funds Target Rate:</td><td class="bbg-cyan" style="font-weight:bold; text-align:right;" id="macroFedRate">4.75% - 5.00%</td></tr>
-                            <tr><td class="bbg-white">Fed FOMC Monetary Path:</td><td class="bbg-yellow" style="text-align:right;" id="macroFedExp">Cut 25bps in Dec FOMC</td></tr>
-                            <tr><td class="bbg-white">US Headline CPI Inflation:</td><td class="bbg-amber" style="text-align:right;" id="macroUsCpi">3.2% YoY</td></tr>
-                            <tr><td class="bbg-white">US Real GDP Annualized:</td><td class="bbg-green" style="font-weight:bold; text-align:right;" id="macroUsGdp">2.8%</td></tr>
-                            <tr><td class="bbg-white">US Unemployment Rate:</td><td class="bbg-white" style="text-align:right;" id="macroUsUnemp">4.1%</td></tr>
-                            <tr><td class="bbg-white">US 10-Year Treasury Yield:</td><td class="bbg-cyan" style="font-weight:bold; text-align:right;" id="macroUs10Y">4.25%</td></tr>
-                            <tr><td class="bbg-white">US 2-Year Treasury Yield:</td><td class="bbg-white" style="text-align:right;" id="macroUs2Y">4.15%</td></tr>
-                            <tr><td class="bbg-white">10Y - 2Y Yield Curve Spread:</td><td class="bbg-green" style="font-weight:bold; text-align:right;" id="macroYieldSpread">+10 bps (Uninverted)</td></tr>
-                            <tr><td class="bbg-white">US Dollar Index (DXY):</td><td class="bbg-amber" style="font-weight:bold; text-align:right;" id="macroDxy">104.20</td></tr>
-                            <tr><td class="bbg-white">Brent Crude Oil Benchmark:</td><td class="bbg-white" style="text-align:right;" id="macroBrent">$75.20 / bbl</td></tr>
+                            <tr><td class="bbg-white">Fed FOMC Monetary Path:</td><td class="bbg-yellow" style="text-align:right;" id="macroFedExp">Cut 25-50 bps</td></tr>
+                            <tr><td class="bbg-white">US Headline CPI Inflation:</td><td class="bbg-amber" style="text-align:right;" id="macroUsCpi">2.50% YoY</td></tr>
+                            <tr><td class="bbg-white">US Real GDP Annualized:</td><td class="bbg-green" style="font-weight:bold; text-align:right;" id="macroUsGdp">3.00%</td></tr>
+                            <tr><td class="bbg-white">US Unemployment Rate:</td><td class="bbg-white" style="text-align:right;" id="macroUsUnemp">4.20%</td></tr>
+                            <tr><td class="bbg-white">US 10-Year Treasury Yield:</td><td class="bbg-cyan" style="font-weight:bold; text-align:right;" id="macroUs10Y">3.72%</td></tr>
+                            <tr><td class="bbg-white">US 2-Year Treasury Yield:</td><td class="bbg-white" style="text-align:right;" id="macroUs2Y">3.58%</td></tr>
+                            <tr><td class="bbg-white">10Y - 2Y Yield Curve Spread:</td><td class="bbg-green" style="font-weight:bold; text-align:right;" id="macroYieldSpread">+14 bps (Uninverted)</td></tr>
+                            <tr><td class="bbg-white">US Dollar Index (DXY):</td><td class="bbg-amber" style="font-weight:bold; text-align:right;" id="macroDxy">100.85</td></tr>
+                            <tr><td class="bbg-white">Brent Crude Oil Benchmark:</td><td class="bbg-white" style="text-align:right;" id="macroBrent">$74.80 / bbl</td></tr>
+                            <tr><td class="bbg-white">Gold Spot Benchmark (ATH):</td><td class="bbg-yellow" style="font-weight:bold; text-align:right;" id="macroGold">$2,615 / oz</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -1240,9 +1386,11 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             fetchPortfolioData();
             fetchQuotesData();
             fetchNewsData();
+            fetchMacroData();
 
             setInterval(fetchPortfolioData, 12000);
             setInterval(fetchQuotesData, 12000);
+            setInterval(fetchMacroData, 30000);
         });
 
         function startClock() {
@@ -1313,6 +1461,7 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 renderSummaryMetrics();
                 renderHoldingsTables();
                 renderBlotterTables();
+                renderWorkingOrders(portState.workingOrders || []);
                 calcEmsx();
             } catch (e) {
                 console.error('Portfolio error:', e);
@@ -1607,6 +1756,35 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             testBuy(sym, qtyVal);
         }
 
+        let monCurrentPage = 1;
+        let monPageSize = 100;
+        let emsxCurrentPage = 1;
+        let emsxPageSize = 100;
+
+        function changeMonPage(delta) {
+            monCurrentPage += delta;
+            if (monCurrentPage < 1) monCurrentPage = 1;
+            renderMonitorGrid();
+        }
+
+        function changeMonPageSize(sz) {
+            monPageSize = parseInt(sz) || 100;
+            monCurrentPage = 1;
+            renderMonitorGrid();
+        }
+
+        function changeEmsxPage(delta) {
+            emsxCurrentPage += delta;
+            if (emsxCurrentPage < 1) emsxCurrentPage = 1;
+            filterEmsxUniverse();
+        }
+
+        function changeEmsxPageSize(sz) {
+            emsxPageSize = parseInt(sz) || 100;
+            emsxCurrentPage = 1;
+            filterEmsxUniverse();
+        }
+
         function renderMonitorGrid() {
             const tbody = document.getElementById('monitorGridBody');
             const searchEl = document.getElementById('monitorSearchInput');
@@ -1615,7 +1793,7 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             let filtered = quoteList.filter(q => {
                 if (currentMonitorFilter !== 'ALL') {
                     if (currentMonitorFilter === 'Space Tech') {
-                        if (!q.category.includes('Space Tech') && !q.category.includes('Pre-IPO') && !['SPACEX', 'OPENAI', 'DXYZ', 'RKLB', 'ASTS', 'LUNR', 'ARKX', 'UFO', 'PL', 'RDW', 'MNTS', 'BKSY', 'SPCE', 'STRIPE', 'ANTHROPIC', 'BYTEDANCE'].includes(q.symbol)) return false;
+                        if (!q.category.includes('Space Tech') && !q.category.includes('Pre-IPO') && !['SPACEX', 'SPCX', 'OPENAI', 'DXYZ', 'RKLB', 'ASTS', 'LUNR', 'ARKX', 'UFO', 'PL', 'RDW', 'MNTS', 'BKSY', 'SPCE', 'STRIPE', 'ANTHROPIC', 'BYTEDANCE', 'DATABRICKS', 'CANVA', 'XAI', 'NEURALINK', 'ANDURIL'].includes(q.symbol)) return false;
                     } else if (currentMonitorFilter === 'Index') {
                         if (!q.category.includes('Index') && !q.category.includes('Rates') && !q.symbol.startsWith('^')) return false;
                     } else if (q.category !== currentMonitorFilter) {
@@ -1629,10 +1807,21 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 return true;
             });
 
-            const countEl = document.getElementById('monAssetCount');
-            if (countEl) countEl.textContent = `SHOWING: ${filtered.length} / ${quoteList.length} ASSETS`;
+            const totalFiltered = filtered.length;
+            const totalPages = Math.ceil(totalFiltered / monPageSize) || 1;
+            if (monCurrentPage > totalPages) monCurrentPage = totalPages;
+            if (monCurrentPage < 1) monCurrentPage = 1;
 
-            tbody.innerHTML = filtered.map(q => {
+            const countEl = document.getElementById('monAssetCount');
+            if (countEl) countEl.textContent = `TOTAL: ${totalFiltered.toLocaleString('id-ID')} ASSETS`;
+
+            const pageInfoEl = document.getElementById('monPageInfo');
+            if (pageInfoEl) pageInfoEl.textContent = `PAGE ${monCurrentPage} OF ${totalPages} (${totalFiltered.toLocaleString('id-ID')} ASSETS)`;
+
+            const startIdx = (monCurrentPage - 1) * monPageSize;
+            const pageItems = filtered.slice(startIdx, startIdx + monPageSize);
+
+            tbody.innerHTML = pageItems.map(q => {
                 const isUp = q.changePct >= 0;
                 const cls = isUp ? 'bbg-green' : 'bbg-red';
                 const sign = isUp ? '+' : '';
@@ -1715,7 +1904,7 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             let filtered = quoteList.filter(q => {
                 if (currentUniverseFilter !== 'ALL') {
                     if (currentUniverseFilter === 'Space Tech') {
-                        if (!q.category.includes('Space Tech') && !q.category.includes('Pre-IPO') && !['SPACEX', 'OPENAI', 'DXYZ', 'RKLB', 'ASTS', 'LUNR', 'ARKX', 'UFO', 'PL', 'RDW', 'MNTS', 'BKSY', 'SPCE', 'STRIPE', 'ANTHROPIC', 'BYTEDANCE'].includes(q.symbol)) return false;
+                        if (!q.category.includes('Space Tech') && !q.category.includes('Pre-IPO') && !['SPACEX', 'SPCX', 'OPENAI', 'DXYZ', 'RKLB', 'ASTS', 'LUNR', 'ARKX', 'UFO', 'PL', 'RDW', 'MNTS', 'BKSY', 'SPCE', 'STRIPE', 'ANTHROPIC', 'BYTEDANCE', 'DATABRICKS', 'CANVA', 'XAI', 'NEURALINK', 'ANDURIL'].includes(q.symbol)) return false;
                     } else if (currentUniverseFilter === 'Index') {
                         if (!q.category.includes('Index') && !q.category.includes('Rates') && !q.symbol.startsWith('^')) return false;
                     } else if (q.category !== currentUniverseFilter) {
@@ -1729,11 +1918,22 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 return true;
             });
 
+            const totalFiltered = filtered.length;
+            const totalPages = Math.ceil(totalFiltered / emsxPageSize) || 1;
+            if (emsxCurrentPage > totalPages) emsxCurrentPage = totalPages;
+            if (emsxCurrentPage < 1) emsxCurrentPage = 1;
+
             const countEl = document.getElementById('emsxAssetCount');
-            if (countEl) countEl.textContent = `SHOWING: ${filtered.length} / ${quoteList.length} ASSETS`;
+            if (countEl) countEl.textContent = `TOTAL: ${totalFiltered.toLocaleString('id-ID')} ASSETS`;
+
+            const pageInfoEl = document.getElementById('emsxPageInfo');
+            if (pageInfoEl) pageInfoEl.textContent = `PAGE ${emsxCurrentPage} OF ${totalPages} (${totalFiltered.toLocaleString('id-ID')} ASSETS)`;
+
+            const startIdx = (emsxCurrentPage - 1) * emsxPageSize;
+            const pageItems = filtered.slice(startIdx, startIdx + emsxPageSize);
 
             const ubody = document.getElementById('emsxUniverseBody');
-            ubody.innerHTML = filtered.map(q => {
+            ubody.innerHTML = pageItems.map(q => {
                 const cls = q.changePct >= 0 ? 'bbg-green' : 'bbg-red';
                 const idrPx = fmtIdr(q.priceIdr || (q.currency === 'USD' ? q.price * usdRate : q.price));
                 return `
@@ -1818,6 +2018,93 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             calcEmsx();
         }
 
+        // ============================================================
+        // EMSX ORDER TYPES, TIME IN FORCE (TIF) & PRICING
+        // ============================================================
+        let emsxOrderType = 'MARKET';
+        let emsxTif = 'GTC';
+
+        function setEmsxOrderType(ot) {
+            emsxOrderType = ot;
+            document.querySelectorAll('.btn-ordertype').forEach(b => b.classList.remove('active'));
+            const btnMap = {
+                'MARKET': 'btnOtMarket',
+                'LIMIT': 'btnOtLimit',
+                'STOP': 'btnOtStop',
+                'STOP_LIMIT': 'btnOtStopLimit',
+                'TRAILING_STOP': 'btnOtTrail'
+            };
+            if (btnMap[ot]) {
+                const el = document.getElementById(btnMap[ot]);
+                if (el) el.classList.add('active');
+            }
+
+            const limitRow = document.getElementById('emsxLimitPriceRow');
+            const stopRow = document.getElementById('emsxStopPriceRow');
+
+            if (ot === 'LIMIT' || ot === 'STOP_LIMIT') {
+                if (limitRow) limitRow.style.display = 'flex';
+                const sym = document.getElementById('emsxTickerSelect').value;
+                const q = quoteList.find(x => x.symbol === sym);
+                const limitIn = document.getElementById('emsxLimitPriceInput');
+                if (q && limitIn && (!limitIn.value || parseFloat(limitIn.value) <= 0)) {
+                    limitIn.value = q.price;
+                }
+            } else {
+                if (limitRow) limitRow.style.display = 'none';
+            }
+
+            if (ot === 'STOP' || ot === 'STOP_LIMIT') {
+                if (stopRow) stopRow.style.display = 'flex';
+                const sym = document.getElementById('emsxTickerSelect').value;
+                const q = quoteList.find(x => x.symbol === sym);
+                const stopIn = document.getElementById('emsxStopPriceInput');
+                if (q && stopIn && (!stopIn.value || parseFloat(stopIn.value) <= 0)) {
+                    stopIn.value = (q.price * 0.95).toFixed(2);
+                }
+            } else {
+                if (stopRow) stopRow.style.display = 'none';
+            }
+
+            calcEmsx();
+        }
+
+        function adjustLimitPct(pct) {
+            const inEl = document.getElementById('emsxLimitPriceInput');
+            if (!inEl) return;
+            const cur = parseFloat(inEl.value) || 0;
+            if (cur > 0) {
+                const nextVal = cur * (1 + pct);
+                inEl.value = nextVal > 100 ? nextVal.toFixed(2) : nextVal.toFixed(4);
+                calcEmsx();
+            }
+        }
+
+        function resetLimitToMarket() {
+            const sym = document.getElementById('emsxTickerSelect').value;
+            const q = quoteList.find(x => x.symbol === sym);
+            const inEl = document.getElementById('emsxLimitPriceInput');
+            if (q && inEl) {
+                inEl.value = q.price;
+                calcEmsx();
+            }
+        }
+
+        function setEmsxTif(tif) {
+            emsxTif = tif;
+            document.querySelectorAll('.btn-tif').forEach(b => b.classList.remove('active'));
+            const tifMap = {
+                'GTC': 'btnTifGtc',
+                'DAY': 'btnTifDay',
+                'IOC': 'btnTifIoc',
+                'FOK': 'btnTifFok'
+            };
+            if (tifMap[tif]) {
+                const el = document.getElementById(tifMap[tif]);
+                if (el) el.classList.add('active');
+            }
+        }
+
         function calcEmsx() {
             const sym = document.getElementById('emsxTickerSelect').value;
             const q = quoteList.find(x => x.symbol === sym);
@@ -1827,9 +2114,15 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             const isIndo = q.symbol.includes('.JK') || q.category === 'Saham Indo';
             const actualQty = isIndo ? inputVal * 100 : inputVal;
 
-            const price = q.price;
-            const priceInIdr = (q.currency === 'USD') ? price * usdRate : price;
+            let price = q.price;
+            if (emsxOrderType === 'LIMIT' || emsxOrderType === 'STOP_LIMIT') {
+                const limitIn = document.getElementById('emsxLimitPriceInput');
+                if (limitIn && parseFloat(limitIn.value) > 0) {
+                    price = parseFloat(limitIn.value);
+                }
+            }
 
+            const priceInIdr = (q.currency === 'USD') ? price * usdRate : price;
             const gross = actualQty * priceInIdr;
             const comm = gross * 0.0015;
             const net = emsxSide === 'BUY' ? gross + comm : gross - comm;
@@ -1851,7 +2144,11 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             if (!q) return;
 
             const budget = portState.cash * pct;
-            const priceInIdr = (q.currency === 'USD') ? q.price * usdRate : q.price;
+            let price = q.price;
+            if (emsxOrderType === 'LIMIT' && document.getElementById('emsxLimitPriceInput') && parseFloat(document.getElementById('emsxLimitPriceInput').value) > 0) {
+                price = parseFloat(document.getElementById('emsxLimitPriceInput').value);
+            }
+            const priceInIdr = (q.currency === 'USD') ? price * usdRate : price;
             if (priceInIdr <= 0) return;
 
             let units = Math.floor(budget / (priceInIdr * 1.0015));
@@ -1882,14 +2179,28 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             const isIndo = q.symbol.includes('.JK') || q.category === 'Saham Indo';
             const actualQty = isIndo ? inputVal * 100 : inputVal;
 
+            let limitVal = null;
+            if (emsxOrderType === 'LIMIT' || emsxOrderType === 'STOP_LIMIT') {
+                limitVal = parseFloat(document.getElementById('emsxLimitPriceInput').value) || q.price;
+            }
+
+            let stopVal = null;
+            if (emsxOrderType === 'STOP' || emsxOrderType === 'STOP_LIMIT') {
+                stopVal = parseFloat(document.getElementById('emsxStopPriceInput').value) || null;
+            }
+
             const queueAllowed = document.getElementById('emsxQueueCheckbox') ? document.getElementById('emsxQueueCheckbox').checked : true;
             const payload = {
                 type: emsxSide,
+                orderType: emsxOrderType,
+                tif: emsxTif,
                 symbol: q.symbol,
                 name: q.name,
                 category: q.category,
                 qty: actualQty,
                 price: q.price,
+                limitPrice: limitVal,
+                stopPrice: stopVal,
                 currency: q.currency,
                 queueIfClosed: queueAllowed
             };
@@ -1902,18 +2213,80 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 });
                 const d = await res.json();
                 if (res.ok && d.success) {
-                    if (d.trade && d.trade.status && d.trade.status.includes('QUEUED')) {
-                        showPopup(`⏳ DMA ORDER QUEUED: ${d.trade.type} ${d.trade.qty} ${d.trade.symbol} dimasukkan ke antrean pembukaan pasar (${d.trade.exchange} TUTUP)`, false);
-                    } else {
-                        showPopup(`DMA FILL CONFIRMED: ${d.trade.type} ${d.trade.qty} ${d.trade.symbol} @ ${fmtIdr(d.trade.priceInIdr)} IDR`, false);
-                    }
+                    showPopup(d.message || `DMA FILL CONFIRMED: ${payload.type} ${payload.qty} ${payload.symbol}`, false);
                     await fetchPortfolioData();
-                    showView('summary');
+                    showView('emsx');
                 } else {
                     showPopup(`DMA REJECTED: ${d.error || 'Execution failed'}`, true);
                 }
             } catch (e) {
                 showPopup('COMMUNICATION ERROR: ' + e.message, true);
+            }
+        }
+
+        // ============================================================
+        // EMSX WORKING ORDERS BLOTTER & CANCELLATION ENGINE
+        // ============================================================
+        function renderWorkingOrders(workingOrders = []) {
+            const tbody = document.getElementById('emsxWorkingOrdersBody');
+            const countEl = document.getElementById('workingOrdersCount');
+            if (!tbody) return;
+
+            if (!workingOrders || workingOrders.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; color:#666; padding:8px;">[ORDER BOOK CLEAR] No active working limit or stop orders. All orders filled or blotter clean.</td></tr>`;
+                if (countEl) countEl.textContent = '0 WORKING ORDERS';
+                return;
+            }
+
+            if (countEl) countEl.textContent = `${workingOrders.length} ACTIVE WORKING ORDERS`;
+
+            tbody.innerHTML = workingOrders.map(o => {
+                const sideCls = o.type === 'BUY' ? 'bbg-green' : 'bbg-red';
+                const isUsd = (o.currency === 'USD');
+                const limitStr = o.limitPrice ? (isUsd ? '$' + Number(o.limitPrice).toFixed(2) : fmtIdr(o.limitPrice)) : (o.stopPrice ? 'STOP ' + (isUsd ? '$' + Number(o.stopPrice).toFixed(2) : fmtIdr(o.stopPrice)) : 'MKT');
+                const quote = quoteList.find(q => q.symbol === o.symbol);
+                const curPxStr = quote ? (isUsd ? '$' + Number(quote.price).toFixed(2) : fmtIdr(quote.price)) : '-';
+                const timeStr = o.timestamp ? new Date(o.timestamp).toLocaleTimeString('id-ID') : '-';
+
+                return `
+                    <tr>
+                        <td><strong class="bbg-amber">${o.id}</strong></td>
+                        <td>${timeStr}</td>
+                        <td><strong class="bbg-cyan">${o.symbol}</strong></td>
+                        <td class="bbg-white">${o.name}</td>
+                        <td class="${sideCls}" style="font-weight:bold;">${o.type}</td>
+                        <td>${o.orderType}</td>
+                        <td class="bbg-amber" style="font-weight:bold;">${limitStr}</td>
+                        <td class="bbg-white">${curPxStr}</td>
+                        <td>${o.qty}</td>
+                        <td class="bbg-cyan">${o.tif || 'GTC'}</td>
+                        <td><span style="background:#332200; border:1px solid #FF8800; color:#FFB000; padding:1px 5px; font-size:9.5px; font-weight:bold;">${o.status}</span></td>
+                        <td style="text-align:center;">
+                            <button class="btn-act" style="background:#330000; border:1px solid #FF2233; color:#FF5566; font-weight:bold; padding:1px 6px;" onclick="cancelOrder('${o.id}')">CANCEL</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        async function cancelOrder(orderId) {
+            if (!confirm(`Batalkan Working Order ${orderId}?`)) return;
+            showPopup(`[EMSX CANCEL] Membatalkan order #${orderId}...`);
+            try {
+                const res = await fetch('/api/portfolio/orders/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ orderId })
+                });
+                const d = await res.json();
+                if (d.success) {
+                    showPopup(d.message);
+                    await fetchPortfolioData();
+                } else {
+                    showPopup(d.error || 'Gagal membatalkan order', true);
+                }
+            } catch (e) {
+                showPopup('Error: ' + e.message, true);
             }
         }
 
@@ -2327,43 +2700,68 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 const res = await fetch('/api/macro');
                 if (!res.ok) return;
                 const d = await res.json();
+
+                const fmtItem = (item, defaultSuffix = '') => {
+                    if (item === undefined || item === null) return '-';
+                    if (typeof item === 'string' || typeof item === 'number') {
+                        return `${item}${defaultSuffix}`;
+                    }
+                    if (typeof item === 'object') {
+                        const val = item.value !== undefined ? item.value : (item.val || '-');
+                        if (item.trend) {
+                            return `${val} <span style="font-size:9.5px; opacity:0.82; font-weight:normal;">[${item.trend}]</span>`;
+                        }
+                        return `${val}${defaultSuffix}`;
+                    }
+                    return '-';
+                };
+
+                const setHtml = (id, html) => {
+                    const el = document.getElementById(id);
+                    if (el) el.innerHTML = html;
+                };
+
                 if (d.indonesia) {
                     const idn = d.indonesia;
-                    const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-                    setTxt('macroBiRate', idn.biRate);
-                    setTxt('macroInfYoy', idn.inflationYoY + ' (Target BI 1.5-3.5%)');
-                    setTxt('macroInfMom', idn.inflationMoM);
-                    setTxt('macroGdpIndo', idn.gdpGrowthYoY);
-                    setTxt('macroFxReserves', idn.foreignReserves + ' USD');
-                    setTxt('macroTradeBal', idn.tradeBalance);
-                    setTxt('macroIndoYield', idn.tenYearYield);
-                    setTxt('macroDebtGdp', idn.debtToGdp + ' of GDP');
-                    setTxt('macroCad', idn.currAccountDeficit);
-                    setTxt('macroJisdor', idn.jisdorFx + ' / USD');
+                    setHtml('macroBiRate', fmtItem(idn.biRate));
+                    setHtml('macroInfYoy', fmtItem(idn.cpiYoY || idn.inflationYoY, ' (Target BI 2.5±1%)'));
+                    setHtml('macroInfMom', fmtItem(idn.cpiMoM || idn.inflationMoM));
+                    setHtml('macroGdpIndo', fmtItem(idn.gdpGrowthYoY));
+                    setHtml('macroFxReserves', fmtItem(idn.forexReserves || idn.foreignReserves));
+                    setHtml('macroTradeBal', fmtItem(idn.tradeBalance));
+                    setHtml('macroIndoYield', fmtItem(idn.sbnYield10Y || idn.tenYearYield));
+                    setHtml('macroDebtGdp', fmtItem(idn.debtToGdp || idn.debtGdp));
+                    setHtml('macroCad', fmtItem(idn.currAccountDeficit || idn.cad));
+                    setHtml('macroJisdor', fmtItem(idn.jisdorUsd || idn.jisdorFx));
+                    setHtml('macroIhsgPe', fmtItem(idn.ihsgPE));
+                    setHtml('macroIhsgPbv', fmtItem(idn.ihsgPBV));
+                    setHtml('macroIhsgDiv', fmtItem(idn.ihsgDivYield));
                 }
+
                 if (d.global) {
                     const g = d.global;
-                    const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-                    setTxt('macroFedRate', g.fedRate);
-                    setTxt('macroFedExp', g.fedRateExpectation);
-                    setTxt('macroUsCpi', g.usCpiInflation);
-                    setTxt('macroUsGdp', g.usGdpAnnualized);
-                    setTxt('macroUsUnemp', g.usUnemployment);
-                    setTxt('macroUs10Y', g.us10YYield);
-                    setTxt('macroUs2Y', g.us2YYield);
-                    setTxt('macroYieldSpread', g.yieldCurveSpread);
-                    setTxt('macroDxy', g.dxyIndex);
-                    setTxt('macroBrent', g.brentCrude);
+                    setHtml('macroFedRate', fmtItem(g.fedFundsRate || g.fedRate));
+                    setHtml('macroFedExp', fmtItem(g.fedRateExpectation || g.fedExp));
+                    setHtml('macroUsCpi', fmtItem(g.usCpiYoY || g.usCpiInflation));
+                    setHtml('macroUsGdp', fmtItem(g.usGdpQoQ || g.usGdpAnnualized));
+                    setHtml('macroUsUnemp', fmtItem(g.usUnemployment || g.usUnemp));
+                    setHtml('macroUs10Y', fmtItem(g.usYield10Y || g.us10YYield));
+                    setHtml('macroUs2Y', fmtItem(g.usYield2Y || g.us2YYield));
+                    setHtml('macroYieldSpread', fmtItem(g.yieldCurveSpread));
+                    setHtml('macroDxy', fmtItem(g.dxyIndex));
+                    setHtml('macroBrent', fmtItem(g.brentCrude));
+                    setHtml('macroGold', fmtItem(g.goldSpot));
                 }
-                if (d.microKeyMetrics) {
+
+                if (d.microKeyMetrics && Array.isArray(d.microKeyMetrics)) {
                     const tbody = document.getElementById('macroMicroTableBody');
                     if (tbody) {
                         tbody.innerHTML = d.microKeyMetrics.map(m => `
                             <tr>
                                 <td><strong class="bbg-amber" style="cursor:pointer;" onclick="openGp('${m.symbol}')">${m.symbol}</strong></td>
                                 <td class="bbg-white">${m.name}</td>
-                                <td class="bbg-cyan">${m.pe ? m.pe.toFixed(1) + 'x' : 'N/A'}</td>
-                                <td class="bbg-white">${m.pbv ? m.pbv.toFixed(1) + 'x' : 'N/A'}</td>
+                                <td class="bbg-cyan">${m.pe ? (typeof m.pe === 'number' ? m.pe.toFixed(1) + 'x' : m.pe) : 'N/A'}</td>
+                                <td class="bbg-white">${m.pbv ? (typeof m.pbv === 'number' ? m.pbv.toFixed(1) + 'x' : m.pbv) : 'N/A'}</td>
                                 <td class="bbg-green">${m.roe || 'N/A'}</td>
                                 <td class="bbg-yellow">${m.divYield || 'N/A'}</td>
                                 <td class="bbg-white"><strong>${m.mktCapIdr ? 'Rp ' + m.mktCapIdr : (m.mktCapUsd || 'N/A')}</strong></td>
