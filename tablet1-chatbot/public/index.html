@@ -1075,17 +1075,19 @@
         <!-- VIEW 5: MARKET MONITOR (MON <GO>) -->
         <!-- ============================================================== -->
         <div id="view-monitor" class="view-section">
-            <div class="sec-title" style="display:flex; justify-content:space-between; align-items:center;">
-                <span>-- GLOBAL MULTI-ASSET MARKET MONITOR (5,300+ ASSETS ACROSS ALL EXCHANGES) --</span>
-                <div style="display:flex; gap:8px; align-items:center;">
+            <div class="sec-title" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+                <span>-- GLOBAL MULTI-ASSET MARKET MONITOR &amp; SECF (500,000+ GLOBAL INSTRUMENTS) --</span>
+                <div style="display:flex; gap:6px; align-items:center;">
                     <input type="text" id="monitorSearchInput" oninput="renderMonitorGrid()" class="bbg-input"
-                        placeholder="FILTER MONITOR..."
-                        style="width:200px; font-size:10.5px; padding:2px 6px; text-transform:uppercase;">
+                        placeholder="SEARCH 500k+ ASSETS (SAMSUNG, TOYOTA, BBCA)..."
+                        style="width:230px; font-size:10.5px; padding:2px 6px; text-transform:uppercase;"
+                        onkeydown="if(event.key==='Enter') searchGlobalSecuritiesMonitor()">
+                    <button type="button" class="btn-act" style="background:#221500; border-color:#FF8800; color:#FFB000; font-weight:bold;" onclick="searchGlobalSecuritiesMonitor()">SECF 500k+ &lt;GO&gt;</button>
                     <button type="button" class="btn-act" onclick="fetchQuotesData()">PULL LIVE DATA &lt;GO&gt;</button>
                 </div>
             </div>
             <div class="cat-pill-bar">
-                <button type="button" class="cat-pill active" onclick="setMonitorFilter('ALL')">ALL (5,300+)</button>
+                <button type="button" class="cat-pill active" onclick="setMonitorFilter('ALL')">ALL CORE (5,300+)</button>
                 <button type="button" class="cat-pill" style="border-color:#FF8800; color:#FF8800; font-weight:bold;" onclick="setMonitorFilter('Space Tech')">🚀 SPACE TECH &amp; PRE-IPO (75)</button>
                 <button type="button" class="cat-pill" style="border-color:#00EEEE; color:#00EEEE;" onclick="setMonitorFilter('Saham IPO')">HOT IPOs (60)</button>
                 <button type="button" class="cat-pill" onclick="setMonitorFilter('Saham Indo')">IDX INDONESIA (880+)</button>
@@ -1095,7 +1097,7 @@
                 <button type="button" class="cat-pill" onclick="setMonitorFilter('Komoditas')">KOMODITAS (100+)</button>
                 <button type="button" class="cat-pill" onclick="setMonitorFilter('Forex')">FOREX (100+)</button>
                 <button type="button" class="cat-pill" onclick="setMonitorFilter('Index')">INDICES &amp; RATES (150+)</button>
-                <span class="cat-pill-count" id="monAssetCount">TOTAL: 5,300+ ASSETS</span>
+                <span class="cat-pill-count" id="monAssetCount" style="color:#FFB000; font-weight:bold;">UNIVERSE: 500,000+ GLOBAL ASSETS</span>
             </div>
             <!-- MONITOR PAGINATION BAR -->
             <div style="display:flex; justify-content:space-between; align-items:center; background:#0c0c0c; border:1px solid #222; border-bottom:none; padding:3px 8px; font-size:10px;">
@@ -1189,6 +1191,20 @@
                 <span>NET CHG: <strong id="stChg" class="bbg-green">-</strong></span>
                 <span>VOL: <strong id="stVol" class="bbg-cyan">-</strong></span>
                 <span>SMA(20): <strong id="stSma" class="bbg-amber">-</strong></span>
+            </div>
+
+            <!-- BLOOMBERG KEY FUNDAMENTALS & VALUATION RATIOS (DES / FA <GO>) -->
+            <div id="chartFundamentalsBanner" style="background:#050505; border:1px solid #1e1e1e; border-bottom:none; padding:4px 8px; font-size:10.5px; display:flex; gap:12px; flex-wrap:wrap; font-family:Consolas,monospace; border-left:3px solid #FF8800;">
+                <span class="bbg-dim">MKT CAP: <strong id="fnMktCap" class="bbg-amber">Loading...</strong></span>
+                <span class="bbg-dim">P/E (TTM): <strong id="fnPe" class="bbg-white">Loading...</strong></span>
+                <span class="bbg-dim">FWD P/E: <strong id="fnFwdPe" class="bbg-white">-</strong></span>
+                <span class="bbg-dim">P/BV: <strong id="fnPb" class="bbg-white">-</strong></span>
+                <span class="bbg-dim">EPS: <strong id="fnEps" class="bbg-cyan">-</strong></span>
+                <span class="bbg-dim">DIV YLD: <strong id="fnDiv" class="bbg-green">-</strong></span>
+                <span class="bbg-dim">52W HIGH: <strong id="fn52High" class="bbg-green">-</strong></span>
+                <span class="bbg-dim">52W LOW: <strong id="fn52Low" class="bbg-red">-</strong></span>
+                <span class="bbg-dim">BETA: <strong id="fnBeta" class="bbg-white">-</strong></span>
+                <span class="bbg-dim">TARGET (1Y): <strong id="fnTarget" class="bbg-cyan">-</strong></span>
             </div>
 
             <!-- DUAL-PANE CHART CANVAS CONTAINER -->
@@ -2498,6 +2514,50 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             drawChart(currentChartSym, tf);
         }
 
+        async function searchGlobalSecuritiesMonitor() {
+            const input = document.getElementById('monitorSearchInput');
+            const term = (input ? input.value : '').trim();
+            if (!term) return;
+
+            showPopup(`[SECF 500k+] Mencari "${term}" di 500.000+ instrumen bursa global...`);
+            try {
+                const res = await fetch(`/api/securities/search?q=${encodeURIComponent(term)}`);
+                const d = await res.json();
+                if (d && d.results && d.results.length > 0) {
+                    d.results.forEach(r => {
+                        const exists = quoteList.find(q => q.symbol === r.symbol);
+                        if (!exists) {
+                            quoteList.unshift({
+                                symbol: r.symbol,
+                                name: r.name,
+                                category: r.category || 'Global Equity',
+                                price: r.price || 100,
+                                prevClose: r.price || 100,
+                                change: 0,
+                                changePct: 0,
+                                high: r.price ? r.price * 1.02 : 102,
+                                low: r.price ? r.price * 0.98 : 98,
+                                currency: r.currency || 'USD',
+                                priceIdr: r.currency === 'USD' ? (r.price || 100) * usdRate : (r.price || 100),
+                                volume: 1000000
+                            });
+                        }
+                    });
+                    currentMonitorFilter = 'ALL';
+                    document.querySelectorAll('.cat-pill').forEach(b => b.classList.remove('active'));
+                    const allBtn = document.querySelector('.cat-pill');
+                    if (allBtn) allBtn.classList.add('active');
+                    monCurrentPage = 1;
+                    renderMonitorGrid();
+                    showPopup(`[SECF 500k+] Ditemukan ${d.results.length} instrumen bursa global!`);
+                } else {
+                    showPopup(`[SECF] Tidak ditemukan ticker dengan kata kunci "${term}"`, true);
+                }
+            } catch (e) {
+                showPopup('Error SECF: ' + e.message, true);
+            }
+        }
+
         async function drawChart(sym, tf = '1d') {
             currentChartSym = sym;
             currentChartTf = tf;
@@ -2518,6 +2578,26 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 pxEl.textContent = isUsd ? 
                     `$${Number(q.price).toFixed(2)} (${fmtIdr(q.price * usdRate)} IDR)` : `${fmtIdr(q.price)} IDR`;
             }
+
+            // Fetch live fundamentals from Bloomberg DES engine
+            const setFn = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val || '-'; };
+            setFn('fnMktCap', 'Loading...');
+            setFn('fnPe', 'Loading...');
+            fetch(`/api/security/fundamentals/${encodeURIComponent(sym)}`)
+                .then(r => r.json())
+                .then(f => {
+                    if (!f) return;
+                    setFn('fnMktCap', f.marketCap);
+                    setFn('fnPe', f.peRatio);
+                    setFn('fnFwdPe', f.forwardPe);
+                    setFn('fnPb', f.pbRatio);
+                    setFn('fnEps', f.eps);
+                    setFn('fnDiv', f.divYield);
+                    setFn('fn52High', f.fiftyTwoWeekHigh);
+                    setFn('fn52Low', f.fiftyTwoWeekLow);
+                    setFn('fnBeta', f.beta);
+                    setFn('fnTarget', f.targetPrice);
+                }).catch(() => {});
 
             const canvas = document.getElementById('chartCanvas');
             if (!canvas) return;
