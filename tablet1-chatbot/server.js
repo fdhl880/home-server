@@ -4,7 +4,39 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
-const Parser = require('rss-parser');
+
+// Fail-safe RSS Parser: use npm rss-parser if available, or zero-dependency native parser (Termux friendly)
+let Parser;
+try {
+    Parser = require('rss-parser');
+} catch (e) {
+    Parser = class {
+        constructor(opts = {}) { this.headers = opts.headers || {}; this.timeout = opts.timeout || 4000; }
+        async parseURL(url) {
+            try {
+                const res = await fetch(url, { headers: this.headers, signal: AbortSignal.timeout(this.timeout) });
+                const xml = await res.text();
+                const items = [];
+                const itemMatches = xml.match(/<item[\s\S]*?<\/item>/gi) || [];
+                for (const itemXml of itemMatches.slice(0, 10)) {
+                    const titleMatch = itemXml.match(/<title>(?:<!\[CDATA\[(.*?)\]\]>|(.*?))<\/title>/i);
+                    const linkMatch = itemXml.match(/<link>(?:<!\[CDATA\[(.*?)\]\]>|(.*?))<\/link>/i);
+                    const pubDateMatch = itemXml.match(/<pubDate>(?:<!\[CDATA\[(.*?)\]\]>|(.*?))<\/pubDate>/i);
+                    const descMatch = itemXml.match(/<description>(?:<!\[CDATA\[(.*?)\]\]>|(.*?))<\/description>/i);
+                    const title = (titleMatch ? (titleMatch[1] || titleMatch[2]) : '').trim();
+                    const link = (linkMatch ? (linkMatch[1] || linkMatch[2]) : '#').trim();
+                    const pubDate = (pubDateMatch ? (pubDateMatch[1] || pubDateMatch[2]) : new Date().toISOString()).trim();
+                    const snippet = (descMatch ? (descMatch[1] || descMatch[2]) : title).replace(/<[^>]+>/g, '').trim();
+                    if (title) items.push({ title, link, pubDate, contentSnippet: snippet });
+                }
+                return { items };
+            } catch (err) {
+                return { items: [] };
+            }
+        }
+    };
+}
+
 const { ALL_UNIVERSE, MACRO_MICRO_DATA } = require('./universe');
 
 const app = express();
