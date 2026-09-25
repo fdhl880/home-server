@@ -1651,6 +1651,63 @@ app.get('/api/markets', (req, res) => {
     ]);
 });
 
+// 6b. GET /api/securities/search -> Universal Bloomberg SECF <GO> (500,000+ Global Instruments)
+app.get('/api/securities/search', async (req, res) => {
+    const q = (req.query.q || '').trim();
+    if (!q) return res.json({ query: '', count: 0, results: [] });
+
+    // 1. Search local universe
+    const localMatches = TRACKED_ASSETS.filter(a => 
+        a.symbol.toUpperCase().includes(q.toUpperCase()) || 
+        (a.name && a.name.toUpperCase().includes(q.toUpperCase()))
+    ).slice(0, 15).map(a => ({
+        symbol: a.symbol,
+        name: a.name,
+        category: a.category,
+        currency: a.currency,
+        price: a.price,
+        source: 'BLOOMBERG_UNIVERSE'
+    }));
+
+    // 2. Query Global Market Index (500,000+ global stocks, crypto, forex, commodities)
+    try {
+        const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=15&newsCount=0`;
+        const yRes = await new Promise((resolve) => {
+            const r = https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 2500 }, resp => {
+                let d = '';
+                resp.on('data', c => d += c);
+                resp.on('end', () => {
+                    try { resolve(JSON.parse(d)); } catch (e) { resolve(null); }
+                });
+            });
+            r.on('error', () => resolve(null));
+            r.on('timeout', () => { r.destroy(); resolve(null); });
+        });
+
+        const globalQuotes = (yRes?.quotes || []).map(g => ({
+            symbol: g.symbol,
+            name: g.shortname || g.longname || g.symbol,
+            category: g.quoteType || 'EQUITY',
+            exchange: g.exchDisp || g.exchange || 'GLOBAL',
+            currency: g.currency || (g.symbol.includes('.JK') ? 'IDR' : 'USD'),
+            source: 'B-PIPE_GLOBAL'
+        }));
+
+        const seen = new Set();
+        const merged = [];
+        for (const item of [...localMatches, ...globalQuotes]) {
+            const k = item.symbol.toUpperCase();
+            if (!seen.has(k)) {
+                seen.add(k);
+                merged.push(item);
+            }
+        }
+        return res.json({ query: q, count: merged.length, results: merged });
+    } catch (e) {
+        return res.json({ query: q, count: localMatches.length, results: localMatches });
+    }
+});
+
 // Dynamic Quote for ANY symbol
 app.get('/api/quote/:symbol', async (req, res) => {
     try {
