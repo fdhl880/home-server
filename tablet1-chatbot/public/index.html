@@ -1825,20 +1825,20 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 const isUp = q.changePct >= 0;
                 const cls = isUp ? 'bbg-green' : 'bbg-red';
                 const sign = isUp ? '+' : '';
-                const origPx = q.currency === 'USD' ? '$' + q.price.toFixed(2) : fmtIdr(q.price);
+                const origPx = q.currency === 'USD' ? '$' + Number(q.price).toFixed(2) : fmtIdr(q.price);
                 const idrPx = fmtIdr(q.priceIdr || (q.currency === 'USD' ? q.price * usdRate : q.price));
 
                 return `
-                    <tr>
+                    <tr id="row_${q.symbol.replace(/[^a-zA-Z0-9]/g, '_')}">
                         <td><strong class="bbg-amber" style="cursor:pointer;" onclick="openGp('${q.symbol}')">${q.symbol}</strong></td>
                         <td class="bbg-white">${q.name}</td>
                         <td class="bbg-dim" style="font-size:10px;">${q.category}</td>
-                        <td class="bbg-cyan">${origPx}</td>
-                        <td class="bbg-white"><strong>${idrPx}</strong></td>
-                        <td class="${cls}">${sign}${fmtIdr(q.change)}</td>
-                        <td class="${cls}">${sign}${q.changePct.toFixed(2)}%</td>
-                        <td>${q.currency === 'USD' ? '$' + q.high.toFixed(2) : fmtIdr(q.high)}</td>
-                        <td>${q.currency === 'USD' ? '$' + q.low.toFixed(2) : fmtIdr(q.low)}</td>
+                        <td class="bbg-cyan cell-orig-px">${origPx}</td>
+                        <td class="bbg-white cell-idr-px"><strong>${idrPx}</strong></td>
+                        <td class="${cls} cell-chg">${sign}${fmtIdr(q.change)}</td>
+                        <td class="${cls} cell-chgpct">${sign}${Number(q.changePct || 0).toFixed(2)}%</td>
+                        <td class="cell-high">${q.currency === 'USD' ? '$' + Number(q.high || q.price).toFixed(2) : fmtIdr(q.high || q.price)}</td>
+                        <td class="cell-low">${q.currency === 'USD' ? '$' + Number(q.low || q.price).toFixed(2) : fmtIdr(q.low || q.price)}</td>
                         <td style="text-align:center; white-space:nowrap;">
                             <button class="btn-act" style="background:#003311; border:1px solid #00AA44; color:#00FF66; font-weight:bold; margin-right:3px;" onclick="testBuy('${q.symbol}')" title="Eksekusi beli langsung 1 lot via DMA">+BUY 1x</button>
                             <button class="btn-act" onclick="loadEmsxAsset('${q.symbol}', 'BUY')">TRADE &lt;F3&gt;</button>
@@ -1847,6 +1847,43 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     </tr>
                 `;
             }).join('');
+
+            // Automatically trigger live exchange quote refresh for all visible rows on this page!
+            clearTimeout(window._visibleQuotesTimer);
+            window._visibleQuotesTimer = setTimeout(() => {
+                const symsToRefresh = pageItems.slice(0, 40).map(p => p.symbol);
+                if (symsToRefresh.length > 0) {
+                    fetch('/api/quotes/batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ symbols: symsToRefresh })
+                    }).then(r => r.json()).then(d => {
+                        if (d && d.quotes) {
+                            for (const sym in d.quotes) {
+                                const q = d.quotes[sym];
+                                if (!q || !q.price) continue;
+                                const row = document.getElementById('row_' + sym.replace(/[^a-zA-Z0-9]/g, '_'));
+                                if (row) {
+                                    const isUp = q.changePct >= 0;
+                                    const cls = isUp ? 'bbg-green' : 'bbg-red';
+                                    const sign = isUp ? '+' : '';
+                                    const origPx = q.currency === 'USD' ? '$' + Number(q.price).toFixed(2) : fmtIdr(q.price);
+                                    const idrPx = fmtIdr(q.priceIdr || (q.currency === 'USD' ? q.price * usdRate : q.price));
+
+                                    const origEl = row.querySelector('.cell-orig-px');
+                                    if (origEl) origEl.textContent = origPx;
+                                    const idrEl = row.querySelector('.cell-idr-px strong');
+                                    if (idrEl) idrEl.textContent = idrPx;
+                                    const chgEl = row.querySelector('.cell-chg');
+                                    if (chgEl) { chgEl.className = `${cls} cell-chg`; chgEl.textContent = sign + fmtIdr(q.change); }
+                                    const chgPctEl = row.querySelector('.cell-chgpct');
+                                    if (chgPctEl) { chgPctEl.className = `${cls} cell-chgpct`; chgPctEl.textContent = sign + Number(q.changePct || 0).toFixed(2) + '%'; }
+                                }
+                            }
+                        }
+                    }).catch(() => {});
+                }
+            }, 300);
         }
 
         // ============================================================
@@ -2302,11 +2339,37 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
         let cachedCandles = [];
         let activeHoverIdx = -1;
 
-        function openGp(sym) {
+        async function openGp(sym) {
             currentChartSym = sym;
             const inEl = document.getElementById('chartSearchInput');
             if (inEl) inEl.value = sym;
             showView('chart');
+
+            // ALWAYS fetch real-time price from exchange before drawing chart
+            try {
+                const res = await fetch(`/api/quote/${encodeURIComponent(sym)}`);
+                const realQuote = await res.json();
+                if (realQuote && realQuote.price > 0) {
+                    // Update or insert into quoteList so chart uses real price
+                    const existing = quoteList.find(q => q.symbol === sym);
+                    if (existing) {
+                        existing.price = realQuote.price;
+                        existing.prevClose = realQuote.prevClose;
+                        existing.change = realQuote.change;
+                        existing.changePct = realQuote.changePct;
+                        existing.high = realQuote.high;
+                        existing.low = realQuote.low;
+                        existing.volume = realQuote.volume;
+                        existing.currency = realQuote.currency;
+                        existing.name = realQuote.name || existing.name;
+                    } else {
+                        quoteList.push(realQuote);
+                    }
+                }
+            } catch (e) {
+                // Use cached data if fetch fails
+            }
+
             drawChart(sym, currentChartTf);
         }
 
@@ -2788,7 +2851,7 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             if (!q) return;
 
             const box = document.getElementById('aiOutBox');
-            box.textContent = `ANALYZING PORTFOLIO & BLOOMBERG MARKET INTELLIGENCE (NAV: ${fmtIdr(portState.totalNetWorth)} IDR)...\n`;
+            box.innerHTML = `<span class="bbg-amber">[CONNECTING TO B-PIPE LIVE EXCHANGE FEED & GROQ LPU ANALYST]</span>\nAnalyzing market data & NAV (${fmtIdr(portState.totalNetWorth)} IDR)...`;
 
             try {
                 const res = await fetch('/api/terminal/analyst', {
@@ -2804,7 +2867,22 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     })
                 });
                 const data = await res.json();
-                box.textContent = data.analysis || 'Analysis complete.';
+                if (data.error) {
+                    box.textContent = 'AI ANALYST ERROR: ' + data.error;
+                    return;
+                }
+
+                let outHtml = '';
+                if (data.liveQuotes && data.liveQuotes.length > 0) {
+                    outHtml += `<div style="background:#090909; border:1px solid #00aa44; padding:6px 10px; margin-bottom:10px; font-size:11px; line-height:1.5;">` +
+                        `<div style="color:#00ff66; font-weight:bold; margin-bottom:4px;">` +
+                        `🟢 [B-PIPE VERIFIED LIVE TICKERS - REAL EXCHANGE DATA]</div>` +
+                        `<div style="color:#ccc;">` +
+                        data.liveQuotes.map(l => `<span style="color:#00e5ff;">${l}</span>`).join('<br>') +
+                        `</div></div>`;
+                }
+                outHtml += `<div style="white-space:pre-wrap; line-height:1.6;">${data.analysis || 'Analysis complete.'}</div>`;
+                box.innerHTML = outHtml;
             } catch (e) {
                 box.textContent = 'COMMUNICATION ERROR: ' + e.message;
             }

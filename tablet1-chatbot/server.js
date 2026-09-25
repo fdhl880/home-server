@@ -417,8 +417,55 @@ TRACKED_ASSETS.forEach(a => {
     };
 });
 
-// Fetch single quote from Yahoo Finance
-function fetchYahooQuote(sym) {
+const COMMON_ALIASES = {
+    'IHSG': '^JKSE',
+    'COMPOSITE': '^JKSE',
+    'JKSE': '^JKSE',
+    'SP500': '^GSPC',
+    'S&P500': '^GSPC',
+    'NASDAQ': '^IXIC',
+    'DOW': '^DJI',
+    'GOLD': 'GC=F',
+    'EMAS': 'GC=F',
+    'SILVER': 'SI=F',
+    'PERAK': 'SI=F',
+    'OIL': 'CL=F',
+    'MINYAK': 'CL=F',
+    'BRENT': 'BZ=F',
+    'GAS': 'NG=F',
+    'BTC': 'BTC-USD',
+    'BITCOIN': 'BTC-USD',
+    'ETH': 'ETH-USD',
+    'ETHEREUM': 'ETH-USD',
+    'SOL': 'SOL-USD',
+    'SOLANA': 'SOL-USD',
+    'XRP': 'XRP-USD',
+    'RIPPLE': 'XRP-USD',
+    'DOGE': 'DOGE-USD',
+    'DOGECOIN': 'DOGE-USD',
+    'BNB': 'BNB-USD',
+    'ADA': 'ADA-USD',
+    'CARDANO': 'ADA-USD',
+    'USDIDR': 'USDIDR=X',
+    'EURUSD': 'EURUSD=X',
+    'GBPUSD': 'GBPUSD=X',
+    'USDJPY': 'USDJPY=X',
+};
+
+function resolveCanonicalSymbol(rawSym) {
+    if (!rawSym) return '';
+    let sym = rawSym.trim().toUpperCase();
+    if (COMMON_ALIASES[sym]) return COMMON_ALIASES[sym];
+    if (TRACKED_ASSETS.some(a => a.symbol === sym)) return sym;
+    if (/^[A-Z]{4}$/.test(sym)) {
+        if (TRACKED_ASSETS.some(a => a.symbol === sym + '.JK')) return sym + '.JK';
+    }
+    if (TRACKED_ASSETS.some(a => a.symbol === sym + '-USD')) return sym + '-USD';
+    return sym;
+}
+
+// Fetch single quote from Yahoo Finance internal
+function fetchYahooQuoteInternal(sym) {
     return new Promise((resolve) => {
         const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=15m&range=1d`;
         const req = https.get(url, {
@@ -470,46 +517,71 @@ function fetchYahooQuote(sym) {
     });
 }
 
-// Background refresh of market quotes in smooth non-blocking batches
+// Fetch single quote with smart symbol fallback (handles BBCA -> BBCA.JK, BTC -> BTC-USD)
+async function fetchYahooQuote(rawSym) {
+    if (!rawSym) return null;
+    const sym = resolveCanonicalSymbol(rawSym);
+    let quote = await fetchYahooQuoteInternal(sym);
+    if (!quote && /^[A-Z]{4}$/.test(rawSym.trim().toUpperCase())) {
+        quote = await fetchYahooQuoteInternal(rawSym.trim().toUpperCase() + '.JK');
+    }
+    if (!quote && /^[A-Z]{2,6}$/.test(rawSym.trim().toUpperCase())) {
+        quote = await fetchYahooQuoteInternal(rawSym.trim().toUpperCase() + '-USD');
+    }
+    return quote;
+}
+
+// Background refresh - PRIORITY TICKERS ONLY (top ~120 most important)
+// All other 500k+ instruments get real prices ON-DEMAND via /api/quote/:symbol
+const PRIORITY_TICKERS = [
+    // FX
+    'USDIDR=X',
+    // Indonesia Blue Chips (Top 25)
+    '^JKSE', 'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'BBNI.JK', 'TLKM.JK', 'ASII.JK', 'UNTR.JK',
+    'GOTO.JK', 'BREN.JK', 'CUAN.JK', 'AMMN.JK', 'ADRO.JK', 'ANTM.JK', 'ICBP.JK',
+    'INDF.JK', 'BRIS.JK', 'KLBF.JK', 'MDKA.JK', 'PANI.JK', 'SMGR.JK', 'TPIA.JK',
+    'BRPT.JK', 'CTRA.JK', 'MIKA.JK',
+    // US Magnificent 7 + Top Tech
+    'NVDA', 'AAPL', 'MSFT', 'TSLA', 'GOOGL', 'AMZN', 'META',
+    'AMD', 'AVGO', 'TSM', 'PLTR', 'CRM', 'NFLX', 'ORCL',
+    // Wall Street Finance
+    'JPM', 'GS', 'BRK-B', 'V', 'MA', 'BLK', 'COIN',
+    // Crypto Majors
+    'BTC-USD', 'ETH-USD', 'SOL-USD', 'XRP-USD', 'BNB-USD', 'DOGE-USD', 'ADA-USD',
+    // Commodities & Indices
+    'GC=F', 'SI=F', 'CL=F', '^GSPC', '^IXIC', '^DJI', '^TNX',
+    // Forex
+    'EURUSD=X', 'GBPUSD=X', 'USDJPY=X'
+];
+
+let refreshRound = 0;
+
 async function refreshQuotes() {
     try {
-        // Fetch USD/IDR first for conversion
+        // 1. Always refresh USD/IDR first
         const fxQuote = await fetchYahooQuote('USDIDR=X');
         if (fxQuote && fxQuote.price > 10000) {
             quoteCache.usdIdr = fxQuote.price;
         }
 
-        // Combine tracked assets + portfolio holdings
+        // 2. Refresh priority tickers in batches of 8 (avoid Yahoo rate limit)
         const port = loadPortfolio();
         const holdingSymbols = (port.holdings || []).map(h => h.symbol);
-        const allSymbols = Array.from(new Set([...TRACKED_ASSETS.map(a => a.symbol), ...holdingSymbols]));
+        const tickersToRefresh = Array.from(new Set([...PRIORITY_TICKERS, ...holdingSymbols]));
 
-        // Refresh in non-blocking batches of 15
-        const batchSize = 15;
-        for (let i = 0; i < allSymbols.length; i += batchSize) {
-            const chunk = allSymbols.slice(i, i + batchSize);
+        const batchSize = 8;
+        for (let i = 0; i < tickersToRefresh.length; i += batchSize) {
+            const chunk = tickersToRefresh.slice(i, i + batchSize);
             const results = await Promise.all(chunk.map(s => fetchYahooQuote(s)));
 
             results.forEach((q, idx) => {
                 const sym = chunk[idx];
-                const asset = TRACKED_ASSETS.find(a => a.symbol === sym);
                 if (q && q.price > 0) {
+                    const asset = TRACKED_ASSETS.find(a => a.symbol === sym);
                     if (asset) {
                         q.name = asset.name;
                         q.category = asset.category;
                         q.lotSize = asset.lotSize || 1;
-                    }
-
-                    if (q.symbol === 'SPACEX') {
-                        q.price = 185.50;
-                        q.prevClose = 182.20;
-                        q.change = 3.30;
-                        q.changePct = 1.81;
-                    } else if (q.symbol === 'SPCX') {
-                        q.price = 151.20;
-                        q.prevClose = 149.80;
-                        q.change = 1.40;
-                        q.changePct = 0.93;
                     }
 
                     // Price in IDR calculation
@@ -521,7 +593,6 @@ async function refreshQuotes() {
                         q.prevCloseIdr = q.prevClose;
                     }
 
-                    // Special Gold per gram IDR estimation (1 troy oz = 31.1035 g)
                     if (q.symbol === 'GC=F') {
                         q.goldGramIdr = Math.round((q.price / 31.1034768) * quoteCache.usdIdr);
                     }
@@ -529,18 +600,51 @@ async function refreshQuotes() {
                     quoteCache.data[q.symbol] = q;
                 }
             });
-            await new Promise(r => setTimeout(r, 120));
+            await new Promise(r => setTimeout(r, 200));
+        }
+
+        // 3. Rotate through remaining tracked assets (50 per cycle) to gradually fill cache
+        const remainingAssets = TRACKED_ASSETS.filter(a => !tickersToRefresh.includes(a.symbol));
+        const rotateStart = (refreshRound * 50) % remainingAssets.length;
+        const rotateBatch = remainingAssets.slice(rotateStart, rotateStart + 50);
+        refreshRound++;
+
+        for (let i = 0; i < rotateBatch.length; i += batchSize) {
+            const chunk = rotateBatch.slice(i, i + batchSize).map(a => a.symbol);
+            const results = await Promise.all(chunk.map(s => fetchYahooQuote(s)));
+            results.forEach((q, idx) => {
+                const sym = chunk[idx];
+                if (q && q.price > 0) {
+                    const asset = TRACKED_ASSETS.find(a => a.symbol === sym);
+                    if (asset) {
+                        q.name = asset.name;
+                        q.category = asset.category;
+                        q.lotSize = asset.lotSize || 1;
+                    }
+                    if (q.currency === 'USD') {
+                        q.priceIdr = q.price * quoteCache.usdIdr;
+                        q.prevCloseIdr = q.prevClose * quoteCache.usdIdr;
+                    } else {
+                        q.priceIdr = q.price;
+                        q.prevCloseIdr = q.prevClose;
+                    }
+                    quoteCache.data[q.symbol] = q;
+                }
+            });
+            await new Promise(r => setTimeout(r, 200));
         }
 
         quoteCache.lastFetched = Date.now();
+        const realCount = Object.values(quoteCache.data).filter(q => q.timestamp && (Date.now() - q.timestamp < 120000)).length;
+        console.log(`[QUOTE REFRESH] Round ${refreshRound}: ${realCount} live prices updated, USD/IDR=${quoteCache.usdIdr}`);
     } catch (e) {
         console.error('Error refreshing quotes:', e.message);
     }
 }
 
-// Initial fetch and 15-second background loop
+// Initial fetch and 20-second background loop
 refreshQuotes();
-setInterval(refreshQuotes, 15000);
+setInterval(refreshQuotes, 20000);
 
 // ============================================================
 // NEWS FEED AGGREGATOR (FAST FINANCIAL RSS)
@@ -1708,12 +1812,66 @@ app.get('/api/securities/search', async (req, res) => {
     }
 });
 
+// 6b. POST /api/quotes/batch -> Live batch quotes for multiple visible symbols
+app.post('/api/quotes/batch', async (req, res) => {
+    try {
+        const symbols = (req.body.symbols || []).slice(0, 60);
+        const results = {};
+        const toFetch = [];
+
+        for (const rawSym of symbols) {
+            if (!rawSym) continue;
+            const sym = resolveCanonicalSymbol(rawSym);
+            const cached = quoteCache.data[sym] || quoteCache.data[rawSym];
+            if (cached && (Date.now() - (cached.timestamp || 0) < 25000) && cached.price > 0) {
+                results[rawSym] = cached;
+                results[sym] = cached;
+            } else {
+                toFetch.push({ raw: rawSym, sym });
+            }
+        }
+
+        if (toFetch.length > 0) {
+            const batchSize = 10;
+            for (let i = 0; i < toFetch.length; i += batchSize) {
+                const chunk = toFetch.slice(i, i + batchSize);
+                const fetched = await Promise.all(chunk.map(c => fetchYahooQuote(c.sym)));
+                fetched.forEach((q, idx) => {
+                    const item = chunk[idx];
+                    if (q && q.price > 0) {
+                        if (q.currency === 'USD') {
+                            q.priceIdr = q.price * (quoteCache.usdIdr || 16250);
+                            q.prevCloseIdr = q.prevClose * (quoteCache.usdIdr || 16250);
+                        } else {
+                            q.priceIdr = q.price;
+                            q.prevCloseIdr = q.prevClose;
+                        }
+                        quoteCache.data[q.symbol] = q;
+                        results[item.raw] = q;
+                        results[item.sym] = q;
+                    } else if (quoteCache.data[item.sym]) {
+                        results[item.raw] = quoteCache.data[item.sym];
+                        results[item.sym] = quoteCache.data[item.sym];
+                    }
+                });
+                if (i + batchSize < toFetch.length) await new Promise(r => setTimeout(r, 80));
+            }
+        }
+
+        res.json({ quotes: results, usdRate: quoteCache.usdIdr });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // Dynamic Quote for ANY symbol
 app.get('/api/quote/:symbol', async (req, res) => {
     try {
-        const sym = req.params.symbol.toUpperCase();
-        let q = quoteCache.data[sym];
-        if (!q || (Date.now() - q.timestamp > 30000)) {
+        const rawSym = (req.params.symbol || '').trim();
+        const sym = resolveCanonicalSymbol(rawSym);
+        let q = quoteCache.data[sym] || quoteCache.data[rawSym.toUpperCase()];
+
+        if (!q || (Date.now() - (q.timestamp || 0) > 20000)) {
             const fetched = await fetchYahooQuote(sym);
             if (fetched && fetched.price > 0) {
                 q = fetched;
@@ -1725,14 +1883,14 @@ app.get('/api/quote/:symbol', async (req, res) => {
                     q.prevCloseIdr = q.prevClose;
                 }
                 quoteCache.data[sym] = q;
+                quoteCache.data[rawSym.toUpperCase()] = q;
             }
         }
         if (q && q.price > 0) {
             return res.json(q);
         }
 
-        // Fallback: If Yahoo Finance didn't find it or was rate limited, synthesize a valid tradeable quote
-        // so the user can test-buy ANY asset in the world without being blocked!
+        // Fallback with realistic price
         const isIndo = sym.includes('.JK');
         const isCrypto = sym.includes('-USD') || sym.includes('-USDT');
         const isCommodity = sym.includes('=F');
@@ -1781,23 +1939,72 @@ app.get('/api/macro', (req, res) => {
     res.json(MACRO_MICRO_DATA);
 });
 
-// 9. POST /api/terminal/analyst -> Bloomberg Senior Macro/Trading Analyst AI (Groq ultra-fast)
+// 9. POST /api/terminal/analyst -> Bloomberg Senior Macro/Trading Analyst AI (Groq ultra-fast with REAL-TIME MARKET INJECTION)
 app.post('/api/terminal/analyst', async (req, res) => {
     const { prompt, portfolioContext } = req.body;
     if (!prompt) return res.status(400).json({ error: 'Prompt required' });
 
-    const systemPrompt = `Anda adalah BLOOMBERG TERMINAL AI SENIOR STRATEGIST & PORTFOLIO MANAGER.
-Tugas Anda: Memberikan analisis finansial tajam, profesional, berbasis data makro, teknikal, dan fundamental.
-Format respons:
-- Gunakan gaya bahasa profesional Bloomberg Terminal (singkat, padat, berwawasan tinggi, tanpa basa-basi).
-- Berikan angka, rasio, level support/resistance, atau probabilitas jika relevan.
-- Jika pengguna bertanya saran alokasi untuk portofolio FADHIL MUHAMMAD SYAFIQ LUBIS, berikan diversifikasi realistis (misal: 40% Saham Blue Chip IDX seperti BBCA/BBRI, 25% US Tech NVDA/AAPL, 15% Emas/Komoditas, 10% Kripto BTC/ETH, 10% Kas cadangan).
-- Bahasa: Bahasa Indonesia profesional atau English jika diminta.`;
+    // Detect mentioned tickers in prompt
+    const words = prompt.toUpperCase().match(/\b[A-Z0-9\.\=\-\^]{2,12}\b/g) || [];
+    const detectedSymbols = new Set(['^JKSE', 'USDIDR=X', 'GC=F', 'BTC-USD', 'NVDA']);
+
+    for (const w of words) {
+        const canonical = resolveCanonicalSymbol(w);
+        if (TRACKED_ASSETS.some(a => a.symbol === canonical || a.symbol === w) || COMMON_ALIASES[w]) {
+            detectedSymbols.add(canonical);
+        }
+    }
+
+    if (portfolioContext?.holdings) {
+        portfolioContext.holdings.forEach(h => {
+            if (h.sym) detectedSymbols.add(resolveCanonicalSymbol(h.sym));
+        });
+    }
+
+    // Fetch or collect live real-time quotes for all detected symbols
+    const liveQuotesText = [];
+    const symList = Array.from(detectedSymbols).slice(0, 15);
+    for (const sym of symList) {
+        let q = quoteCache.data[sym];
+        if (!q || (Date.now() - (q.timestamp || 0) > 30000)) {
+            const fetched = await fetchYahooQuote(sym);
+            if (fetched && fetched.price > 0) {
+                q = fetched;
+                quoteCache.data[sym] = q;
+            }
+        }
+        if (q && q.price > 0) {
+            const pxStr = q.currency === 'USD' 
+                ? `$${q.price.toFixed(2)} (Rp ${Math.round(q.priceIdr || q.price * quoteCache.usdIdr).toLocaleString('id-ID')})` 
+                : `Rp ${Number(q.price).toLocaleString('id-ID')}`;
+            const chgStr = `${q.change >= 0 ? '+' : ''}${Number(q.changePct || 0).toFixed(2)}%`;
+            liveQuotesText.push(`- ${q.symbol} (${q.name}): ${pxStr} [Chg: ${chgStr}, High: ${q.high}, Low: ${q.low}, Vol: ${(q.volume || 0).toLocaleString()}]`);
+        }
+    }
+
+    const systemPrompt = `Anda adalah BLOOMBERG TERMINAL AI SENIOR QUANT & MACRO STRATEGIST (B-ANALYST).
+SANGAT PENTING:
+- ANDA MEMILIKI AKSES LANGSUNG KE FEED DATA REAL-TIME BURSA PASAR HARI INI.
+- WAJIB gunakan harga asli dari DATA PASAR REAL-TIME di bawah ini!
+- DILARANG KERAS MENGARANG atau MENGHALUSINASIKAN HARGA SAHAM/ASET! Sebutkan harga persis sesuai data real-time di bawah.
+- Format analisis: Singkat, padat, berbobot ala Bloomberg Intelligence (BI), berikan angka akurat, level support/resistance realistis, dan rekomendasi taktis.
+- Gunakan bahasa Indonesia finansial profesional tingkat tinggi.
+
+=== DATA PASAR REAL-TIME BURSA HARI INI ===
+Nilai Tukar USD/IDR: Rp ${quoteCache.usdIdr.toLocaleString('id-ID')}
+IHSG Composite: ${quoteCache.data['^JKSE']?.price || 6450} (${quoteCache.data['^JKSE']?.changePct?.toFixed(2) || 0}%)
+Harga Live Instrumen Terkait:
+${liveQuotesText.join('\n')}
+
+=== STATUS PORTOFOLIO USER (FADHIL MUHAMMAD SYAFIQ LUBIS) ===
+Total Net Worth: Rp ${Number(portfolioContext?.totalNetWorth || 0).toLocaleString('id-ID')}
+Cash IDR: Rp ${Number(portfolioContext?.cash || 0).toLocaleString('id-ID')}
+Holdings: ${JSON.stringify(portfolioContext?.holdings || [])}`;
 
     try {
         const groqResp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
-            signal: AbortSignal.timeout(6000),
+            signal: AbortSignal.timeout(9000),
             headers: {
                 'Authorization': `Bearer ${GROQ_API_KEY}`,
                 'Content-Type': 'application/json'
@@ -1806,18 +2013,40 @@ Format respons:
                 model: 'openai/gpt-oss-120b',
                 messages: [
                     { role: 'system', content: systemPrompt },
-                    { role: 'user', content: `Konteks Portofolio: ${JSON.stringify(portfolioContext || {})}\n\nPertanyaan: ${prompt}` }
+                    { role: 'user', content: prompt }
                 ],
-                temperature: 0.5,
-                max_tokens: 500
+                temperature: 0.25,
+                max_tokens: 700
             })
         });
 
         if (groqResp.ok) {
             const j = await groqResp.json();
             const text = j.choices?.[0]?.message?.content || 'Analisis selesai.';
-            return res.json({ analysis: text });
+            return res.json({ analysis: text, liveQuotes: liveQuotesText });
         } else {
+            // Fallback to qwen3.8-27b
+            const fallbackResp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                signal: AbortSignal.timeout(9000),
+                headers: {
+                    'Authorization': `Bearer ${GROQ_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: 'qwen/qwen3.8-27b',
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: prompt }
+                    ],
+                    temperature: 0.25,
+                    max_tokens: 700
+                })
+            });
+            if (fallbackResp.ok) {
+                const j2 = await fallbackResp.json();
+                return res.json({ analysis: j2.choices?.[0]?.message?.content, liveQuotes: liveQuotesText });
+            }
             const err = await groqResp.text();
             return res.status(500).json({ error: 'AI Analyst error: ' + err.slice(0, 100) });
         }
