@@ -1,269 +1,337 @@
 const fs = require('fs');
+const path = require('path');
 
-const indexFile = 'c:\\Users\\Asus\\.antigravity\\tablet-dashboards\\tablet1-chatbot\\public\\index.html';
-let content = fs.readFileSync(indexFile, 'utf8');
+const filePath = path.join(__dirname, '../public/index.html');
+let html = fs.readFileSync(filePath, 'utf8').replace(/\r\n/g, '\n');
 
-// 1. Text changes requested by user:
-// "itu fadhil alpha ganti jadid fadhil muhammad syafiq lubis kemudian itu yg tulisan awal 200 jt hapus"
-content = content.replace(
-    'PORTFOLIO &amp; RISK ANALYTICS // PORTFOLIO: FADHIL MUHAMMAD SYAFIQ LUBIS(IDR)',
-    'PORTFOLIO &amp; RISK ANALYTICS // PORTFOLIO: FADHIL MUHAMMAD SYAFIQ LUBIS (IDR)'
-);
-
-content = content.replace(
-    '<span class="p-metric-sub" id="sReturn">Return: +0.00% (Awal: Rp 200 Jt)</span>',
-    '<span class="p-metric-sub" id="sReturn">Return: +0.00%</span>'
-);
-
-content = content.replace(
-    '[NO ACTIVE POSITIONS] Portofolio Anda memiliki modal Rp 200.000.000 (100% Cash).',
-    '[NO ACTIVE POSITIONS] Portofolio FADHIL MUHAMMAD SYAFIQ LUBIS (100% Cash).'
-);
-
-content = content.replace(
-    '<span class="bbg-cyan">ACCOUNT: FADHIL-ALPHA-200M | ROUTE: BEST-EXEC</span>',
-    '<span class="bbg-cyan">ACCOUNT: FADHIL MUHAMMAD SYAFIQ LUBIS | ROUTE: BEST-EXEC</span>'
-);
-
-content = content.replace(
-    'Portfolio: FADHIL-ALPHA-200M | Modal: Rp 200.000.000.',
-    'Portfolio: FADHIL MUHAMMAD SYAFIQ LUBIS.'
-);
-
-content = content.replace(
-    `onclick="askAi('Berikan rekomendasi alokasi modal Rp 200 Juta saya secara terperinci.')">Rekomendasi\n                        Alokasi 200 Juta</button>`,
-    `onclick="askAi('Berikan rekomendasi alokasi portofolio FADHIL MUHAMMAD SYAFIQ LUBIS secara terperinci.')">Rekomendasi Alokasi Portofolio</button>`
-);
-
-content = content.replace(
-    `<p><strong class="bbg-amber">1&lt;GO&gt; PORT</strong> - Portfolio &amp; Risk Analytics (Modal Rp 200\n                    Juta)</p>`,
-    `<p><strong class="bbg-amber">1&lt;GO&gt; PORT</strong> - Portfolio &amp; Risk Analytics</p>`
-);
-
-content = content.replace(
-    'retEl.textContent = `Return: ${fmtPct(portState.overallReturn)} (Awal: Rp 200 Jt)`;',
-    'retEl.textContent = `Return: ${fmtPct(portState.overallReturn)}`;'
-);
-
-content = content.replace(
-    '[NO ACTIVE POSITIONS] Portofolio Anda memiliki modal Rp 200.000.000 (100% Cash).<br>',
-    '[NO ACTIVE POSITIONS] Portofolio FADHIL MUHAMMAD SYAFIQ LUBIS (100% Cash).<br>'
-);
-
-// 2. Add category pill styling in CSS
-if (!content.includes('.cat-pill-bar')) {
-    const cssToInsert = `
-        /* ASSET UNIVERSE & MONITOR CATEGORY FILTER PILLS */
-        .cat-pill-bar {
-            display: flex;
-            gap: 4px;
-            flex-wrap: wrap;
-            padding: 4px 6px;
-            background: #080808;
-            border: 1px solid #1a1a1a;
-            margin-bottom: 6px;
-            align-items: center;
-        }
-        .cat-pill {
-            background: #111111;
+// 1. ADD CSS FOR ORDER TYPES & TIF
+const cssAdditions = `
+        /* ORDER TYPE & TIF SELECTOR STYLES */
+        .btn-ordertype {
+            background: #181818;
+            color: #888888;
             border: 1px solid #333333;
-            color: #aaaaaa;
             font-family: inherit;
             font-size: 10px;
             font-weight: bold;
-            padding: 3px 8px;
+            padding: 2px 7px;
             cursor: pointer;
-            text-transform: uppercase;
-            transition: all 0.15s ease;
+            transition: all 0.1s ease;
         }
-        .cat-pill:hover {
-            background: #222222;
-            color: #F39F41;
+        .btn-ordertype:hover {
             border-color: #F39F41;
+            color: #ffffff;
         }
-        .cat-pill.active {
+        .btn-ordertype.active {
             background: #F39F41;
             color: #000000;
             border-color: #F39F41;
-            box-shadow: 0 0 6px rgba(243, 159, 65, 0.4);
         }
-        .cat-pill-count {
-            margin-left: auto;
-            font-size: 10px;
-            color: #00EEEE;
+        .btn-tif {
+            background: #111111;
+            color: #888888;
+            border: 1px solid #282828;
+            font-size: 9.5px;
             font-weight: bold;
+            padding: 1px 6px;
+            cursor: pointer;
         }
-    `;
-    content = content.replace('/* NOTIFICATION TOAST */', cssToInsert + '\n        /* NOTIFICATION TOAST */');
+        .btn-tif.active {
+            background: #004455;
+            color: #00FFFF;
+            border-color: #00EEEE;
+        }
+        .delta-btn {
+            background: #1a1a1a;
+            color: #ffb000;
+            border: 1px solid #444;
+            font-size: 9.5px;
+            font-weight: bold;
+            padding: 1px 5px;
+            cursor: pointer;
+        }
+        .delta-btn:hover {
+            background: #332200;
+            border-color: #ffb000;
+        }
+`;
+
+if (!html.includes('.btn-ordertype {')) {
+    html = html.replace('.btn-side.sell.active {', cssAdditions + '\n        .btn-side.sell.active {');
+    console.log('[1/6] CSS styles added.');
 }
 
-// 3. Add Category Filter UI to VIEW 3: EMSX TRADEABLE ASSET UNIVERSE
-const emsxUniverseOldHeader = `<div class="sec-title" style="display:flex; justify-content:space-between; align-items:center;">
-                <span>TRADEABLE ASSET UNIVERSE (CLICK ROW TO LOAD INTO EMSX)</span>
-                <div style="display:flex; gap:8px; align-items:center;">
-                    <input type="text" id="emsxSearchInput" oninput="filterEmsxUniverse()" class="bbg-input"
-                        placeholder="FILTER UNIVERSE..."
-                        style="width:220px; font-size:10.5px; padding:2px 6px; text-transform:uppercase;">
-                    <span class="bbg-cyan" style="font-size:10px;">B-PIPE STREAMING</span>
+// 2. EMSX ORDER TICKET INPUTS: Add Order Type, Limit Price, Stop Price, TIF
+const oldEmsxInputsTarget = `<div class="emsx-line">
+                            <span class="emsx-label" id="emsxQtyTitle">QUANTITY (LOTS - 1 LOT = 100 SHARES):</span>
+                            <div class="emsx-in-cell">
+                                <input type="number" id="emsxQtyInput" class="bbg-input" value="10" min="1" step="1" oninput="calcEmsx()">
+                            </div>
+                        </div>`;
+
+const newEmsxInputs = `<div class="emsx-line">
+                            <span class="emsx-label">ORDER TYPE:</span>
+                            <div class="emsx-in-cell" style="flex-wrap:wrap; gap:3px;">
+                                <button type="button" class="btn-ordertype active" id="btnOtMarket" onclick="setEmsxOrderType('MARKET')">MARKET</button>
+                                <button type="button" class="btn-ordertype" id="btnOtLimit" onclick="setEmsxOrderType('LIMIT')">LIMIT</button>
+                                <button type="button" class="btn-ordertype" id="btnOtStop" onclick="setEmsxOrderType('STOP')">STOP</button>
+                                <button type="button" class="btn-ordertype" id="btnOtStopLimit" onclick="setEmsxOrderType('STOP_LIMIT')">STOP-LIMIT</button>
+                                <button type="button" class="btn-ordertype" id="btnOtTrail" onclick="setEmsxOrderType('TRAILING_STOP')">TRAIL STOP</button>
+                            </div>
+                        </div>
+                        <div class="emsx-line" id="emsxLimitPriceRow" style="display:none; background:#120e05; padding:3px 0; border:1px solid #442a00;">
+                            <span class="emsx-label bbg-amber" style="font-weight:bold;">LIMIT PRICE:</span>
+                            <div class="emsx-in-cell" style="gap:4px; flex-wrap:wrap;">
+                                <input type="number" id="emsxLimitPriceInput" class="bbg-input" step="any" style="width:110px; font-weight:bold; color:#ffcc00;" oninput="calcEmsx()">
+                                <button type="button" class="delta-btn" onclick="adjustLimitPct(-0.02)">-2%</button>
+                                <button type="button" class="delta-btn" onclick="adjustLimitPct(-0.01)">-1%</button>
+                                <button type="button" class="delta-btn" onclick="resetLimitToMarket()">MKT</button>
+                                <button type="button" class="delta-btn" onclick="adjustLimitPct(0.01)">+1%</button>
+                                <button type="button" class="delta-btn" onclick="adjustLimitPct(0.02)">+2%</button>
+                            </div>
+                        </div>
+                        <div class="emsx-line" id="emsxStopPriceRow" style="display:none; background:#140505; padding:3px 0; border:1px solid #440000;">
+                            <span class="emsx-label bbg-red" style="font-weight:bold;">STOP TRIGGER:</span>
+                            <div class="emsx-in-cell">
+                                <input type="number" id="emsxStopPriceInput" class="bbg-input" step="any" style="width:120px; font-weight:bold; color:#ff4444;" placeholder="Trigger Px...">
+                            </div>
+                        </div>
+                        <div class="emsx-line">
+                            <span class="emsx-label">TIME IN FORCE:</span>
+                            <div class="emsx-in-cell" style="gap:3px;">
+                                <button type="button" class="btn-tif active" id="btnTifGtc" onclick="setEmsxTif('GTC')">GTC</button>
+                                <button type="button" class="btn-tif" id="btnTifDay" onclick="setEmsxTif('DAY')">DAY</button>
+                                <button type="button" class="btn-tif" id="btnTifIoc" onclick="setEmsxTif('IOC')">IOC</button>
+                                <button type="button" class="btn-tif" id="btnTifFok" onclick="setEmsxTif('FOK')">FOK</button>
+                            </div>
+                        </div>
+                        <div class="emsx-line">
+                            <span class="emsx-label" id="emsxQtyTitle">QUANTITY (LOTS - 1 LOT = 100 SHARES):</span>
+                            <div class="emsx-in-cell">
+                                <input type="number" id="emsxQtyInput" class="bbg-input" value="10" min="1" step="1" oninput="calcEmsx()">
+                            </div>
+                        </div>`;
+
+if (html.includes(oldEmsxInputsTarget)) {
+    html = html.replace(oldEmsxInputsTarget, newEmsxInputs);
+    console.log('[2/6] Order type, limit price & TIF inputs added.');
+} else {
+    console.error('Failed to locate oldEmsxInputsTarget');
+}
+
+// 3. WORKING ORDERS BLOTTER HTML
+const emsxGridClose = `                        <!-- Execute DMA Button -->
+                        <div style="display:flex; gap:6px; margin-top:6px;">
+                            <button class="btn-exec" id="btnEmsxExec" onclick="executeEmsxOrder()" style="flex:1; margin-top:0;">
+                                &lt;TRANSACT / EXECUTE DMA ORDER &lt;GO&gt;&gt;
+                            </button>
+                            <button class="btn-act" id="btnEmsxQuickBuy" onclick="testBuyCurrentEmsx()" style="background:#003311; border:1px solid #00AA44; color:#00FF66; font-weight:bold; font-size:11px; padding:0 12px; cursor:pointer;" title="Eksekusi beli langsung 1 lot via Direct Market Access">
+                                +INSTANT BUY
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>`;
 
-const emsxUniverseNewHeader = `<div class="sec-title" style="display:flex; justify-content:space-between; align-items:center;">
-                <span>TRADEABLE ASSET UNIVERSE // 215+ GLOBAL INSTRUMENTS (CLICK ROW TO LOAD)</span>
-                <div style="display:flex; gap:8px; align-items:center;">
-                    <input type="text" id="emsxSearchInput" oninput="filterEmsxUniverse()" class="bbg-input"
-                        placeholder="SEARCH ANY TICKER OR NAME..."
-                        style="width:230px; font-size:10.5px; padding:2px 6px; text-transform:uppercase;">
-                    <span class="bbg-cyan" style="font-size:10px;">B-PIPE DMA GATEWAY</span>
+const workingOrdersBlotterHtml = `                        <!-- Execute DMA Button -->
+                        <div style="display:flex; gap:6px; margin-top:6px;">
+                            <button class="btn-exec" id="btnEmsxExec" onclick="executeEmsxOrder()" style="flex:1; margin-top:0;">
+                                &lt;TRANSACT / EXECUTE DMA ORDER &lt;GO&gt;&gt;
+                            </button>
+                            <button class="btn-act" id="btnEmsxQuickBuy" onclick="testBuyCurrentEmsx()" style="background:#003311; border:1px solid #00AA44; color:#00FF66; font-weight:bold; font-size:11px; padding:0 12px; cursor:pointer;" title="Eksekusi beli langsung 1 lot via Direct Market Access">
+                                +INSTANT BUY
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
-            <div class="cat-pill-bar">
-                <button class="cat-pill active" onclick="setUniverseFilter('ALL')">ALL (215+)</button>
-                <button class="cat-pill" onclick="setUniverseFilter('Saham Indo')">IDX INDONESIA (66)</button>
-                <button class="cat-pill" onclick="setUniverseFilter('Saham US')">WALL STREET (68)</button>
+
+            <!-- EMSX LIVE WORKING ORDERS BLOTTER -->
+            <div class="sec-title" style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; border-left:3px solid #FF8800;">
+                <span class="bbg-amber">EMSX ACTIVE WORKING ORDERS // LIMIT &amp; STOP ORDER BOOK</span>
+                <span class="bbg-white" id="workingOrdersCount" style="font-size:10.5px;">0 WORKING ORDERS</span>
+            </div>
+            <div class="table-frame" style="max-height:160px; margin-bottom:10px;">
+                <table class="bbg-tbl">
+                    <thead>
+                        <tr>
+                            <th>ORDER ID</th>
+                            <th>TIME</th>
+                            <th>TICKER</th>
+                            <th>SECURITY NAME</th>
+                            <th>SIDE</th>
+                            <th>ORDER TYPE</th>
+                            <th>LIMIT / STOP PX</th>
+                            <th>LAST MKT PX</th>
+                            <th>QTY</th>
+                            <th>TIF</th>
+                            <th>STATUS</th>
+                            <th style="text-align:center;">ACTION</th>
+                        </tr>
+                    </thead>
+                    <tbody id="emsxWorkingOrdersBody">
+                        <tr><td colspan="12" style="text-align:center; color:#666; padding:8px;">[ORDER BOOK CLEAR] No active working limit orders.</td></tr>
+                    </tbody>
+                </table>
+            </div>`;
+
+if (html.includes(emsxGridClose)) {
+    html = html.replace(emsxGridClose, workingOrdersBlotterHtml);
+    console.log('[3/6] Working orders blotter HTML table inserted.');
+} else {
+    console.error('Failed to locate emsxGridClose');
+}
+
+// 4. UNIVERSE & MONITOR CATEGORY PILLS & PAGINATION CONTROLS
+// EMSX Universe Title & Pills
+const oldEmsxUnivTitle = `<span>TRADEABLE ASSET UNIVERSE // 1,350+ INSTRUMENTS (CLICK TICKER ATAU +BUY)</span>`;
+const newEmsxUnivTitle = `<span>TRADEABLE ASSET UNIVERSE // 5,300+ GLOBAL ASSETS &amp; INSTRUMENTS</span>`;
+if (html.includes(oldEmsxUnivTitle)) {
+    html = html.replace(oldEmsxUnivTitle, newEmsxUnivTitle);
+}
+
+const oldEmsxPills = `<div class="cat-pill-bar">
+                <button class="cat-pill active" onclick="setUniverseFilter('ALL')">ALL (1,350+)</button>
+                <button class="cat-pill" style="border-color:#FF8800; color:#FF8800; font-weight:bold;" onclick="setUniverseFilter('Space Tech')">🚀 SPACE TECH &amp; PRE-IPO (16)</button>
+                <button class="cat-pill" style="border-color:#00EEEE; color:#00EEEE;" onclick="setUniverseFilter('Saham IPO')">HOT IPOs (40)</button>
+                <button class="cat-pill" onclick="setUniverseFilter('Saham Indo')">IDX INDONESIA (850+)</button>
+                <button class="cat-pill" onclick="setUniverseFilter('Saham US')">WALL STREET (100+)</button>
                 <button class="cat-pill" onclick="setUniverseFilter('Saham Global')">GLOBAL ADRs (10)</button>
-                <button class="cat-pill" onclick="setUniverseFilter('Crypto')">CRYPTO (30)</button>
+                <button class="cat-pill" onclick="setUniverseFilter('Crypto')">CRYPTO (100+)</button>
                 <button class="cat-pill" onclick="setUniverseFilter('Komoditas')">KOMODITAS (16)</button>
                 <button class="cat-pill" onclick="setUniverseFilter('Forex')">FOREX (15)</button>
-                <button class="cat-pill" onclick="setUniverseFilter('Index')">INDICES & RATES (10)</button>
-                <span class="cat-pill-count" id="emsxAssetCount">SHOWING: 215 ASSETS</span>
+                <button class="cat-pill" onclick="setUniverseFilter('Index')">INDICES &amp; RATES (11)</button>
+                <span class="cat-pill-count" id="emsxAssetCount">SHOWING: 1,350+ ASSETS</span>
             </div>`;
 
-content = content.replace(emsxUniverseOldHeader, emsxUniverseNewHeader);
-
-// 4. Add Category Filter UI to VIEW 5: MARKET MONITOR
-const monitorOldHeader = `<div class="sec-title">
-                <span>-- GLOBAL MULTI-ASSET MARKET MONITOR (EQUITIES, CRYPTO, COMMODITIES, FOREX) --</span>
-                <button class="btn-act" onclick="fetchQuotesData()">PULL LIVE DATA &lt;GO&gt;</button>
-            </div>`;
-
-const monitorNewHeader = `<div class="sec-title" style="display:flex; justify-content:space-between; align-items:center;">
-                <span>-- GLOBAL MULTI-ASSET MARKET MONITOR (215+ ASSETS ACROSS ALL EXCHANGES) --</span>
-                <div style="display:flex; gap:8px; align-items:center;">
-                    <input type="text" id="monitorSearchInput" oninput="renderMonitorGrid()" class="bbg-input"
-                        placeholder="FILTER MONITOR..."
-                        style="width:200px; font-size:10.5px; padding:2px 6px; text-transform:uppercase;">
-                    <button class="btn-act" onclick="fetchQuotesData()">PULL LIVE DATA &lt;GO&gt;</button>
-                </div>
+const newEmsxPills = `<div class="cat-pill-bar">
+                <button class="cat-pill active" onclick="setUniverseFilter('ALL')">ALL (5,300+)</button>
+                <button class="cat-pill" style="border-color:#FF8800; color:#FF8800; font-weight:bold;" onclick="setUniverseFilter('Space Tech')">🚀 SPACE TECH &amp; PRE-IPO (75)</button>
+                <button class="cat-pill" style="border-color:#00EEEE; color:#00EEEE;" onclick="setUniverseFilter('Saham IPO')">HOT IPOs (60)</button>
+                <button class="cat-pill" onclick="setUniverseFilter('Saham Indo')">IDX INDONESIA (880+)</button>
+                <button class="cat-pill" onclick="setUniverseFilter('Saham US')">WALL STREET (3,250+)</button>
+                <button class="cat-pill" onclick="setUniverseFilter('Saham Global')">GLOBAL EQUITIES (700+)</button>
+                <button class="cat-pill" onclick="setUniverseFilter('Crypto')">CRYPTO (550+)</button>
+                <button class="cat-pill" onclick="setUniverseFilter('Komoditas')">KOMODITAS (100+)</button>
+                <button class="cat-pill" onclick="setUniverseFilter('Forex')">FOREX (100+)</button>
+                <button class="cat-pill" onclick="setUniverseFilter('Index')">INDICES &amp; RATES (150+)</button>
+                <span class="cat-pill-count" id="emsxAssetCount">TOTAL: 5,300+ ASSETS</span>
             </div>
-            <div class="cat-pill-bar">
-                <button class="cat-pill active" onclick="setMonitorFilter('ALL')">ALL (215+)</button>
-                <button class="cat-pill" onclick="setMonitorFilter('Saham Indo')">IDX INDONESIA (66)</button>
-                <button class="cat-pill" onclick="setMonitorFilter('Saham US')">WALL STREET (68)</button>
+            <!-- EMSX PAGINATION BAR -->
+            <div style="display:flex; justify-content:space-between; align-items:center; background:#0c0c0c; border:1px solid #222; border-bottom:none; padding:3px 8px; font-size:10px;">
+                <div>
+                    <span id="emsxPageInfo" class="bbg-amber" style="font-weight:bold;">PAGE 1 OF 54 (5,335 ASSETS)</span>
+                </div>
+                <div style="display:flex; gap:6px; align-items:center;">
+                    <button type="button" class="btn-act" onclick="changeEmsxPage(-1)">&lt; PREV</button>
+                    <button type="button" class="btn-act" onclick="changeEmsxPage(1)">NEXT &gt;</button>
+                    <span class="bbg-dim">PER PAGE:</span>
+                    <select class="bbg-select" style="width:65px; font-size:10px; padding:1px;" onchange="changeEmsxPageSize(this.value)">
+                        <option value="50">50</option>
+                        <option value="100" selected>100</option>
+                        <option value="250">250</option>
+                        <option value="500">500</option>
+                    </select>
+                </div>
+            </div>`;
+
+if (html.includes(oldEmsxPills)) {
+    html = html.replace(oldEmsxPills, newEmsxPills);
+    console.log('[4a/6] EMSX Universe pills and pagination bar inserted.');
+} else {
+    console.error('Failed to locate oldEmsxPills');
+}
+
+// Monitor Title & Pills
+const oldMonTitle = `<span>-- GLOBAL MULTI-ASSET MARKET MONITOR (1,350+ ASSETS ACROSS ALL EXCHANGES) --</span>`;
+const newMonTitle = `<span>-- GLOBAL MULTI-ASSET MARKET MONITOR (5,300+ ASSETS ACROSS ALL EXCHANGES) --</span>`;
+if (html.includes(oldMonTitle)) {
+    html = html.replace(oldMonTitle, newMonTitle);
+}
+
+const oldMonPills = `<div class="cat-pill-bar">
+                <button class="cat-pill active" onclick="setMonitorFilter('ALL')">ALL (1,350+)</button>
+                <button class="cat-pill" style="border-color:#FF8800; color:#FF8800; font-weight:bold;" onclick="setMonitorFilter('Space Tech')">🚀 SPACE TECH &amp; PRE-IPO (16)</button>
+                <button class="cat-pill" style="border-color:#00EEEE; color:#00EEEE;" onclick="setMonitorFilter('Saham IPO')">HOT IPOs (40)</button>
+                <button class="cat-pill" onclick="setMonitorFilter('Saham Indo')">IDX INDONESIA (850+)</button>
+                <button class="cat-pill" onclick="setMonitorFilter('Saham US')">WALL STREET (100+)</button>
                 <button class="cat-pill" onclick="setMonitorFilter('Saham Global')">GLOBAL ADRs (10)</button>
-                <button class="cat-pill" onclick="setMonitorFilter('Crypto')">CRYPTO (30)</button>
+                <button class="cat-pill" onclick="setMonitorFilter('Crypto')">CRYPTO (100+)</button>
                 <button class="cat-pill" onclick="setMonitorFilter('Komoditas')">KOMODITAS (16)</button>
                 <button class="cat-pill" onclick="setMonitorFilter('Forex')">FOREX (15)</button>
-                <button class="cat-pill" onclick="setMonitorFilter('Index')">INDICES & RATES (10)</button>
-                <span class="cat-pill-count" id="monAssetCount">SHOWING: 215 ASSETS</span>
+                <button class="cat-pill" onclick="setMonitorFilter('Index')">INDICES &amp; RATES (11)</button>
+                <span class="cat-pill-count" id="monAssetCount">SHOWING: 1,350+ ASSETS</span>
             </div>`;
 
-content = content.replace(monitorOldHeader, monitorNewHeader);
+const newMonPills = `<div class="cat-pill-bar">
+                <button class="cat-pill active" onclick="setMonitorFilter('ALL')">ALL (5,300+)</button>
+                <button class="cat-pill" style="border-color:#FF8800; color:#FF8800; font-weight:bold;" onclick="setMonitorFilter('Space Tech')">🚀 SPACE TECH &amp; PRE-IPO (75)</button>
+                <button class="cat-pill" style="border-color:#00EEEE; color:#00EEEE;" onclick="setMonitorFilter('Saham IPO')">HOT IPOs (60)</button>
+                <button class="cat-pill" onclick="setMonitorFilter('Saham Indo')">IDX INDONESIA (880+)</button>
+                <button class="cat-pill" onclick="setMonitorFilter('Saham US')">WALL STREET (3,250+)</button>
+                <button class="cat-pill" onclick="setMonitorFilter('Saham Global')">GLOBAL EQUITIES (700+)</button>
+                <button class="cat-pill" onclick="setMonitorFilter('Crypto')">CRYPTO (550+)</button>
+                <button class="cat-pill" onclick="setMonitorFilter('Komoditas')">KOMODITAS (100+)</button>
+                <button class="cat-pill" onclick="setMonitorFilter('Forex')">FOREX (100+)</button>
+                <button class="cat-pill" onclick="setMonitorFilter('Index')">INDICES &amp; RATES (150+)</button>
+                <span class="cat-pill-count" id="monAssetCount">TOTAL: 5,300+ ASSETS</span>
+            </div>
+            <!-- MONITOR PAGINATION BAR -->
+            <div style="display:flex; justify-content:space-between; align-items:center; background:#0c0c0c; border:1px solid #222; border-bottom:none; padding:3px 8px; font-size:10px;">
+                <div>
+                    <span id="monPageInfo" class="bbg-amber" style="font-weight:bold;">PAGE 1 OF 54 (5,335 ASSETS)</span>
+                </div>
+                <div style="display:flex; gap:6px; align-items:center;">
+                    <button type="button" class="btn-act" onclick="changeMonPage(-1)">&lt; PREV</button>
+                    <button type="button" class="btn-act" onclick="changeMonPage(1)">NEXT &gt;</button>
+                    <span class="bbg-dim">PER PAGE:</span>
+                    <select class="bbg-select" style="width:65px; font-size:10px; padding:1px;" onchange="changeMonPageSize(this.value)">
+                        <option value="50">50</option>
+                        <option value="100" selected>100</option>
+                        <option value="250">250</option>
+                        <option value="500">500</option>
+                    </select>
+                </div>
+            </div>`;
 
-// 5. Update Javascript functions for categorized dropdown, filtering, and pills
-const oldJsSection = `        function renderMonitorGrid() {
-            const tbody = document.getElementById('monitorGridBody');
-            tbody.innerHTML = quoteList.map(q => {
-                const isUp = q.changePct >= 0;
-                const cls = isUp ? 'bbg-green' : 'bbg-red';
-                const sign = isUp ? '+' : '';
-                const origPx = q.currency === 'USD' ? '$' + q.price.toFixed(2) : fmtIdr(q.price);
-                const idrPx = fmtIdr(q.priceIdr || (q.currency === 'USD' ? q.price * usdRate : q.price));
+if (html.includes(oldMonPills)) {
+    html = html.replace(oldMonPills, newMonPills);
+    console.log('[4b/6] Monitor pills and pagination bar inserted.');
+} else {
+    console.error('Failed to locate oldMonPills');
+}
 
-                return \`
-                    <tr>
-                        <td><strong class="bbg-amber" style="cursor:pointer;" onclick="openGp('\${q.symbol}')">\${q.symbol}</strong></td>
-                        <td class="bbg-white">\${q.name}</td>
-                        <td class="bbg-dim" style="font-size:10px;">\${q.category}</td>
-                        <td class="bbg-cyan">\${origPx}</td>
-                        <td class="bbg-white"><strong>\${idrPx}</strong></td>
-                        <td class="\${cls}">\${sign}\${fmtIdr(q.change)}</td>
-                        <td class="\${cls}">\${sign}\${q.changePct.toFixed(2)}%</td>
-                        <td>\${q.currency === 'USD' ? '$' + q.high.toFixed(2) : fmtIdr(q.high)}</td>
-                        <td>\${q.currency === 'USD' ? '$' + q.low.toFixed(2) : fmtIdr(q.low)}</td>
-                        <td style="text-align:center;">
-                            <button class="btn-act" onclick="loadEmsxAsset('\${q.symbol}', 'BUY')">TRADE</button>
-                            <button class="btn-act" onclick="openGp('\${q.symbol}')">GP</button>
-                        </td>
-                    </tr>
-                \`;
-            }).join('');
-        }
+// 5. UPDATE JAVASCRIPT:
+// Update fetchPortfolioData to call renderWorkingOrders
+const oldFetchPort = `                renderSummaryMetrics();
+                renderHoldingsTables();
+                renderBlotterTables();
+                calcEmsx();`;
 
-        // ============================================================
-        // EMSX ORDER EXECUTION
-        // ============================================================
-        function populateEmsxDropdown() {
-            const sel = document.getElementById('emsxTickerSelect');
-            const cur = sel.value;
-            sel.innerHTML = quoteList.map(q => \`<option value="\${q.symbol}">\${q.symbol} - \${q.name} [\${q.category}]</option>\`).join('');
-            if (cur && quoteList.some(x => x.symbol === cur)) {
-                sel.value = cur;
-            } else if (quoteList.length > 0) {
-                sel.value = quoteList[0].symbol;
-            }
+const newFetchPort = `                renderSummaryMetrics();
+                renderHoldingsTables();
+                renderBlotterTables();
+                renderWorkingOrders(portState.workingOrders || []);
+                calcEmsx();`;
 
-            // Also populate universe table in EMSX
-            const ubody = document.getElementById('emsxUniverseBody');
-            ubody.innerHTML = quoteList.map(q => {
-                const cls = q.changePct >= 0 ? 'bbg-green' : 'bbg-red';
-                const idrPx = fmtIdr(q.priceIdr || (q.currency === 'USD' ? q.price * usdRate : q.price));
-                return \`
-                    <tr style="cursor:pointer;" onclick="setEmsxTicker('\${q.symbol}')">
-                        <td><strong class="bbg-amber">\${q.symbol}</strong></td>
-                        <td class="bbg-white">\${q.name}</td>
-                        <td class="bbg-dim" style="font-size:10px;">\${q.category}</td>
-                        <td class="bbg-cyan">\${q.currency === 'USD' ? '$' + q.price.toFixed(2) : fmtIdr(q.price)}</td>
-                        <td class="bbg-white"><strong>\${idrPx}</strong></td>
-                        <td class="\${cls}">\${q.changePct >= 0 ? '+' : ''}\${q.changePct.toFixed(2)}%</td>
-                        <td>\${q.currency === 'USD' ? '$' + q.high.toFixed(2) : fmtIdr(q.high)}</td>
-                        <td>\${q.currency === 'USD' ? '$' + q.low.toFixed(2) : fmtIdr(q.low)}</td>
-                    </tr>
-                \`;
-            }).join('');
+if (html.includes(oldFetchPort)) {
+    html = html.replace(oldFetchPort, newFetchPort);
+    console.log('[5a/6] fetchPortfolioData updated to call renderWorkingOrders.');
+} else {
+    console.error('Failed to locate oldFetchPort');
+}
 
-            filterEmsxUniverse();
-            onEmsxTickerChanged();
-        }
-
-        function filterEmsxUniverse() {
-            const inEl = document.getElementById('emsxSearchInput');
-            if (!inEl) return;
-            const term = inEl.value.trim().toUpperCase();
-            const rows = document.querySelectorAll('#emsxUniverseBody tr');
-            rows.forEach(row => {
-                const txt = row.textContent.toUpperCase();
-                row.style.display = term && !txt.includes(term) ? 'none' : '';
-            });
-        }`;
-
-const newJsSection = `        let currentUniverseFilter = 'ALL';
-        let currentMonitorFilter = 'ALL';
-
-        function setUniverseFilter(cat) {
-            currentUniverseFilter = cat;
-            document.querySelectorAll('#view-emsx .cat-pill').forEach(btn => {
-                btn.classList.toggle('active', btn.textContent.includes(cat) || (cat === 'ALL' && btn.textContent.includes('ALL')));
-            });
-            filterEmsxUniverse();
-        }
-
-        function setMonitorFilter(cat) {
-            currentMonitorFilter = cat;
-            document.querySelectorAll('#view-monitor .cat-pill').forEach(btn => {
-                btn.classList.toggle('active', btn.textContent.includes(cat) || (cat === 'ALL' && btn.textContent.includes('ALL')));
-            });
-            renderMonitorGrid();
-        }
-
-        function renderMonitorGrid() {
+// Replace renderMonitorGrid and filterEmsxUniverse with paginated versions
+const oldRenderMonToFilterEmsx = `        function renderMonitorGrid() {
             const tbody = document.getElementById('monitorGridBody');
             const searchEl = document.getElementById('monitorSearchInput');
             const term = searchEl ? searchEl.value.trim().toUpperCase() : '';
 
             let filtered = quoteList.filter(q => {
                 if (currentMonitorFilter !== 'ALL') {
-                    if (currentMonitorFilter === 'Index') {
+                    if (currentMonitorFilter === 'Space Tech') {
+                        if (!q.category.includes('Space Tech') && !q.category.includes('Pre-IPO') && !['SPACEX', 'OPENAI', 'DXYZ', 'RKLB', 'ASTS', 'LUNR', 'ARKX', 'UFO', 'PL', 'RDW', 'MNTS', 'BKSY', 'SPCE', 'STRIPE', 'ANTHROPIC', 'BYTEDANCE'].includes(q.symbol)) return false;
+                    } else if (currentMonitorFilter === 'Index') {
                         if (!q.category.includes('Index') && !q.category.includes('Rates') && !q.symbol.startsWith('^')) return false;
                     } else if (q.category !== currentMonitorFilter) {
                         return false;
@@ -297,70 +365,126 @@ const newJsSection = `        let currentUniverseFilter = 'ALL';
                         <td class="\${cls}">\${sign}\${q.changePct.toFixed(2)}%</td>
                         <td>\${q.currency === 'USD' ? '$' + q.high.toFixed(2) : fmtIdr(q.high)}</td>
                         <td>\${q.currency === 'USD' ? '$' + q.low.toFixed(2) : fmtIdr(q.low)}</td>
-                        <td style="text-align:center;">
+                        <td style="text-align:center; white-space:nowrap;">
+                            <button class="btn-act" style="background:#003311; border:1px solid #00AA44; color:#00FF66; font-weight:bold; margin-right:3px;" onclick="testBuy('\${q.symbol}')" title="Eksekusi beli langsung 1 lot via DMA">+BUY 1x</button>
                             <button class="btn-act" onclick="loadEmsxAsset('\${q.symbol}', 'BUY')">TRADE &lt;F3&gt;</button>
                             <button class="btn-act" onclick="openGp('\${q.symbol}')">GP</button>
                         </td>
                     </tr>
                 \`;
             }).join('');
+        }`;
+
+const newRenderMon = `        let monCurrentPage = 1;
+        let monPageSize = 100;
+        let emsxCurrentPage = 1;
+        let emsxPageSize = 100;
+
+        function changeMonPage(delta) {
+            monCurrentPage += delta;
+            if (monCurrentPage < 1) monCurrentPage = 1;
+            renderMonitorGrid();
         }
 
-        // ============================================================
-        // EMSX ORDER EXECUTION
-        // ============================================================
-        function populateEmsxDropdown() {
-            const sel = document.getElementById('emsxTickerSelect');
-            const cur = sel.value;
+        function changeMonPageSize(sz) {
+            monPageSize = parseInt(sz) || 100;
+            monCurrentPage = 1;
+            renderMonitorGrid();
+        }
 
-            // Group quotes by category for institutional elegance
-            const categories = [
-                { name: 'SAHAM INDONESIA (IDX BLUECHIP & LQ45)', filter: q => q.category === 'Saham Indo' },
-                { name: 'WALL STREET & US MEGA-CAPS', filter: q => q.category === 'Saham US' },
-                { name: 'GLOBAL ADRs & ASIAN GIANTS', filter: q => q.category === 'Saham Global' },
-                { name: 'TOP CRYPTOCURRENCIES', filter: q => q.category === 'Crypto' },
-                { name: 'GLOBAL COMMODITIES & FUTURES', filter: q => q.category === 'Komoditas' },
-                { name: 'FOREX CURRENCY PAIRS', filter: q => q.category === 'Forex' },
-                { name: 'GLOBAL INDICES & BENCHMARKS', filter: q => q.category.includes('Index') || q.category.includes('Rates') || q.symbol.startsWith('^') }
-            ];
+        function changeEmsxPage(delta) {
+            emsxCurrentPage += delta;
+            if (emsxCurrentPage < 1) emsxCurrentPage = 1;
+            filterEmsxUniverse();
+        }
 
-            let html = '';
-            categories.forEach(cat => {
-                const items = quoteList.filter(cat.filter);
-                if (items.length > 0) {
-                    html += \`<optgroup label="-- \${cat.name} (\${items.length}) --">\`;
-                    items.forEach(q => {
-                        const pxStr = q.currency === 'USD' ? '$' + q.price.toFixed(2) : fmtIdr(q.price) + ' IDR';
-                        html += \`<option value="\${q.symbol}">\${q.symbol} - \${q.name} [\${pxStr}]</option>\`;
-                    });
-                    html += \`</optgroup>\`;
+        function changeEmsxPageSize(sz) {
+            emsxPageSize = parseInt(sz) || 100;
+            emsxCurrentPage = 1;
+            filterEmsxUniverse();
+        }
+
+        function renderMonitorGrid() {
+            const tbody = document.getElementById('monitorGridBody');
+            const searchEl = document.getElementById('monitorSearchInput');
+            const term = searchEl ? searchEl.value.trim().toUpperCase() : '';
+
+            let filtered = quoteList.filter(q => {
+                if (currentMonitorFilter !== 'ALL') {
+                    if (currentMonitorFilter === 'Space Tech') {
+                        if (!q.category.includes('Space Tech') && !q.category.includes('Pre-IPO') && !['SPACEX', 'SPCX', 'OPENAI', 'DXYZ', 'RKLB', 'ASTS', 'LUNR', 'ARKX', 'UFO', 'PL', 'RDW', 'MNTS', 'BKSY', 'SPCE', 'STRIPE', 'ANTHROPIC', 'BYTEDANCE', 'DATABRICKS', 'CANVA', 'XAI', 'NEURALINK', 'ANDURIL'].includes(q.symbol)) return false;
+                    } else if (currentMonitorFilter === 'Index') {
+                        if (!q.category.includes('Index') && !q.category.includes('Rates') && !q.symbol.startsWith('^')) return false;
+                    } else if (q.category !== currentMonitorFilter) {
+                        return false;
+                    }
                 }
+                if (term) {
+                    const match = (q.symbol + ' ' + q.name + ' ' + q.category).toUpperCase();
+                    if (!match.includes(term)) return false;
+                }
+                return true;
             });
 
-            // Fallback if none categorized
-            if (!html) {
-                html = quoteList.map(q => \`<option value="\${q.symbol}">\${q.symbol} - \${q.name} [\${q.category}]</option>\`).join('');
-            }
+            const totalFiltered = filtered.length;
+            const totalPages = Math.ceil(totalFiltered / monPageSize) || 1;
+            if (monCurrentPage > totalPages) monCurrentPage = totalPages;
+            if (monCurrentPage < 1) monCurrentPage = 1;
 
-            sel.innerHTML = html;
+            const countEl = document.getElementById('monAssetCount');
+            if (countEl) countEl.textContent = \`TOTAL: \${totalFiltered.toLocaleString('id-ID')} ASSETS\`;
 
-            if (cur && quoteList.some(x => x.symbol === cur)) {
-                sel.value = cur;
-            } else if (quoteList.length > 0) {
-                sel.value = quoteList[0].symbol;
-            }
+            const pageInfoEl = document.getElementById('monPageInfo');
+            if (pageInfoEl) pageInfoEl.textContent = \`PAGE \${monCurrentPage} OF \${totalPages} (\${totalFiltered.toLocaleString('id-ID')} ASSETS)\`;
 
-            filterEmsxUniverse();
-            onEmsxTickerChanged();
-        }
+            const startIdx = (monCurrentPage - 1) * monPageSize;
+            const pageItems = filtered.slice(startIdx, startIdx + monPageSize);
 
-        function filterEmsxUniverse() {
+            tbody.innerHTML = pageItems.map(q => {
+                const isUp = q.changePct >= 0;
+                const cls = isUp ? 'bbg-green' : 'bbg-red';
+                const sign = isUp ? '+' : '';
+                const origPx = q.currency === 'USD' ? '$' + q.price.toFixed(2) : fmtIdr(q.price);
+                const idrPx = fmtIdr(q.priceIdr || (q.currency === 'USD' ? q.price * usdRate : q.price));
+
+                return \`
+                    <tr>
+                        <td><strong class="bbg-amber" style="cursor:pointer;" onclick="openGp('\${q.symbol}')">\${q.symbol}</strong></td>
+                        <td class="bbg-white">\${q.name}</td>
+                        <td class="bbg-dim" style="font-size:10px;">\${q.category}</td>
+                        <td class="bbg-cyan">\${origPx}</td>
+                        <td class="bbg-white"><strong>\${idrPx}</strong></td>
+                        <td class="\${cls}">\${sign}\${fmtIdr(q.change)}</td>
+                        <td class="\${cls}">\${sign}\${q.changePct.toFixed(2)}%</td>
+                        <td>\${q.currency === 'USD' ? '$' + q.high.toFixed(2) : fmtIdr(q.high)}</td>
+                        <td>\${q.currency === 'USD' ? '$' + q.low.toFixed(2) : fmtIdr(q.low)}</td>
+                        <td style="text-align:center; white-space:nowrap;">
+                            <button class="btn-act" style="background:#003311; border:1px solid #00AA44; color:#00FF66; font-weight:bold; margin-right:3px;" onclick="testBuy('\${q.symbol}')" title="Eksekusi beli langsung 1 lot via DMA">+BUY 1x</button>
+                            <button class="btn-act" onclick="loadEmsxAsset('\${q.symbol}', 'BUY')">TRADE &lt;F3&gt;</button>
+                            <button class="btn-act" onclick="openGp('\${q.symbol}')">GP</button>
+                        </td>
+                    </tr>
+                \`;
+            }).join('');
+        }`;
+
+if (html.includes(oldRenderMonToFilterEmsx)) {
+    html = html.replace(oldRenderMonToFilterEmsx, newRenderMon);
+    console.log('[5b/6] renderMonitorGrid replaced with paginated version.');
+} else {
+    console.error('Failed to locate oldRenderMonToFilterEmsx');
+}
+
+// Replace filterEmsxUniverse with paginated version
+const oldFilterEmsx = `        function filterEmsxUniverse() {
             const inEl = document.getElementById('emsxSearchInput');
             const term = inEl ? inEl.value.trim().toUpperCase() : '';
 
             let filtered = quoteList.filter(q => {
                 if (currentUniverseFilter !== 'ALL') {
-                    if (currentUniverseFilter === 'Index') {
+                    if (currentUniverseFilter === 'Space Tech') {
+                        if (!q.category.includes('Space Tech') && !q.category.includes('Pre-IPO') && !['SPACEX', 'OPENAI', 'DXYZ', 'RKLB', 'ASTS', 'LUNR', 'ARKX', 'UFO', 'PL', 'RDW', 'MNTS', 'BKSY', 'SPCE', 'STRIPE', 'ANTHROPIC', 'BYTEDANCE'].includes(q.symbol)) return false;
+                    } else if (currentUniverseFilter === 'Index') {
                         if (!q.category.includes('Index') && !q.category.includes('Rates') && !q.symbol.startsWith('^')) return false;
                     } else if (q.category !== currentUniverseFilter) {
                         return false;
@@ -390,18 +514,456 @@ const newJsSection = `        let currentUniverseFilter = 'ALL';
                         <td class="\${cls}">\${q.changePct >= 0 ? '+' : ''}\${q.changePct.toFixed(2)}%</td>
                         <td>\${q.currency === 'USD' ? '$' + q.high.toFixed(2) : fmtIdr(q.high)}</td>
                         <td>\${q.currency === 'USD' ? '$' + q.low.toFixed(2) : fmtIdr(q.low)}</td>
+                        <td style="text-align:center;">
+                            <button class="btn-act" style="background:#003311; border:1px solid #00AA44; color:#00FF66; font-weight:bold; padding:1px 6px;" onclick="event.stopPropagation(); testBuy('\${q.symbol}')" title="Eksekusi beli langsung 1 lot via DMA">+BUY 1x</button>
+                        </td>
                     </tr>
                 \`;
             }).join('');
         }`;
 
-if (content.includes(oldJsSection)) {
-    content = content.replace(oldJsSection, newJsSection);
-    console.log('Successfully updated JavaScript in index.html');
+const newFilterEmsx = `        function filterEmsxUniverse() {
+            const inEl = document.getElementById('emsxSearchInput');
+            const term = inEl ? inEl.value.trim().toUpperCase() : '';
+
+            let filtered = quoteList.filter(q => {
+                if (currentUniverseFilter !== 'ALL') {
+                    if (currentUniverseFilter === 'Space Tech') {
+                        if (!q.category.includes('Space Tech') && !q.category.includes('Pre-IPO') && !['SPACEX', 'SPCX', 'OPENAI', 'DXYZ', 'RKLB', 'ASTS', 'LUNR', 'ARKX', 'UFO', 'PL', 'RDW', 'MNTS', 'BKSY', 'SPCE', 'STRIPE', 'ANTHROPIC', 'BYTEDANCE', 'DATABRICKS', 'CANVA', 'XAI', 'NEURALINK', 'ANDURIL'].includes(q.symbol)) return false;
+                    } else if (currentUniverseFilter === 'Index') {
+                        if (!q.category.includes('Index') && !q.category.includes('Rates') && !q.symbol.startsWith('^')) return false;
+                    } else if (q.category !== currentUniverseFilter) {
+                        return false;
+                    }
+                }
+                if (term) {
+                    const match = (q.symbol + ' ' + q.name + ' ' + q.category).toUpperCase();
+                    if (!match.includes(term)) return false;
+                }
+                return true;
+            });
+
+            const totalFiltered = filtered.length;
+            const totalPages = Math.ceil(totalFiltered / emsxPageSize) || 1;
+            if (emsxCurrentPage > totalPages) emsxCurrentPage = totalPages;
+            if (emsxCurrentPage < 1) emsxCurrentPage = 1;
+
+            const countEl = document.getElementById('emsxAssetCount');
+            if (countEl) countEl.textContent = \`TOTAL: \${totalFiltered.toLocaleString('id-ID')} ASSETS\`;
+
+            const pageInfoEl = document.getElementById('emsxPageInfo');
+            if (pageInfoEl) pageInfoEl.textContent = \`PAGE \${emsxCurrentPage} OF \${totalPages} (\${totalFiltered.toLocaleString('id-ID')} ASSETS)\`;
+
+            const startIdx = (emsxCurrentPage - 1) * emsxPageSize;
+            const pageItems = filtered.slice(startIdx, startIdx + emsxPageSize);
+
+            const ubody = document.getElementById('emsxUniverseBody');
+            ubody.innerHTML = pageItems.map(q => {
+                const cls = q.changePct >= 0 ? 'bbg-green' : 'bbg-red';
+                const idrPx = fmtIdr(q.priceIdr || (q.currency === 'USD' ? q.price * usdRate : q.price));
+                return \`
+                    <tr style="cursor:pointer;" onclick="setEmsxTicker('\${q.symbol}')">
+                        <td><strong class="bbg-amber">\${q.symbol}</strong></td>
+                        <td class="bbg-white">\${q.name}</td>
+                        <td class="bbg-dim" style="font-size:10px;">\${q.category}</td>
+                        <td class="bbg-cyan">\${q.currency === 'USD' ? '$' + q.price.toFixed(2) : fmtIdr(q.price)}</td>
+                        <td class="bbg-white"><strong>\${idrPx}</strong></td>
+                        <td class="\${cls}">\${q.changePct >= 0 ? '+' : ''}\${q.changePct.toFixed(2)}%</td>
+                        <td>\${q.currency === 'USD' ? '$' + q.high.toFixed(2) : fmtIdr(q.high)}</td>
+                        <td>\${q.currency === 'USD' ? '$' + q.low.toFixed(2) : fmtIdr(q.low)}</td>
+                        <td style="text-align:center;">
+                            <button class="btn-act" style="background:#003311; border:1px solid #00AA44; color:#00FF66; font-weight:bold; padding:1px 6px;" onclick="event.stopPropagation(); testBuy('\${q.symbol}')" title="Eksekusi beli langsung 1 lot via DMA">+BUY 1x</button>
+                        </td>
+                    </tr>
+                \`;
+            }).join('');
+        }`;
+
+if (html.includes(oldFilterEmsx)) {
+    html = html.replace(oldFilterEmsx, newFilterEmsx);
+    console.log('[5c/6] filterEmsxUniverse replaced with paginated version.');
 } else {
-    console.error('Failed to locate oldJsSection in index.html');
-    process.exit(1);
+    console.error('Failed to locate oldFilterEmsx');
 }
 
-fs.writeFileSync(indexFile, content, 'utf8');
-console.log('Successfully updated index.html!');
+// 6. REPLACE calcEmsx, presetEmsxCash, executeEmsxOrder & ADD Working Orders Blotter logic
+const oldCalcAndExecBlock = `        function calcEmsx() {
+            const sym = document.getElementById('emsxTickerSelect').value;
+            const q = quoteList.find(x => x.symbol === sym);
+            if (!q) return;
+
+            const inputVal = parseFloat(document.getElementById('emsxQtyInput').value) || 0;
+            const isIndo = q.symbol.includes('.JK') || q.category === 'Saham Indo';
+            const actualQty = isIndo ? inputVal * 100 : inputVal;
+
+            const price = q.price;
+            const priceInIdr = (q.currency === 'USD') ? price * usdRate : price;
+
+            const gross = actualQty * priceInIdr;
+            const comm = gross * 0.0015;
+            const net = emsxSide === 'BUY' ? gross + comm : gross - comm;
+            const postCash = emsxSide === 'BUY' ? portState.cash - net : portState.cash + net;
+
+            document.getElementById('emsxGrossOut').textContent = \`\${fmtIdr(gross)} IDR\`;
+            document.getElementById('emsxCommOut').textContent = \`\${fmtIdr(comm)} IDR\`;
+            document.getElementById('emsxNetOut').textContent = \`\${fmtIdr(net)} IDR\`;
+            document.getElementById('emsxCashOut').textContent = \`\${fmtIdr(portState.cash)} IDR\`;
+
+            const postEl = document.getElementById('emsxPostCashOut');
+            postEl.textContent = \`\${fmtIdr(postCash)} IDR\`;
+            postEl.className = postCash >= 0 ? 'bbg-white' : 'bbg-red';
+        }
+
+        function presetEmsxCash(pct) {
+            const sym = document.getElementById('emsxTickerSelect').value;
+            const q = quoteList.find(x => x.symbol === sym);
+            if (!q) return;
+
+            const budget = portState.cash * pct;
+            const priceInIdr = (q.currency === 'USD') ? q.price * usdRate : q.price;
+            if (priceInIdr <= 0) return;
+
+            let units = Math.floor(budget / (priceInIdr * 1.0015));
+            const isIndo = q.symbol.includes('.JK') || q.category === 'Saham Indo';
+
+            if (isIndo) {
+                let lots = Math.floor(units / 100);
+                if (lots < 1) lots = 1;
+                document.getElementById('emsxQtyInput').value = lots;
+            } else {
+                if (units < 1) units = 1;
+                document.getElementById('emsxQtyInput').value = units;
+            }
+            calcEmsx();
+        }
+
+        async function executeEmsxOrder() {
+            const sym = document.getElementById('emsxTickerSelect').value;
+            const q = quoteList.find(x => x.symbol === sym);
+            if (!q) return;
+
+            const inputVal = parseFloat(document.getElementById('emsxQtyInput').value);
+            if (!inputVal || inputVal <= 0) {
+                showPopup('REJECTED: Quantity must be greater than zero.', true);
+                return;
+            }
+
+            const isIndo = q.symbol.includes('.JK') || q.category === 'Saham Indo';
+            const actualQty = isIndo ? inputVal * 100 : inputVal;
+
+            const queueAllowed = document.getElementById('emsxQueueCheckbox') ? document.getElementById('emsxQueueCheckbox').checked : true;
+            const payload = {
+                type: emsxSide,
+                symbol: q.symbol,
+                name: q.name,
+                category: q.category,
+                qty: actualQty,
+                price: q.price,
+                currency: q.currency,
+                queueIfClosed: queueAllowed
+            };
+
+            try {
+                const res = await fetch('/api/portfolio/trade', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const d = await res.json();
+                if (res.ok && d.success) {
+                    if (d.trade && d.trade.status && d.trade.status.includes('QUEUED')) {
+                        showPopup(\`⏳ DMA ORDER QUEUED: \${d.trade.type} \${d.trade.qty} \${d.trade.symbol} dimasukkan ke antrean pembukaan pasar (\${d.trade.exchange} TUTUP)\`, false);
+                    } else {
+                        showPopup(\`DMA FILL CONFIRMED: \${d.trade.type} \${d.trade.qty} \${d.trade.symbol} @ \${fmtIdr(d.trade.priceInIdr)} IDR\`, false);
+                    }
+                    await fetchPortfolioData();
+                    showView('summary');
+                } else {
+                    showPopup(\`DMA REJECTED: \${d.error || 'Execution failed'}\`, true);
+                }
+            } catch (e) {
+                showPopup('COMMUNICATION ERROR: ' + e.message, true);
+            }
+        }`;
+
+const newOrderLogicAndBlotter = `        // ============================================================
+        // EMSX ORDER TYPES, TIME IN FORCE (TIF) & PRICING
+        // ============================================================
+        let emsxOrderType = 'MARKET';
+        let emsxTif = 'GTC';
+
+        function setEmsxOrderType(ot) {
+            emsxOrderType = ot;
+            document.querySelectorAll('.btn-ordertype').forEach(b => b.classList.remove('active'));
+            const btnMap = {
+                'MARKET': 'btnOtMarket',
+                'LIMIT': 'btnOtLimit',
+                'STOP': 'btnOtStop',
+                'STOP_LIMIT': 'btnOtStopLimit',
+                'TRAILING_STOP': 'btnOtTrail'
+            };
+            if (btnMap[ot]) {
+                const el = document.getElementById(btnMap[ot]);
+                if (el) el.classList.add('active');
+            }
+
+            const limitRow = document.getElementById('emsxLimitPriceRow');
+            const stopRow = document.getElementById('emsxStopPriceRow');
+
+            if (ot === 'LIMIT' || ot === 'STOP_LIMIT') {
+                if (limitRow) limitRow.style.display = 'flex';
+                const sym = document.getElementById('emsxTickerSelect').value;
+                const q = quoteList.find(x => x.symbol === sym);
+                const limitIn = document.getElementById('emsxLimitPriceInput');
+                if (q && limitIn && (!limitIn.value || parseFloat(limitIn.value) <= 0)) {
+                    limitIn.value = q.price;
+                }
+            } else {
+                if (limitRow) limitRow.style.display = 'none';
+            }
+
+            if (ot === 'STOP' || ot === 'STOP_LIMIT') {
+                if (stopRow) stopRow.style.display = 'flex';
+                const sym = document.getElementById('emsxTickerSelect').value;
+                const q = quoteList.find(x => x.symbol === sym);
+                const stopIn = document.getElementById('emsxStopPriceInput');
+                if (q && stopIn && (!stopIn.value || parseFloat(stopIn.value) <= 0)) {
+                    stopIn.value = (q.price * 0.95).toFixed(2);
+                }
+            } else {
+                if (stopRow) stopRow.style.display = 'none';
+            }
+
+            calcEmsx();
+        }
+
+        function adjustLimitPct(pct) {
+            const inEl = document.getElementById('emsxLimitPriceInput');
+            if (!inEl) return;
+            const cur = parseFloat(inEl.value) || 0;
+            if (cur > 0) {
+                const nextVal = cur * (1 + pct);
+                inEl.value = nextVal > 100 ? nextVal.toFixed(2) : nextVal.toFixed(4);
+                calcEmsx();
+            }
+        }
+
+        function resetLimitToMarket() {
+            const sym = document.getElementById('emsxTickerSelect').value;
+            const q = quoteList.find(x => x.symbol === sym);
+            const inEl = document.getElementById('emsxLimitPriceInput');
+            if (q && inEl) {
+                inEl.value = q.price;
+                calcEmsx();
+            }
+        }
+
+        function setEmsxTif(tif) {
+            emsxTif = tif;
+            document.querySelectorAll('.btn-tif').forEach(b => b.classList.remove('active'));
+            const tifMap = {
+                'GTC': 'btnTifGtc',
+                'DAY': 'btnTifDay',
+                'IOC': 'btnTifIoc',
+                'FOK': 'btnTifFok'
+            };
+            if (tifMap[tif]) {
+                const el = document.getElementById(tifMap[tif]);
+                if (el) el.classList.add('active');
+            }
+        }
+
+        function calcEmsx() {
+            const sym = document.getElementById('emsxTickerSelect').value;
+            const q = quoteList.find(x => x.symbol === sym);
+            if (!q) return;
+
+            const inputVal = parseFloat(document.getElementById('emsxQtyInput').value) || 0;
+            const isIndo = q.symbol.includes('.JK') || q.category === 'Saham Indo';
+            const actualQty = isIndo ? inputVal * 100 : inputVal;
+
+            let price = q.price;
+            if (emsxOrderType === 'LIMIT' || emsxOrderType === 'STOP_LIMIT') {
+                const limitIn = document.getElementById('emsxLimitPriceInput');
+                if (limitIn && parseFloat(limitIn.value) > 0) {
+                    price = parseFloat(limitIn.value);
+                }
+            }
+
+            const priceInIdr = (q.currency === 'USD') ? price * usdRate : price;
+            const gross = actualQty * priceInIdr;
+            const comm = gross * 0.0015;
+            const net = emsxSide === 'BUY' ? gross + comm : gross - comm;
+            const postCash = emsxSide === 'BUY' ? portState.cash - net : portState.cash + net;
+
+            document.getElementById('emsxGrossOut').textContent = \`\${fmtIdr(gross)} IDR\`;
+            document.getElementById('emsxCommOut').textContent = \`\${fmtIdr(comm)} IDR\`;
+            document.getElementById('emsxNetOut').textContent = \`\${fmtIdr(net)} IDR\`;
+            document.getElementById('emsxCashOut').textContent = \`\${fmtIdr(portState.cash)} IDR\`;
+
+            const postEl = document.getElementById('emsxPostCashOut');
+            postEl.textContent = \`\${fmtIdr(postCash)} IDR\`;
+            postEl.className = postCash >= 0 ? 'bbg-white' : 'bbg-red';
+        }
+
+        function presetEmsxCash(pct) {
+            const sym = document.getElementById('emsxTickerSelect').value;
+            const q = quoteList.find(x => x.symbol === sym);
+            if (!q) return;
+
+            const budget = portState.cash * pct;
+            let price = q.price;
+            if (emsxOrderType === 'LIMIT' && document.getElementById('emsxLimitPriceInput') && parseFloat(document.getElementById('emsxLimitPriceInput').value) > 0) {
+                price = parseFloat(document.getElementById('emsxLimitPriceInput').value);
+            }
+            const priceInIdr = (q.currency === 'USD') ? price * usdRate : price;
+            if (priceInIdr <= 0) return;
+
+            let units = Math.floor(budget / (priceInIdr * 1.0015));
+            const isIndo = q.symbol.includes('.JK') || q.category === 'Saham Indo';
+
+            if (isIndo) {
+                let lots = Math.floor(units / 100);
+                if (lots < 1) lots = 1;
+                document.getElementById('emsxQtyInput').value = lots;
+            } else {
+                if (units < 1) units = 1;
+                document.getElementById('emsxQtyInput').value = units;
+            }
+            calcEmsx();
+        }
+
+        async function executeEmsxOrder() {
+            const sym = document.getElementById('emsxTickerSelect').value;
+            const q = quoteList.find(x => x.symbol === sym);
+            if (!q) return;
+
+            const inputVal = parseFloat(document.getElementById('emsxQtyInput').value);
+            if (!inputVal || inputVal <= 0) {
+                showPopup('REJECTED: Quantity must be greater than zero.', true);
+                return;
+            }
+
+            const isIndo = q.symbol.includes('.JK') || q.category === 'Saham Indo';
+            const actualQty = isIndo ? inputVal * 100 : inputVal;
+
+            let limitVal = null;
+            if (emsxOrderType === 'LIMIT' || emsxOrderType === 'STOP_LIMIT') {
+                limitVal = parseFloat(document.getElementById('emsxLimitPriceInput').value) || q.price;
+            }
+
+            let stopVal = null;
+            if (emsxOrderType === 'STOP' || emsxOrderType === 'STOP_LIMIT') {
+                stopVal = parseFloat(document.getElementById('emsxStopPriceInput').value) || null;
+            }
+
+            const queueAllowed = document.getElementById('emsxQueueCheckbox') ? document.getElementById('emsxQueueCheckbox').checked : true;
+            const payload = {
+                type: emsxSide,
+                orderType: emsxOrderType,
+                tif: emsxTif,
+                symbol: q.symbol,
+                name: q.name,
+                category: q.category,
+                qty: actualQty,
+                price: q.price,
+                limitPrice: limitVal,
+                stopPrice: stopVal,
+                currency: q.currency,
+                queueIfClosed: queueAllowed
+            };
+
+            try {
+                const res = await fetch('/api/portfolio/trade', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const d = await res.json();
+                if (res.ok && d.success) {
+                    showPopup(d.message || \`DMA FILL CONFIRMED: \${payload.type} \${payload.qty} \${payload.symbol}\`, false);
+                    await fetchPortfolioData();
+                    showView('emsx');
+                } else {
+                    showPopup(\`DMA REJECTED: \${d.error || 'Execution failed'}\`, true);
+                }
+            } catch (e) {
+                showPopup('COMMUNICATION ERROR: ' + e.message, true);
+            }
+        }
+
+        // ============================================================
+        // EMSX WORKING ORDERS BLOTTER & CANCELLATION ENGINE
+        // ============================================================
+        function renderWorkingOrders(workingOrders = []) {
+            const tbody = document.getElementById('emsxWorkingOrdersBody');
+            const countEl = document.getElementById('workingOrdersCount');
+            if (!tbody) return;
+
+            if (!workingOrders || workingOrders.length === 0) {
+                tbody.innerHTML = \`<tr><td colspan="12" style="text-align:center; color:#666; padding:8px;">[ORDER BOOK CLEAR] No active working limit or stop orders. All orders filled or blotter clean.</td></tr>\`;
+                if (countEl) countEl.textContent = '0 WORKING ORDERS';
+                return;
+            }
+
+            if (countEl) countEl.textContent = \`\${workingOrders.length} ACTIVE WORKING ORDERS\`;
+
+            tbody.innerHTML = workingOrders.map(o => {
+                const sideCls = o.type === 'BUY' ? 'bbg-green' : 'bbg-red';
+                const isUsd = (o.currency === 'USD');
+                const limitStr = o.limitPrice ? (isUsd ? '$' + Number(o.limitPrice).toFixed(2) : fmtIdr(o.limitPrice)) : (o.stopPrice ? 'STOP ' + (isUsd ? '$' + Number(o.stopPrice).toFixed(2) : fmtIdr(o.stopPrice)) : 'MKT');
+                const quote = quoteList.find(q => q.symbol === o.symbol);
+                const curPxStr = quote ? (isUsd ? '$' + Number(quote.price).toFixed(2) : fmtIdr(quote.price)) : '-';
+                const timeStr = o.timestamp ? new Date(o.timestamp).toLocaleTimeString('id-ID') : '-';
+
+                return \`
+                    <tr>
+                        <td><strong class="bbg-amber">\${o.id}</strong></td>
+                        <td>\${timeStr}</td>
+                        <td><strong class="bbg-cyan">\${o.symbol}</strong></td>
+                        <td class="bbg-white">\${o.name}</td>
+                        <td class="\${sideCls}" style="font-weight:bold;">\${o.type}</td>
+                        <td>\${o.orderType}</td>
+                        <td class="bbg-amber" style="font-weight:bold;">\${limitStr}</td>
+                        <td class="bbg-white">\${curPxStr}</td>
+                        <td>\${o.qty}</td>
+                        <td class="bbg-cyan">\${o.tif || 'GTC'}</td>
+                        <td><span style="background:#332200; border:1px solid #FF8800; color:#FFB000; padding:1px 5px; font-size:9.5px; font-weight:bold;">\${o.status}</span></td>
+                        <td style="text-align:center;">
+                            <button class="btn-act" style="background:#330000; border:1px solid #FF2233; color:#FF5566; font-weight:bold; padding:1px 6px;" onclick="cancelOrder('\${o.id}')">CANCEL</button>
+                        </td>
+                    </tr>
+                \`;
+            }).join('');
+        }
+
+        async function cancelOrder(orderId) {
+            if (!confirm(\`Batalkan Working Order \${orderId}?\`)) return;
+            showPopup(\`[EMSX CANCEL] Membatalkan order #\${orderId}...\`);
+            try {
+                const res = await fetch('/api/portfolio/orders/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ orderId })
+                });
+                const d = await res.json();
+                if (d.success) {
+                    showPopup(d.message);
+                    await fetchPortfolioData();
+                } else {
+                    showPopup(d.error || 'Gagal membatalkan order', true);
+                }
+            } catch (e) {
+                showPopup('Error: ' + e.message, true);
+            }
+        }`;
+
+if (html.includes(oldCalcAndExecBlock)) {
+    html = html.replace(oldCalcAndExecBlock, newOrderLogicAndBlotter);
+    console.log('[6/6] Order types execution & Working Orders Blotter logic inserted.');
+} else {
+    console.error('Failed to locate oldCalcAndExecBlock');
+}
+
+fs.writeFileSync(filePath, html, 'utf8');
+console.log('Successfully written updated index.html!');

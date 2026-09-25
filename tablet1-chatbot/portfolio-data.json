@@ -1,6 +1,6 @@
 {
   "initialCapital": 200000000,
-  "cash": 3899265,
+  "cash": 2399181,
   "realizedPnL": 0,
   "holdings": [
     {
@@ -22,6 +22,16 @@
       "avgPrice": 362.88,
       "createdAt": 1789748256516,
       "lastUpdated": 1789748256516
+    },
+    {
+      "symbol": "BTC-USD",
+      "name": "BTC-USD",
+      "category": "General",
+      "currency": "USD",
+      "qty": 0.001,
+      "avgPrice": 83622,
+      "createdAt": 1790346334944,
+      "lastUpdated": 1790346334944
     }
   ],
   "trades": [
@@ -92,6 +102,52 @@
       "exchange": "NYSE / NASDAQ (Wall Street)",
       "marketStatus": "OPEN",
       "note": "Eksekusi DMA MARKET: 15 @ $362.88"
+    },
+    {
+      "id": "ORD-1790346334944",
+      "timestamp": "2026-09-25T14:25:34.944Z",
+      "type": "BUY",
+      "orderType": "MARKET",
+      "tif": "GTC",
+      "symbol": "BTC-USD",
+      "name": "BTC-USD",
+      "category": "General",
+      "qty": 0.001,
+      "price": 83622,
+      "limitPrice": null,
+      "currency": "USD",
+      "priceInIdr": 1497837264,
+      "totalValueIdr": 1497837,
+      "brokerFee": 2247,
+      "realizedPnL": 0,
+      "status": "FILLED",
+      "exchange": "CRYPTO (24/7)",
+      "marketStatus": "OPEN",
+      "note": "Eksekusi DMA MARKET: 0.001 @ $83622.00"
+    },
+    {
+      "id": "ORD-1790346339283-703",
+      "timestamp": "2026-09-25T14:25:39.283Z",
+      "type": "BUY",
+      "orderType": "MARKET",
+      "tif": "GTC",
+      "symbol": "BBCA.JK",
+      "name": "BBCA.JK",
+      "category": "General",
+      "qty": 100,
+      "price": 6250,
+      "limitPrice": null,
+      "stopPrice": null,
+      "trailPct": null,
+      "currency": "IDR",
+      "priceInIdr": 6250,
+      "totalValueIdr": 625000,
+      "brokerFee": 938,
+      "reservedCash": 625938,
+      "status": "CANCELLED",
+      "exchange": "IDX (Bursa Efek Indonesia)",
+      "marketStatus": "CLOSED",
+      "note": "MARKET BUY pada Rp 6.250 (GTC)"
     }
   ],
   "workingOrders": []
