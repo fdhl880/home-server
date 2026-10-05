@@ -1300,10 +1300,10 @@ app.post('/api/portfolio/trade', (req, res) => {
             }
         }
 
-        res.status(400).json({ error: 'Tipe aksi harus BUY atau SELL.' });
+        if (!res.headersSent) res.status(400).json({ error: 'Tipe aksi harus BUY atau SELL.' });
     } catch (e) {
         console.error('Trade POST error:', e.message);
-        res.status(500).json({ error: e.message });
+        if (!res.headersSent) res.status(500).json({ error: e.message });
     }
 });
 
@@ -1352,7 +1352,7 @@ app.post('/api/portfolio/orders/cancel', (req, res) => {
         savePortfolio(port);
         res.json({ success: true, message: `Order #${orderId} (${order.symbol}) berhasil DIBATALKAN. Posisi/saldo dikembalikan.` });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        if (!res.headersSent) res.status(500).json({ error: e.message });
     }
 });
 
@@ -1362,10 +1362,10 @@ app.get('/api/portfolio/orders', (req, res) => {
         const port = loadPortfolio();
         res.json({
             workingOrders: port.workingOrders || [],
-            trades: port.trades || []
+            trades: (port.trades || []).slice(-100).reverse()
         });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        if (!res.headersSent) res.status(500).json({ error: e.message });
     }
 });
 
@@ -1582,7 +1582,7 @@ const handleDmaBuy = (req, res) => {
         });
     } catch (e) {
         console.error('DMA execution error:', e.message);
-        res.status(500).json({ error: e.message });
+        if (!res.headersSent) res.status(500).json({ error: e.message });
     }
 };
 app.get('/api/dma-buy', handleDmaBuy);
@@ -1892,7 +1892,7 @@ app.post('/api/quotes/batch', async (req, res) => {
 
         res.json({ quotes: results, usdRate: quoteCache.usdIdr });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        if (!res.headersSent) res.status(500).json({ error: e.message });
     }
 });
 
@@ -1949,7 +1949,7 @@ app.get('/api/quote/:symbol', async (req, res) => {
         quoteCache.data[sym] = fallbackQuote;
         res.json(fallbackQuote);
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        if (!res.headersSent) res.status(500).json({ error: e.message });
     }
 });
 
@@ -2038,7 +2038,7 @@ app.get('/api/security/fundamentals/:symbol', async (req, res) => {
         const data = await fetchFundamentals(rawSym);
         res.json(data);
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        if (!res.headersSent) res.status(500).json({ error: e.message });
     }
 });
 
@@ -2169,10 +2169,10 @@ Holdings: ${JSON.stringify(portfolioContext?.holdings || [])}`;
                 return res.json({ analysis: j2.choices?.[0]?.message?.content, liveQuotes: liveQuotesText });
             }
             const err = await groqResp.text();
-            return res.status(500).json({ error: 'AI Analyst error: ' + err.slice(0, 100) });
+            if (!res.headersSent) return res.status(500).json({ error: 'AI Analyst error: ' + err.slice(0, 100) });
         }
     } catch (e) {
-        res.status(500).json({ error: 'Koneksi AI Analyst gagal: ' + e.message });
+        if (!res.headersSent) res.status(500).json({ error: 'Koneksi AI Analyst gagal: ' + e.message });
     }
 });
 
