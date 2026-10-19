@@ -2608,6 +2608,12 @@ app.post('/api/crypto-futures/settings', (req, res) => {
     res.json(updated);
 });
 
+// Pluang Glassmorphism Terminal Page & Static Assets on Port 4000 (/pluang)
+app.use('/pluang', express.static(path.join(pluangDir, 'static')));
+app.get('/pluang', (req, res) => {
+    res.sendFile(path.join(pluangDir, 'static', 'index.html'));
+});
+
 // Pluang Glassmorphism Terminal API Aliases (/pluang)
 app.get('/api/status', (req, res) => {
     const cfg = getLocalTradingConfig();
