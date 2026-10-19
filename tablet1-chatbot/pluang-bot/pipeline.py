@@ -305,36 +305,35 @@ def _rule_based_setup(scan_data: dict):
     elif mss == "BEARISH":
         bear_score += 1
 
-    # === DECISION (Wall Street-style: opportunities exist in most markets) ===
+    # === INSTITUTIONAL SETUP DETERMINATION (Selective Wall Street Quality) ===
+    # A true institutional desk only trades when edge is clear (3+ confluences).
+    # Choppy sideways markets (net between -2 and +2) are REJECTED to preserve cash.
     net = bull_score - bear_score
     direction = "NONE"
     setup_name = "NO_CLEAR_SETUP"
-    prob = 0
+    prob = 35
 
     if net >= 3:
         direction = "LONG"
         setup_name = "RULE_BASED_BULLISH_CONFLUENCE"
-        prob = min(55 + net * 6, 90)
+        prob = min(68 + (net - 3) * 5, 85)
     elif net <= -3:
         direction = "SHORT"
         setup_name = "RULE_BASED_BEARISH_CONFLUENCE"
-        prob = min(55 + abs(net) * 6, 90)
-    elif net >= 2:
+        prob = min(68 + (abs(net) - 3) * 5, 85)
+    elif net == 2 and vol_ratio > 1.4:
         direction = "LONG"
-        setup_name = "RULE_BASED_MOMENTUM_LONG"
-        prob = min(50 + net * 5, 80)
-    elif net <= -2:
+        setup_name = "RULE_BASED_BREAKOUT_LONG"
+        prob = 66
+    elif net == -2 and vol_ratio > 1.4:
         direction = "SHORT"
-        setup_name = "RULE_BASED_MOMENTUM_SHORT"
-        prob = min(50 + abs(net) * 5, 80)
-    elif net >= 1 and vol_ratio > 1.2:
-        direction = "LONG"
-        setup_name = "RULE_BASED_VOLUME_BULLISH"
-        prob = min(48 + net * 5, 70)
-    elif net <= -1 and vol_ratio > 1.2:
-        direction = "SHORT"
-        setup_name = "RULE_BASED_VOLUME_BEARISH"
-        prob = min(48 + abs(net) * 5, 70)
+        setup_name = "RULE_BASED_BREAKDOWN_SHORT"
+        prob = 66
+    else:
+        # Choppy, low-conviction market: explicitly keep in CASH
+        direction = "NONE"
+        setup_name = "NO_CLEAR_SETUP"
+        prob = 40
 
     return {
         "setup_name": setup_name,
@@ -814,11 +813,11 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
 
     reasons = []
 
-    # Gate 1: Confidence < min (only if no direction at all)
+    # Gate 1: Confidence < min (Institutional standard: must meet min confidence)
     conf = result.get("confidence_score", 0)
-    if conf < current_min_confidence and result.get("direction") == "NONE":
+    if conf < current_min_confidence:
         result["status"] = "REJECTED"
-        reasons.append(f"Confidence {conf}% < {current_min_confidence}% tanpa arah jelas")
+        reasons.append(f"Confidence score {conf}% di bawah batas institusional {current_min_confidence}%")
 
     # Gate 2: Cap position size (don't reject, just cap)
     if result.get("position_size_idr", 0) > current_max_budget:
@@ -828,41 +827,39 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
     if result.get("leverage", 1) > current_max_leverage:
         result["leverage"] = current_max_leverage
 
-    # Gate 4: NO_CLEAR_SETUP with NO direction = reject
-    # But if AI found direction despite NO_CLEAR_SETUP label, allow it
-    if setup_result.get("setup_name") == "NO_CLEAR_SETUP" and setup_result.get("direction") == "NONE":
-        if result.get("direction", "NONE") == "NONE":
-            result["status"] = "REJECTED"
-            reasons.append("Setup scanner tidak menemukan arah")
-
-    # Gate 5: Plan SKIP only rejects if no override from Layer 5
-    if plan_result.get("action") == "SKIP" and result.get("direction", "NONE") == "NONE":
+    # Gate 4: NO_CLEAR_SETUP or Direction NONE = REJECT
+    if result.get("direction", "NONE") == "NONE" or setup_result.get("setup_name") == "NO_CLEAR_SETUP":
         result["status"] = "REJECTED"
-        reasons.append("Trading plan SKIP tanpa override")
+        reasons.append("Pasar sideways/konsolidasi tanpa setup arah konvergen yang jelas")
 
-    # Gate 6: Risk audit REJECT only if score < 3/10 (truly catastrophic)
+    # Gate 5: Plan SKIP rejects
+    if plan_result.get("action") == "SKIP":
+        result["status"] = "REJECTED"
+        reasons.append("Trading plan SKIP (level SL/TP tidak memiliki edge statistik)")
+
+    # Gate 6: Risk audit must pass at least 6/10 checks
     risk_score = risk_result.get("total_score", 5)
-    if risk_score < 3:
+    if risk_score < 6:
         result["status"] = "REJECTED"
-        reasons.append(f"Risk audit hanya {risk_score}/10 (fatal)")
+        reasons.append(f"Risk audit hanya lolos {risk_score}/10 (minimum 6/10)")
 
-    # Gate 7: Critical failures > 4 (not 2, be more lenient)
+    # Gate 7: Critical failures >= 2 = REJECT
     cf = risk_result.get("critical_failures", [])
     real_cf = [c for c in cf if c != "PARSE_FAILURE"]
-    if len(real_cf) > 4:
+    if len(real_cf) >= 2:
         result["status"] = "REJECTED"
-        reasons.append(f"{len(real_cf)} critical risk failures")
+        reasons.append(f"Terdapat {len(real_cf)} kegagalan risiko kritis: {', '.join(real_cf)}")
 
-    # Gate 8: RRR check (only if direction exists)
+    # Gate 8: RRR check
     if result.get("direction", "NONE") != "NONE":
         try:
             rrr_str = result.get("risk_reward_ratio", "0:0")
             parts = rrr_str.split(":")
             if len(parts) == 2:
                 rrr_val = float(parts[1]) / float(parts[0]) if float(parts[0]) > 0 else 0
-                if 0 < rrr_val < 1.0:  # Only reject truly terrible RRR (< 1:1)
+                if rrr_val < current_min_rrr:
                     result["status"] = "REJECTED"
-                    reasons.append(f"RRR {rrr_str} < minimum 1:1.0")
+                    reasons.append(f"Risk-to-Reward {rrr_str} di bawah rasio minimum 1:{current_min_rrr}")
         except Exception:
             pass
 
@@ -949,8 +946,8 @@ def run_5_layer_pipeline(symbol: str):
         approved = (
             direction != "NONE" and
             setup_name != "NO_CLEAR_SETUP" and
-            prob >= cfg.get("min_confidence_score", 45) and
-            risk_score >= 5
+            prob >= cfg.get("min_confidence_score", 65) and
+            risk_score >= 6
         )
 
         final_call = {
