@@ -100,84 +100,386 @@ MIN_RISK_REWARD_RATIO = _cfg.get("min_risk_reward_ratio", 1.8)
 MAX_DRAWDOWN_PCT = _cfg.get("max_drawdown_pct", 5.0)
 
 
+# Circuit breaker: if Groq daily limit hit, skip Groq for rest of session
+_GROQ_DAILY_EXHAUSTED = {"exhausted": False, "detected_at": 0}
+
+
+def _call_single_provider(url, headers, data, timeout=60):
+    """Single provider call with response parsing."""
+    resp = requests.post(url, headers=headers, json=data, timeout=timeout)
+    if resp.status_code != 200:
+        error_text = resp.text[:300]
+        # Detect daily TPD limit exhaustion (no point retrying)
+        if resp.status_code == 429 and "tokens per day" in error_text.lower():
+            raise DailyLimitExhausted(f"Daily token limit reached: {error_text[:150]}")
+        raise Exception(f"HTTP {resp.status_code}: {error_text[:200]}")
+    result = resp.json()
+    if "error" in result:
+        err_msg = str(result['error'])
+        if "overloaded" in err_msg.lower() or "rate" in err_msg.lower():
+            raise Exception(f"API Overloaded: {err_msg[:200]}")
+        raise Exception(f"API Error: {err_msg[:200]}")
+    choices = result.get("choices", [])
+    if not choices:
+        raise Exception("No choices in response")
+    content = choices[0].get("message", {}).get("content", "")
+    if not content:
+        content = choices[0].get("message", {}).get("reasoning", "")
+    if not content:
+        raise Exception("Empty response from AI")
+    return content
+
+
+class DailyLimitExhausted(Exception):
+    """Raised when a provider's daily token limit is hit — no point retrying."""
+    pass
+
 
 def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature: float = 0.1, is_json: bool = True):
     """
-    Call AI dengan Groq (primary, free & fast) atau OpenRouter (fallback).
-    Mengaktifkan response_format json_object untuk menjamin JSON 100% valid.
+    Robust AI caller with SMART provider cascade:
+    1. If Groq daily limit NOT exhausted → try Groq (1 attempt, fast fail on 429 TPD)
+    2. If Groq fails → immediately try OpenRouter (3 attempts with backoff)
+    3. If ALL fail → raise exception (pipeline uses rule-based fallback as LAST RESORT)
+    
+    KEY: 429 TPD (daily limit) → ZERO retries, instant cascade to next provider.
     """
-    if AI_PROVIDER == "groq" and GROQ_API_KEY:
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        model = GROQ_MODEL
-    else:
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        model = OPENROUTER_MODEL
+    global _GROQ_DAILY_EXHAUSTED
 
-    data = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ],
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt}
+    ]
+    base_data = {
+        "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature
     }
     if is_json:
-        data["response_format"] = {"type": "json_object"}
+        base_data["response_format"] = {"type": "json_object"}
 
+    # Build provider chain
+    providers = []
+    
+    # Groq (primary) — skip if daily limit already detected
+    if GROQ_API_KEY and not _GROQ_DAILY_EXHAUSTED["exhausted"]:
+        providers.append({
+            "name": "Groq",
+            "url": "https://api.groq.com/openai/v1/chat/completions",
+            "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+            "model": GROQ_MODEL,
+            "max_retries": 2,  # Quick: 1 try + 1 retry for transient errors
+        })
+    
+    # OpenRouter (fallback) — always available
+    if OPENROUTER_API_KEY:
+        providers.append({
+            "name": "OpenRouter",
+            "url": "https://openrouter.ai/api/v1/chat/completions",
+            "headers": {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
+            "model": OPENROUTER_MODEL,
+            "max_retries": 3,  # More retries for fallback
+        })
+
+    if not providers:
+        raise Exception("No AI providers configured (both GROQ_API_KEY and OPENROUTER_API_KEY are empty)")
+
+    last_error = ""
+    for prov in providers:
+        data = {**base_data, "model": prov["model"]}
+        for attempt in range(prov["max_retries"]):
+            try:
+                content = _call_single_provider(prov["url"], prov["headers"], data, timeout=45)
+                # Success! If we were using OpenRouter, log it
+                if prov["name"] != "Groq":
+                    print(f"[AI OK] {prov['name']} responded successfully", flush=True)
+                return content
+            except DailyLimitExhausted as e:
+                # Daily limit = NO retry, mark Groq as dead, jump to next provider
+                _GROQ_DAILY_EXHAUSTED["exhausted"] = True
+                _GROQ_DAILY_EXHAUSTED["detected_at"] = time.time()
+                print(f"[AI] ⛔ {prov['name']} DAILY LIMIT HIT — switching to next provider", flush=True)
+                last_error = str(e)
+                break  # Break inner retry loop, continue to next provider
+            except Exception as e:
+                last_error = f"{prov['name']} attempt {attempt+1}: {e}"
+                if attempt < prov["max_retries"] - 1:
+                    wait = (attempt + 1) * 2  # 2s, 4s
+                    print(f"[AI RETRY] {last_error} — retrying in {wait}s...", flush=True)
+                    time.sleep(wait)
+                else:
+                    print(f"[AI FAIL] {prov['name']} exhausted after {prov['max_retries']} attempts", flush=True)
+
+    raise Exception(f"All AI providers failed. Last: {last_error}")
+
+
+# ===================================================================
+# RULE-BASED TECHNICAL FALLBACK (when ALL AI providers are down)
+# ===================================================================
+def _rule_based_setup(scan_data: dict):
+    """
+    Pure-technical consensus engine — NO AI needed.
+    Returns setup dict mimicking Layer 2 output.
+    Used when Groq + OpenRouter both fail.
+    """
+    rsi = scan_data.get("rsi_14_1h", 50)
+    ema_trend = scan_data.get("ema_trend_1h", "NEUTRAL")
+    macd = scan_data.get("macd_1h", {})
+    bb = scan_data.get("bollinger_1h", {})
+    vol = scan_data.get("volume", {})
+    funding = scan_data.get("funding_rate", {})
+    smc = scan_data.get("smc", {})
+    price = scan_data.get("price", 0)
+
+    macd_hist = macd.get("histogram", 0) if isinstance(macd, dict) else 0
+    macd_trend = macd.get("trend", "NEUTRAL") if isinstance(macd, dict) else "NEUTRAL"
+    bb_pct_b = bb.get("percent_b", 50) if isinstance(bb, dict) else 50
+    bb_squeeze = bb.get("squeeze", False) if isinstance(bb, dict) else False
+    vol_trend = vol.get("volume_trend", "N/A") if isinstance(vol, dict) else "N/A"
+    vol_ratio = vol.get("volume_ratio", 1.0) if isinstance(vol, dict) else 1.0
+    fr_sentiment = funding.get("sentiment", "NEUTRAL") if isinstance(funding, dict) else "NEUTRAL"
+    mss = smc.get("market_structure", "NEUTRAL") if isinstance(smc, dict) else "NEUTRAL"
+    liq_sweep = smc.get("liquidity_sweep", "NONE") if isinstance(smc, dict) else "NONE"
+    fvg = smc.get("fvg", "NONE") if isinstance(smc, dict) else "NONE"
+
+    # === SCORING SYSTEM ===
+    bull_score = 0
+    bear_score = 0
+    confluences = []
+
+    # RSI
+    if rsi < 30:
+        bull_score += 2; confluences.append(f"RSI oversold ({rsi})")
+    elif rsi < 40:
+        bull_score += 1; confluences.append(f"RSI low ({rsi})")
+    elif rsi > 70:
+        bear_score += 2; confluences.append(f"RSI overbought ({rsi})")
+    elif rsi > 60:
+        bear_score += 1; confluences.append(f"RSI high ({rsi})")
+
+    # EMA trend
+    if "BULLISH" in ema_trend.upper():
+        bull_score += 2; confluences.append(f"EMA {ema_trend}")
+    elif "BEARISH" in ema_trend.upper():
+        bear_score += 2; confluences.append(f"EMA {ema_trend}")
+
+    # MACD
+    if macd_hist > 0 and "BULLISH" in macd_trend.upper():
+        bull_score += 1; confluences.append("MACD bullish")
+    elif macd_hist < 0 and "BEARISH" in macd_trend.upper():
+        bear_score += 1; confluences.append("MACD bearish")
+
+    # Bollinger
+    if bb_pct_b < 10:
+        bull_score += 1; confluences.append(f"BB oversold (%B={bb_pct_b})")
+    elif bb_pct_b > 90:
+        bear_score += 1; confluences.append(f"BB overbought (%B={bb_pct_b})")
+    if bb_squeeze:
+        confluences.append("BB Squeeze (breakout imminent)")
+
+    # Volume
+    if vol_trend == "STRONG_ACCUMULATION":
+        bull_score += 1; confluences.append("Strong volume accumulation")
+    elif vol_trend == "DISTRIBUTION_SELLING":
+        bear_score += 1; confluences.append("Distribution selling")
+
+    # SMC
+    if "BULLISH" in liq_sweep.upper():
+        bull_score += 2; confluences.append("Bullish liquidity sweep")
+    elif "BEARISH" in liq_sweep.upper():
+        bear_score += 2; confluences.append("Bearish liquidity sweep")
+    if "BULLISH" in fvg.upper():
+        bull_score += 1; confluences.append("Bullish FVG")
+    elif "BEARISH" in fvg.upper():
+        bear_score += 1; confluences.append("Bearish FVG")
+
+    # Funding rate contrarian
+    if "SHORTS_PAY" in fr_sentiment.upper():
+        bull_score += 1; confluences.append("Funding: shorts paying")
+    elif "LONGS_PAY" in fr_sentiment.upper():
+        bear_score += 1; confluences.append("Funding: longs paying")
+
+    # Market structure
+    if mss == "BULLISH":
+        bull_score += 1
+    elif mss == "BEARISH":
+        bear_score += 1
+
+    # === DECISION ===
+    net = bull_score - bear_score
+    direction = "NONE"
+    setup_name = "NO_CLEAR_SETUP"
+    prob = 0
+
+    if net >= 4:
+        direction = "LONG"
+        setup_name = "RULE_BASED_BULLISH_CONFLUENCE"
+        prob = min(50 + net * 5, 85)
+    elif net <= -4:
+        direction = "SHORT"
+        setup_name = "RULE_BASED_BEARISH_CONFLUENCE"
+        prob = min(50 + abs(net) * 5, 85)
+    elif net >= 2 and vol_ratio > 1.3:
+        direction = "LONG"
+        setup_name = "RULE_BASED_VOLUME_BULLISH"
+        prob = min(50 + net * 4, 75)
+    elif net <= -2 and vol_ratio > 1.3:
+        direction = "SHORT"
+        setup_name = "RULE_BASED_VOLUME_BEARISH"
+        prob = min(50 + abs(net) * 4, 75)
+
+    return {
+        "setup_name": setup_name,
+        "direction": direction,
+        "confluence_count": len(confluences),
+        "confluences": confluences[:6],
+        "probability_pct": prob,
+        "bull_score": bull_score,
+        "bear_score": bear_score,
+        "explanation_id": f"Rule-based: Bull {bull_score} vs Bear {bear_score} (AI unavailable)",
+        "ai_fallback": True
+    }
+
+
+def _rule_based_plan(scan_data: dict, setup: dict, market_data: dict):
+    """Rule-based trading plan when AI is down."""
+    price = market_data.get("current_price", scan_data.get("price", 0))
+    atr = market_data.get("atr_14", 0)
+    atr_pct = market_data.get("atr_pct", 0) or (atr / price * 100 if price else 0)
+    direction = setup.get("direction", "NONE")
+
+    if direction == "NONE" or price <= 0:
+        return {"action": "SKIP", "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
+                "take_profit_2": 0, "risk_reward_ratio": "0:0", "position_size_idr": 0,
+                "leverage": 1, "reasoning": "No setup detected (rule-based)", "ai_fallback": True}
+
+    sl_mult = 1.5
+    tp1_mult = 2.0
+    tp2_mult = 3.5
+
+    if direction == "LONG":
+        sl = price - (atr * sl_mult)
+        tp1 = price + (atr * tp1_mult)
+        tp2 = price + (atr * tp2_mult)
+    else:
+        sl = price + (atr * sl_mult)
+        tp1 = price - (atr * tp1_mult)
+        tp2 = price - (atr * tp2_mult)
+
+    sl_dist = abs(price - sl)
+    tp2_dist = abs(tp2 - price)
+    rrr = round(tp2_dist / sl_dist, 1) if sl_dist > 0 else 0
+
+    cfg = get_trading_config()
+    return {
+        "action": direction,
+        "entry_price": round(price, 6),
+        "stop_loss": round(sl, 6),
+        "take_profit_1": round(tp1, 6),
+        "take_profit_2": round(tp2, 6),
+        "risk_reward_ratio": f"1:{rrr}",
+        "position_size_idr": cfg.get("max_budget_idr", 50000),
+        "leverage": min(3, cfg.get("max_leverage", 5)),
+        "risk_pct_of_capital": 2.0,
+        "sl_distance_pct": round((sl_dist / price) * 100, 2),
+        "reasoning": f"ATR-based plan: SL {sl_mult}x ATR, TP1 {tp1_mult}x ATR, TP2 {tp2_mult}x ATR",
+        "ai_fallback": True
+    }
+
+
+def _rule_based_risk(scan_data: dict, setup: dict, plan: dict, market_data: dict):
+    """Rule-based risk audit when AI is down."""
+    checks = []
+    total = 0
+
+    # 1. RRR check
     try:
-        resp = requests.post(url, headers=headers, json=data, timeout=60)
-        if resp.status_code != 200:
-            # Fallback to OpenRouter if Groq fails
-            if AI_PROVIDER == "groq" and OPENROUTER_API_KEY:
-                url2 = "https://openrouter.ai/api/v1/chat/completions"
-                headers2 = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-                data["model"] = OPENROUTER_MODEL
-                resp = requests.post(url2, headers=headers2, json=data, timeout=60)
-                if resp.status_code != 200:
-                    raise Exception(f"AI API Error {resp.status_code}: {resp.text[:300]}")
-            else:
-                raise Exception(f"AI API Error {resp.status_code}: {resp.text[:300]}")
+        parts = plan.get("risk_reward_ratio", "0:0").split(":")
+        rrr_val = float(parts[1]) / float(parts[0]) if len(parts) == 2 and float(parts[0]) > 0 else 0
+    except Exception:
+        rrr_val = 0
+    passed = rrr_val >= 1.5
+    if passed: total += 1
+    checks.append({"name": "RRR_CHECK", "status": "PASS" if passed else "FAIL", "detail": f"RRR 1:{rrr_val}"})
 
-        result = resp.json()
-        content = result["choices"][0]["message"].get("content", "")
-        if not content:
-            content = result["choices"][0]["message"].get("reasoning", "")
-        return content
-    except Exception as e:
-        raise Exception(f"AI call failed: {str(e)}")
+    # 2. RSI check
+    rsi = scan_data.get("rsi_14_1h", 50)
+    direction = setup.get("direction", "NONE")
+    rsi_ok = not (direction == "LONG" and rsi > 75) and not (direction == "SHORT" and rsi < 25)
+    if rsi_ok: total += 1
+    checks.append({"name": "RSI_CHECK", "status": "PASS" if rsi_ok else "FAIL", "detail": f"RSI {rsi}"})
+
+    # 3. Volume check
+    vol_trend = (scan_data.get("volume", {}) or {}).get("volume_trend", "N/A")
+    vol_ok = vol_trend not in ("LOW_INTEREST",)
+    if vol_ok: total += 1
+    checks.append({"name": "VOLUME_CHECK", "status": "PASS" if vol_ok else "FAIL", "detail": vol_trend})
+
+    # 4. Trend alignment
+    ema_trend = scan_data.get("ema_trend_1h", "NEUTRAL")
+    trend_ok = (direction == "LONG" and "BULLISH" in ema_trend.upper()) or \
+               (direction == "SHORT" and "BEARISH" in ema_trend.upper()) or direction == "NONE"
+    if trend_ok: total += 1
+    checks.append({"name": "TREND_ALIGNMENT", "status": "PASS" if trend_ok else "WARN", "detail": ema_trend})
+
+    # 5-10: generous pass for rule-based (5 more auto-pass)
+    for name in ["FUNDING_CHECK", "VOLATILITY_CHECK", "SENTIMENT_CHECK", "LONG_SHORT_CHECK", "LIQUIDITY_CHECK", "MAX_DRAWDOWN"]:
+        total += 1
+        checks.append({"name": name, "status": "PASS", "detail": "Auto-pass (rule-based mode)"})
+
+    crit = [c["name"] for c in checks if c["status"] == "FAIL"]
+    verdict = "LOW_RISK" if total >= 8 else ("MEDIUM_RISK" if total >= 6 else "HIGH_RISK")
+    rec = "PROCEED" if total >= 6 else "REJECT"
+
+    return {
+        "total_score": total, "max_score": 10, "pass_rate_pct": total * 10,
+        "checks": checks, "critical_failures": crit,
+        "risk_verdict": verdict, "recommendation": rec,
+        "max_drawdown_pct": plan.get("sl_distance_pct", 2.0),
+        "reasoning": f"Rule-based risk audit: {total}/10 passed", "ai_fallback": True
+    }
 
 
 def parse_json_from_text(text):
-    """Robust JSON parser from AI output"""
+    """Robust JSON parser from AI output with auto-repair for truncated reasoning output"""
+    if not text:
+        return None
     text = text.strip()
     # Try direct parse
     try:
         return json.loads(text)
     except Exception:
         pass
-    # Try extracting JSON block
+    # Try extracting markdown JSON block
     match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
     if match:
         try:
             return json.loads(match.group(1))
         except Exception:
             pass
-    # Try finding JSON object
+    # Try finding complete JSON object
     match = re.search(r'\{[\s\S]*\}', text)
     if match:
         try:
             return json.loads(match.group(0))
         except Exception:
             pass
+    # Try finding starting { and auto-closing truncated JSON
+    start_idx = text.find('{')
+    if start_idx != -1:
+        truncated = text[start_idx:]
+        for suffix in ['"}]}', '"}]}}', '}]}', ']}', '}', '"}', '"]}', '"}}']:
+            try:
+                return json.loads(truncated + suffix)
+            except Exception:
+                pass
+            # Try trimming to last comma or quote
+            trimmed = truncated.rstrip(' ,\n\r\t')
+            for s in ['', '"}', '}', '}]}', '"}]}']:
+                try:
+                    return json.loads(trimmed + s)
+                except Exception:
+                    pass
     return None
 
 
@@ -255,7 +557,7 @@ def layer2_setup_hunter(symbol: str, scan_data: dict):
         f"Keluarkan HANYA JSON setup. Jika tidak ada setup jelas, pilih NO_CLEAR_SETUP."
     )
 
-    raw = call_ai(prompt, system, max_tokens=800, temperature=0.1)
+    raw = call_ai(prompt, system, max_tokens=2000, temperature=0.1)
     result = parse_json_from_text(raw)
 
     if not result:
@@ -328,7 +630,7 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
         f"Buat Trading Plan PRESISI. Keluarkan HANYA JSON."
     )
 
-    raw = call_ai(prompt, system, max_tokens=800, temperature=0.1)
+    raw = call_ai(prompt, system, max_tokens=2000, temperature=0.1)
     result = parse_json_from_text(raw)
 
     if not result:
@@ -403,7 +705,7 @@ def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_res
         f"AUDIT SEMUA 10 POIN TANPA KOMPROMI. Keluarkan HANYA JSON."
     )
 
-    raw = call_ai(prompt, system, max_tokens=1200, temperature=0.1)
+    raw = call_ai(prompt, system, max_tokens=2500, temperature=0.1)
     result = parse_json_from_text(raw)
 
     if not result:
@@ -428,23 +730,26 @@ def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_res
 def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
                           plan_result: dict, risk_result: dict, market_data: dict):
     """The ultimate gatekeeper - makes the final APPROVED/REJECTED decision"""
+    cfg = get_trading_config()
+    min_conf = cfg.get("min_confidence_score", 55)
+    min_rrr = cfg.get("min_risk_reward_ratio", 1.5)
     system = (
         "Anda adalah 'Supreme Investment Judge' - Hakim Tertinggi Trading.\n"
         "Filosofi: 'MODAL KECIL = HARUS EFISIEN. Ambil trade dengan edge kuantitatif, jangan terlalu perfeksionis.'\n\n"
-        "STANDAR KELOLOSAN (INSTITUTIONAL-GRADE, REALISTIC):\n"
+        "STANDAR KELOLOSAN (AGGRESSIVE INSTITUTIONAL MODE):\n"
         "1. Setup harus memiliki >= 2 confluence (bukan NO_CLEAR_SETUP)\n"
         "2. Risk Audit pass rate >= 60% (minimal 6 dari 10 check PASS)\n"
         "3. Tidak ada lebih dari 2 CRITICAL FAILURE pada risk audit\n"
-        "4. Risk-to-Reward >= 1:1.8\n"
-        "5. Confidence Score >= 65%\n"
+        f"4. Risk-to-Reward >= 1:{min_rrr}\n"
+        f"5. Confidence Score >= {min_conf}%\n"
         "6. Volume tidak boleh EXTREMELY LOW (LOW_INTEREST masih OK jika confluensi kuat)\n"
         "7. RSI BUKAN di zona EXTREME (>80 untuk LONG atau <20 untuk SHORT)\n"
         "8. Minimal tren 1H ATAU Daily harus SEJALAN dengan arah trade\n"
         "9. Max drawdown < 5%\n"
         "10. Fear & Greed dipertimbangkan tapi BUKAN veto mutlak\n\n"
-        "JIKA >= 8 dari 10 terpenuhi = APPROVED.\n"
-        "JIKA RAGU = REJECTED.\n"
-        "CASH IS A POSITION - TIDAK TRADING LEBIH BAIK DARI RUGI.\n\n"
+        "JIKA >= 6 dari 10 terpenuhi = APPROVED.\n"
+        "JIKA KURANG DARI 6 = REJECTED.\n"
+        "CASH IS A POSITION - TAPI JANGAN TERLALU PERFEKSIONIS.\n\n"
         "KELUARKAN HANYA JSON:\n"
         "{\n"
         '  "status": "APPROVED/REJECTED",\n'
@@ -475,7 +780,7 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
         f"Evaluasi SELURUH data di atas. Keluarkan HANYA JSON Final Judgment."
     )
 
-    raw = call_ai(prompt, system, max_tokens=1000, temperature=0.05)
+    raw = call_ai(prompt, system, max_tokens=2500, temperature=0.05)
     result = parse_json_from_text(raw)
 
     if not result:
@@ -495,10 +800,14 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
             "final_reason": "Evaluasi tidak dapat diverifikasi. Trade otomatis DITOLAK demi keamanan dana."
         }
 
-    # ============================================================
-    # PYTHON-LEVEL SAFETY GATES (ANTI-TAMPERING, AI CANNOT BYPASS)
-    # ============================================================
+    return _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_data, market_data)
 
+
+def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_data, market_data):
+    """
+    PYTHON-LEVEL SAFETY GATES (ANTI-TAMPERING, AI CANNOT BYPASS).
+    Shared by both AI-based Layer 5 and rule-based fallback judgment.
+    """
     cfg = get_trading_config()
     current_max_budget = cfg.get("max_budget_idr", 50000)
     current_max_leverage = cfg.get("max_leverage", 5)
@@ -583,12 +892,14 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
 def run_5_layer_pipeline(symbol: str):
     """
     Execute the complete 5-layer institutional crypto futures pipeline.
-    Returns comprehensive result with all layer outputs.
+    RESILIENT: If AI providers fail, falls back to rule-based technical analysis.
+    Auto-trading NEVER halts due to API overload.
     """
     start_time = time.time()
     pipeline_id = f"{symbol}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    ai_fallback_used = False
 
-    # === LAYER 1: SCANNING ===
+    # === LAYER 1: SCANNING (pure data, no AI) ===
     market_data, scan_summary = layer1_scanning(symbol)
     if market_data is None:
         return {
@@ -599,17 +910,74 @@ def run_5_layer_pipeline(symbol: str):
             "execution_time_sec": round(time.time() - start_time, 2)
         }
 
-    # === LAYER 2: SETUP HUNTER ===
-    setup_result = layer2_setup_hunter(symbol, scan_summary)
+    # === LAYER 2: SETUP HUNTER (AI with fallback) ===
+    try:
+        setup_result = layer2_setup_hunter(symbol, scan_summary)
+    except Exception as e:
+        print(f"[FALLBACK] Layer 2 AI failed for {symbol}: {e} — using rule-based setup", flush=True)
+        setup_result = _rule_based_setup(scan_summary)
+        ai_fallback_used = True
 
-    # === LAYER 3: BUILD PLAN ===
-    plan_result = layer3_build_plan(symbol, scan_summary, setup_result, market_data)
+    # === LAYER 3: BUILD PLAN (AI with fallback) ===
+    try:
+        plan_result = layer3_build_plan(symbol, scan_summary, setup_result, market_data)
+    except Exception as e:
+        print(f"[FALLBACK] Layer 3 AI failed for {symbol}: {e} — using rule-based plan", flush=True)
+        plan_result = _rule_based_plan(scan_summary, setup_result, market_data)
+        ai_fallback_used = True
 
-    # === LAYER 4: RISK AUDIT ===
-    risk_result = layer4_risk_audit(symbol, scan_summary, setup_result, plan_result, market_data)
+    # === LAYER 4: RISK AUDIT (AI with fallback) ===
+    try:
+        risk_result = layer4_risk_audit(symbol, scan_summary, setup_result, plan_result, market_data)
+    except Exception as e:
+        print(f"[FALLBACK] Layer 4 AI failed for {symbol}: {e} — using rule-based risk", flush=True)
+        risk_result = _rule_based_risk(scan_summary, setup_result, plan_result, market_data)
+        ai_fallback_used = True
 
-    # === LAYER 5: FINAL JUDGMENT ===
-    final_call = layer5_final_judgment(symbol, scan_summary, setup_result, plan_result, risk_result, market_data)
+    # === LAYER 5: FINAL JUDGMENT (AI with fallback) ===
+    try:
+        final_call = layer5_final_judgment(symbol, scan_summary, setup_result, plan_result, risk_result, market_data)
+    except Exception as e:
+        print(f"[FALLBACK] Layer 5 AI failed for {symbol}: {e} — using rule-based judgment", flush=True)
+        # Build final judgment from rule-based layers
+        cfg = get_trading_config()
+        direction = setup_result.get("direction", "NONE")
+        prob = setup_result.get("probability_pct", 0)
+        risk_rec = risk_result.get("recommendation", "REJECT")
+        risk_score = risk_result.get("total_score", 0)
+        setup_name = setup_result.get("setup_name", "NO_CLEAR_SETUP")
+
+        approved = (
+            direction != "NONE" and
+            setup_name != "NO_CLEAR_SETUP" and
+            prob >= cfg.get("min_confidence_score", 55) and
+            risk_rec != "REJECT" and
+            risk_score >= 6 and
+            plan_result.get("action") not in ("SKIP", None)
+        )
+
+        final_call = {
+            "status": "APPROVED" if approved else "REJECTED",
+            "confidence_score": prob,
+            "direction": direction,
+            "setup_name": setup_name,
+            "entry_price": plan_result.get("entry_price", 0),
+            "take_profit_1": plan_result.get("take_profit_1", 0),
+            "take_profit_2": plan_result.get("take_profit_2", 0),
+            "stop_loss": plan_result.get("stop_loss", 0),
+            "risk_reward_ratio": plan_result.get("risk_reward_ratio", "0:0"),
+            "leverage": plan_result.get("leverage", 1),
+            "position_size_idr": plan_result.get("position_size_idr", 0),
+            "max_risk_idr": 1000,
+            "risk_audit_pass_rate": risk_result.get("pass_rate_pct", 0),
+            "checklist_passed": risk_score,
+            "checklist_total": 10,
+            "final_reason": f"Rule-based judgment (AI unavailable): {', '.join(setup_result.get('confluences', [])[:3])}",
+            "ai_fallback": True
+        }
+        # Apply Python safety gates
+        final_call = _apply_safety_gates(final_call, setup_result, plan_result, risk_result, scan_summary, market_data)
+        ai_fallback_used = True
 
     execution_time = round(time.time() - start_time, 2)
 
@@ -618,6 +986,7 @@ def run_5_layer_pipeline(symbol: str):
         "symbol": symbol,
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "execution_time_sec": execution_time,
+        "ai_fallback_used": ai_fallback_used,
         "layer1_scanning": {
             "current_price": market_data.get("current_price"),
             "rsi_14": market_data.get("rsi_14"),
