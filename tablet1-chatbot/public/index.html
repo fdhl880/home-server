@@ -1356,8 +1356,8 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 <div>
                     <span class="bbg-amber" style="font-weight:900; font-size:13px; letter-spacing:1px;">PYROFUEL // INSTITUTIONAL CRYPTO FUTURES 5-LAYER AI ENGINE</span>
                     <div style="font-size:10.5px; color:#888; margin-top:2px;">
-                        <span>MARKET: <strong class="bbg-white">CRYPTO FUTURES ONLY (10 PERP PAIRS)</strong></span> |
-                        <span>AI CORE: <strong class="bbg-cyan">GROQ OSS-120B</strong></span> |
+                        <span>MARKET: <strong class="bbg-white">PLUANG CRYPTO FUTURES UNIVERSE (43+ PERP PAIRS)</strong></span> |
+                        <span>AI CORE: <strong class="bbg-cyan">GROQ OSS-120B (PRO AGGRESSIVE MODE)</strong></span> |
                         <span id="pluangLiveStatusBadge" class="bbg-green" style="font-weight:bold;">● PLUANG MCP: CONNECTED (USDT ACTIVE)</span>
                     </div>
                 </div>
@@ -1365,8 +1365,11 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     <button id="btnAutoTraderToggle" class="btn-act" style="background:#00ff66; color:#000; font-weight:bold;" onclick="toggleAutoTrader()">
                         ● AUTONOMOUS TRADER: ACTIVE
                     </button>
+                    <button class="btn-act" onclick="scanTopMovers()">
+                        SCAN TOP 10 MOVERS &lt;GO&gt;
+                    </button>
                     <button class="btn-act" onclick="scanAllCryptoFutures()">
-                        SCAN ALL 10 PAIRS &lt;GO&gt;
+                        SCAN ALL UNIVERSE &lt;GO&gt;
                     </button>
                 </div>
             </div>
@@ -1419,9 +1422,9 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 </button>
             </div>
 
-            <!-- 10 CRYPTO FUTURES LIVE MONITOR TABLE -->
+            <!-- CRYPTO FUTURES LIVE MONITOR TABLE -->
             <div class="sec-title">
-                <span>-- CRYPTO FUTURES LIVE WATCHLIST // 10 PERPETUAL CONTRACTS --</span>
+                <span>-- CRYPTO FUTURES LIVE WATCHLIST // ALL 43+ PLUANG PERPETUAL CONTRACTS (OPPORTUNITY RANKED) --</span>
                 <span class="bbg-cyan">NO STOCKS • 100% CRYPTO FUTURES • STRICT MULTI-AGENT AUDIT</span>
             </div>
 
@@ -3601,9 +3604,31 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             }
         }
 
+        async function scanTopMovers() {
+            showPopup('RUNNING 5-LAYER AI SCAN ON TOP 10 MOVERS BY OPPORTUNITY...');
+            const top10 = cryptoFuturesWatchlist.slice(0, 10);
+            for (const item of top10) {
+                await scanCryptoFuturesSymbol(item.symbol);
+                await new Promise(r => setTimeout(r, 600));
+            }
+            showPopup('TOP 10 MOVERS SCAN COMPLETED.');
+        }
+
         function renderCryptoFuturesWatchlist() {
             const tbody = document.getElementById('cryptoFuturesTbody');
             if (!tbody) return;
+
+            // Dynamically populate manual order symbol dropdown with ALL pairs
+            const orderSel = document.getElementById('manualOrderSymbol');
+            if (orderSel && cryptoFuturesWatchlist && cryptoFuturesWatchlist.length > 0) {
+                const curVal = orderSel.value;
+                orderSel.innerHTML = cryptoFuturesWatchlist.map(c => 
+                    `<option value="${c.symbol}">${c.symbol} (${c.name || c.pair})</option>`
+                ).join('');
+                if (curVal && cryptoFuturesWatchlist.some(c => c.symbol === curVal)) {
+                    orderSel.value = curVal;
+                }
+            }
 
             if (!cryptoFuturesWatchlist || cryptoFuturesWatchlist.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:15px; color:#888;">WATCHLIST CRYPTO FUTURES KOSONG</td></tr>';

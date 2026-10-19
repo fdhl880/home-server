@@ -1,18 +1,19 @@
 {
   "max_budget_idr": 50000,
   "max_leverage": 5,
-  "min_confidence_score": 65,
-  "min_risk_reward_ratio": 1.8,
+  "min_confidence_score": 55,
+  "min_risk_reward_ratio": 1.5,
   "max_drawdown_pct": 5.0,
   "margin_type": "ISOLATED",
   "order_type": "MARKET",
   "tp_sl_mode": "DUAL_TP",
   "tp1_close_pct": 50,
   "tp1_move_sl_to_breakeven": true,
-  "max_concurrent_positions": 3,
-  "max_daily_trades": 10,
+  "max_concurrent_positions": 5,
+  "max_daily_trades": 20,
   "currency": "USDT",
   "auto_execute_on_pluang": true,
-  "updated_at": "2026-10-19 16:17:00 UTC",
-  "note": "Full futures config - ISOLATED margin, MARKET orders, dual TP with SL trailing to breakeven"
+  "trading_mode": "AGGRESSIVE_INSTITUTIONAL",
+  "updated_at": "2026-10-19 17:01:00 UTC",
+  "note": "Aggressive Wall Street Pro Mode - 55% min confidence, 1.5x RRR, max 5 concurrent positions, dual TP with trailing breakeven"
 }

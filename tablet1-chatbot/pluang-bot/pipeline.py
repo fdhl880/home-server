@@ -502,8 +502,8 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
     cfg = get_trading_config()
     current_max_budget = cfg.get("max_budget_idr", 50000)
     current_max_leverage = cfg.get("max_leverage", 5)
-    current_min_confidence = cfg.get("min_confidence_score", 80)
-    current_min_rrr = cfg.get("min_risk_reward_ratio", 2.0)
+    current_min_confidence = cfg.get("min_confidence_score", 55)
+    current_min_rrr = cfg.get("min_risk_reward_ratio", 1.5)
 
     # Gate 1: Confidence < min = FORCE REJECT
     if result.get("confidence_score", 0) < current_min_confidence:
@@ -545,16 +545,16 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
         result["final_reason"] = (result.get("final_reason", "") +
             f" [PYTHON GATE: Too many critical risk failures ({len(real_cf)}): {', '.join(real_cf)}]")
 
-    # Gate 8: RRR check from string
+    # Gate 8: Dynamic RRR check from string
     try:
         rrr_str = result.get("risk_reward_ratio", "0:0")
         parts = rrr_str.split(":")
         if len(parts) == 2:
             rrr_val = float(parts[1]) / float(parts[0]) if float(parts[0]) > 0 else 0
-            if rrr_val < MIN_RISK_REWARD_RATIO:
+            if rrr_val < current_min_rrr:
                 result["status"] = "REJECTED"
                 result["final_reason"] = (result.get("final_reason", "") +
-                    f" [PYTHON GATE: RRR {rrr_str} < minimum 1:{MIN_RISK_REWARD_RATIO}]")
+                    f" [PYTHON GATE: RRR {rrr_str} < minimum 1:{current_min_rrr}]")
     except Exception:
         pass
 
