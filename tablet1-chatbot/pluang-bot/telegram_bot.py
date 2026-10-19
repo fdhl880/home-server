@@ -1,23 +1,26 @@
 """
 ===========================================================================
-PYROFUEL TELEGRAM BOT v2.0 - FULL UNIVERSE CRYPTO FUTURES AI
+PYROFUEL TELEGRAM BOT v3.0 - FULL UNIVERSE CRYPTO FUTURES AI
 ===========================================================================
 Token: 8829535429:AAHFHM56RDNAd7-ax6Dd-3V3g9OZEleYi5M (@idrisginting_bot)
 Koleksi Aset: ALL Binance USDT Perpetual Futures (~200+ coins)
-Fitur: 5-Layer AI Pipeline, Smart Ranking, Currency Conversion, Full Control
+Fitur: 5-Layer AI Pipeline, Pluang MCP Execution, Live Token Validation
 
-PERINTAH BARU:
+DAFTAR PERINTAH:
 /start      - Welcome & daftar perintah
+/login      - Hubungkan akun Pluang Anda via OAuth resmi
 /scan       - Full scan CORE 10 + Top movers
-/universe   - Status seluruh universe (200+ coins)
+/scan [coin]- Analisis koin spesifik (misal: /scan btc)
+/konfirmasi [coin] - Eksekusi order riil ke Pluang Futures
+/universe   - Status seluruh universe (200+ pairs)
 /top        - Top 20 movers saat ini
-/btc, /eth, /sol - Analisis individual
-/status     - Portfolio & posisi aktif
-/auto       - Status autonomous trader
-/limit [n]  - Ubah batas modal (misal: /limit 100000)
-/leverage [n] - Ubah batas leverage (misal: /leverage 3)
+/btc, /eth, /sol - Analisis instan koin utama
+/status     - Status koneksi Pluang, portfolio & posisi aktif
+/auto       - Status autonomous trading engine
+/limit [n]  - Ubah batas modal per trade
+/leverage [n] - Ubah batas leverage
 /fx         - Kurs USD/IDR real-time
-/convert [jumlah] [mata_uang] - Konversi mata uang
+/convert [n] [usd/idr] - Konversi mata uang
 ===========================================================================
 """
 import os
@@ -44,8 +47,10 @@ from market_data import (
     get_full_universe, get_top_movers, get_universe_summary, get_fx_info,
     convert_usd_to_idr, convert_idr_to_usd, rank_universe_by_opportunity
 )
+from pluang_mcp import PluangMCPClient
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TOKEN_FILE = os.path.join(BASE_DIR, "tokens.json")
 POSITIONS_FILE = os.path.join(RESULTS_DIR, "active_positions.json")
 STATE_FILE = os.path.join(RESULTS_DIR, "autotrader_state.json")
 
@@ -53,17 +58,42 @@ ENV = load_env()
 TELEGRAM_TOKEN = ENV.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELE_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-# Import config dynamically
 def _max_budget():
     return get_trading_config().get("max_budget_idr", 50000)
 
 def _max_leverage():
     return get_trading_config().get("max_leverage", 5)
 
+def get_pluang_client():
+    """Load client and verify access token live against Pluang MCP"""
+    if not os.path.exists(TOKEN_FILE):
+        return None
+    try:
+        with open(TOKEN_FILE, "r", encoding="utf-8") as f:
+            t = json.load(f)
+        token = t.get("access_token")
+        if not token:
+            return None
+        client = PluangMCPClient(token)
+        try:
+            client.initialize()
+            if client._last_error and "401" in str(client._last_error):
+                # Token expired, try refreshing
+                if client._refresh_token():
+                    return client
+                return None
+            return client
+        except Exception as e:
+            if "401" in str(e):
+                if client._refresh_token():
+                    return client
+            return None
+    except Exception as e:
+        print(f"[-] Pluang client error: {e}")
+        return None
 
 def send_telegram_message(chat_id, text, reply_markup=None):
     url = f"{TELE_API}/sendMessage"
-    # Telegram has 4096 char limit, split if needed
     if len(text) > 4000:
         text = text[:3997] + "..."
     payload = {
@@ -80,10 +110,14 @@ def send_telegram_message(chat_id, text, reply_markup=None):
         print(f"[-] Telegram error: {e}")
         return None
 
-def answer_callback(callback_query_id, text):
+def answer_callback(callback_query_id, text, show_alert=False):
     url = f"{TELE_API}/answerCallbackQuery"
     try:
-        requests.post(url, json={"callback_query_id": callback_query_id, "text": text}, timeout=5)
+        requests.post(url, json={
+            "callback_query_id": callback_query_id,
+            "text": text,
+            "show_alert": show_alert
+        }, timeout=5)
     except Exception:
         pass
 
@@ -98,7 +132,9 @@ def format_pipeline_report(res: dict):
     status = fc.get("status", "REJECTED")
     badge = "✅ <b>LOLOS KELAYAKAN (APPROVED)</b>" if status == "APPROVED" else "🛑 <b>DITOLAK KETAT (REJECTED)</b>"
 
-    max_budget = _max_budget()
+    cfg = get_trading_config()
+    max_budget = cfg.get("max_budget_idr", 50000)
+    min_conf = cfg.get("min_confidence_score", 65)
     
     text = (
         f"🛡️ <b>PYROFUEL 5-LAYER FUTURES AUDIT</b>\n"
@@ -116,12 +152,205 @@ def format_pipeline_report(res: dict):
         f"🔍 <b>3. CRO Risk Audit:</b> {risk.get('risk_verdict', 'N/A')}\n"
         f"• Score: {risk.get('total_score', 0)}/{risk.get('max_score', 10)} ({risk.get('pass_rate_pct', 0)}%)\n\n"
         f"⚖️ <b>4. Supreme Judge Decision:</b> {badge}\n"
-        f"• <b>Skor Keyakinan:</b> {fc.get('confidence_score', 0)}% (Min 80%)\n"
+        f"• <b>Skor Keyakinan:</b> {fc.get('confidence_score', 0)}% (Min {min_conf}%)\n"
         f"• <b>Maks Modal:</b> Rp {min(fc.get('position_size_idr', max_budget), max_budget):,}\n\n"
-        f"📌 <b>Pertimbangan Final:</b>\n{fc.get('final_reason', '-')[:500]}\n"
+        f"📌 <b>Pertimbangan Final:</b>\n{fc.get('final_reason', '-')[:450]}\n"
     )
     return text, status
 
+def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str = None):
+    """Execute real trade on Pluang Futures via MCP"""
+    raw_sym = symbol.upper().strip().replace("USDT", "-USD")
+    if not raw_sym.endswith("-USD"):
+        raw_sym = raw_sym + "-USD"
+    
+    cfg = get_trading_config()
+    max_budget = cfg.get("max_budget_idr", 50000)
+    max_lev = cfg.get("max_leverage", 5)
+    margin_type = cfg.get("margin_type", "ISOLATED")
+    order_type = cfg.get("order_type", "MARKET")
+    budget_usd = convert_idr_to_usd(max_budget)
+
+    # 1. Check Pluang Client & Token
+    client = get_pluang_client()
+    if not client:
+        msg = (
+            "⚠️ <b>KONEKSI PLUANG EXPIRED / BELUM LOGIN</b>\n\n"
+            f"Order <b>{raw_sym}</b> tidak dapat dikirim ke akun Pluang karena token OAuth kadaluarsa (401 invalid_token).\n\n"
+            "👉 <b>Solusi Cepat:</b>\n"
+            "1. Ketik <code>/login</code> di Telegram ini untuk membuka link otorisasi Pluang, ATAU\n"
+            "2. Jalankan perintah ini di Termux:\n"
+            "   <code>python pluang-bot/auth_pluang.py --force</code>\n\n"
+            "<i>🛡️ Modal USDT Anda tetap 100% aman karena tidak ada order yang terpotong.</i>"
+        )
+        if callback_query_id:
+            answer_callback(callback_query_id, "Gagal: Token Pluang expired! Silakan ketik /login", show_alert=True)
+        send_telegram_message(chat_id, msg)
+        return False
+
+    # 2. Get Signal / Technical Setup
+    scan_file = os.path.join(RESULTS_DIR, f"{raw_sym.replace('-', '_')}_latest.json")
+    signal = None
+    if os.path.exists(scan_file):
+        try:
+            with open(scan_file, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                signal = saved.get("layer5_final_call", {})
+        except Exception:
+            pass
+
+    if not signal or not signal.get("direction") or signal.get("direction") == "NONE":
+        send_telegram_message(chat_id, f"⏳ <i>Menghitung analisis teknikal kuantitatif untuk {raw_sym}...</i>")
+        try:
+            res = run_5_layer_pipeline(raw_sym)
+            signal = res.get("layer5_final_call", {})
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error analisa: {e}")
+            return False
+
+    direction = signal.get("direction", "LONG")
+    entry_price = signal.get("entry_price", 0)
+    tp1 = signal.get("take_profit_1", 0)
+    tp2 = signal.get("take_profit_2", 0)
+    sl = signal.get("stop_loss", 0)
+    leverage = min(signal.get("leverage", 3), max_lev)
+
+    send_telegram_message(chat_id, f"⚡ <i>Mengirim order {direction} {raw_sym} senilai Rp {max_budget:,} (${budget_usd:.2f} USDT) ke Pluang Futures...</i>")
+
+    # 3. Call Pluang MCP execute_full_trade
+    try:
+        execution_result = client.execute_full_trade(
+            signal={
+                "binance_pair": raw_sym.replace("-USD", "USDT"),
+                "symbol": raw_sym,
+                "direction": direction,
+                "leverage": leverage,
+                "entry_price": entry_price,
+                "take_profit_1": tp1,
+                "take_profit_2": tp2,
+                "stop_loss": sl,
+                "position_size_usdt": budget_usd
+            },
+            config={
+                "margin_type": margin_type,
+                "order_type": order_type,
+                "max_leverage": max_lev
+            }
+        )
+
+        pluang_synced = execution_result.get("pluang_synced", False)
+
+        if pluang_synced:
+            # Record position in active_positions.json
+            positions = []
+            if os.path.exists(POSITIONS_FILE):
+                try:
+                    with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+                        positions = json.load(f)
+                except Exception:
+                    positions = []
+
+            open_res = execution_result.get("steps", {}).get("open_position", {})
+            order_id = open_res.get("orderId") or open_res.get("id") or "LIVE_EXECUTED"
+
+            new_pos = {
+                "id": f"POS_{raw_sym}_{int(time.time())}",
+                "symbol": raw_sym,
+                "binance_pair": raw_sym.replace("-USD", "USDT"),
+                "direction": direction,
+                "entry_price": entry_price,
+                "entry_price_idr": convert_usd_to_idr(entry_price),
+                "take_profit_1": tp1,
+                "take_profit_2": tp2,
+                "stop_loss": sl,
+                "leverage": leverage,
+                "margin_type": margin_type,
+                "order_type": order_type,
+                "position_size_idr": max_budget,
+                "position_size_usd": budget_usd,
+                "position_size_usdt": budget_usd,
+                "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "status": "OPEN",
+                "pluang_synced": True,
+                "order_id": order_id,
+                "pluang_execution": execution_result
+            }
+            positions.append(new_pos)
+            with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
+                json.dump(positions, f, indent=2, ensure_ascii=False)
+
+            if callback_query_id:
+                answer_callback(callback_query_id, f"Order {raw_sym} berhasil dibuka di Pluang!", show_alert=False)
+
+            msg = (
+                f"⚡ <b>ORDER BERHASIL DIEKSEKUSI DI PLUANG!</b>\n\n"
+                f"💎 <b>Aset:</b> <code>{raw_sym}</code>\n"
+                f"🎯 <b>Arah:</b> <b>{direction}</b>\n"
+                f"📊 <b>Leverage:</b> <b>{leverage}x</b> ({margin_type})\n"
+                f"💰 <b>Margin:</b> <b>Rp {max_budget:,}</b> (${budget_usd:.2f} USDT)\n"
+                f"📍 <b>Entry:</b> ${entry_price:,.4f}\n"
+                f"🎯 <b>TP1:</b> ${tp1:,.4f} | <b>TP2:</b> ${tp2:,.4f}\n"
+                f"🛑 <b>Stop Loss:</b> ${sl:,.4f}\n"
+                f"🆔 <b>Order ID Pluang:</b> <code>{order_id}</code>\n"
+                f"⏰ <b>Waktu:</b> {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}\n\n"
+                f"<i>Posisi aktif kini langsung terpantau di Pluang & Bloomberg Terminal.</i>"
+            )
+            send_telegram_message(chat_id, msg)
+            return True
+        else:
+            err = execution_result.get("error") or "Order ditolak oleh Pluang API"
+            if callback_query_id:
+                answer_callback(callback_query_id, f"Pluang: {err[:60]}", show_alert=True)
+            msg = (
+                f"❌ <b>PLUANG MENOLAK ORDER {raw_sym}</b>\n\n"
+                f"Detail Error dari Pluang:\n<code>{err}</code>\n\n"
+                f"<i>Catatan: Tidak ada modal yang terpotong. Sinyal tidak didaftarkan sebagai posisi aktif.</i>"
+            )
+            send_telegram_message(chat_id, msg)
+            return False
+
+    except Exception as e:
+        if callback_query_id:
+            answer_callback(callback_query_id, f"Error: {str(e)[:60]}", show_alert=True)
+        send_telegram_message(chat_id, f"❌ <b>Error Eksekusi Pluang:</b>\n<code>{e}</code>")
+        return False
+
+def handle_login_command(chat_id):
+    """Generate official Pluang OAuth URL and send to user"""
+    try:
+        from auth_pluang import get_or_create_client, generate_pkce, AUTH_ENDPOINT, REDIRECT_URI
+        cid = get_or_create_client()
+        cv, cc = generate_pkce()
+        scopes = "market:read portfolio:read trade:write"
+        auth_url = (
+            f"{AUTH_ENDPOINT}?response_type=code"
+            f"&client_id={cid}"
+            f"&redirect_uri={REDIRECT_URI}"
+            f"&scope={scopes.replace(' ', '%20')}"
+            f"&code_challenge={cc}"
+            f"&code_challenge_method=S256"
+        )
+        
+        reply_markup = {
+            "inline_keyboard": [
+                [{"text": "🔑 Buka Halaman Login Pluang", "url": auth_url}]
+            ]
+        }
+        send_telegram_message(
+            chat_id,
+            "🔐 <b>LOGIN / SAMBUNGKAN AKUN PLUANG</b>\n\n"
+            "Untuk membuka posisi futures otomatis dengan USDT Anda, akun Pluang harus dihubungkan via OAuth resmi.\n\n"
+            "👉 <b>Langkah Login:</b>\n"
+            "1. Klik tombol <b>Buka Halaman Login Pluang</b> di bawah\n"
+            "2. Masukkan nomor HP & PIN Pluang Anda di browser\n"
+            "3. Setujui izin akses trading untuk bot\n\n"
+            "👉 <b>Atau jika Anda di Termux:</b>\n"
+            "Buka tab terminal baru dan jalankan:\n"
+            "<code>python pluang-bot/auth_pluang.py --force</code>",
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        send_telegram_message(chat_id, f"❌ Gagal membuat link login: {e}")
 
 def run_radar_scan(chat_id):
     """Scan CORE + Top movers"""
@@ -136,7 +365,6 @@ def run_radar_scan(chat_id):
         f"<i>Menganalisa melalui 5-Layer AI Pipeline. Mohon tunggu ~2-5 menit.</i>"
     )
 
-    # Build scan list
     core_pairs = {item["pair"] for item in CRYPTO_FUTURES_WATCHLIST}
     scan_list = list(CRYPTO_FUTURES_WATCHLIST)
     for m in movers:
@@ -164,8 +392,8 @@ def run_radar_scan(chat_id):
                 reply_markup = {
                     "inline_keyboard": [
                         [
-                            {"text": f"✅ Setujui & Eksekusi ({sym})", "callback_data": f"buy_{sym}"},
-                            {"text": "❌ Batalkan", "callback_data": f"reject_{sym}"}
+                            {"text": f"✅ Konfirmasi & Eksekusi ({sym})", "callback_data": f"confirm_{sym}"},
+                            {"text": "❌ Batalkan", "callback_data": f"cancel_{sym}"}
                         ]
                     ]
                 }
@@ -182,9 +410,8 @@ def run_radar_scan(chat_id):
         f"{'🛡️' if approved_count == 0 else ''} <b>{total - approved_count} REJECTED (SAFETY FIRST)</b>\n\n"
     )
     if approved_count == 0:
-        summary += "<i>Filosofi: Tidak ada setup yang memenuhi standar minimal 80% keyakinan & RRR 1:2.0. Dana Anda aman.</i>"
+        summary += "<i>Filosofi: Tidak ada setup yang memenuhi standar institusional keyakinan & RRR 1:1.8. Dana Anda aman.</i>"
     send_telegram_message(chat_id, summary)
-
 
 def get_system_status():
     positions = []
@@ -200,39 +427,40 @@ def get_system_status():
     fx = get_fx_info()
     universe = get_full_universe()
     
+    client = get_pluang_client()
+    pluang_badge = "🟢 <b>CONNECTED & VERIFIED</b>" if client else "🔴 <b>TOKEN EXPIRED (Ketik /login)</b>"
+
     text = (
         f"📊 <b>STATUS SISTEM TRADING AI CRYPTO FUTURES</b>\n"
         f"────────────────────────\n"
+        f"🏦 <b>Pluang Status:</b> {pluang_badge}\n"
         f"🤖 <b>AI Provider:</b> Groq (openai/gpt-oss-120b)\n"
         f"🌐 <b>Universe:</b> {len(universe)} crypto futures pairs\n"
         f"🔒 <b>Limit Modal:</b> Rp {cfg.get('max_budget_idr', 50000):,} per trade\n"
         f"   <i>(= ${convert_idr_to_usd(cfg.get('max_budget_idr', 50000)):.2f} USD)</i>\n"
-        f"⚡ <b>Leverage Max:</b> {cfg.get('max_leverage', 5)}x\n"
+        f"⚡ <b>Leverage Max:</b> {cfg.get('max_leverage', 5)}x ({cfg.get('margin_type', 'ISOLATED')})\n"
         f"💱 <b>Kurs USD/IDR:</b> Rp {fx['usd_idr']:,.0f}\n"
-        f"💼 <b>Posisi Terbuka:</b> {len(open_pos)} posisi\n"
+        f"💼 <b>Posisi Aktif:</b> {len(open_pos)} posisi\n"
         f"────────────────────────\n"
     )
     if open_pos:
         text += "<b>Daftar Posisi Aktif:</b>\n"
         for p in open_pos[:10]:
+            synced_mark = "✅ Pluang Live" if p.get("pluang_synced") else "📝 Lokal"
             text += (f"• <code>{p['symbol']}</code> {p['direction']} @ ${p.get('entry_price', 0):,.4f} "
-                     f"(Lev: {p.get('leverage', 1)}x, Rp {p.get('position_size_idr', 0):,})\n")
+                     f"(Lev: {p.get('leverage', 1)}x, {synced_mark})\n")
         if len(open_pos) > 10:
             text += f"<i>... dan {len(open_pos) - 10} posisi lainnya</i>\n"
     else:
-        text += "<i>Saat ini tidak ada posisi terbuka. Modal 100% terlindungi dalam cash.</i>\n"
+        text += "<i>Saat ini tidak ada posisi terbuka. Modal 100% terlindungi dalam USDT.</i>\n"
 
     return text
 
-
 def handle_universe_command(chat_id):
-    """Show full universe status"""
     send_telegram_message(chat_id, "⏳ <i>Mengambil data seluruh universe crypto futures...</i>")
-    
     try:
         summary = get_universe_summary()
         fx = get_fx_info()
-        
         text = (
             f"🌐 <b>CRYPTO FUTURES FULL UNIVERSE STATUS</b>\n"
             f"────────────────────────\n"
@@ -245,51 +473,40 @@ def handle_universe_command(chat_id):
         )
         for g in summary["top_10_gainers"][:7]:
             text += f"  • <code>{g['symbol']:12s}</code> <b>{g['change']:+.2f}%</b>\n"
-        
         text += f"\n🔴 <b>TOP 10 LOSERS (24h):</b>\n"
         for l in summary["top_10_losers"][:7]:
             text += f"  • <code>{l['symbol']:12s}</code> <b>{l['change']:+.2f}%</b>\n"
-        
         text += f"\n📊 <b>TOP 10 BY VOLUME:</b>\n"
         for v in summary["top_by_volume"][:7]:
             text += f"  • <code>{v['symbol']:12s}</code> ${v['vol']/1e9:,.2f}B\n"
-        
         send_telegram_message(chat_id, text)
     except Exception as e:
         send_telegram_message(chat_id, f"❌ Error: {e}")
 
-
 def handle_top_movers(chat_id):
-    """Show top 20 movers with opportunity scores"""
     try:
         movers = get_top_movers(20)
         fx = get_fx_info()
-        
         text = f"🔥 <b>TOP 20 CRYPTO FUTURES MOVERS</b>\n"
         text += f"<i>Ranked by AI Opportunity Score</i>\n"
         text += f"💱 Kurs: Rp {fx['usd_idr']:,.0f}/USD\n"
         text += f"────────────────────────\n"
-        
         for i, m in enumerate(movers):
             emoji = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"#{i+1:2d}"
             tier_badge = "⭐" if m.get("tier") == "CORE" else "  "
             change = m.get("price_change_24h_pct", 0)
             change_emoji = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
-            
             text += (
                 f"{emoji}{tier_badge} <code>{m['pair']:12s}</code> "
                 f"{change_emoji}{change:+6.2f}% "
                 f"| Score: {m.get('opportunity_score', 0):.2f}\n"
             )
-        
         text += f"\n<i>⭐ = Core watchlist | Score = Volume×Volatility×Momentum</i>"
         send_telegram_message(chat_id, text)
     except Exception as e:
         send_telegram_message(chat_id, f"❌ Error: {e}")
 
-
 def handle_fx_command(chat_id):
-    """Show exchange rate info"""
     fx = get_fx_info()
     text = (
         f"💱 <b>KURS MATA UANG REAL-TIME</b>\n"
@@ -305,9 +522,7 @@ def handle_fx_command(chat_id):
     )
     send_telegram_message(chat_id, text)
 
-
 def handle_convert_command(chat_id, args):
-    """Convert currency: /convert 50000 idr or /convert 100 usd"""
     if len(args) < 2:
         send_telegram_message(chat_id,
             "ℹ️ <b>Format:</b> <code>/convert [jumlah] [usd/idr]</code>\n"
@@ -315,12 +530,10 @@ def handle_convert_command(chat_id, args):
             "• <code>/convert 50000 idr</code> → ke USD\n"
             "• <code>/convert 100 usd</code> → ke IDR")
         return
-    
     try:
         amount = float(args[0].replace(",", "").replace(".", ""))
         currency = args[1].upper()
         fx = get_fx_info()
-        
         if currency == "IDR":
             result_usd = convert_idr_to_usd(amount)
             text = (
@@ -341,40 +554,26 @@ def handle_convert_command(chat_id, args):
             )
         else:
             text = f"❌ Mata uang <code>{currency}</code> tidak dikenal. Gunakan <code>usd</code> atau <code>idr</code>."
-        
         send_telegram_message(chat_id, text)
     except ValueError:
         send_telegram_message(chat_id, "❌ Format salah. Contoh: <code>/convert 50000 idr</code>")
 
-
 def handle_any_coin_scan(chat_id, coin_name):
-    """Scan any coin by name/symbol"""
     coin_name = coin_name.upper().strip()
-    
-    # Try to match
     symbol = None
-    
-    # Direct match in core watchlist
     for item in CRYPTO_FUTURES_WATCHLIST:
         if coin_name in [item["name"].upper(), item["symbol"].upper(), 
                           item["pair"].upper(), item["symbol"].replace("-USD", "").upper()]:
             symbol = item["symbol"]
             break
-    
-    # Try as Binance pair
     if not symbol:
-        if not coin_name.endswith("USDT"):
-            test_pair = coin_name + "USDT"
-        else:
-            test_pair = coin_name
-        # Try to get data
+        test_pair = coin_name if coin_name.endswith("USDT") else coin_name + "USDT"
         try:
             data = get_market_indicators_fast(test_pair)
             if data.get("data_quality") != "FAILED":
                 symbol = test_pair.replace("USDT", "-USD")
         except Exception:
             pass
-    
     if not symbol:
         send_telegram_message(chat_id, 
             f"❌ Tidak ditemukan coin <code>{coin_name}</code>.\n"
@@ -391,16 +590,15 @@ def handle_any_coin_scan(chat_id, coin_name):
         markup = None
         if status == "APPROVED":
             markup = {"inline_keyboard": [[
-                {"text": f"✅ Setujui (Rp {_max_budget():,})", "callback_data": f"buy_{symbol}"},
-                {"text": "❌ Tolak", "callback_data": f"reject_{symbol}"}
+                {"text": f"✅ Konfirmasi & Eksekusi ({symbol})", "callback_data": f"confirm_{symbol}"},
+                {"text": "❌ Batalkan", "callback_data": f"cancel_{symbol}"}
             ]]}
         send_telegram_message(chat_id, text, markup)
     except Exception as e:
         send_telegram_message(chat_id, f"❌ Error analisis {symbol}: {e}")
 
-
 def start_bot_listener():
-    print(f"[*] Menjalankan Telegram Bot v2.0 - Full Universe Crypto Futures (@idrisginting_bot)...", flush=True)
+    print(f"[*] Menjalankan Telegram Bot v3.0 - Full Universe Crypto Futures (@idrisginting_bot)...", flush=True)
     offset = 0
     while True:
         try:
@@ -409,12 +607,15 @@ def start_bot_listener():
             if r.status_code != 200:
                 time.sleep(5)
                 continue
-
             data = r.json()
+            if not data.get("ok"):
+                time.sleep(3)
+                continue
+
             for update in data.get("result", []):
                 offset = update["update_id"] + 1
 
-                # Handle text command
+                # Handle text messages
                 if "message" in update and "text" in update["message"]:
                     chat_id = update["message"]["chat"]["id"]
                     msg_text = update["message"]["text"].strip()
@@ -423,16 +624,21 @@ def start_bot_listener():
                     if msg_lower in ["/start", "start", "halo", "help", "/help"]:
                         cfg = get_trading_config()
                         universe = get_full_universe()
+                        client = get_pluang_client()
+                        pluang_txt = "🟢 Terhubung" if client else "🔴 Perlu /login"
                         welcome = (
-                            "👋 <b>Halo! Saya Pyrofuel AI Crypto Futures Trading v2.0</b>\n\n"
+                            "👋 <b>Halo! Saya Pyrofuel AI Crypto Futures Trading v3.0</b>\n\n"
+                            f"🏦 <b>Pluang Status:</b> {pluang_txt}\n"
                             f"🌐 <b>Universe:</b> {len(universe)} crypto futures pairs\n"
                             f"🔒 <b>Limit Modal:</b> Rp {cfg.get('max_budget_idr', 50000):,}\n"
                             f"⚡ <b>Max Leverage:</b> {cfg.get('max_leverage', 5)}x\n\n"
                             "Sistem dirancang dengan <b>5-Layer AI Pipeline</b>:\n"
                             "• Scanner ➔ Setup Hunter ➔ Plan ➔ Risk Audit ➔ Supreme Judge\n\n"
                             "<b>📋 Perintah:</b>\n"
+                            "• <code>/login</code> - Hubungkan akun Pluang Anda via OAuth\n"
+                            "• <code>/konfirmasi [coin]</code> - Eksekusi riil ke Pluang Futures\n"
                             "• <code>/scan</code> - Scan 30 coins (core + top movers)\n"
-                            "• <code>/scan [coin]</code> - Analisis spesifik (misal: /scan dot)\n"
+                            "• <code>/scan [coin]</code> - Analisis spesifik (misal: /scan btc)\n"
                             "• <code>/universe</code> - Status full universe 200+ pairs\n"
                             "• <code>/top</code> - Top 20 movers saat ini\n"
                             "• <code>/btc</code> <code>/eth</code> <code>/sol</code> - Analisis cepat\n"
@@ -444,6 +650,39 @@ def start_bot_listener():
                             "• <code>/convert [n] [usd/idr]</code> - Konversi mata uang"
                         )
                         send_telegram_message(chat_id, welcome)
+
+                    elif msg_lower in ["/login", "login", "/auth", "auth"]:
+                        handle_login_command(chat_id)
+
+                    elif msg_lower.startswith("/konfirmasi") or msg_lower.startswith("/confirm") or msg_lower.startswith("/approve") or msg_lower.startswith("/beli"):
+                        parts = msg_text.split()
+                        if len(parts) >= 2:
+                            coin = parts[1].upper().strip().replace("-USD", "").replace("USDT", "")
+                            execute_trade_with_pluang(coin, chat_id)
+                        else:
+                            # Look for latest approved signal
+                            latest_approved = None
+                            if os.path.exists(RESULTS_DIR):
+                                for f in os.listdir(RESULTS_DIR):
+                                    if f.endswith("_latest.json"):
+                                        try:
+                                            with open(os.path.join(RESULTS_DIR, f), "r", encoding="utf-8") as jf:
+                                                sd = json.load(jf)
+                                                if sd.get("layer5_final_call", {}).get("status") == "APPROVED":
+                                                    latest_approved = sd.get("symbol")
+                                                    break
+                                        except Exception:
+                                            pass
+                            if latest_approved:
+                                execute_trade_with_pluang(latest_approved, chat_id)
+                            else:
+                                send_telegram_message(
+                                    chat_id,
+                                    "ℹ️ <b>Tidak ada sinyal APPROVED yang menunggu konfirmasi otomatis.</b>\n\n"
+                                    "Ketik nama koin untuk mengeksekusi langsung:\n"
+                                    "Contoh: <code>/konfirmasi btc</code> atau <code>/konfirmasi eth</code>\n\n"
+                                    "Atau ketik <code>/scan</code> untuk memindai setup market terbaik."
+                                )
 
                     elif msg_lower in ["/scan", "scan", "cek", "cek pasar"]:
                         run_radar_scan(chat_id)
@@ -472,7 +711,7 @@ def start_bot_listener():
                                 pass
                         
                         text = (
-                            f"⚙️ <b>STATUS AUTONOMOUS TRADER v2.0:</b>\n"
+                            f"⚙️ <b>STATUS AUTONOMOUS TRADER v3.0:</b>\n"
                             f"────────────────────────\n"
                             f"🌐 <b>Mode:</b> {state.get('mode', 'FULL_UNIVERSE')}\n"
                             f"📊 <b>Universe Size:</b> {state.get('universe_size', 'N/A')} pairs\n"
@@ -576,7 +815,7 @@ def start_bot_listener():
                     elif msg_lower in ["/sui", "sui"]:
                         handle_any_coin_scan(chat_id, "SUI")
                     
-                    # Catch-all: try to scan any coin name
+                    # Catch-all: scan any other coin name
                     elif msg_lower.startswith("/"):
                         coin_try = msg_lower.lstrip("/").strip()
                         if len(coin_try) >= 2 and len(coin_try) <= 10:
@@ -585,9 +824,9 @@ def start_bot_listener():
                             send_telegram_message(chat_id, 
                                 "❓ Perintah tidak dikenali.\n"
                                 "Ketik <code>/help</code> untuk daftar perintah.\n"
-                                "Atau ketik nama coin langsung: <code>/dot</code> <code>/matic</code> dll.")
+                                "Atau ketik nama coin langsung: <code>/btc</code> <code>/sol</code> dll.")
 
-                # Handle inline button click (Approve / Reject)
+                # Handle inline button click
                 elif "callback_query" in update:
                     cb = update["callback_query"]
                     cb_id = cb["id"]
@@ -596,22 +835,13 @@ def start_bot_listener():
 
                     if cb_data.startswith("buy_") or cb_data.startswith("confirm_"):
                         symbol = cb_data.replace("buy_", "").replace("confirm_", "")
-                        cfg = get_trading_config()
-                        max_budget = cfg.get("max_budget_idr", 50000)
-                        answer_callback(cb_id, f"Mengeksekusi order {symbol} senilai Rp {max_budget:,}...")
-                        send_telegram_message(
-                            chat_id,
-                            f"⚡ <b>ORDER DIEKSEKUSI // CRYPTO FUTURES</b>\n\n"
-                            f"Aset: <b>{symbol}</b>\n"
-                            f"Nominal: <b>Rp {max_budget:,}</b> (${convert_idr_to_usd(max_budget):.4f} USD)\n"
-                            f"Status: <b>SUCCESS / OPENED</b>\n"
-                            f"Waktu: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
-                            f"<i>Posisi aktif kini dipantau otomatis oleh risk officer stop-loss.</i>"
-                        )
+                        answer_callback(cb_id, f"Menghubungi Pluang untuk order {symbol}...")
+                        execute_trade_with_pluang(symbol, chat_id, callback_query_id=cb_id)
+
                     elif cb_data.startswith("reject_") or cb_data.startswith("cancel_"):
                         symbol = cb_data.replace("reject_", "").replace("cancel_", "")
                         answer_callback(cb_id, f"Order {symbol} dibatalkan.")
-                        send_telegram_message(chat_id, f"🛑 Order <b>{symbol}</b> telah dibatalkan. Modal tetap 100% aman.")
+                        send_telegram_message(chat_id, f"🛑 Order <b>{symbol}</b> telah dibatalkan. Modal 100% aman dalam USDT.")
 
         except Exception as e:
             print(f"[-] Bot listener error: {e}")

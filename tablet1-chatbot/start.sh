@@ -30,19 +30,27 @@ elif command -v pip &> /dev/null; then
     pip install requests python-dotenv --quiet || true
 fi
 
-# 3. Clean up stale mock positions so tables start fresh
-rm -f pluang-bot/results/active_positions.json
+# 3. Initialize results directory and active positions if missing
 mkdir -p pluang-bot/results
-echo "[]" > pluang-bot/results/active_positions.json
+if [ ! -f "pluang-bot/results/active_positions.json" ]; then
+    echo "[]" > pluang-bot/results/active_positions.json
+fi
 
 # 4. Clean up any zombie process holding port 4000
-echo "[*] Ensuring Port 4000 is clean..."
+echo "[*] Ensuring Port 4000 & previous bot processes are clean..."
 if command -v fuser &> /dev/null; then
     fuser -k 4000/tcp 2>/dev/null || true
 fi
 pkill -9 -f "node server.js" 2>/dev/null || true
+pkill -9 -f "telegram_bot.py" 2>/dev/null || true
 sleep 1
 
-# 5. Start Unified Bloomberg & Crypto Futures Engine
+# 5. Launch Telegram Bot in background
+if [ -f "pluang-bot/telegram_bot.py" ]; then
+    echo "[*] Launching Pyrofuel Telegram Bot (@idrisginting_bot) in background..."
+    $PY_BIN pluang-bot/telegram_bot.py > telegram_bot.log 2>&1 &
+fi
+
+# 6. Start Unified Bloomberg & Crypto Futures Engine
 echo "[*] Launching Unified Bloomberg Terminal & Crypto Futures Engine on Port 4000..."
 exec node server.js
