@@ -2206,6 +2206,108 @@ app.post('/api/tony/chat', async (req, res) => {
     res.json({ speech: 'Terminal siap.', text: 'Bloomberg Terminal Active.', action: 'none' });
 });
 
+// ============================================================
+// CRYPTO FUTURES AI ENGINE (5-LAYER INSTITUTIONAL PIPELINE)
+// ============================================================
+const PYTHON_BOT_URL = 'http://127.0.0.1:5000';
+
+app.get('/api/crypto-futures/watchlist', async (req, res) => {
+    try {
+        const resp = await fetch(`${PYTHON_BOT_URL}/api/watchlist`, { signal: AbortSignal.timeout(25000) });
+        if (resp.ok) return res.json(await resp.json());
+    } catch (e) {
+        console.error('Watchlist fetch error:', e.message);
+    }
+    res.json([
+        { symbol: "BTC-USD", name: "Bitcoin", pair: "BTCUSDT", price: 81680, change_24h: 1.2, rsi_14: 45, trend: "BULLISH" },
+        { symbol: "ETH-USD", name: "Ethereum", pair: "ETHUSDT", price: 2150, change_24h: -0.5, rsi_14: 48, trend: "NEUTRAL" },
+        { symbol: "SOL-USD", name: "Solana", pair: "SOLUSDT", price: 103.5, change_24h: 2.1, rsi_14: 42, trend: "BULLISH" },
+        { symbol: "BNB-USD", name: "BNB", pair: "BNBUSDT", price: 620, change_24h: 0.8, rsi_14: 51, trend: "NEUTRAL" },
+        { symbol: "XRP-USD", name: "Ripple", pair: "XRPUSDT", price: 1.85, change_24h: 3.5, rsi_14: 55, trend: "BULLISH" },
+        { symbol: "DOGE-USD", name: "Dogecoin", pair: "DOGEUSDT", price: 0.16, change_24h: -1.1, rsi_14: 40, trend: "BEARISH" },
+        { symbol: "AVAX-USD", name: "Avalanche", pair: "AVAXUSDT", price: 22.4, change_24h: 1.5, rsi_14: 49, trend: "NEUTRAL" },
+        { symbol: "LINK-USD", name: "Chainlink", pair: "LINKUSDT", price: 14.8, change_24h: 0.2, rsi_14: 47, trend: "NEUTRAL" },
+        { symbol: "ADA-USD", name: "Cardano", pair: "ADAUSDT", price: 0.65, change_24h: -0.8, rsi_14: 44, trend: "BEARISH" },
+        { symbol: "SUI20947-USD", name: "Sui", pair: "SUIUSDT", price: 2.25, change_24h: 4.2, rsi_14: 58, trend: "BULLISH" }
+    ]);
+});
+
+app.get('/api/crypto-futures/status', async (req, res) => {
+    try {
+        const resp = await fetch(`${PYTHON_BOT_URL}/api/status`, { signal: AbortSignal.timeout(5000) });
+        if (resp.ok) return res.json(await resp.json());
+    } catch (e) {}
+    res.json({
+        status: "online",
+        market: "CRYPTO_FUTURES_ONLY",
+        assets_count: 10,
+        max_budget_idr: 50000,
+        max_leverage: 5,
+        ai_provider: "groq",
+        model: "openai/gpt-oss-120b",
+        telegram_bot: "@idrisginting_bot"
+    });
+});
+
+app.post('/api/crypto-futures/scan', async (req, res) => {
+    try {
+        const resp = await fetch(`${PYTHON_BOT_URL}/api/scan`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+            signal: AbortSignal.timeout(65000)
+        });
+        if (resp.ok) return res.json(await resp.json());
+        const err = await resp.text();
+        return res.status(500).json({ error: err });
+    } catch (e) {
+        res.status(500).json({ error: "Gagal terhubung ke engine AI Crypto Futures: " + e.message });
+    }
+});
+
+app.get('/api/crypto-futures/positions', async (req, res) => {
+    try {
+        const resp = await fetch(`${PYTHON_BOT_URL}/api/positions`, { signal: AbortSignal.timeout(5000) });
+        if (resp.ok) return res.json(await resp.json());
+    } catch (e) {}
+    res.json([]);
+});
+
+app.post('/api/crypto-futures/execute', async (req, res) => {
+    try {
+        const resp = await fetch(`${PYTHON_BOT_URL}/api/execute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+            signal: AbortSignal.timeout(10000)
+        });
+        if (resp.ok) return res.json(await resp.json());
+    } catch (e) {}
+    res.status(500).json({ error: "Execution failed or engine unreachable" });
+});
+
+app.get('/api/crypto-futures/config', async (req, res) => {
+    try {
+        const resp = await fetch(`${PYTHON_BOT_URL}/api/config`, { signal: AbortSignal.timeout(5000) });
+        if (resp.ok) return res.json(await resp.json());
+    } catch (e) {}
+    res.json({ max_budget_idr: 50000, max_leverage: 5 });
+});
+
+app.post('/api/crypto-futures/config', async (req, res) => {
+    try {
+        const resp = await fetch(`${PYTHON_BOT_URL}/api/config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+            signal: AbortSignal.timeout(5000)
+        });
+        if (resp.ok) return res.json(await resp.json());
+    } catch (e) {}
+    res.status(500).json({ error: "Failed to update config" });
+});
+
+
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`================================================================`);
     console.log(`🏛️ BLOOMBERG PROFESSIONAL SERVICE - REAL-TIME TRADING DESK ON PORT ${PORT}`);

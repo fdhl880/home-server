@@ -3,3 +3,12 @@ node_modules/
 **/.env
 .env*.local
 *.log
+
+# Pluang Bot
+pluang-bot/__pycache__/
+pluang-bot/results/
+pluang-bot/tokens.json
+pluang-bot/client_config.json
+pluang-bot/login_url.txt
+**/__pycache__/
+*.pyc

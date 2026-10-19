@@ -620,12 +620,13 @@
         <button class="f-key k-green" onclick="showView('news')">7&lt;GO&gt; TOP &lt;GO&gt; NEWS</button>
         <button class="f-key k-cyan" onclick="showView('ai')">8&lt;GO&gt; B-ANALYST (AI)</button>
         <button class="f-key k-yellow" onclick="showView('macro')" title="Statistik Ekonomi Makro & Mikro Global & Indonesia">9&lt;GO&gt; ECST MACRO</button>
+        <button class="f-key k-amber" onclick="showView('cryptofutures')" title="Pyrofuel Crypto Futures AI 5-Layer Engine">10&lt;GO&gt; CRYPTO FUTURES AI</button>
     </nav>
 
     <!-- 3. COMMAND INPUT STRIP (BBG COMMAND PROMPT) -->
     <div class="cmd-bar">
         <span class="cmd-prompt">COMMAND:</span>
-        <input type="text" id="terminalCmdInput" class="cmd-box" placeholder="ENTER MNEMONIC (E.G. PORT <GO>, BUY 50 BBCA, GP SPACEX, ECST <GO>, TOP <GO>)..." autocomplete="off" spellcheck="false">
+        <input type="text" id="terminalCmdInput" class="cmd-box" placeholder="ENTER MNEMONIC (E.G. PORT <GO>, BUY 50 BBCA, GP SPACEX, ECST <GO>, TOP <GO>, CRYPTO <GO>)..." autocomplete="off" spellcheck="false">
         <button class="cmd-enter" onclick="submitCmd()">&lt;GO&gt;</button>
     </div>
 
@@ -666,6 +667,7 @@
             <a class="sub-link" onclick="showView('news')">7) NEWS WIRE</a>
             <a class="sub-link" onclick="showView('ai')">8) B-ANALYST (AI)</a>
             <a class="sub-link" onclick="showView('macro')">9) ECST MACRO/MICRO</a>
+            <a class="sub-link" onclick="showView('cryptofutures')">10) CRYPTO FUTURES AI</a>
         </div>
 
         <!-- ============================================================== -->
@@ -1346,7 +1348,164 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
         </div>
 
         <!-- ============================================================== -->
-        <!-- VIEW 10: HELP & CHEATSHEET (<HELP>) -->
+        <!-- VIEW 10: PYROFUEL INSTITUTIONAL CRYPTO FUTURES AI ENGINE -->
+        <!-- ============================================================== -->
+        <div id="view-cryptofutures" class="view-section">
+            <!-- TOP BADGE & SAFETY STRIP -->
+            <div style="background:#0a0a0a; border:2px solid #F39F41; padding:8px 12px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <div>
+                    <span class="bbg-amber" style="font-weight:900; font-size:13px; letter-spacing:1px;">PYROFUEL // INSTITUTIONAL CRYPTO FUTURES 5-LAYER AI ENGINE</span>
+                    <div style="font-size:10.5px; color:#888; margin-top:2px;">
+                        <span>MARKET: <strong class="bbg-white">CRYPTO FUTURES ONLY (10 PERP PAIRS)</strong></span> |
+                        <span>AI CORE: <strong class="bbg-cyan">GROQ OSS-120B (FREE TIER HIGH SPEED)</strong></span> |
+                        <span>TELEGRAM: <strong class="bbg-green">@idrisginting_bot</strong></span>
+                    </div>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <div style="display:flex; align-items:center; gap:4px; background:#120e05; border:1px solid #F39F41; padding:2px 6px;">
+                        <span class="bbg-amber" style="font-weight:bold; font-size:10.5px;">BUDGET CAP:</span>
+                        <span style="color:#aaa; font-size:10px;">RP</span>
+                        <input type="number" id="cfgMaxBudgetInput" value="50000" step="5000" min="10000" style="width:75px; background:#000; border:1px solid #442a00; color:#FFFF00; font-family:inherit; font-weight:bold; font-size:11px; padding:2px 4px;">
+                        <span class="bbg-amber" style="font-weight:bold; font-size:10.5px; margin-left:6px;">LEV:</span>
+                        <input type="number" id="cfgMaxLevInput" value="5" step="1" min="1" max="20" style="width:40px; background:#000; border:1px solid #442a00; color:#FFFF00; font-family:inherit; font-weight:bold; font-size:11px; padding:2px 4px;">
+                        <span style="color:#aaa; font-size:10px;">X</span>
+                        <button class="btn-act" style="padding:2px 6px; font-size:10px; margin-left:4px;" onclick="saveDynamicTradingConfig()">SAVE LIMIT &lt;GO&gt;</button>
+                    </div>
+                    <button id="btnAutoTraderToggle" class="btn-act" style="background:#00ff66; color:#000; font-weight:bold;" onclick="toggleAutoTrader()">
+                        ● AUTONOMOUS TRADER: ACTIVE
+                    </button>
+                    <button class="btn-act" onclick="scanAllCryptoFutures()">
+                        SCAN ALL 10 PAIRS &lt;GO&gt;
+                    </button>
+                </div>
+            </div>
+
+            <!-- 10 CRYPTO FUTURES LIVE MONITOR TABLE -->
+            <div class="sec-title">
+                <span>-- CRYPTO FUTURES LIVE WATCHLIST // 10 PERPETUAL CONTRACTS --</span>
+                <span class="bbg-cyan">NO STOCKS • 100% CRYPTO FUTURES • STRICT MULTI-AGENT AUDIT</span>
+            </div>
+
+            <div class="table-frame" style="margin-bottom:10px;">
+                <table class="bbg-tbl" id="cryptoFuturesTable">
+                    <thead>
+                        <tr>
+                            <th>SYMBOL</th>
+                            <th>NAME</th>
+                            <th>PAIR</th>
+                            <th>MKT PRICE (USD)</th>
+                            <th>PRICE (IDR)</th>
+                            <th>24H CHG</th>
+                            <th>RSI (14)</th>
+                            <th>EMA TREND</th>
+                            <th>VOLATILITY</th>
+                            <th>MAX LEV</th>
+                            <th>LATEST 5-LAYER AUDIT</th>
+                            <th style="text-align:center;">ACTION</th>
+                        </tr>
+                    </thead>
+                    <tbody id="cryptoFuturesTbody">
+                        <tr><td colspan="12" style="text-align:center; padding:15px; color:#888;">LOADING CRYPTO FUTURES ENGINE...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- 5-LAYER PIPELINE INTERACTIVE DEEP DIVE -->
+            <div class="sec-title">
+                <span id="pipelineTitleLabel">-- 5-LAYER INSTITUTIONAL AI PIPELINE DEEP DIVE // BTC-USD --</span>
+                <span id="pipelineStatusBadge" class="bbg-yellow">STATUS: SELECT OR SCAN A PAIR</span>
+            </div>
+
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:8px; margin-bottom:12px;">
+                <!-- Layer 1: Scanner -->
+                <div style="background:#060606; border:1px solid #222; border-top:3px solid #00EEEE; padding:8px;">
+                    <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                        <span class="bbg-cyan" style="font-weight:bold; font-size:11px;">1. SCANNER (DATA)</span>
+                        <span id="l1Status" class="bbg-green" style="font-size:10px;">READY</span>
+                    </div>
+                    <div id="l1Content" style="font-size:10.5px; line-height:1.5; color:#aaa;">
+                        Tekan "SCAN" pada salah satu aset di atas untuk menjalankan analisa multi-timeframe &amp; indikator lengkap (RSI, EMA, MACD, Bollinger, ATR, Funding Rate, Long/Short Ratio).
+                    </div>
+                </div>
+
+                <!-- Layer 2: Setup Hunter -->
+                <div style="background:#060606; border:1px solid #222; border-top:3px solid #F39F41; padding:8px;">
+                    <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                        <span class="bbg-amber" style="font-weight:bold; font-size:11px;">2. SETUP HUNTER</span>
+                        <span id="l2Status" class="bbg-yellow" style="font-size:10px;">AWAITING</span>
+                    </div>
+                    <div id="l2Content" style="font-size:10.5px; line-height:1.5; color:#aaa;">
+                        Identifikasi pola institusional (EMA Pullback, RSI Oversold Bounce, Bollinger Breakout, Funding Squeeze). Minimal 2 confluence valid.
+                    </div>
+                </div>
+
+                <!-- Layer 3: Trading Plan -->
+                <div style="background:#060606; border:1px solid #222; border-top:3px solid #FFFF00; padding:8px;">
+                    <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                        <span class="bbg-yellow" style="font-weight:bold; font-size:11px;">3. PLAN ARCHITECT</span>
+                        <span id="l3Status" class="bbg-yellow" style="font-size:10px;">AWAITING</span>
+                    </div>
+                    <div id="l3Content" style="font-size:10.5px; line-height:1.5; color:#aaa;">
+                        Perhitungan Entry ideal, Take Profit 1 &amp; 2, Stop Loss ketat via ATR, rasio RRR min 1:2.0, leverage maks 5x, dan alokasi modal dikunci maks Rp 50.000.
+                    </div>
+                </div>
+
+                <!-- Layer 4: CRO Risk Audit -->
+                <div style="background:#060606; border:1px solid #222; border-top:3px solid #FF2233; padding:8px;">
+                    <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                        <span class="bbg-red" style="font-weight:bold; font-size:11px;">4. CRO RISK AUDIT</span>
+                        <span id="l4Status" class="bbg-yellow" style="font-size:10px;">AWAITING</span>
+                    </div>
+                    <div id="l4Content" style="font-size:10.5px; line-height:1.5; color:#aaa;">
+                        Audit 10 checklist skeptis (Likuiditas, fakeout volume, drawdown limit, resistensi, sentimen extreme). Filosofi: Lebih baik batal daripada rugi!
+                    </div>
+                </div>
+
+                <!-- Layer 5: Supreme Judge -->
+                <div style="background:#060606; border:1px solid #222; border-top:3px solid #00FF00; padding:8px;">
+                    <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                        <span class="bbg-green" style="font-weight:bold; font-size:11px;">5. SUPREME JUDGE</span>
+                        <span id="l5Status" class="bbg-yellow" style="font-size:10px;">AWAITING</span>
+                    </div>
+                    <div id="l5Content" style="font-size:10.5px; line-height:1.5; color:#aaa;">
+                        Hakim Tertinggi konsensus multi-agent. Syarat kelolosan mutlak: Keyakinan &gt;=80%, RRR &gt;=1:2.0, 0 critical failures, dan 8 Python security gates.
+                    </div>
+                </div>
+            </div>
+
+            <!-- ACTIVE CRYPTO FUTURES POSITIONS & AUDIT LOG -->
+            <div class="sec-title">
+                <span>-- ACTIVE CRYPTO FUTURES LEDGER // POSITIONS &amp; P&amp;L TRACKER --</span>
+                <span class="bbg-cyan">CAPITAL LIMIT: RP 50.000 PER POSITION</span>
+            </div>
+
+            <div class="table-frame">
+                <table class="bbg-tbl" id="cryptoFuturesPositionsTable">
+                    <thead>
+                        <tr>
+                            <th>POSITION ID</th>
+                            <th>SYMBOL</th>
+                            <th>SIDE</th>
+                            <th>LEVERAGE</th>
+                            <th>ENTRY PRICE</th>
+                            <th>CURRENT PRICE</th>
+                            <th>ALLOCATION (IDR)</th>
+                            <th>TAKE PROFIT</th>
+                            <th>STOP LOSS</th>
+                            <th>UNREAL P&amp;L</th>
+                            <th>STATUS</th>
+                            <th style="text-align:center;">ACTION</th>
+                        </tr>
+                    </thead>
+                    <tbody id="cryptoFuturesPositionsTbody">
+                        <tr><td colspan="12" style="text-align:center; padding:15px; color:#888;">TIDAK ADA POSISI TERBUKA. MODAL ANDA 100% AMAN TERSIMPAN DI CASH.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ============================================================== -->
+        <!-- VIEW 11: HELP & CHEATSHEET (<HELP>) -->
         <!-- ============================================================== -->
         <div id="view-help" class="view-section">
             <div class="sec-title">
@@ -1361,6 +1520,8 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 <p><strong class="bbg-amber">6&lt;GO&gt; GP</strong> - Grafik candlestick harga</p>
                 <p><strong class="bbg-amber">7&lt;GO&gt; TOP</strong> - Berita pasar keuangan terkini</p>
                 <p><strong class="bbg-amber">8&lt;GO&gt; BI / AI</strong> - Bloomberg Senior Macro Analyst AI</p>
+                <p><strong class="bbg-amber">9&lt;GO&gt; ECST</strong> - Economic &amp; Macro/Micro Intelligence</p>
+                <p><strong class="bbg-amber">10&lt;GO&gt; CRYPTO</strong> - Pyrofuel 5-Layer AI Crypto Futures Engine (Rp 50rb Limit)</p>
             </div>
         </div>
 
@@ -1445,13 +1606,13 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             if (target) target.classList.add('active');
 
             const viewMap = {
-                'summary': 3, 'holdings': 4, 'emsx': 5, 'blotter': 6, 'monitor': 7, 'chart': 8, 'news': 9, 'ai': 10, 'macro': 11
+                'summary': 3, 'holdings': 4, 'emsx': 5, 'blotter': 6, 'monitor': 7, 'chart': 8, 'news': 9, 'ai': 10, 'macro': 11, 'cryptofutures': 12
             };
             const fkeys = document.querySelectorAll('.f-key');
             if (fkeys[viewMap[viewId]]) fkeys[viewMap[viewId]].classList.add('active');
 
             const subMap = {
-                'summary': 0, 'holdings': 1, 'emsx': 2, 'blotter': 3, 'monitor': 4, 'chart': 5, 'news': 6, 'ai': 7, 'macro': 8
+                'summary': 0, 'holdings': 1, 'emsx': 2, 'blotter': 3, 'monitor': 4, 'chart': 5, 'news': 6, 'ai': 7, 'macro': 8, 'cryptofutures': 9
             };
             const sublinks = document.querySelectorAll('.sub-link');
             if (sublinks[subMap[viewId]]) sublinks[subMap[viewId]].classList.add('active');
@@ -1460,6 +1621,8 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 setTimeout(() => drawChart(currentChartSym, currentChartTf), 40);
             } else if (viewId === 'macro') {
                 fetchMacroData();
+            } else if (viewId === 'cryptofutures') {
+                fetchCryptoFuturesData();
             }
         }
 
@@ -3075,6 +3238,374 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             });
         }
 
+        // ============================================================
+        // 10) PYROFUEL CRYPTO FUTURES AI TRADING ENGINE
+        // ============================================================
+        let cryptoFuturesWatchlist = [];
+        let cryptoFuturesPositions = [];
+        let autoTraderActive = true;
+
+        async function fetchCryptoFuturesData() {
+            try {
+                // 1. Fetch Watchlist
+                const res = await fetch('/api/crypto-futures/watchlist');
+                if (res.ok) {
+                    cryptoFuturesWatchlist = await res.json();
+                    renderCryptoFuturesWatchlist();
+                }
+
+                // 2. Fetch Status & Config
+                const stRes = await fetch('/api/crypto-futures/status');
+                if (stRes.ok) {
+                    const st = await stRes.json();
+                    autoTraderActive = st.autonomous_running !== false;
+                    updateAutoTraderButton();
+                    const bIn = document.getElementById('cfgMaxBudgetInput');
+                    const lIn = document.getElementById('cfgMaxLevInput');
+                    if (bIn && st.max_budget_idr) bIn.value = st.max_budget_idr;
+                    if (lIn && st.max_leverage) lIn.value = st.max_leverage;
+                }
+
+                // 3. Fetch Positions
+                const posRes = await fetch('/api/crypto-futures/positions');
+                if (posRes.ok) {
+                    cryptoFuturesPositions = await posRes.json();
+                    renderCryptoFuturesPositions();
+                }
+            } catch (e) {
+                console.error('Crypto Futures fetch error:', e);
+            }
+        }
+
+        // Auto-refresh Crypto Futures data every 5 seconds when tab is active
+        setInterval(() => {
+            const curView = document.getElementById('view-cryptofutures');
+            if (curView && curView.classList.contains('active')) {
+                fetchCryptoFuturesData();
+            }
+        }, 5000);
+
+        async function saveDynamicTradingConfig() {
+            const bVal = parseFloat(document.getElementById('cfgMaxBudgetInput')?.value || 50000);
+            const lVal = parseInt(document.getElementById('cfgMaxLevInput')?.value || 5);
+
+            showPopup(`SAVING NEW CONFIG: RP ${bVal.toLocaleString('id-ID')}, LEV ${lVal}x...`);
+            try {
+                const res = await fetch('/api/crypto-futures/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        max_budget_idr: bVal,
+                        max_leverage: lVal
+                    })
+                });
+                if (res.ok) {
+                    showPopup(`SUCCESS: LIMIT UPDATED TO RP ${bVal.toLocaleString('id-ID')} | LEV ${lVal}x`);
+                } else {
+                    showPopup('FAILED TO UPDATE CONFIG ON SERVER');
+                }
+            } catch (e) {
+                showPopup('CONFIG UPDATE ERROR: ' + e.message);
+            }
+        }
+
+        function updateAutoTraderButton() {
+            const btn = document.getElementById('btnAutoTraderToggle');
+            if (!btn) return;
+            if (autoTraderActive) {
+                btn.textContent = '● AUTONOMOUS TRADER: ACTIVE';
+                btn.style.background = '#00ff66';
+                btn.style.color = '#000';
+            } else {
+                btn.textContent = '○ AUTONOMOUS TRADER: PAUSED';
+                btn.style.background = '#333';
+                btn.style.color = '#fff';
+            }
+        }
+
+        async function toggleAutoTrader() {
+            try {
+                const res = await fetch('/api/crypto-futures/auto/toggle', { method: 'POST' });
+                if (res.ok) {
+                    const data = await res.json();
+                    autoTraderActive = data.autonomous_running;
+                    updateAutoTraderButton();
+                    showPopup(`AUTONOMOUS TRADER: ${autoTraderActive ? 'ACTIVE (EVERY 5M)' : 'PAUSED'}`);
+                }
+            } catch (e) {
+                showPopup('FAILED TO TOGGLE AUTO TRADER');
+            }
+        }
+
+        function renderCryptoFuturesWatchlist() {
+            const tbody = document.getElementById('cryptoFuturesTbody');
+            if (!tbody) return;
+
+            if (!cryptoFuturesWatchlist || cryptoFuturesWatchlist.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:15px; color:#888;">WATCHLIST CRYPTO FUTURES KOSONG</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = cryptoFuturesWatchlist.map(item => {
+                const pxUsd = item.price ? `$${Number(item.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: item.price < 1 ? 4 : 2 })}` : '-';
+                const pxIdr = item.price ? `Rp ${Math.round(item.price * usdRate).toLocaleString('id-ID')}` : '-';
+                const chg = item.change_24h || 0;
+                const chgCls = chg >= 0 ? 'bbg-green' : 'bbg-red';
+                const chgStr = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
+
+                const rsi = item.rsi_14 || 50;
+                let rsiCls = 'bbg-white';
+                if (rsi >= 70) rsiCls = 'bbg-red';
+                else if (rsi <= 30) rsiCls = 'bbg-green';
+
+                const trend = item.trend || 'N/A';
+                const trendCls = trend.includes('BULLISH') ? 'bbg-green' : (trend.includes('BEARISH') ? 'bbg-red' : 'bbg-yellow');
+
+                // Latest Scan Badge
+                let scanBadge = '<span style="color:#666;">BELUM DISCAN</span>';
+                if (item.last_scan && item.last_scan.layer5_final_call) {
+                    const fc = item.last_scan.layer5_final_call;
+                    if (fc.status === 'APPROVED') {
+                        scanBadge = `<span class="bbg-green" style="font-weight:bold;">● APPROVED (${fc.confidence_score}%)</span>`;
+                    } else {
+                        scanBadge = `<span class="bbg-red" style="font-weight:bold;">✖ REJECTED (${fc.confidence_score || 0}%)</span>`;
+                    }
+                }
+
+                return `
+                    <tr onclick="loadSavedScanDetails('${item.symbol}')" style="cursor:pointer;">
+                        <td style="font-weight:bold; color:#F39F41;">${item.symbol}</td>
+                        <td>${item.name}</td>
+                        <td class="bbg-cyan">${item.pair || (item.symbol.replace('-USD', 'USDT'))}</td>
+                        <td style="font-weight:bold; color:#fff;">${pxUsd}</td>
+                        <td class="bbg-dim" style="font-size:10px;">${pxIdr}</td>
+                        <td class="${chgCls}" style="font-weight:bold;">${chgStr}</td>
+                        <td class="${rsiCls}" style="font-weight:bold;">${rsi}</td>
+                        <td class="${trendCls}" style="font-size:10px;">${trend}</td>
+                        <td style="font-size:10px;">${item.volatility || 'MODERATE'}</td>
+                        <td class="bbg-amber" style="font-weight:bold;">${item.leverage_max || 10}x</td>
+                        <td>${scanBadge}</td>
+                        <td style="text-align:center;" onclick="event.stopPropagation();">
+                            <button class="btn-act" style="padding:2px 8px; font-size:10px;" onclick="scanCryptoFuturesSymbol('${item.symbol}')">
+                                SCAN 5-LAYER &lt;GO&gt;
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        async function scanCryptoFuturesSymbol(sym) {
+            showPopup(`RUNNING 5-LAYER PIPELINE FOR ${sym}...`);
+            const titleEl = document.getElementById('pipelineTitleLabel');
+            const badgeEl = document.getElementById('pipelineStatusBadge');
+            if (titleEl) titleEl.textContent = `-- 5-LAYER INSTITUTIONAL AI PIPELINE DEEP DIVE // ${sym} --`;
+            if (badgeEl) {
+                badgeEl.textContent = 'STATUS: RUNNING 5-LAYER MULTI-AGENT AUDIT (~10-15s)...';
+                badgeEl.className = 'bbg-amber';
+            }
+
+            // Set layers to scanning
+            ['l1', 'l2', 'l3', 'l4', 'l5'].forEach(l => {
+                const s = document.getElementById(`${l}Status`);
+                if (s) { s.textContent = 'AUDITING...'; s.className = 'bbg-yellow'; }
+            });
+
+            try {
+                const res = await fetch('/api/crypto-futures/scan', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol: sym })
+                });
+
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.error || 'Server error');
+                }
+
+                const data = await res.json();
+                renderCryptoFuturesPipeline(data);
+                showPopup(`AUDIT COMPLETE FOR ${sym}: ${data.layer5_final_call?.status || 'DONE'}`);
+                
+                // Refresh watchlist to update badges
+                fetchCryptoFuturesData();
+            } catch (e) {
+                if (badgeEl) {
+                    badgeEl.textContent = 'STATUS: AUDIT ERROR: ' + e.message;
+                    badgeEl.className = 'bbg-red';
+                }
+                showPopup(`ERROR SCANNING ${sym}: ${e.message}`);
+            }
+        }
+
+        async function scanAllCryptoFutures() {
+            showPopup('RUNNING BATCH SCAN ON ALL 10 CRYPTO FUTURES...');
+            for (const item of cryptoFuturesWatchlist) {
+                await scanCryptoFuturesSymbol(item.symbol);
+                await new Promise(r => setTimeout(r, 1000));
+            }
+            showPopup('BATCH SCAN ON ALL 10 PAIRS COMPLETED.');
+        }
+
+        function loadSavedScanDetails(sym) {
+            const item = cryptoFuturesWatchlist.find(x => x.symbol === sym);
+            if (item && item.last_scan) {
+                renderCryptoFuturesPipeline(item.last_scan);
+            } else {
+                scanCryptoFuturesSymbol(sym);
+            }
+        }
+
+        function renderCryptoFuturesPipeline(d) {
+            const sym = d.symbol || 'N/A';
+            const titleEl = document.getElementById('pipelineTitleLabel');
+            const badgeEl = document.getElementById('pipelineStatusBadge');
+            if (titleEl) titleEl.textContent = `-- 5-LAYER INSTITUTIONAL AI PIPELINE DEEP DIVE // ${sym} (${d.timestamp || ''}) --`;
+
+            const fc = d.layer5_final_call || {};
+            const isApproved = fc.status === 'APPROVED';
+
+            if (badgeEl) {
+                badgeEl.textContent = isApproved ? `STATUS: ✅ APPROVED (${fc.confidence_score}%)` : `STATUS: 🛑 REJECTED (${fc.confidence_score || 0}%)`;
+                badgeEl.className = isApproved ? 'bbg-green' : 'bbg-red';
+            }
+
+            // Layer 1
+            const l1 = d.layer1_scanning || {};
+            const l1St = document.getElementById('l1Status');
+            const l1Ct = document.getElementById('l1Content');
+            if (l1St) { l1St.textContent = 'COMPLETE'; l1St.className = 'bbg-green'; }
+            if (l1Ct) {
+                l1Ct.innerHTML = `
+                    • <b>Price:</b> $${Number(l1.current_price || 0).toLocaleString()} (ATR: ${l1.atr_pct || 0}%)<br>
+                    • <b>RSI:</b> 14=${l1.rsi_14 || '-'} | 7=${l1.rsi_7 || '-'}<br>
+                    • <b>EMA:</b> ${l1.ema_trend || '-'}<br>
+                    • <b>MACD:</b> ${l1.macd?.trend || '-'} (Hist: ${l1.macd?.histogram || 0})<br>
+                    • <b>Bollinger:</b> ${l1.bollinger?.squeeze ? '<span class="bbg-amber">[SQUEEZE]</span>' : 'Normal'} (W: ${l1.bollinger?.width_pct}%)<br>
+                    • <b>Vol Profile:</b> ${l1.volume_profile?.volume_trend || '-'}<br>
+                    • <b>Funding:</b> ${l1.funding_rate?.funding_rate || 0}% (${l1.funding_rate?.sentiment || 'N/A'})<br>
+                    • <b>Fear & Greed:</b> ${l1.fear_greed?.value || '-'} (${l1.fear_greed?.classification || '-'})
+                `;
+            }
+
+            // Layer 2
+            const l2 = d.layer2_setup || {};
+            const l2St = document.getElementById('l2Status');
+            const l2Ct = document.getElementById('l2Content');
+            const hasSetup = l2.setup_name && l2.setup_name !== 'NO_CLEAR_SETUP';
+            if (l2St) {
+                l2St.textContent = hasSetup ? 'SETUP FOUND' : 'NO SETUP';
+                l2St.className = hasSetup ? 'bbg-green' : 'bbg-yellow';
+            }
+            if (l2Ct) {
+                l2Ct.innerHTML = `
+                    • <b>Setup:</b> <span class="bbg-amber">${l2.setup_name || 'NO_CLEAR_SETUP'}</span><br>
+                    • <b>Direction:</b> <b>${l2.direction || 'NONE'}</b><br>
+                    • <b>Confluences:</b> ${l2.confluence_count || 0} sinyal<br>
+                    • <b>Probability:</b> ${l2.probability_pct || 0}%<br>
+                    • <b>Analysis:</b> <i>${l2.explanation_id || '-'}</i>
+                `;
+            }
+
+            // Layer 3
+            const l3 = d.layer3_plan || {};
+            const l3St = document.getElementById('l3Status');
+            const l3Ct = document.getElementById('l3Content');
+            if (l3St) {
+                l3St.textContent = l3.action === 'SKIP' ? 'SKIPPED' : 'READY';
+                l3St.className = l3.action === 'SKIP' ? 'bbg-yellow' : 'bbg-green';
+            }
+            if (l3Ct) {
+                l3Ct.innerHTML = `
+                    • <b>Action:</b> <strong class="${l3.action === 'LONG' ? 'bbg-green' : (l3.action === 'SHORT' ? 'bbg-red' : 'bbg-yellow')}">${l3.action || 'SKIP'}</strong><br>
+                    • <b>Entry:</b> $${Number(l3.entry_price || 0).toLocaleString()}<br>
+                    • <b>Take Profit 1:</b> $${Number(l3.take_profit_1 || 0).toLocaleString()}<br>
+                    • <b>Take Profit 2:</b> $${Number(l3.take_profit_2 || 0).toLocaleString()}<br>
+                    • <b>Stop Loss:</b> $${Number(l3.stop_loss || 0).toLocaleString()}<br>
+                    • <b>Risk-to-Reward:</b> <span class="bbg-cyan">${l3.risk_reward_ratio || 'N/A'}</span><br>
+                    • <b>Max Capital:</b> Rp ${Number(l3.position_size_idr || 50000).toLocaleString('id-ID')} (${l3.leverage || 1}x Lev)
+                `;
+            }
+
+            // Layer 4
+            const l4 = d.layer4_risk || {};
+            const l4St = document.getElementById('l4Status');
+            const l4Ct = document.getElementById('l4Content');
+            const passPct = l4.pass_rate_pct || 0;
+            if (l4St) {
+                l4St.textContent = `${passPct}% PASS`;
+                l4St.className = passPct >= 70 ? 'bbg-green' : 'bbg-red';
+            }
+            if (l4Ct) {
+                const fails = l4.critical_failures && l4.critical_failures.length > 0 ? l4.critical_failures.join(', ') : 'NONE';
+                l4Ct.innerHTML = `
+                    • <b>Risk Verdict:</b> <span class="${passPct >= 70 ? 'bbg-green' : 'bbg-red'}">${l4.risk_verdict || 'N/A'}</span><br>
+                    • <b>Score:</b> ${l4.total_score || 0}/${l4.max_score || 10} checklist pass<br>
+                    • <b>Failures:</b> <span class="bbg-red">${fails}</span><br>
+                    • <b>Max Drawdown:</b> ${l4.max_drawdown_pct || 0}%<br>
+                    • <b>Recommendation:</b> <b>${l4.recommendation || '-'}</b>
+                `;
+            }
+
+            // Layer 5
+            const l5St = document.getElementById('l5Status');
+            const l5Ct = document.getElementById('l5Content');
+            if (l5St) {
+                l5St.textContent = fc.status || 'REJECTED';
+                l5St.className = isApproved ? 'bbg-green' : 'bbg-red';
+            }
+            if (l5Ct) {
+                l5Ct.innerHTML = `
+                    • <b>Verdict:</b> <strong class="${isApproved ? 'bbg-green' : 'bbg-red'}">${fc.status || 'REJECTED'}</strong><br>
+                    • <b>Confidence:</b> <b>${fc.confidence_score || 0}%</b> (Min 80%)<br>
+                    • <b>Direction:</b> <b>${fc.direction || 'NONE'}</b> (${fc.leverage || 1}x Lev)<br>
+                    • <b>Allocated IDR:</b> Rp ${Number(fc.position_size_idr || 0).toLocaleString('id-ID')}<br>
+                    • <b>Final Consensus:</b><br><span style="color:#ddd; font-size:10px;">${fc.final_reason || '-'}</span>
+                `;
+            }
+        }
+
+        function renderCryptoFuturesPositions() {
+            const tbody = document.getElementById('cryptoFuturesPositionsTbody');
+            if (!tbody) return;
+
+            if (!cryptoFuturesPositions || cryptoFuturesPositions.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:15px; color:#888;">TIDAK ADA POSISI TERBUKA. MODAL ANDA 100% AMAN TERSIMPAN DI CASH.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = cryptoFuturesPositions.map(p => {
+                const isLong = p.direction === 'LONG';
+                return `
+                    <tr>
+                        <td class="bbg-cyan" style="font-size:10px;">${p.id || '-'}</td>
+                        <td style="font-weight:bold; color:#F39F41;">${p.symbol}</td>
+                        <td class="${isLong ? 'bbg-green' : 'bbg-red'}" style="font-weight:bold;">${p.direction}</td>
+                        <td class="bbg-amber">${p.leverage || 1}x</td>
+                        <td>$${Number(p.entry_price || 0).toLocaleString()}</td>
+                        <td>$${Number(p.current_price || p.entry_price || 0).toLocaleString()}</td>
+                        <td style="font-weight:bold;">Rp ${Number(p.position_size_idr || p.amount_idr || 50000).toLocaleString('id-ID')}</td>
+                        <td class="bbg-green">$${Number(p.take_profit_1 || 0).toLocaleString()}</td>
+                        <td class="bbg-red">$${Number(p.stop_loss || 0).toLocaleString()}</td>
+                        <td class="bbg-green">+0.00 IDR</td>
+                        <td><span class="bbg-green">● OPEN</span></td>
+                        <td style="text-align:center;">
+                            <button class="btn-act" style="background:#440000; color:#ff4444; border-color:#ff4444; padding:2px 8px; font-size:10px;" onclick="closeCryptoPosition('${p.id}')">
+                                CLOSE &lt;GO&gt;
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function closeCryptoPosition(posId) {
+            showPopup(`CLOSING POSITION ${posId}...`);
+            cryptoFuturesPositions = cryptoFuturesPositions.filter(p => p.id !== posId);
+            renderCryptoFuturesPositions();
+            showPopup(`POSITION ${posId} CLOSED. CAPITAL RETURNED TO CASH.`);
+        }
+
         function submitCmd() {
             const inEl = document.getElementById('terminalCmdInput');
             const raw = inEl.value.trim().toUpperCase().replace(/<GO>/g, '').trim();
@@ -3144,6 +3675,9 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             } else if (raw === 'ECST' || raw === 'MACRO' || raw === 'ECON' || raw === '9') {
                 showView('macro');
                 showPopup('ECST: ECONOMIC & MACRO/MICRO INTELLIGENCE LOADED.');
+            } else if (raw === 'CRYPTO' || raw === 'FUTURES' || raw === 'CRYP' || raw === '10') {
+                showView('cryptofutures');
+                showPopup('CRYPTO: PYROFUEL 5-LAYER AI FUTURES DESK LOADED.');
             } else if (raw === 'HELP') {
                 showView('help');
             } else {
@@ -3157,6 +3691,15 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 }
             }
         }
+
+        // Support direct navigation via query params (e.g. ?tab=10)
+        window.addEventListener('DOMContentLoaded', () => {
+            const params = new URLSearchParams(window.location.search);
+            const tab = params.get('tab');
+            if (tab === '10' || tab === 'crypto' || tab === 'cryptofutures') {
+                setTimeout(() => showView('cryptofutures'), 100);
+            }
+        });
     </script>
 </body>
 </html>
