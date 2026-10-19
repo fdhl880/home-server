@@ -1,3 +1,4 @@
+try { require('./bootstrap_credentials')(); } catch (e) {}
 try { require('dotenv').config(); } catch (e) {}
 const express = require('express');
 const path = require('path');
@@ -2307,6 +2308,135 @@ app.post('/api/crypto-futures/config', async (req, res) => {
     res.status(500).json({ error: "Failed to update config" });
 });
 
+app.post('/api/crypto-futures/auto/toggle', async (req, res) => {
+    try {
+        const resp = await fetch(`${PYTHON_BOT_URL}/api/auto/toggle`, {
+            method: 'POST',
+            signal: AbortSignal.timeout(5000)
+        });
+        if (resp.ok) return res.json(await resp.json());
+    } catch (e) {}
+    res.status(500).json({ error: "Failed to toggle auto trader" });
+});
+
+app.get('/api/crypto-futures/settings', async (req, res) => {
+    try {
+        const resp = await fetch(`${PYTHON_BOT_URL}/api/futures/settings`, { signal: AbortSignal.timeout(5000) });
+        if (resp.ok) return res.json(await resp.json());
+    } catch (e) {}
+    res.json({
+        max_budget_idr: 50000,
+        max_leverage: 5,
+        margin_type: "ISOLATED",
+        order_type: "MARKET",
+        tp_sl_mode: "DUAL_TP",
+        tp1_close_pct: 50,
+        tp1_move_sl_to_breakeven: true,
+        auto_execute_on_pluang: true
+    });
+});
+
+app.post('/api/crypto-futures/settings', async (req, res) => {
+    try {
+        const resp = await fetch(`${PYTHON_BOT_URL}/api/futures/settings`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+            signal: AbortSignal.timeout(5000)
+        });
+        if (resp.ok) return res.json(await resp.json());
+    } catch (e) {}
+    res.status(500).json({ error: "Failed to update futures settings" });
+});
+
+app.get('/api/crypto-futures/pluang/status', async (req, res) => {
+    try {
+        const resp = await fetch(`${PYTHON_BOT_URL}/api/pluang/status`, { signal: AbortSignal.timeout(5000) });
+        if (resp.ok) return res.json(await resp.json());
+    } catch (e) {}
+    res.json({ connected: false, error: "Pluang engine unreachable" });
+});
+
+app.get('/api/crypto-futures/pluang/balance', async (req, res) => {
+    try {
+        const resp = await fetch(`${PYTHON_BOT_URL}/api/pluang/balance`, { signal: AbortSignal.timeout(5000) });
+        if (resp.ok) return res.json(await resp.json());
+    } catch (e) {}
+    res.status(500).json({ error: "Unable to fetch Pluang balance" });
+});
+
+app.post('/api/crypto-futures/positions/close', async (req, res) => {
+    try {
+        const resp = await fetch(`${PYTHON_BOT_URL}/api/pluang/close-position`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+            signal: AbortSignal.timeout(10000)
+        });
+        if (resp.ok) return res.json(await resp.json());
+    } catch (e) {}
+    res.status(500).json({ error: "Failed to close position on Pluang" });
+});
+
+// ============================================================
+// ZERO-SETUP AUTO-SPAWNER FOR PYTHON BACKEND (PLUANG-BOT)
+// ============================================================
+const { spawn } = require('child_process');
+
+function startPythonPluangBot() {
+    const pluangDir = path.join(__dirname, 'pluang-bot');
+    if (!fs.existsSync(pluangDir)) {
+        console.log('[PYROFUEL] pluang-bot directory not found, skipping Python auto-start.');
+        return;
+    }
+
+    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    console.log(`[PYROFUEL] Auto-spawning Python processes using '${pyCmd}' in ${pluangDir}...`);
+
+    const pythonProcesses = [];
+    const scripts = [
+        { name: 'server.py', args: ['-u', 'server.py'] },
+        { name: 'auto_trader.py', args: ['-u', 'auto_trader.py'] },
+        { name: 'telegram_bot.py', args: ['-u', 'telegram_bot.py'] }
+    ];
+
+    scripts.forEach(script => {
+        try {
+            const proc = spawn(pyCmd, script.args, {
+                cwd: pluangDir,
+                env: { ...process.env, PYTHONUNBUFFERED: '1' },
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+
+            proc.stdout.on('data', data => {
+                const msg = data.toString().trim();
+                if (msg) console.log(`[PLUANG:${script.name}] ${msg}`);
+            });
+
+            proc.stderr.on('data', data => {
+                const msg = data.toString().trim();
+                if (msg) console.error(`[PLUANG:${script.name}:ERR] ${msg}`);
+            });
+
+            proc.on('close', code => {
+                console.log(`[PLUANG:${script.name}] Process exited with code ${code}`);
+            });
+
+            pythonProcesses.push(proc);
+        } catch (err) {
+            console.error(`[PYROFUEL] Failed to launch ${script.name}:`, err.message);
+        }
+    });
+
+    const cleanup = () => {
+        console.log('[PYROFUEL] Cleaning up child processes...');
+        pythonProcesses.forEach(proc => {
+            try { proc.kill(); } catch (e) {}
+        });
+    };
+    process.on('SIGINT', () => { cleanup(); process.exit(); });
+    process.on('SIGTERM', () => { cleanup(); process.exit(); });
+}
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`================================================================`);
@@ -2314,4 +2444,13 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`💰 MODAL AWAL: Rp 200.000.000 (IDR 200 Juta)`);
     console.log(`🌐 Akses di browser: http://localhost:${PORT}`);
     console.log(`================================================================`);
+
+    // Check if Python bot is already running on port 5000 before spawning
+    http.get(`${PYTHON_BOT_URL}/api/status`, (r) => {
+        console.log('[PYROFUEL] Pluang Python server already active on port 5000. Connected seamlessly.');
+    }).on('error', () => {
+        console.log('[PYROFUEL] Pluang Python backend not running. Auto-starting now...');
+        startPythonPluangBot();
+    });
 });
+

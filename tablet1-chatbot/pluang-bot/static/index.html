@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pluang AI Agentic Trading Terminal | 5-Layer Multi-Agent Engine</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base: #080d1a;
+            --bg-card: rgba(17, 24, 39, 0.75);
+            --bg-card-hover: rgba(30, 41, 59, 0.85);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --border-glow: rgba(16, 185, 129, 0.3);
+            --accent-emerald: #10b981;
+            --accent-cyan: #06b6d4;
+            --accent-amber: #f59e0b;
+            --accent-crimson: #ef4444;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --text-sub: #64748b;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-base);
+            color: var(--text-main);
+            min-height: 100vh;
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(16, 185, 129, 0.12) 0px, transparent 50%),
+                radial-gradient(at 100% 0%, rgba(6, 182, 212, 0.1) 0px, transparent 50%),
+                radial-gradient(at 50% 100%, rgba(30, 41, 59, 0.5) 0px, transparent 70%);
+            background-attachment: fixed;
+            overflow-x: hidden;
+            padding-bottom: 60px;
+        }
+
+        h1, h2, h3, h4, .brand-font {
+            font-family: 'Outfit', sans-serif;
+        }
+
+        /* Glass Utility */
+        .glass-panel {
+            background: var(--bg-card);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border-glass);
+            border-radius: 16px;
+        }
+
+        /* Header / Navbar */
+        header {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            background: rgba(8, 13, 26, 0.85);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border-glass);
+            padding: 16px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo-group {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .logo-icon {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #10b981, #06b6d4);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+            font-weight: 800;
+            box-shadow: 0 0 20px rgba(16, 185, 129, 0.4);
+        }
+
+        .logo-text h1 {
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .logo-text span {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .system-badges {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .badge-pill {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            border-radius: 30px;
+            font-size: 13px;
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--border-glass);
+        }
+
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--accent-emerald);
+            box-shadow: 0 0 10px var(--accent-emerald);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); opacity: 0.8; }
+            50% { transform: scale(1.3); opacity: 1; }
+            100% { transform: scale(0.95); opacity: 0.8; }
+        }
+
+        .limit-badge {
+            background: rgba(16, 185, 129, 0.1);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        /* Container Layout */
+        .dashboard-container {
+            max-width: 1360px;
+            margin: 28px auto;
+            padding: 0 24px;
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            gap: 28px;
+        }
+
+        @media (max-width: 1024px) {
+            .dashboard-container {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Watchlist Sidebar */
+        .sidebar-title {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .refresh-btn {
+            background: transparent;
+            border: 1px solid var(--border-glass);
+            color: var(--text-muted);
+            padding: 6px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+
+        .refresh-btn:hover {
+            color: var(--text-main);
+            border-color: var(--accent-cyan);
+            background: rgba(6, 182, 212, 0.1);
+        }
+
+        .asset-card {
+            padding: 16px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-glass);
+            margin-bottom: 12px;
+            cursor: pointer;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .asset-card:hover, .asset-card.active {
+            background: var(--bg-card-hover);
+            border-color: rgba(6, 182, 212, 0.4);
+            transform: translateX(4px);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .asset-info h4 {
+            font-size: 16px;
+            font-weight: 700;
+        }
+
+        .asset-info p {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .asset-price-box {
+            text-align: right;
+        }
+
+        .asset-price {
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        .asset-change {
+            font-size: 12px;
+            font-weight: 600;
+            display: inline-block;
+            margin-top: 2px;
+        }
+
+        .positive { color: var(--accent-emerald); }
+        .negative { color: var(--accent-crimson); }
+
+        /* Main Workspace: 5-Layer Pipeline */
+        .main-workspace {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        /* Asset Detail Hero */
+        .hero-banner {
+            padding: 24px 28px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-radius: 20px;
+            background: linear-gradient(135deg, rgba(30, 41, 59, 0.6), rgba(15, 23, 42, 0.8));
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .hero-title h2 {
+            font-size: 28px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+        }
+
+        .hero-title p {
+            color: var(--text-muted);
+            margin-top: 4px;
+            font-size: 14px;
+        }
+
+        .scan-action-btn {
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: #fff;
+            border: none;
+            padding: 14px 28px;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 6px 20px rgba(16, 185, 129, 0.35);
+            transition: all 0.25s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .scan-action-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(16, 185, 129, 0.5);
+        }
+
+        .scan-action-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* 5-Layer Pipeline Cards */
+        .pipeline-stepper {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .layer-card {
+            border-radius: 16px;
+            padding: 20px 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-glass);
+            transition: all 0.3s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .layer-card::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: var(--accent-cyan);
+        }
+
+        .layer-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .layer-badge {
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            padding: 4px 10px;
+            border-radius: 6px;
+            background: rgba(6, 182, 212, 0.15);
+            color: var(--accent-cyan);
+        }
+
+        .layer-title {
+            font-size: 18px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .layer-content {
+            font-size: 14px;
+            line-height: 1.6;
+            color: #cbd5e1;
+            background: rgba(0, 0, 0, 0.25);
+            padding: 14px 18px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.04);
+        }
+
+        /* Layer 5: Supreme Final Call Banner */
+        .final-call-card {
+            border-radius: 20px;
+            padding: 28px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-glass);
+            position: relative;
+        }
+
+        .status-badge-big {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 18px;
+            border-radius: 30px;
+            font-size: 16px;
+            font-weight: 800;
+            margin-bottom: 16px;
+        }
+
+        .status-approved {
+            background: rgba(16, 185, 129, 0.15);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.4);
+            box-shadow: 0 0 25px rgba(16, 185, 129, 0.2);
+        }
+
+        .status-rejected {
+            background: rgba(239, 68, 68, 0.15);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            box-shadow: 0 0 25px rgba(239, 68, 68, 0.2);
+        }
+
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 14px;
+            margin: 18px 0;
+        }
+
+        .metric-item {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 12px 16px;
+            border-radius: 10px;
+            border: 1px solid var(--border-glass);
+        }
+
+        .metric-item span {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            font-weight: 700;
+        }
+
+        .metric-item strong {
+            display: block;
+            font-size: 16px;
+            margin-top: 4px;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        .action-row {
+            margin-top: 24px;
+            display: flex;
+            gap: 14px;
+        }
+
+        .btn-execute {
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: #fff;
+            border: none;
+            padding: 14px 28px;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);
+            transition: all 0.2s;
+        }
+
+        .btn-execute:hover {
+            transform: scale(1.02);
+        }
+
+        .btn-reject {
+            background: rgba(239, 68, 68, 0.1);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            padding: 14px 24px;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-reject:hover {
+            background: rgba(239, 68, 68, 0.2);
+        }
+
+        /* Loading Spinner */
+        .spinner {
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top: 3px solid #10b981;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header Sticky -->
+    <header>
+        <div class="logo-group">
+            <div class="logo-icon">P</div>
+            <div class="logo-text">
+                <h1>PLUANG AI TRADING TERMINAL</h1>
+                <span>5-Layer Institutional Multi-Agent Framework</span>
+            </div>
+        </div>
+        <div class="system-badges">
+            <div class="badge-pill" id="pluang-status">
+                <span class="pulse-dot"></span> Pluang MCP Connected
+            </div>
+            <div class="badge-pill limit-badge">
+                🔒 Limit: Rp 50.000 / Posisi
+            </div>
+            <div class="badge-pill" style="color:#f59e0b;">
+                🎯 Min Conf: 65% | RRR ≥1:1.8
+            </div>
+            <div class="badge-pill" style="color:#a78bfa;">
+                🌐 Pluang-Only: 39 Koin
+            </div>
+            <div class="badge-pill" style="color:#f472b6;">
+                ⚙️ ISOLATED | MARKET | DUAL TP
+            </div>
+            <div class="badge-pill" style="color:#06b6d4;">
+                🤖 Telegram: @idrisginting_bot
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <div class="dashboard-container">
+        
+        <!-- Left: Watchlist -->
+        <aside>
+            <div class="sidebar-title">
+                <h3>Radar Pasar Real-Time</h3>
+                <button class="refresh-btn" onclick="loadWatchlist()">🔄 Refresh</button>
+            </div>
+            <div id="watchlist-container">
+                <p style="color:var(--text-muted); font-size:14px;">Memuat data pasar...</p>
+            </div>
+
+            <!-- Active Positions Panel -->
+            <div style="margin-top:20px;">
+                <h3 style="font-size:16px; font-weight:700; margin-bottom:12px;">📈 Posisi Aktif</h3>
+                <div id="positions-panel" class="glass-panel" style="padding:14px;">
+                    <p style="color:var(--text-muted); font-size:13px;">Memuat posisi...</p>
+                </div>
+            </div>
+
+            <!-- Auto Trader Status Panel -->
+            <div style="margin-top:20px;">
+                <h3 style="font-size:16px; font-weight:700; margin-bottom:12px;">🤖 Auto Trader Status</h3>
+                <div id="autotrader-status" class="glass-panel" style="padding:14px;">
+                    <p style="color:var(--text-muted); font-size:13px;">Memuat status...</p>
+                </div>
+            </div>
+
+            <!-- Futures Settings Panel -->
+            <div style="margin-top:20px;">
+                <h3 style="font-size:16px; font-weight:700; margin-bottom:12px;">⚙️ Futures Settings</h3>
+                <div id="futures-settings-panel" class="glass-panel" style="padding:14px;">
+                    <p style="color:var(--text-muted); font-size:13px;">Memuat settings...</p>
+                </div>
+            </div>
+
+            <!-- Execution Log Panel -->
+            <div style="margin-top:20px;">
+                <h3 style="font-size:16px; font-weight:700; margin-bottom:12px;">📋 Execution Log</h3>
+                <div id="execution-log-panel" class="glass-panel" style="padding:14px; max-height:200px; overflow-y:auto;">
+                    <p style="color:var(--text-muted); font-size:13px;">Memuat log...</p>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Right: 5-Layer AI Pipeline Workspace -->
+        <main class="main-workspace">
+            
+            <!-- Hero Asset Card -->
+            <div class="hero-banner">
+                <div class="hero-title">
+                    <h2 id="active-symbol-title">BTC-USD (Bitcoin)</h2>
+                    <p id="active-symbol-desc">Pilih aset dari radar pasar untuk menjalankan audit 5 tingkat.</p>
+                </div>
+                <button class="scan-action-btn" id="start-scan-btn" onclick="trigger5LayerScan()">
+                    <span>🚀 Jalankan 5-Layer Audit</span>
+                </button>
+            </div>
+
+            <!-- Pipeline Container -->
+            <div class="pipeline-stepper" id="pipeline-container">
+                
+                <!-- Lapisan 1: Scanning -->
+                <div class="layer-card">
+                    <div class="layer-header">
+                        <div class="layer-title">📡 Lapisan 1: Market Scanning & Indikator</div>
+                        <span class="layer-badge">Technical Screener</span>
+                    </div>
+                    <div class="layer-content" id="layer1-content">
+                        Menunggu perintah audit... Klik <b>"Jalankan 5-Layer Audit"</b> untuk menarik candle real-time, RSI 14, dan EMA 20/50.
+                    </div>
+                </div>
+
+                <!-- Lapisan 2: Hunts the Setup -->
+                <div class="layer-card">
+                    <div class="layer-header">
+                        <div class="layer-title">🎯 Lapisan 2: Hunts The Setup</div>
+                        <span class="layer-badge">Strategy Hunter</span>
+                    </div>
+                    <div class="layer-content" id="layer2-content">
+                        Mendeteksi pola teknikal (Pullback EMA, Support Bounce, Range Breakout).
+                    </div>
+                </div>
+
+                <!-- Lapisan 3: Build Plan Trading -->
+                <div class="layer-card">
+                    <div class="layer-header">
+                        <div class="layer-title">📐 Lapisan 3: Build Trading Plan</div>
+                        <span class="layer-badge">Execution Plan</span>
+                    </div>
+                    <div class="layer-content" id="layer3-content">
+                        Menghitung target Entry, Take Profit 1 & 2, Stop Loss ketat, dan batas alokasi modal.
+                    </div>
+                </div>
+
+                <!-- Lapisan 4: Cek Seluruh Resiko -->
+                <div class="layer-card">
+                    <div class="layer-header">
+                        <div class="layer-title">🛡️ Lapisan 4: Cek Seluruh Resiko</div>
+                        <span class="layer-badge">Chief Risk Auditor</span>
+                    </div>
+                    <div class="layer-content" id="layer4-content">
+                        Audit skeptis: Risk-to-Reward Ratio (wajib &ge; 1:2.0), risiko fakeout, dan potensi drawdown.
+                    </div>
+                </div>
+
+                <!-- Lapisan 5: Final Call -->
+                <div class="final-call-card" id="final-call-container">
+                    <div class="layer-header">
+                        <div class="layer-title">⚖️ Lapisan 5: Supreme Final Call (Hakim)</div>
+                        <span class="layer-badge" style="background:rgba(245, 158, 11, 0.2); color:#fbbf24;">Gatekeeper</span>
+                    </div>
+                    <div id="final-call-body">
+                        <p style="color:var(--text-muted); font-size:14px;">Belum ada hasil audit aktif.</p>
+                    </div>
+                </div>
+
+            </div>
+
+        </main>
+    </div>
+
+    <!-- Client-side Logic -->
+    <script>
+        let currentSelectedSymbol = "BTC-USD";
+
+        async function checkStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                const badge = document.getElementById('pluang-status');
+                if (data.pluang_connected) {
+                    badge.innerHTML = `<span class="pulse-dot"></span> Pluang MCP Aktif`;
+                } else {
+                    badge.innerHTML = `<span style="color:#ef4444;">●</span> Pluang Belum Login`;
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function loadWatchlist() {
+            const container = document.getElementById('watchlist-container');
+            container.innerHTML = '<p style="color:var(--text-muted); font-size:13px;">Mengambil data live...</p>';
+            try {
+                const res = await fetch('/api/watchlist');
+                const list = await res.json();
+                container.innerHTML = '';
+                
+                list.forEach(item => {
+                    const isPos = item.change_24h >= 0;
+                    const card = document.createElement('div');
+                    card.className = `asset-card ${item.symbol === currentSelectedSymbol ? 'active' : ''}`;
+                    card.onclick = () => selectAsset(item.symbol, item.name);
+                    
+                    card.innerHTML = `
+                        <div class="asset-info">
+                            <h4>${item.symbol}</h4>
+                            <p>${item.name} • RSI: ${item.rsi}</p>
+                        </div>
+                        <div class="asset-price-box">
+                            <div class="asset-price">$${Number(item.price).toLocaleString()}</div>
+                            <div class="asset-change ${isPos ? 'positive' : 'negative'}">
+                                ${isPos ? '▲ +' : '▼ '}${item.change_24h}%
+                            </div>
+                        </div>
+                    `;
+                    container.appendChild(card);
+                });
+            } catch (e) {
+                container.innerHTML = '<p style="color:#ef4444;">Gagal memuat pasar.</p>';
+            }
+        }
+
+        function selectAsset(symbol, name) {
+            currentSelectedSymbol = symbol;
+            document.getElementById('active-symbol-title').innerText = `${symbol} (${name})`;
+            document.querySelectorAll('.asset-card').forEach(el => el.classList.remove('active'));
+            event.currentTarget.classList.add('active');
+        }
+
+        async function trigger5LayerScan() {
+            const btn = document.getElementById('start-scan-btn');
+            btn.disabled = true;
+            btn.innerHTML = `<div class="spinner"></div> Menjalankan Audit...`;
+
+            document.getElementById('layer1-content').innerHTML = `<i>Memindai candle real-time ${currentSelectedSymbol}...</i>`;
+            document.getElementById('layer2-content').innerHTML = `<i>Mencari pola setup trading...</i>`;
+            document.getElementById('layer3-content').innerHTML = `<i>Menyusun rencana harga dan posisi...</i>`;
+            document.getElementById('layer4-content').innerHTML = `<i>Mengaudit seluruh potensi bahaya...</i>`;
+            document.getElementById('final-call-body').innerHTML = `<i>Hakim sedang menimbang konsensus...</i>`;
+
+            try {
+                const res = await fetch('/api/scan', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ symbol: currentSelectedSymbol })
+                });
+                const data = await res.json();
+
+                if (data.error) {
+                    alert("Error: " + data.error);
+                    return;
+                }
+
+                // Render Layer 1
+                const l1 = data.layer1_scanning;
+                document.getElementById('layer1-content').innerHTML = `
+                    <b>Harga:</b> $${l1.current_price?.toLocaleString()} (${l1.change_24h_pct}%) | 
+                    <b>RSI (14):</b> ${l1.rsi_14} | 
+                    <b>Tren:</b> ${l1.trend_ema} | 
+                    <b>24h High:</b> $${l1.high_24h?.toLocaleString()} | <b>24h Low:</b> $${l1.low_24h?.toLocaleString()}
+                `;
+
+                // Render Layer 2
+                document.getElementById('layer2-content').innerText = data.layer2_setup;
+
+                // Render Layer 3
+                document.getElementById('layer3-content').innerText = data.layer3_plan;
+
+                // Render Layer 4
+                document.getElementById('layer4-content').innerText = data.layer4_risk;
+
+                // Render Layer 5 (Final Call)
+                const fc = data.layer5_final_call;
+                const isApproved = fc.status === "APPROVED";
+
+                document.getElementById('final-call-body').innerHTML = `
+                    <div class="status-badge-big ${isApproved ? 'status-approved' : 'status-rejected'}">
+                        ${isApproved ? '✅ LOLOS KELAYAKAN (APPROVED)' : '🛑 DITOLAK KETAT (REJECTED)'}
+                    </div>
+                    <div class="metric-grid">
+                        <div class="metric-item">
+                            <span>Keyakinan</span>
+                            <strong>${fc.confidence_score}% (Min 65%)</strong>
+                        </div>
+                        <div class="metric-item">
+                            <span>Risk / Reward</span>
+                            <strong>${fc.risk_reward_ratio} (Min 1:1.8)</strong>
+                        </div>
+                        <div class="metric-item">
+                            <span>Target Profit</span>
+                            <strong>$${Number(fc.take_profit_1 || 0).toLocaleString()}</strong>
+                        </div>
+                        <div class="metric-item">
+                            <span>Stop Loss</span>
+                            <strong>$${Number(fc.stop_loss || 0).toLocaleString()}</strong>
+                        </div>
+                        <div class="metric-item">
+                            <span>Modal Dikunci</span>
+                            <strong>Rp ${Number(fc.nominal_idr || 50000).toLocaleString()}</strong>
+                        </div>
+                    </div>
+                    <p style="font-size:14px; line-height:1.6; margin-top:12px; color:#cbd5e1;">
+                        <b>Kesimpulan Hakim:</b> ${fc.final_reason}
+                    </p>
+                    ${isApproved ? `
+                        <div class="action-row">
+                            <button class="btn-execute" onclick="executeTrade('${currentSelectedSymbol}', ${fc.nominal_idr})">
+                                🚀 Eksekusi Pluang (Rp ${Number(fc.nominal_idr).toLocaleString()})
+                            </button>
+                            <button class="btn-reject" onclick="alert('Transaksi dibatalkan.')">
+                                ❌ Tolak & Abaikan
+                            </button>
+                        </div>
+                    ` : ''}
+                `;
+
+            } catch (e) {
+                alert("Gagal scan: " + e);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `<span>🚀 Jalankan 5-Layer Audit</span>`;
+            }
+        }
+
+        async function executeTrade(symbol, amount) {
+            if (!confirm(`Konfirmasi eksekusi order draf di Pluang:\nAset: ${symbol}\nNominal: Rp ${amount.toLocaleString()}\n\nLanjutkan?`)) {
+                return;
+            }
+            try {
+                const res = await fetch('/api/execute', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ symbol: symbol, amount_idr: amount })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    alert("✅ Sukses! " + result.message);
+                } else {
+                    alert("❌ Gagal: " + result.error);
+                }
+            } catch (e) {
+                alert("Error eksekusi: " + e);
+            }
+        }
+
+        // Auto-refresh watchlist and status every 5 seconds
+        async function loadPositions() {
+            try {
+                const res = await fetch('/api/positions');
+                const data = await res.json();
+                const openPositions = data.filter(p => p.status === 'OPEN');
+                const posContainer = document.getElementById('positions-panel');
+                if (!posContainer) return;
+                if (openPositions.length === 0) {
+                    posContainer.innerHTML = '<p style="color:var(--text-muted); font-size:13px;">🛡️ Tidak ada posisi aktif. Cash is King.</p>';
+                } else {
+                    posContainer.innerHTML = openPositions.map(p => `
+                        <div style="padding:10px 14px; border-radius:10px; background:rgba(16,185,129,0.06); border:1px solid rgba(16,185,129,0.2); margin-bottom:8px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <div>
+                                    <b style="font-size:14px;">${p.symbol}</b>
+                                    <span style="font-size:12px; color:${p.direction === 'LONG' ? '#34d399' : '#f87171'}; margin-left:6px;">${p.direction} ${p.leverage}x</span>
+                                    <br><span style="font-size:10px; color:#a78bfa;">${p.margin_type || 'ISOLATED'} | ${p.order_type || 'MARKET'}</span>
+                                    <span style="font-size:10px; margin-left:4px; color:${p.pluang_synced ? '#34d399' : '#f59e0b'};">${p.pluang_synced ? '✅ Pluang' : '📝 Local'}</span>
+                                </div>
+                                <div style="text-align:right;">
+                                    <span style="font-size:13px; color:${p.pnl_pct >= 0 ? '#34d399' : '#f87171'}; font-weight:700;">${p.pnl_pct >= 0 ? '+' : ''}${p.pnl_pct?.toFixed(2) || 0}%</span>
+                                    <br><span style="font-size:11px; color:var(--text-muted);">Rp ${Number(p.position_size_idr || 0).toLocaleString()}</span>
+                                </div>
+                            </div>
+                            <div style="display:flex; gap:6px; margin-top:6px; font-size:10px; color:var(--text-sub);">
+                                <span>TP1: $${Number(p.take_profit_1 || 0).toFixed(2)}</span>
+                                <span>TP2: $${Number(p.take_profit_2 || 0).toFixed(2)}</span>
+                                <span>SL: $${Number(p.stop_loss || 0).toFixed(2)}</span>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+            } catch(e) { console.error(e); }
+        }
+
+        async function loadAutoTraderStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                const statusEl = document.getElementById('autotrader-status');
+                if (!statusEl) return;
+                const state = data.autotrader_state || {};
+                statusEl.innerHTML = `
+                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
+                        <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px; text-align:center;">
+                            <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">Scan Total</span>
+                            <div style="font-size:18px; font-weight:700; color:var(--accent-cyan);">${state.total_scans_done || 0}</div>
+                        </div>
+                        <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px; text-align:center;">
+                            <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">Approved</span>
+                            <div style="font-size:18px; font-weight:700; color:#34d399;">${state.signals_approved_count || 0}</div>
+                        </div>
+                        <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px; text-align:center;">
+                            <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">Rejected</span>
+                            <div style="font-size:18px; font-weight:700; color:#f87171;">${state.signals_rejected_count || 0}</div>
+                        </div>
+                    </div>
+                    <p style="font-size:11px; color:var(--text-sub); margin-top:8px;">Last scan: ${state.last_scan_time || 'N/A'} | Universe: ${state.universe_size || 39} coins</p>
+                `;
+            } catch(e) { console.error(e); }
+        }
+
+        // Init
+        checkStatus();
+        loadWatchlist();
+        loadPositions();
+        loadAutoTraderStatus();
+        loadFuturesSettings();
+        loadExecutionLog();
+        
+        // Auto-refresh every 5 seconds
+        setInterval(() => {
+            loadWatchlist();
+            checkStatus();
+            loadPositions();
+            loadAutoTraderStatus();
+            loadFuturesSettings();
+        }, 5000);
+
+        // Execution log refresh every 15 seconds
+        setInterval(() => {
+            loadExecutionLog();
+        }, 15000);
+
+        async function loadFuturesSettings() {
+            try {
+                const res = await fetch('/api/futures/settings');
+                const cfg = await res.json();
+                const panel = document.getElementById('futures-settings-panel');
+                if (!panel) return;
+                panel.innerHTML = `
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+                        <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px;">
+                            <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">Margin Type</span>
+                            <div style="font-size:14px; font-weight:700; color:#f472b6;">${cfg.margin_type || 'ISOLATED'}</div>
+                        </div>
+                        <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px;">
+                            <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">Order Type</span>
+                            <div style="font-size:14px; font-weight:700; color:#818cf8;">${cfg.order_type || 'MARKET'}</div>
+                        </div>
+                        <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px;">
+                            <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">Max Leverage</span>
+                            <div style="font-size:14px; font-weight:700; color:#fbbf24;">${cfg.max_leverage || 5}x</div>
+                        </div>
+                        <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px;">
+                            <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">TP/SL Mode</span>
+                            <div style="font-size:14px; font-weight:700; color:#34d399;">${cfg.tp_sl_mode || 'DUAL_TP'}</div>
+                        </div>
+                        <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px;">
+                            <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">TP1 Close %</span>
+                            <div style="font-size:14px; font-weight:700; color:#06b6d4;">${cfg.tp1_close_pct || 50}%</div>
+                        </div>
+                        <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px;">
+                            <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">Max Positions</span>
+                            <div style="font-size:14px; font-weight:700; color:#fb923c;">${cfg.max_concurrent_positions || 3}</div>
+                        </div>
+                    </div>
+                    <div style="margin-top:8px; padding:6px 10px; background:rgba(0,0,0,0.3); border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:10px; color:var(--text-sub);">Pluang Auto Execute</span>
+                        <span style="font-size:12px; font-weight:700; color:${cfg.auto_execute_on_pluang ? '#34d399' : '#f87171'};">${cfg.auto_execute_on_pluang ? '✅ ON' : '❌ OFF'}</span>
+                    </div>
+                    <div style="margin-top:6px; padding:6px 10px; background:rgba(0,0,0,0.3); border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:10px; color:var(--text-sub);">TP1 → SL to Breakeven</span>
+                        <span style="font-size:12px; font-weight:700; color:${cfg.tp1_move_sl_to_breakeven ? '#34d399' : '#f87171'};">${cfg.tp1_move_sl_to_breakeven ? '✅ ON' : '❌ OFF'}</span>
+                    </div>
+                `;
+            } catch(e) { console.error(e); }
+        }
+
+        async function loadExecutionLog() {
+            try {
+                const res = await fetch('/api/execution-log?limit=10');
+                const data = await res.json();
+                const panel = document.getElementById('execution-log-panel');
+                if (!panel) return;
+                if (!data.logs || data.logs.length === 0) {
+                    panel.innerHTML = '<p style="color:var(--text-muted); font-size:12px;">Belum ada eksekusi.</p>';
+                    return;
+                }
+                panel.innerHTML = data.logs.map(log => {
+                    const isOk = log.status === 'EXECUTED';
+                    return `
+                        <div style="padding:6px 8px; border-radius:6px; background:rgba(0,0,0,0.25); margin-bottom:4px; font-size:11px;">
+                            <div style="display:flex; justify-content:space-between;">
+                                <span style="color:${isOk ? '#34d399' : '#f87171'}; font-weight:600;">${isOk ? '✅' : '❌'} ${log.direction || 'LONG'} ${log.symbol || '?'}</span>
+                                <span style="color:var(--text-sub);">${log.leverage || 5}x ${log.margin_type || ''}</span>
+                            </div>
+                            <span style="color:var(--text-sub); font-size:9px;">${log.timestamp || ''}</span>
+                        </div>
+                    `;
+                }).join('');
+            } catch(e) { console.error(e); }
+        }
+    </script>
+</body>
+</html>

@@ -1357,20 +1357,11 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     <span class="bbg-amber" style="font-weight:900; font-size:13px; letter-spacing:1px;">PYROFUEL // INSTITUTIONAL CRYPTO FUTURES 5-LAYER AI ENGINE</span>
                     <div style="font-size:10.5px; color:#888; margin-top:2px;">
                         <span>MARKET: <strong class="bbg-white">CRYPTO FUTURES ONLY (10 PERP PAIRS)</strong></span> |
-                        <span>AI CORE: <strong class="bbg-cyan">GROQ OSS-120B (FREE TIER HIGH SPEED)</strong></span> |
-                        <span>TELEGRAM: <strong class="bbg-green">@idrisginting_bot</strong></span>
+                        <span>AI CORE: <strong class="bbg-cyan">GROQ OSS-120B</strong></span> |
+                        <span id="pluangLiveStatusBadge" class="bbg-green" style="font-weight:bold;">● PLUANG MCP: CONNECTED (USDT ACTIVE)</span>
                     </div>
                 </div>
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                    <div style="display:flex; align-items:center; gap:4px; background:#120e05; border:1px solid #F39F41; padding:2px 6px;">
-                        <span class="bbg-amber" style="font-weight:bold; font-size:10.5px;">BUDGET CAP:</span>
-                        <span style="color:#aaa; font-size:10px;">RP</span>
-                        <input type="number" id="cfgMaxBudgetInput" value="50000" step="5000" min="10000" style="width:75px; background:#000; border:1px solid #442a00; color:#FFFF00; font-family:inherit; font-weight:bold; font-size:11px; padding:2px 4px;">
-                        <span class="bbg-amber" style="font-weight:bold; font-size:10.5px; margin-left:6px;">LEV:</span>
-                        <input type="number" id="cfgMaxLevInput" value="5" step="1" min="1" max="20" style="width:40px; background:#000; border:1px solid #442a00; color:#FFFF00; font-family:inherit; font-weight:bold; font-size:11px; padding:2px 4px;">
-                        <span style="color:#aaa; font-size:10px;">X</span>
-                        <button class="btn-act" style="padding:2px 6px; font-size:10px; margin-left:4px;" onclick="saveDynamicTradingConfig()">SAVE LIMIT &lt;GO&gt;</button>
-                    </div>
                     <button id="btnAutoTraderToggle" class="btn-act" style="background:#00ff66; color:#000; font-weight:bold;" onclick="toggleAutoTrader()">
                         ● AUTONOMOUS TRADER: ACTIVE
                     </button>
@@ -1378,6 +1369,54 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                         SCAN ALL 10 PAIRS &lt;GO&gt;
                     </button>
                 </div>
+            </div>
+
+            <!-- FUTURES PARAMETERS & RISK CONFIGURATION BAR -->
+            <div style="background:#060606; border:1px solid #333; padding:8px 12px; margin-bottom:10px; display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between;">
+                <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
+                    <div style="display:flex; align-items:center; gap:4px;">
+                        <span class="bbg-amber" style="font-weight:bold; font-size:10px;">CAP/POS:</span>
+                        <span style="color:#aaa; font-size:10px;">RP</span>
+                        <input type="number" id="cfgMaxBudgetInput" value="50000" step="5000" min="10000" style="width:75px; background:#000; border:1px solid #442a00; color:#FFFF00; font-family:inherit; font-weight:bold; font-size:11px; padding:2px 4px;">
+                    </div>
+                    <div style="display:flex; align-items:center; gap:4px;">
+                        <span class="bbg-amber" style="font-weight:bold; font-size:10px;">MAX LEV:</span>
+                        <input type="number" id="cfgMaxLevInput" value="5" step="1" min="1" max="20" style="width:40px; background:#000; border:1px solid #442a00; color:#FFFF00; font-family:inherit; font-weight:bold; font-size:11px; padding:2px 4px;">
+                        <span style="color:#aaa; font-size:10px;">x</span>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:4px;">
+                        <span class="bbg-cyan" style="font-weight:bold; font-size:10px;">MARGIN:</span>
+                        <select id="cfgMarginTypeSelect" style="background:#000; border:1px solid #005555; color:#00EEEE; font-family:inherit; font-weight:bold; font-size:10.5px; padding:2px 4px;">
+                            <option value="ISOLATED">ISOLATED (Safe)</option>
+                            <option value="CROSS">CROSS (Full Account)</option>
+                        </select>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:4px;">
+                        <span class="bbg-cyan" style="font-weight:bold; font-size:10px;">ORDER:</span>
+                        <select id="cfgOrderTypeSelect" style="background:#000; border:1px solid #005555; color:#00EEEE; font-family:inherit; font-weight:bold; font-size:10.5px; padding:2px 4px;">
+                            <option value="MARKET">MARKET (Instant)</option>
+                            <option value="LIMIT">LIMIT (GTC)</option>
+                        </select>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:4px;">
+                        <span class="bbg-green" style="font-weight:bold; font-size:10px;">TP/SL:</span>
+                        <select id="cfgTpSlModeSelect" style="background:#000; border:1px solid #005500; color:#00FF00; font-family:inherit; font-weight:bold; font-size:10.5px; padding:2px 4px;">
+                            <option value="DUAL_TP">DUAL TP (50% TP1 + Trailing BE)</option>
+                            <option value="SINGLE_TP">SINGLE TP (100% Target)</option>
+                            <option value="TRAILING">TRAILING STOP</option>
+                        </select>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:4px;">
+                        <span class="bbg-amber" style="font-weight:bold; font-size:10px;">PLUANG DMA:</span>
+                        <select id="cfgAutoExecuteSelect" style="background:#000; border:1px solid #553300; color:#FFFF00; font-family:inherit; font-weight:bold; font-size:10.5px; padding:2px 4px;">
+                            <option value="true">LIVE PLUANG MCP (Real Orders)</option>
+                            <option value="false">AUDIT ONLY (Paper/Sim)</option>
+                        </select>
+                    </div>
+                </div>
+                <button class="btn-act" style="background:#F39F41; color:#000; font-weight:900; padding:3px 10px; font-size:10.5px;" onclick="saveDynamicTradingConfig()">
+                    SAVE FUTURES CONFIG &lt;GO&gt;
+                </button>
             </div>
 
             <!-- 10 CRYPTO FUTURES LIVE MONITOR TABLE -->
@@ -1470,6 +1509,90 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     <div id="l5Content" style="font-size:10.5px; line-height:1.5; color:#aaa;">
                         Hakim Tertinggi konsensus multi-agent. Syarat kelolosan mutlak: Keyakinan &gt;=80%, RRR &gt;=1:2.0, 0 critical failures, dan 8 Python security gates.
                     </div>
+                </div>
+            </div>
+
+            <!-- EMSX // PLUANG CRYPTO FUTURES DIRECT MARKET ACCESS (DMA) TICKET -->
+            <div class="sec-title" style="margin-top:10px;">
+                <span>-- EMSX // PLUANG CRYPTO FUTURES ORDER EXECUTION DESK --</span>
+                <span class="bbg-amber">DIRECT PLUANG MCP DMA • INSTANT SUBMISSION</span>
+            </div>
+            <div style="background:#080808; border:1px solid #F39F41; padding:10px 12px; margin-bottom:12px;">
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:10px; align-items:flex-end;">
+                    <div>
+                        <label class="p-metric-lbl" style="color:#00EEEE;">FUTURES SYMBOL</label>
+                        <select id="manualOrderSymbol" style="width:100%; background:#000; border:1px solid #333; color:#fff; font-family:inherit; font-weight:bold; padding:4px;" onchange="updateManualTicketPrice()">
+                            <option value="BTC-USD">BTC-USD (Bitcoin)</option>
+                            <option value="ETH-USD">ETH-USD (Ethereum)</option>
+                            <option value="SOL-USD">SOL-USD (Solana)</option>
+                            <option value="BNB-USD">BNB-USD (BNB)</option>
+                            <option value="XRP-USD">XRP-USD (Ripple)</option>
+                            <option value="DOGE-USD">DOGE-USD (Dogecoin)</option>
+                            <option value="AVAX-USD">AVAX-USD (Avalanche)</option>
+                            <option value="LINK-USD">LINK-USD (Chainlink)</option>
+                            <option value="ADA-USD">ADA-USD (Cardano)</option>
+                            <option value="SUI20947-USD">SUI-USD (Sui)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="p-metric-lbl" style="color:#00EEEE;">SIDE (DIRECTION)</label>
+                        <select id="manualOrderSide" style="width:100%; background:#000; border:1px solid #333; color:#00FF00; font-family:inherit; font-weight:bold; padding:4px;" onchange="updateManualTicketPrice()">
+                            <option value="LONG" style="color:#00FF00;">LONG (BUY)</option>
+                            <option value="SHORT" style="color:#FF2233;">SHORT (SELL)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="p-metric-lbl" style="color:#00EEEE;">MARGIN TYPE</label>
+                        <select id="manualOrderMargin" style="width:100%; background:#000; border:1px solid #333; color:#FFFF00; font-family:inherit; font-weight:bold; padding:4px;">
+                            <option value="ISOLATED">ISOLATED (Safe)</option>
+                            <option value="CROSS">CROSS (Full Bal)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="p-metric-lbl" style="color:#00EEEE;">LEVERAGE</label>
+                        <div style="display:flex; align-items:center;">
+                            <input type="number" id="manualOrderLev" value="5" min="1" max="20" style="width:100%; background:#000; border:1px solid #333; color:#FFFF00; font-family:inherit; font-weight:bold; padding:4px;">
+                            <span style="color:#888; margin-left:4px;">x</span>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="p-metric-lbl" style="color:#00EEEE;">ORDER TYPE</label>
+                        <select id="manualOrderType" style="width:100%; background:#000; border:1px solid #333; color:#00EEEE; font-family:inherit; font-weight:bold; padding:4px;" onchange="toggleManualLimitPriceInput()">
+                            <option value="MARKET">MARKET (Instant)</option>
+                            <option value="LIMIT">LIMIT (Pending)</option>
+                        </select>
+                    </div>
+                    <div id="manualLimitPriceGroup" style="display:none;">
+                        <label class="p-metric-lbl" style="color:#00EEEE;">LIMIT PRICE ($)</label>
+                        <input type="number" id="manualLimitPrice" placeholder="0.00" step="any" style="width:100%; background:#000; border:1px solid #333; color:#fff; font-family:inherit; font-weight:bold; padding:4px;">
+                    </div>
+                    <div>
+                        <label class="p-metric-lbl" style="color:#00EEEE;">CAPITAL (IDR)</label>
+                        <input type="number" id="manualOrderAmountIdr" value="50000" step="5000" min="10000" style="width:100%; background:#000; border:1px solid #333; color:#00FF00; font-family:inherit; font-weight:bold; padding:4px;">
+                    </div>
+                    <div>
+                        <label class="p-metric-lbl" style="color:#00FF00;">TAKE PROFIT 1 ($)</label>
+                        <input type="number" id="manualOrderTp1" placeholder="Auto" step="any" style="width:100%; background:#000; border:1px solid #005500; color:#00FF00; font-family:inherit; font-weight:bold; padding:4px;">
+                    </div>
+                    <div>
+                        <label class="p-metric-lbl" style="color:#00FF00;">TAKE PROFIT 2 ($)</label>
+                        <input type="number" id="manualOrderTp2" placeholder="Auto" step="any" style="width:100%; background:#000; border:1px solid #005500; color:#00FF00; font-family:inherit; font-weight:bold; padding:4px;">
+                    </div>
+                    <div>
+                        <label class="p-metric-lbl" style="color:#FF2233;">STOP LOSS ($)</label>
+                        <input type="number" id="manualOrderSl" placeholder="Auto" step="any" style="width:100%; background:#000; border:1px solid #550000; color:#FF5555; font-family:inherit; font-weight:bold; padding:4px;">
+                    </div>
+                </div>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; padding-top:8px; border-top:1px solid #1a1a1a; flex-wrap:wrap; gap:8px;">
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <button class="btn-act" style="background:#151515; border-color:#555; color:#00EEEE; font-size:10px; padding:3px 8px;" onclick="loadAiPlanToTicket()">
+                            ⚡ LOAD LATEST AI PLAN TO TICKET
+                        </button>
+                        <span style="font-size:10px; color:#888;">Live balance &amp; order execution routed via Pluang MCP API.</span>
+                    </div>
+                    <button class="btn-act" style="background:#00FF00; color:#000; font-weight:900; font-size:11px; padding:4px 14px; letter-spacing:0.5px;" onclick="transmitManualPluangOrder()">
+                        TRANSMIT ORDER TO PLUANG &lt;GO&gt;
+                    </button>
                 </div>
             </div>
 
@@ -3260,13 +3383,44 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     const st = await stRes.json();
                     autoTraderActive = st.autonomous_running !== false;
                     updateAutoTraderButton();
-                    const bIn = document.getElementById('cfgMaxBudgetInput');
-                    const lIn = document.getElementById('cfgMaxLevInput');
-                    if (bIn && st.max_budget_idr) bIn.value = st.max_budget_idr;
-                    if (lIn && st.max_leverage) lIn.value = st.max_leverage;
                 }
 
-                // 3. Fetch Positions
+                // 3. Fetch Full Futures Settings (Leverage, Margin, Order, TP/SL, Auto Execute)
+                const setRes = await fetch('/api/crypto-futures/settings');
+                if (setRes.ok) {
+                    const cfg = await setRes.json();
+                    const bIn = document.getElementById('cfgMaxBudgetInput');
+                    const lIn = document.getElementById('cfgMaxLevInput');
+                    const mSel = document.getElementById('cfgMarginTypeSelect');
+                    const oSel = document.getElementById('cfgOrderTypeSelect');
+                    const tpSel = document.getElementById('cfgTpSlModeSelect');
+                    const aSel = document.getElementById('cfgAutoExecuteSelect');
+
+                    if (bIn && cfg.max_budget_idr) bIn.value = cfg.max_budget_idr;
+                    if (lIn && cfg.max_leverage) lIn.value = cfg.max_leverage;
+                    if (mSel && cfg.margin_type) mSel.value = cfg.margin_type;
+                    if (oSel && cfg.order_type) oSel.value = cfg.order_type;
+                    if (tpSel && cfg.tp_sl_mode) tpSel.value = cfg.tp_sl_mode;
+                    if (aSel && cfg.auto_execute_on_pluang !== undefined) aSel.value = String(cfg.auto_execute_on_pluang);
+                }
+
+                // 4. Fetch Pluang MCP Live Status & Balance
+                try {
+                    const plRes = await fetch('/api/crypto-futures/pluang/status');
+                    const plBadge = document.getElementById('pluangLiveStatusBadge');
+                    if (plRes.ok && plBadge) {
+                        const plData = await plRes.json();
+                        if (plData.connected) {
+                            plBadge.innerHTML = '● PLUANG MCP: <span style="color:#00ff66;">CONNECTED (LIVE DMA)</span>';
+                            plBadge.className = 'bbg-green';
+                        } else {
+                            plBadge.innerHTML = '○ PLUANG MCP: <span style="color:#ffaa00;">READY (SIM / MCP TOKEN)</span>';
+                            plBadge.className = 'bbg-yellow';
+                        }
+                    }
+                } catch (e) {}
+
+                // 5. Fetch Positions
                 const posRes = await fetch('/api/crypto-futures/positions');
                 if (posRes.ok) {
                     cryptoFuturesPositions = await posRes.json();
@@ -3288,24 +3442,134 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
         async function saveDynamicTradingConfig() {
             const bVal = parseFloat(document.getElementById('cfgMaxBudgetInput')?.value || 50000);
             const lVal = parseInt(document.getElementById('cfgMaxLevInput')?.value || 5);
+            const mVal = document.getElementById('cfgMarginTypeSelect')?.value || 'ISOLATED';
+            const oVal = document.getElementById('cfgOrderTypeSelect')?.value || 'MARKET';
+            const tpVal = document.getElementById('cfgTpSlModeSelect')?.value || 'DUAL_TP';
+            const aVal = document.getElementById('cfgAutoExecuteSelect')?.value === 'true';
 
-            showPopup(`SAVING NEW CONFIG: RP ${bVal.toLocaleString('id-ID')}, LEV ${lVal}x...`);
+            showPopup(`SAVING FUTURES CONFIG: RP ${bVal.toLocaleString('id-ID')} | ${lVal}x | ${mVal} | ${oVal}...`);
             try {
-                const res = await fetch('/api/crypto-futures/config', {
+                const res = await fetch('/api/crypto-futures/settings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         max_budget_idr: bVal,
-                        max_leverage: lVal
+                        max_leverage: lVal,
+                        margin_type: mVal,
+                        order_type: oVal,
+                        tp_sl_mode: tpVal,
+                        auto_execute_on_pluang: aVal
                     })
                 });
                 if (res.ok) {
-                    showPopup(`SUCCESS: LIMIT UPDATED TO RP ${bVal.toLocaleString('id-ID')} | LEV ${lVal}x`);
+                    showPopup(`SUCCESS: FUTURES PARAMS UPDATED ON ENGINE & PLUANG`);
+                    fetchCryptoFuturesData();
                 } else {
-                    showPopup('FAILED TO UPDATE CONFIG ON SERVER');
+                    showPopup('FAILED TO UPDATE SETTINGS ON SERVER');
                 }
             } catch (e) {
                 showPopup('CONFIG UPDATE ERROR: ' + e.message);
+            }
+        }
+
+        // Manual Ticket helpers
+        function toggleManualLimitPriceInput() {
+            const oType = document.getElementById('manualOrderType')?.value;
+            const grp = document.getElementById('manualLimitPriceGroup');
+            if (grp) grp.style.display = oType === 'LIMIT' ? 'block' : 'none';
+        }
+
+        function updateManualTicketPrice() {
+            const sym = document.getElementById('manualOrderSymbol')?.value;
+            const side = document.getElementById('manualOrderSide')?.value || 'LONG';
+            const item = cryptoFuturesWatchlist.find(i => i.symbol === sym);
+            if (!item || !item.price) return;
+
+            const px = Number(item.price);
+            const isLong = side === 'LONG';
+            const tp1 = isLong ? px * 1.025 : px * 0.975;
+            const tp2 = isLong ? px * 1.050 : px * 0.950;
+            const sl = isLong ? px * 0.985 : px * 1.015;
+
+            const limEl = document.getElementById('manualLimitPrice');
+            const tp1El = document.getElementById('manualOrderTp1');
+            const tp2El = document.getElementById('manualOrderTp2');
+            const slEl = document.getElementById('manualOrderSl');
+
+            if (limEl && !limEl.value) limEl.value = px.toFixed(px < 1 ? 4 : 2);
+            if (tp1El) tp1El.value = tp1.toFixed(px < 1 ? 4 : 2);
+            if (tp2El) tp2El.value = tp2.toFixed(px < 1 ? 4 : 2);
+            if (slEl) slEl.value = sl.toFixed(px < 1 ? 4 : 2);
+        }
+
+        let latestScannedPlan = null;
+
+        function loadAiPlanToTicket() {
+            if (!latestScannedPlan) {
+                showPopup('NO AUDITED AI PLAN YET. SCAN A SYMBOL FIRST &lt;GO&gt;');
+                return;
+            }
+            const p = latestScannedPlan;
+            const symEl = document.getElementById('manualOrderSymbol');
+            const sideEl = document.getElementById('manualOrderSide');
+            const levEl = document.getElementById('manualOrderLev');
+            const amtEl = document.getElementById('manualOrderAmountIdr');
+            const tp1El = document.getElementById('manualOrderTp1');
+            const tp2El = document.getElementById('manualOrderTp2');
+            const slEl = document.getElementById('manualOrderSl');
+            const limEl = document.getElementById('manualLimitPrice');
+
+            if (symEl && p.symbol) symEl.value = p.symbol;
+            if (sideEl && p.action && p.action !== 'SKIP') sideEl.value = p.action;
+            if (levEl && p.leverage) levEl.value = p.leverage;
+            if (amtEl && p.position_size_idr) amtEl.value = p.position_size_idr;
+            if (tp1El && p.take_profit_1) tp1El.value = p.take_profit_1;
+            if (tp2El && p.take_profit_2) tp2El.value = p.take_profit_2;
+            if (slEl && p.stop_loss) slEl.value = p.stop_loss;
+            if (limEl && p.entry_price) limEl.value = p.entry_price;
+
+            showPopup(`COPIED AI PLAN FOR ${p.symbol || 'PAIR'} TO DMA TICKET!`);
+        }
+
+        async function transmitManualPluangOrder() {
+            const sym = document.getElementById('manualOrderSymbol')?.value;
+            const side = document.getElementById('manualOrderSide')?.value;
+            const margin = document.getElementById('manualOrderMargin')?.value || 'ISOLATED';
+            const lev = parseInt(document.getElementById('manualOrderLev')?.value || 5);
+            const ordType = document.getElementById('manualOrderType')?.value || 'MARKET';
+            const limPx = parseFloat(document.getElementById('manualLimitPrice')?.value || 0);
+            const amtIdr = parseFloat(document.getElementById('manualOrderAmountIdr')?.value || 50000);
+            const tp1 = parseFloat(document.getElementById('manualOrderTp1')?.value || 0);
+            const tp2 = parseFloat(document.getElementById('manualOrderTp2')?.value || 0);
+            const sl = parseFloat(document.getElementById('manualOrderSl')?.value || 0);
+
+            showPopup(`TRANSMITTING ${side} ${sym} RP ${amtIdr.toLocaleString('id-ID')} (${lev}x ${margin} ${ordType}) TO PLUANG...`);
+            try {
+                const res = await fetch('/api/crypto-futures/execute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        symbol: sym,
+                        direction: side,
+                        amount_idr: amtIdr,
+                        leverage: lev,
+                        margin_type: margin,
+                        order_type: ordType,
+                        limit_price: limPx || undefined,
+                        tp1_price: tp1,
+                        tp2_price: tp2,
+                        sl_price: sl
+                    })
+                });
+                const d = await res.json();
+                if (res.ok && d.success) {
+                    showPopup(d.message || `ORDER EXECUTED ON PLUANG! ID: ${d.position?.id}`);
+                    fetchCryptoFuturesData();
+                } else {
+                    showPopup(`ORDER REJECTED: ${d.error || 'Execution failed'}`);
+                }
+            } catch (e) {
+                showPopup(`ORDER TRANSMIT ERROR: ${e.message}`);
             }
         }
 
@@ -3563,6 +3827,18 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     • <b>Final Consensus:</b><br><span style="color:#ddd; font-size:10px;">${fc.final_reason || '-'}</span>
                 `;
             }
+
+            // Cache latest scanned plan for 1-click loading into DMA ticket
+            latestScannedPlan = {
+                symbol: sym,
+                action: l3.action || fc.direction || 'LONG',
+                entry_price: l3.entry_price || l1.current_price,
+                take_profit_1: l3.take_profit_1,
+                take_profit_2: l3.take_profit_2,
+                stop_loss: l3.stop_loss,
+                leverage: l3.leverage || fc.leverage || 5,
+                position_size_idr: l3.position_size_idr || fc.position_size_idr || 50000
+            };
         }
 
         function renderCryptoFuturesPositions() {
@@ -3576,21 +3852,24 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
 
             tbody.innerHTML = cryptoFuturesPositions.map(p => {
                 const isLong = p.direction === 'LONG';
+                const sym = p.symbol || '-';
+                const dir = p.direction || 'LONG';
+                const posId = p.id || '-';
                 return `
                     <tr>
-                        <td class="bbg-cyan" style="font-size:10px;">${p.id || '-'}</td>
-                        <td style="font-weight:bold; color:#F39F41;">${p.symbol}</td>
-                        <td class="${isLong ? 'bbg-green' : 'bbg-red'}" style="font-weight:bold;">${p.direction}</td>
-                        <td class="bbg-amber">${p.leverage || 1}x</td>
+                        <td class="bbg-cyan" style="font-size:10px;">${posId}</td>
+                        <td style="font-weight:bold; color:#F39F41;">${sym}</td>
+                        <td class="${isLong ? 'bbg-green' : 'bbg-red'}" style="font-weight:bold;">${dir}</td>
+                        <td class="bbg-amber">${p.leverage || 1}x ${p.margin_type || 'ISO'}</td>
                         <td>$${Number(p.entry_price || 0).toLocaleString()}</td>
                         <td>$${Number(p.current_price || p.entry_price || 0).toLocaleString()}</td>
                         <td style="font-weight:bold;">Rp ${Number(p.position_size_idr || p.amount_idr || 50000).toLocaleString('id-ID')}</td>
                         <td class="bbg-green">$${Number(p.take_profit_1 || 0).toLocaleString()}</td>
                         <td class="bbg-red">$${Number(p.stop_loss || 0).toLocaleString()}</td>
                         <td class="bbg-green">+0.00 IDR</td>
-                        <td><span class="bbg-green">● OPEN</span></td>
+                        <td><span class="bbg-green">● ${p.pluang_synced ? 'PLUANG LIVE' : 'OPEN'}</span></td>
                         <td style="text-align:center;">
-                            <button class="btn-act" style="background:#440000; color:#ff4444; border-color:#ff4444; padding:2px 8px; font-size:10px;" onclick="closeCryptoPosition('${p.id}')">
+                            <button class="btn-act" style="background:#440000; color:#ff4444; border-color:#ff4444; padding:2px 8px; font-size:10px;" onclick="closeCryptoPosition('${posId}', '${sym}', '${dir}')">
                                 CLOSE &lt;GO&gt;
                             </button>
                         </td>
@@ -3599,11 +3878,24 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             }).join('');
         }
 
-        function closeCryptoPosition(posId) {
-            showPopup(`CLOSING POSITION ${posId}...`);
-            cryptoFuturesPositions = cryptoFuturesPositions.filter(p => p.id !== posId);
-            renderCryptoFuturesPositions();
-            showPopup(`POSITION ${posId} CLOSED. CAPITAL RETURNED TO CASH.`);
+        async function closeCryptoPosition(posId, sym, dir) {
+            if (!confirm(`Tutup posisi ${dir || ''} ${sym || posId} di Pluang?`)) return;
+            showPopup(`CLOSING POSITION ${sym || posId} ON PLUANG VIA MCP...`);
+            try {
+                const res = await fetch('/api/crypto-futures/positions/close', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        symbol: sym,
+                        direction: dir
+                    })
+                });
+                const d = await res.json();
+                showPopup(d.message || `POSITION ${sym || posId} CLOSED ON PLUANG!`);
+            } catch (e) {
+                showPopup(`CLOSE ERROR: ${e.message}`);
+            }
+            fetchCryptoFuturesData();
         }
 
         function submitCmd() {

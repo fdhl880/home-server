@@ -1,4 +1,10 @@
 {
+  "name": "home-server-bloomberg-pyrofuel",
+  "version": "3.0.0",
+  "description": "Bloomberg Terminal & Pyrofuel AI Crypto Futures Trading Engine for Pluang",
+  "scripts": {
+    "start": "cd tablet1-chatbot && node server.js"
+  },
   "dependencies": {
     "localtunnel": "^2.0.2"
   }
