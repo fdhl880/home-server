@@ -3372,24 +3372,30 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
         let autoTraderActive = true;
 
         async function fetchCryptoFuturesData() {
+            // 1. Fetch Watchlist (0ms from unified server memory)
             try {
-                // 1. Fetch Watchlist
-                const res = await fetch('/api/crypto-futures/watchlist');
+                const res = await fetch('/api/crypto-futures/watchlist', { signal: AbortSignal.timeout(6000) });
                 if (res.ok) {
                     cryptoFuturesWatchlist = await res.json();
                     renderCryptoFuturesWatchlist();
                 }
+            } catch (e) {
+                console.warn('Watchlist fetch warning:', e.message);
+            }
 
-                // 2. Fetch Status & Config
-                const stRes = await fetch('/api/crypto-futures/status');
+            // 2. Fetch Status & Config
+            try {
+                const stRes = await fetch('/api/crypto-futures/status', { signal: AbortSignal.timeout(5000) });
                 if (stRes.ok) {
                     const st = await stRes.json();
                     autoTraderActive = st.autonomous_running !== false;
                     updateAutoTraderButton();
                 }
+            } catch (e) {}
 
-                // 3. Fetch Full Futures Settings (Leverage, Margin, Order, TP/SL, Auto Execute)
-                const setRes = await fetch('/api/crypto-futures/settings');
+            // 3. Fetch Full Futures Settings (Leverage, Margin, Order, TP/SL, Auto Execute)
+            try {
+                const setRes = await fetch('/api/crypto-futures/settings', { signal: AbortSignal.timeout(5000) });
                 if (setRes.ok) {
                     const cfg = await setRes.json();
                     const bIn = document.getElementById('cfgMaxBudgetInput');
@@ -3406,32 +3412,32 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     if (tpSel && cfg.tp_sl_mode) tpSel.value = cfg.tp_sl_mode;
                     if (aSel && cfg.auto_execute_on_pluang !== undefined) aSel.value = String(cfg.auto_execute_on_pluang);
                 }
+            } catch (e) {}
 
-                // 4. Fetch Pluang MCP Live Status & Balance
-                try {
-                    const plRes = await fetch('/api/crypto-futures/pluang/status');
-                    const plBadge = document.getElementById('pluangLiveStatusBadge');
-                    if (plRes.ok && plBadge) {
-                        const plData = await plRes.json();
-                        if (plData.connected) {
-                            plBadge.innerHTML = '● PLUANG MCP: <span style="color:#00ff66;">CONNECTED (LIVE DMA)</span>';
-                            plBadge.className = 'bbg-green';
-                        } else {
-                            plBadge.innerHTML = '○ PLUANG MCP: <span style="color:#ffaa00;">READY (SIM / MCP TOKEN)</span>';
-                            plBadge.className = 'bbg-yellow';
-                        }
+            // 4. Fetch Pluang MCP Live Status & Balance
+            try {
+                const plRes = await fetch('/api/crypto-futures/pluang/status', { signal: AbortSignal.timeout(5000) });
+                const plBadge = document.getElementById('pluangLiveStatusBadge');
+                if (plRes.ok && plBadge) {
+                    const plData = await plRes.json();
+                    if (plData.connected) {
+                        plBadge.innerHTML = '● PLUANG MCP: <span style="color:#00ff66;">CONNECTED (LIVE DMA)</span>';
+                        plBadge.className = 'bbg-green';
+                    } else {
+                        plBadge.innerHTML = '○ PLUANG MCP: <span style="color:#ffaa00;">READY (SIM / MCP TOKEN)</span>';
+                        plBadge.className = 'bbg-yellow';
                     }
-                } catch (e) {}
+                }
+            } catch (e) {}
 
-                // 5. Fetch Positions
-                const posRes = await fetch('/api/crypto-futures/positions');
+            // 5. Fetch Positions
+            try {
+                const posRes = await fetch('/api/crypto-futures/positions', { signal: AbortSignal.timeout(5000) });
                 if (posRes.ok) {
                     cryptoFuturesPositions = await posRes.json();
                     renderCryptoFuturesPositions();
                 }
-            } catch (e) {
-                console.error('Crypto Futures fetch error:', e);
-            }
+            } catch (e) {}
         }
 
         // Auto-refresh Crypto Futures data every 5 seconds when tab is active
@@ -3728,12 +3734,12 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
         }
 
         async function scanAllCryptoFutures() {
-            showPopup('RUNNING BATCH SCAN ON ALL 10 CRYPTO FUTURES...');
+            showPopup('RUNNING BATCH SCAN ON ALL 43+ CRYPTO FUTURES UNIVERSE...');
             for (const item of cryptoFuturesWatchlist) {
                 await scanCryptoFuturesSymbol(item.symbol);
                 await new Promise(r => setTimeout(r, 1000));
             }
-            showPopup('BATCH SCAN ON ALL 10 PAIRS COMPLETED.');
+            showPopup('BATCH SCAN ON ALL 43+ PAIRS COMPLETED.');
         }
 
         function loadSavedScanDetails(sym) {

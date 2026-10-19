@@ -2317,67 +2317,146 @@ function buildFallbackScan(symbol) {
     };
 }
 
-// 1. WATCHLIST ENDPOINT (100% Native on Port 4000)
-app.get('/api/crypto-futures/watchlist', async (req, res) => {
-    try {
-        if (fs.existsSync(quickScreenPath)) {
-            const qs = JSON.parse(fs.readFileSync(quickScreenPath, 'utf8'));
-            if (Array.isArray(qs) && qs.length > 0) return res.json(qs);
-        }
-    } catch (e) {}
+// FULL 43-COIN PLUANG CRYPTO FUTURES UNIVERSE
+const FULL_CRYPTO_FUTURES_UNIVERSE = [
+    { symbol: "BTC-USD", name: "Bitcoin", pair: "BTCUSDT", leverage_max: 20, tier: "T1_MEGA", default_price: 82000 },
+    { symbol: "ETH-USD", name: "Ethereum", pair: "ETHUSDT", leverage_max: 20, tier: "T1_MEGA", default_price: 2400 },
+    { symbol: "SOL-USD", name: "Solana", pair: "SOLUSDT", leverage_max: 15, tier: "T2_LARGE", default_price: 104 },
+    { symbol: "BNB-USD", name: "BNB", pair: "BNBUSDT", leverage_max: 15, tier: "T2_LARGE", default_price: 727 },
+    { symbol: "XRP-USD", name: "Ripple", pair: "XRPUSDT", leverage_max: 15, tier: "T2_LARGE", default_price: 1.31 },
+    { symbol: "ADA-USD", name: "Cardano", pair: "ADAUSDT", leverage_max: 10, tier: "T2_LARGE", default_price: 0.22 },
+    { symbol: "DOGE-USD", name: "Dogecoin", pair: "DOGEUSDT", leverage_max: 10, tier: "T2_LARGE", default_price: 0.08 },
+    { symbol: "TRX-USD", name: "TRON", pair: "TRXUSDT", leverage_max: 10, tier: "T2_LARGE", default_price: 0.28 },
+    { symbol: "AVAX-USD", name: "Avalanche", pair: "AVAXUSDT", leverage_max: 10, tier: "T2_LARGE", default_price: 9.55 },
+    { symbol: "LINK-USD", name: "Chainlink", pair: "LINKUSDT", leverage_max: 10, tier: "T2_LARGE", default_price: 11.9 },
+    { symbol: "DOT-USD", name: "Polkadot", pair: "DOTUSDT", leverage_max: 10, tier: "T2_LARGE", default_price: 1.14 },
+    { symbol: "LTC-USD", name: "Litecoin", pair: "LTCUSDT", leverage_max: 10, tier: "T2_LARGE", default_price: 54.2 },
+    { symbol: "BCH-USD", name: "Bitcoin Cash", pair: "BCHUSDT", leverage_max: 10, tier: "T2_LARGE", default_price: 320.0 },
+    { symbol: "XLM-USD", name: "Stellar", pair: "XLMUSDT", leverage_max: 10, tier: "T2_LARGE", default_price: 0.16 },
+    { symbol: "ICP-USD", name: "ICP", pair: "ICPUSDT", leverage_max: 10, tier: "T2_LARGE", default_price: 4.8 },
+    { symbol: "UNI-USD", name: "Uniswap", pair: "UNIUSDT", leverage_max: 10, tier: "T2_LARGE", default_price: 7.2 },
+    { symbol: "ATOM-USD", name: "Cosmos", pair: "ATOMUSDT", leverage_max: 10, tier: "T2_LARGE", default_price: 1.75 },
+    { symbol: "SUI-USD", name: "Sui", pair: "SUIUSDT", leverage_max: 10, tier: "T3_MID", default_price: 0.99 },
+    { symbol: "NEAR-USD", name: "NEAR", pair: "NEARUSDT", leverage_max: 10, tier: "T3_MID", default_price: 4.9 },
+    { symbol: "APT-USD", name: "Aptos", pair: "APTUSDT", leverage_max: 10, tier: "T3_MID", default_price: 4.5 },
+    { symbol: "FIL-USD", name: "Filecoin", pair: "FILUSDT", leverage_max: 10, tier: "T3_MID", default_price: 2.1 },
+    { symbol: "ARB-USD", name: "Arbitrum", pair: "ARBUSDT", leverage_max: 10, tier: "T3_MID", default_price: 0.19 },
+    { symbol: "OP-USD", name: "Optimism", pair: "OPUSDT", leverage_max: 10, tier: "T3_MID", default_price: 0.72 },
+    { symbol: "IMX-USD", name: "Immutable", pair: "IMXUSDT", leverage_max: 10, tier: "T3_MID", default_price: 0.88 },
+    { symbol: "INJ-USD", name: "Injective", pair: "INJUSDT", leverage_max: 10, tier: "T3_MID", default_price: 8.56 },
+    { symbol: "AAVE-USD", name: "Aave", pair: "AAVEUSDT", leverage_max: 10, tier: "T3_MID", default_price: 110.0 },
+    { symbol: "ALGO-USD", name: "Algorand", pair: "ALGOUSDT", leverage_max: 10, tier: "T3_MID", default_price: 0.12 },
+    { symbol: "RENDER-USD", name: "Render", pair: "RENDERUSDT", leverage_max: 10, tier: "T3_MID", default_price: 3.8 },
+    { symbol: "FET-USD", name: "Fetch.ai", pair: "FETUSDT", leverage_max: 10, tier: "T3_MID", default_price: 0.75 },
+    { symbol: "STX-USD", name: "Stacks", pair: "STXUSDT", leverage_max: 10, tier: "T3_MID", default_price: 0.95 },
+    { symbol: "TIA-USD", name: "Celestia", pair: "TIAUSDT", leverage_max: 10, tier: "T3_MID", default_price: 2.8 },
+    { symbol: "POL-USD", name: "Polygon", pair: "POLUSDT", leverage_max: 10, tier: "T3_MID", default_price: 0.28 },
+    { symbol: "PEPE-USD", name: "Pepe", pair: "PEPEUSDT", leverage_max: 5, tier: "T4_MEME", default_price: 0.00000412 },
+    { symbol: "SHIB-USD", name: "Shiba Inu", pair: "SHIBUSDT", leverage_max: 5, tier: "T4_MEME", default_price: 0.0000135 },
+    { symbol: "BONK-USD", name: "Bonk", pair: "BONKUSDT", leverage_max: 5, tier: "T4_MEME", default_price: 0.0000115 },
+    { symbol: "FLOKI-USD", name: "Floki", pair: "FLOKIUSDT", leverage_max: 5, tier: "T4_MEME", default_price: 0.000085 },
+    { symbol: "WIF-USD", name: "dogwifhat", pair: "WIFUSDT", leverage_max: 5, tier: "T4_MEME", default_price: 0.78 },
+    { symbol: "TAO-USD", name: "Bittensor", pair: "TAOUSDT", leverage_max: 10, tier: "T5_NARRATIVE", default_price: 285.0 },
+    { symbol: "KAS-USD", name: "Kaspa", pair: "KASUSDT", leverage_max: 10, tier: "T5_NARRATIVE", default_price: 0.11 },
+    { symbol: "SUI20947-USD", name: "Sui Perp", pair: "SUIUSDT", leverage_max: 10, tier: "T3_MID", default_price: 0.99 },
+    { symbol: "RAY-USD", name: "Raydium", pair: "RAYUSDT", leverage_max: 10, tier: "T3_MID", default_price: 1.65 },
+    { symbol: "VANRY-USD", name: "Vanar Chain", pair: "VANRYUSDT", leverage_max: 5, tier: "T4_MEME", default_price: 0.045 },
+    { symbol: "VIC-USD", name: "Viction", pair: "VICUSDT", leverage_max: 5, tier: "T4_MEME", default_price: 0.26 }
+];
 
+// High-speed In-Memory Ticker Cache (Refreshes asynchronously, never blocks HTTP request)
+let cryptoFuturesTickerCache = {};
+
+async function refreshCryptoFuturesTickers() {
     try {
         const binanceResp = await fetch('https://data-api.binance.vision/api/v3/ticker/24hr', {
-            signal: AbortSignal.timeout(5000)
+            signal: AbortSignal.timeout(4000)
         });
         if (binanceResp.ok) {
             const tickers = await binanceResp.json();
-            const tickerMap = {};
-            tickers.forEach(t => { tickerMap[t.symbol] = t; });
-
-            const coreList = [
-                { symbol: "BTC-USD", name: "Bitcoin", pair: "BTCUSDT" },
-                { symbol: "ETH-USD", name: "Ethereum", pair: "ETHUSDT" },
-                { symbol: "SOL-USD", name: "Solana", pair: "SOLUSDT" },
-                { symbol: "BNB-USD", name: "BNB", pair: "BNBUSDT" },
-                { symbol: "XRP-USD", name: "Ripple", pair: "XRPUSDT" },
-                { symbol: "DOGE-USD", name: "Dogecoin", pair: "DOGEUSDT" },
-                { symbol: "AVAX-USD", name: "Avalanche", pair: "AVAXUSDT" },
-                { symbol: "LINK-USD", name: "Chainlink", pair: "LINKUSDT" },
-                { symbol: "ADA-USD", name: "Cardano", pair: "ADAUSDT" },
-                { symbol: "SUI20947-USD", name: "Sui", pair: "SUIUSDT" }
-            ];
-
-            const enriched = coreList.map(item => {
-                const t = tickerMap[item.pair] || {};
-                const price = parseFloat(t.lastPrice) || 0;
-                const change = parseFloat(t.priceChangePercent) || 0;
-                return {
-                    symbol: item.symbol,
-                    name: item.name,
-                    pair: item.pair,
-                    price: price,
-                    change_24h: change,
-                    rsi_14: 50,
-                    trend: change > 0 ? "BULLISH" : (change < -1 ? "BEARISH" : "NEUTRAL")
-                };
-            });
-            return res.json(enriched);
+            if (Array.isArray(tickers)) {
+                tickers.forEach(t => { cryptoFuturesTickerCache[t.symbol] = t; });
+            }
         }
-    } catch (e) {}
+    } catch (e) {
+        try {
+            const fapiResp = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr', {
+                signal: AbortSignal.timeout(4000)
+            });
+            if (fapiResp.ok) {
+                const tickers = await fapiResp.json();
+                if (Array.isArray(tickers)) {
+                    tickers.forEach(t => { cryptoFuturesTickerCache[t.symbol] = t; });
+                }
+            }
+        } catch (err) {}
+    }
+}
+// Run ticker refresh every 10 seconds in the background
+setInterval(refreshCryptoFuturesTickers, 10000);
+refreshCryptoFuturesTickers();
 
-    res.json([
-        { symbol: "BTC-USD", name: "Bitcoin", pair: "BTCUSDT", price: 81930, change_24h: 1.2, rsi_14: 45, trend: "BULLISH" },
-        { symbol: "ETH-USD", name: "Ethereum", pair: "ETHUSDT", price: 2150, change_24h: -0.5, rsi_14: 48, trend: "NEUTRAL" },
-        { symbol: "SOL-USD", name: "Solana", pair: "SOLUSDT", price: 103.5, change_24h: 2.1, rsi_14: 42, trend: "BULLISH" },
-        { symbol: "BNB-USD", name: "BNB", pair: "BNBUSDT", price: 620, change_24h: 0.8, rsi_14: 51, trend: "NEUTRAL" },
-        { symbol: "XRP-USD", name: "Ripple", pair: "XRPUSDT", price: 1.85, change_24h: 3.5, rsi_14: 55, trend: "BULLISH" },
-        { symbol: "DOGE-USD", name: "Dogecoin", pair: "DOGEUSDT", price: 0.16, change_24h: -1.1, rsi_14: 40, trend: "BEARISH" },
-        { symbol: "AVAX-USD", name: "Avalanche", pair: "AVAXUSDT", price: 22.4, change_24h: 1.5, rsi_14: 49, trend: "NEUTRAL" },
-        { symbol: "LINK-USD", name: "Chainlink", pair: "LINKUSDT", price: 14.8, change_24h: 0.2, rsi_14: 47, trend: "NEUTRAL" },
-        { symbol: "ADA-USD", name: "Cardano", pair: "ADAUSDT", price: 0.65, change_24h: -0.8, rsi_14: 44, trend: "BEARISH" },
-        { symbol: "SUI20947-USD", name: "Sui", pair: "SUIUSDT", price: 2.25, change_24h: 4.2, rsi_14: 58, trend: "BULLISH" }
-    ]);
+// 1. WATCHLIST ENDPOINT (100% Native, 0ms latency, All 43 Pairs)
+app.get('/api/crypto-futures/watchlist', (req, res) => {
+    try {
+        // Quick screen movers lookup
+        let qsMoversMap = {};
+        if (fs.existsSync(quickScreenPath)) {
+            try {
+                const qs = JSON.parse(fs.readFileSync(quickScreenPath, 'utf8'));
+                if (qs.top_20_movers && Array.isArray(qs.top_20_movers)) {
+                    qs.top_20_movers.forEach(m => { qsMoversMap[m.pair] = m; });
+                }
+            } catch (e) {}
+        }
+
+        const enriched = FULL_CRYPTO_FUTURES_UNIVERSE.map(item => {
+            const t = cryptoFuturesTickerCache[item.pair] || {};
+            const qsm = qsMoversMap[item.pair] || {};
+            const price = parseFloat(t.lastPrice) || qsm.price || item.default_price || 0;
+            const change = parseFloat(t.priceChangePercent) || qsm.change_24h || 0;
+            
+            // Check latest 5-layer audit file
+            const cleanSym = item.symbol.replace(/[^a-zA-Z0-9]/g, '_');
+            const scanFile = path.join(resultsDir, `${cleanSym}_latest.json`);
+            let latestScan = null;
+            if (fs.existsSync(scanFile)) {
+                try {
+                    latestScan = JSON.parse(fs.readFileSync(scanFile, 'utf8'));
+                } catch (e) {}
+            }
+
+            return {
+                symbol: item.symbol,
+                name: item.name,
+                pair: item.pair,
+                price: price,
+                change_24h: change,
+                rsi_14: 50,
+                trend: change > 3 ? "STRONG_BULLISH" : (change > 0 ? "BULLISH" : (change < -3 ? "STRONG_BEARISH" : "BEARISH")),
+                volatility: Math.abs(change) > 5 ? "HIGH" : "MODERATE",
+                leverage_max: item.leverage_max || 10,
+                tier: item.tier || "T2_LARGE",
+                last_scan: latestScan
+            };
+        });
+
+        return res.json(enriched);
+    } catch (e) {
+        return res.json(FULL_CRYPTO_FUTURES_UNIVERSE.map(item => ({
+            symbol: item.symbol,
+            name: item.name,
+            pair: item.pair,
+            price: item.default_price,
+            change_24h: 1.0,
+            rsi_14: 50,
+            trend: "BULLISH",
+            volatility: "MODERATE",
+            leverage_max: item.leverage_max,
+            tier: item.tier,
+            last_scan: null
+        })));
+    }
 });
 
 // 2. STATUS ENDPOINT (100% Native on Port 4000)
@@ -2395,8 +2474,8 @@ app.get('/api/crypto-futures/status', (req, res) => {
         status: "online",
         version: "3.0",
         market: "CRYPTO_FUTURES_PLUANG_ONLY",
-        universe_size: 39,
-        core_assets_count: 10,
+        universe_size: FULL_CRYPTO_FUTURES_UNIVERSE.length,
+        core_assets_count: FULL_CRYPTO_FUTURES_UNIVERSE.length,
         pluang_connected: hasTokens,
         max_budget_idr: cfg.max_budget_idr || 50000,
         max_leverage: cfg.max_leverage || 5,

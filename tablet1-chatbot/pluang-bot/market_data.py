@@ -78,6 +78,10 @@ PLUANG_FUTURES_UNIVERSE = [
     # --- TIER 5: AI & DEFI NARRATIVES ---
     {"symbol": "TAO-USD",  "name": "Bittensor",  "pair": "TAOUSDT",   "pluang_symbol": "TAO",    "leverage_max": 10, "tier": "T5_NARRATIVE"},
     {"symbol": "KAS-USD",  "name": "Kaspa",      "pair": "KASUSDT",   "pluang_symbol": "KAS",    "leverage_max": 10, "tier": "T5_NARRATIVE"},
+    {"symbol": "SUI20947-USD", "name": "Sui Perp", "pair": "SUIUSDT", "pluang_symbol": "SUI",   "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "RAY-USD",  "name": "Raydium",    "pair": "RAYUSDT",   "pluang_symbol": "RAY",    "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "VANRY-USD","name": "Vanar Chain","pair": "VANRYUSDT", "pluang_symbol": "VANRY",  "leverage_max": 5,  "tier": "T4_MEME"},
+    {"symbol": "VIC-USD",  "name": "Viction",    "pair": "VICUSDT",   "pluang_symbol": "VIC",    "leverage_max": 5,  "tier": "T4_MEME"},
 ]
 
 # The locked universe set - for fast lookup
