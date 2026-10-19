@@ -25,13 +25,11 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 if command -v pip3 &> /dev/null; then
-    echo "[*] Checking Python dependencies..."
-    pip3 install -r requirements.txt --quiet || pip install -r requirements.txt --quiet || true
+    pip3 install requests python-dotenv --quiet || true
 elif command -v pip &> /dev/null; then
-    pip install -r requirements.txt --quiet || true
+    pip install requests python-dotenv --quiet || true
 fi
 
-# 3. Start Unified Bloomberg & Pluang Server
-echo "[*] Launching Node.js Bloomberg Terminal on Port 4000..."
-echo "[*] Node will automatically spawn Pluang Python Server (Port 5000), Auto-Trader & Telegram Bot!"
+# 3. Start Unified Bloomberg & Crypto Futures Engine
+echo "[*] Launching Unified Bloomberg Terminal & Crypto Futures Engine on Port 4000..."
 exec node server.js
