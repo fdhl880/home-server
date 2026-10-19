@@ -30,6 +30,11 @@ elif command -v pip &> /dev/null; then
     pip install requests python-dotenv --quiet || true
 fi
 
-# 3. Start Unified Bloomberg & Crypto Futures Engine
+# 3. Clean up stale mock positions so tables start fresh
+rm -f pluang-bot/results/active_positions.json
+mkdir -p pluang-bot/results
+echo "[]" > pluang-bot/results/active_positions.json
+
+# 4. Start Unified Bloomberg & Crypto Futures Engine
 echo "[*] Launching Unified Bloomberg Terminal & Crypto Futures Engine on Port 4000..."
 exec node server.js

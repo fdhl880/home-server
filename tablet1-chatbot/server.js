@@ -2256,11 +2256,27 @@ function saveLocalTradingConfig(newCfg) {
 function getLocalPositions() {
     try {
         if (fs.existsSync(positionsPath)) {
-            return JSON.parse(fs.readFileSync(positionsPath, 'utf8'));
+            const list = JSON.parse(fs.readFileSync(positionsPath, 'utf8'));
+            if (Array.isArray(list)) {
+                // HANYA tampilkan posisi yang benar-benar LIVE dan SUKSES di Pluang
+                // Posisi offline/simulasi otomatis dibuang sehingga tidak membingungkan user
+                return list.filter(p => p && p.pluang_synced === true);
+            }
         }
     } catch (e) {}
     return [];
 }
+
+// Bersihkan file posisi lama saat server start jika ada posisi yang tidak synced
+try {
+    if (fs.existsSync(positionsPath)) {
+        const raw = JSON.parse(fs.readFileSync(positionsPath, 'utf8'));
+        if (Array.isArray(raw)) {
+            const validOnly = raw.filter(p => p && p.pluang_synced === true);
+            fs.writeFileSync(positionsPath, JSON.stringify(validOnly, null, 2));
+        }
+    }
+} catch (e) {}
 
 function saveLocalPositions(positions) {
     try {
