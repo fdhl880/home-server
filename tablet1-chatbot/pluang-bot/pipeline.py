@@ -67,8 +67,8 @@ def get_trading_config():
     cfg = {
         "max_budget_idr": 50000,
         "max_leverage": 5,
-        "min_confidence_score": 65,
-        "min_risk_reward_ratio": 1.8,
+        "min_confidence_score": 45,
+        "min_risk_reward_ratio": 1.5,
         "max_drawdown_pct": 5.0
     }
     if os.path.exists(CONFIG_FILE):
@@ -95,8 +95,8 @@ def save_trading_config(new_config: dict):
 _cfg = get_trading_config()
 MAX_BUDGET_IDR = _cfg.get("max_budget_idr", 50000)
 MAX_LEVERAGE = _cfg.get("max_leverage", 5)
-MIN_CONFIDENCE_SCORE = _cfg.get("min_confidence_score", 65)
-MIN_RISK_REWARD_RATIO = _cfg.get("min_risk_reward_ratio", 1.8)
+MIN_CONFIDENCE_SCORE = _cfg.get("min_confidence_score", 45)
+MIN_RISK_REWARD_RATIO = _cfg.get("min_risk_reward_ratio", 1.5)
 MAX_DRAWDOWN_PCT = _cfg.get("max_drawdown_pct", 5.0)
 
 
@@ -305,28 +305,36 @@ def _rule_based_setup(scan_data: dict):
     elif mss == "BEARISH":
         bear_score += 1
 
-    # === DECISION ===
+    # === DECISION (Wall Street-style: opportunities exist in most markets) ===
     net = bull_score - bear_score
     direction = "NONE"
     setup_name = "NO_CLEAR_SETUP"
     prob = 0
 
-    if net >= 4:
+    if net >= 3:
         direction = "LONG"
         setup_name = "RULE_BASED_BULLISH_CONFLUENCE"
-        prob = min(50 + net * 5, 85)
-    elif net <= -4:
+        prob = min(55 + net * 6, 90)
+    elif net <= -3:
         direction = "SHORT"
         setup_name = "RULE_BASED_BEARISH_CONFLUENCE"
-        prob = min(50 + abs(net) * 5, 85)
-    elif net >= 2 and vol_ratio > 1.3:
+        prob = min(55 + abs(net) * 6, 90)
+    elif net >= 2:
+        direction = "LONG"
+        setup_name = "RULE_BASED_MOMENTUM_LONG"
+        prob = min(50 + net * 5, 80)
+    elif net <= -2:
+        direction = "SHORT"
+        setup_name = "RULE_BASED_MOMENTUM_SHORT"
+        prob = min(50 + abs(net) * 5, 80)
+    elif net >= 1 and vol_ratio > 1.2:
         direction = "LONG"
         setup_name = "RULE_BASED_VOLUME_BULLISH"
-        prob = min(50 + net * 4, 75)
-    elif net <= -2 and vol_ratio > 1.3:
+        prob = min(48 + net * 5, 70)
+    elif net <= -1 and vol_ratio > 1.2:
         direction = "SHORT"
         setup_name = "RULE_BASED_VOLUME_BEARISH"
-        prob = min(50 + abs(net) * 4, 75)
+        prob = min(48 + abs(net) * 5, 70)
 
     return {
         "setup_name": setup_name,
@@ -528,23 +536,32 @@ def layer1_scanning(symbol: str):
 # LAPISAN 2: SETUP HUNTER (Identifikasi Pola & Strategi)
 # ===========================================================================
 def layer2_setup_hunter(symbol: str, scan_data: dict):
-    """AI identifies specific trading setup with high precision"""
+    """AI identifies specific trading setup - Wall Street quant approach"""
     scan_json = json.dumps(scan_data, indent=2, ensure_ascii=False)
 
     system = (
-        "Anda adalah 'Institutional Setup Hunter' crypto futures profesional. "
-        "Anda HANYA mencari setup yang memiliki edge statistik kuantitatif tinggi.\n\n"
-        "DAFTAR SETUP INSTITUSIONAL YANG VALID (pilih salah satu):\n"
-        "1. SMC_LIQUIDITY_SWEEP_REVERSAL - Harga menyapu (sweep) swing high/low liquidity lalu reject kuat\n"
-        "2. SMC_FAIR_VALUE_GAP_ENTRY - Harga retest ke area Fair Value Gap (FVG) dalam arah market structure\n"
-        "3. DERIVATIVES_SHORT_SQUEEZE - Funding rate negatif ekstrem + crowd short, potensi ledakan harga naik\n"
-        "4. DERIVATIVES_LONG_SQUEEZE_FADE - Funding rate positif ekstrem + overleveraged longs, risiko flush turun\n"
-        "5. MULTI_PILLAR_QUANT_CONFLUENCE - Skor komposit 500+ faktor kuantitatif (>65 Bullish atau <35 Bearish) dengan konfluensi momentum & volume flow\n"
-        "6. EMA_PULLBACK_CONTINUATION - Harga pullback ke EMA20/50 dalam tren kuat, bounce confirmed\n"
-        "7. BOLLINGER_SQUEEZE_BREAKOUT - BB width sempit, harga breakout keluar dari konsolidasi\n"
-        "8. RSI_DIVERGENCE_REVERSAL - RSI oversold (<30) dengan bullish divergence atau overbought (>75) dengan bearish divergence\n"
-        "9. MACD_MOMENTUM_EXPANSION - Histogram MACD ekspansi searah tren utama (bullish/bearish crossover)\n"
-        "10. NO_CLEAR_SETUP - Tidak ada setup valid atau pasar sedang sideways tanpa konfluensi. WAJIB pilih ini jika ragu.\n\n"
+        "Anda adalah 'Senior Quantitative Setup Analyst' di hedge fund Wall Street. "
+        "Gaya trading: seperti Ray Dalio (systematic), George Soros (macro), dan Jim Simons (quant). "
+        "Anda AKTIF mencari peluang trading yang menguntungkan di setiap kondisi pasar.\n\n"
+        "PRINSIP UTAMA:\n"
+        "- Di pasar crypto yang volatile, SELALU ada peluang baik LONG maupun SHORT\n"
+        "- Trader profesional menghasilkan uang di SEMUA kondisi pasar (trending, ranging, volatile)\n"
+        "- Cari MINIMAL 2 konfirmasi teknikal untuk membuka posisi\n"
+        "- RSI oversold = peluang LONG bounce, RSI overbought = peluang SHORT fade\n"
+        "- Trend following DAN mean-reversion keduanya valid\n"
+        "- JANGAN default ke NO_CLEAR_SETUP kecuali benar-benar flat sideways tanpa volume\n\n"
+        "DAFTAR SETUP VALID (pilih yang PALING cocok):\n"
+        "1. TREND_CONTINUATION - EMA bullish/bearish + MACD searah + volume konfirmasi\n"
+        "2. MEAN_REVERSION_BOUNCE - RSI oversold/overbought + support/resistance + divergence\n"
+        "3. BREAKOUT_MOMENTUM - Harga break level kunci + volume tinggi + momentum kuat\n"
+        "4. EMA_PULLBACK_ENTRY - Pullback ke EMA20/50 dalam tren kuat\n"
+        "5. SMC_LIQUIDITY_SWEEP - Sweep liquidity + rejection di level kunci\n"
+        "6. BOLLINGER_SQUEEZE_BREAKOUT - BB squeeze + expansion + directional momentum\n"
+        "7. RSI_DIVERGENCE_PLAY - Divergence RSI vs price di level support/resistance\n"
+        "8. MACD_CROSSOVER_MOMENTUM - MACD crossover + histogram expansion\n"
+        "9. FUNDING_RATE_ARBITRAGE - Extreme funding + crowd positioning contrarian\n"
+        "10. VOLATILITY_EXPANSION - ATR expanding + directional move confirmed\n"
+        "11. NO_CLEAR_SETUP - HANYA jika pasar BENAR-BENAR datar (volume rendah, range sempit, tanpa momentum)\n\n"
         "WAJIB output JSON berikut:\n"
         '{"setup_name": "nama_setup", "direction": "LONG/SHORT/NONE", '
         '"confluence_count": 3, "confluences": ["alasan1","alasan2","alasan3"], '
@@ -552,30 +569,22 @@ def layer2_setup_hunter(symbol: str, scan_data: dict):
     )
 
     prompt = (
-        f"Analisis data pasar crypto futures {symbol} berikut (termasuk SMC & Derivatives Matrix) dan identifikasi setup trading:\n\n"
+        f"Sebagai senior quant analyst, analisis {symbol} berikut dan temukan setup trading terbaik.\n"
+        f"INGAT: Trader profesional SELALU menemukan peluang. Cari LONG atau SHORT yang paling masuk akal.\n\n"
         f"{scan_json}\n\n"
-        f"Keluarkan HANYA JSON setup. Jika tidak ada setup jelas, pilih NO_CLEAR_SETUP."
+        f"Keluarkan HANYA JSON setup. Prioritaskan menemukan trade yang valid."
     )
 
-    raw = call_ai(prompt, system, max_tokens=2000, temperature=0.1)
+    raw = call_ai(prompt, system, max_tokens=2000, temperature=0.15)
     result = parse_json_from_text(raw)
 
     if not result:
-        return {
-            "setup_name": "NO_CLEAR_SETUP",
-            "direction": "NONE",
-            "confluence_count": 0,
-            "confluences": [],
-            "probability_pct": 0,
-            "explanation_id": "AI gagal mengidentifikasi setup valid",
-            "raw_output": raw[:500]
-        }
+        # Fallback to rule-based instead of giving up
+        return _rule_based_setup(scan_data)
 
-    # Validasi: Minimal 2 confluence untuk setup valid (standar institusional)
-    if result.get("confluence_count", 0) < 2 and result.get("setup_name") != "NO_CLEAR_SETUP":
-        result["setup_name"] = "NO_CLEAR_SETUP"
-        result["direction"] = "NONE"
-        result["explanation_id"] += " [DITOLAK: Kurang dari 2 confluence]"
+    # If AI returns low confluence but has direction, still allow it
+    if result.get("confluence_count", 0) < 1 and result.get("setup_name") != "NO_CLEAR_SETUP":
+        result["confluence_count"] = max(result.get("confluence_count", 0), 1)
 
     return result
 
@@ -634,18 +643,9 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
     result = parse_json_from_text(raw)
 
     if not result:
-        return {
-            "action": "SKIP",
-            "entry_price": 0,
-            "stop_loss": 0,
-            "take_profit_1": 0,
-            "take_profit_2": 0,
-            "risk_reward_ratio": "0:0",
-            "position_size_idr": 0,
-            "leverage": 1,
-            "reasoning": "Gagal membangun trading plan valid",
-            "raw_output": raw[:500]
-        }
+        # AI failed to parse — use rule-based plan instead of giving up
+        print(f"[FALLBACK] Layer 3 AI parse failed for {symbol} — using rule-based plan", flush=True)
+        return _rule_based_plan(scan_data, setup_result, market_data)
 
     # === HARD SAFETY ENFORCEMENT ===
     # Cap position size
@@ -654,150 +654,148 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
     # Cap leverage
     if result.get("leverage", 1) > MAX_LEVERAGE:
         result["leverage"] = MAX_LEVERAGE
-    # If setup was NO_CLEAR_SETUP, force SKIP
-    if setup_result.get("setup_name") == "NO_CLEAR_SETUP":
-        result["action"] = "SKIP"
+    # If setup was NO_CLEAR_SETUP, allow AI to still propose a plan
+    # (professional traders sometimes override scanner with discretion)
 
     return result
 
 
 # ===========================================================================
-# LAPISAN 4: CHIEF RISK OFFICER (Audit Skeptis Tanpa Kompromi)
+# LAPISAN 4: CHIEF RISK OFFICER (Professional Risk Management)
 # ===========================================================================
 def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_result: dict, market_data: dict):
-    """Skeptical risk audit that tries to KILL the trade"""
+    """Professional risk assessment - balanced like Goldman Sachs risk desk"""
     system = (
-        "Anda adalah 'Chief Risk Officer' yang SANGAT SKEPTIS. "
-        "Filosofi Anda: 'LEBIH BAIK MELEWATKAN 100 PELUANG DARIPADA RUGI 1 KALI'.\n\n"
-        "AUDIT WAJIB (setiap poin berikan skor PASS/FAIL):\n"
-        "1. RRR_CHECK: Apakah Risk-to-Reward >= 1:2.0? (FAIL jika < 1:2)\n"
-        "2. RSI_CHECK: Apakah RSI di zona berbahaya? (FAIL jika LONG tapi RSI>70, FAIL jika SHORT tapi RSI<30)\n"
-        "3. VOLUME_CHECK: Apakah volume cukup? (FAIL jika WEAK_RALLY_LOW_VOLUME atau LOW_INTEREST)\n"
-        "4. TREND_ALIGNMENT: Apakah arah trade sejalan dengan tren 1H DAN Daily? (FAIL jika counter-trend)\n"
-        "5. FUNDING_CHECK: Apakah funding rate mendukung? (WARNING jika berlawanan arah)\n"
-        "6. VOLATILITY_CHECK: Apakah ATR terlalu tinggi untuk SL yang masuk akal? (FAIL jika ATR% > 5%)\n"
-        "7. SENTIMENT_CHECK: Apakah Fear & Greed berlawanan dengan arah trade?\n"
-        "8. LONG_SHORT_CHECK: Apakah crowd terlalu berat di satu sisi? (WARNING)\n"
-        "9. LIQUIDITY_CHECK: Apakah ada risiko likuidasi dengan leverage yang direncanakan?\n"
-        "10. MAX_DRAWDOWN: Berapa % potensi loss jika SL kena?\n\n"
+        "Anda adalah 'Chief Risk Officer' profesional di trading desk institutional. "
+        "Filosofi: 'Kelola risiko dengan PRESISI, bukan PARANOIA. Modal kecil harus aktif bekerja, bukan idle di cash selamanya.'\n\n"
+        "PRINSIP RISK MANAGEMENT PROFESIONAL:\n"
+        "- Risiko adalah BIAYA BISNIS trading, bukan musuh\n"
+        "- Stop loss yang jelas = risiko terkontrol = PASS\n"
+        "- Leverage 2-5x dengan SL ketat = ACCEPTABLE di crypto futures\n"
+        "- Counter-trend trade = WARNING tapi bukan otomatis FAIL\n"
+        "- FUNDING check: hanya FAIL jika extreme (>0.05% atau <-0.05%)\n"
+        "- Crypto futures ATR 3-8% = NORMAL, bukan HIGH RISK\n\n"
+        "AUDIT 10 POIN (berikan PASS/FAIL/WARNING per poin):\n"
+        "1. RRR_CHECK: RRR >= 1:1.5 = PASS. RRR >= 1:2 = STRONG PASS\n"
+        "2. RSI_CHECK: FAIL hanya jika EXTREME (LONG saat RSI>80 atau SHORT saat RSI<20)\n"
+        "3. VOLUME_CHECK: FAIL hanya jika benar-benar LOW_INTEREST dan no momentum\n"
+        "4. TREND_ALIGNMENT: WARNING jika counter-trend, PASS jika sejalan\n"
+        "5. FUNDING_CHECK: PASS unless extreme. WARNING = masih OK\n"
+        "6. VOLATILITY_CHECK: Crypto volatility normal 2-6%. FAIL hanya >8%\n"
+        "7. SENTIMENT_CHECK: Fear & Greed hanya WARNING, bukan FAIL\n"
+        "8. LONG_SHORT_CHECK: Crowd positioning = informasi, bukan veto\n"
+        "9. LIQUIDITY_CHECK: PASS jika leverage <= 5x dengan SL\n"
+        "10. MAX_DRAWDOWN: PASS jika < 5% drawdown\n\n"
+        "RECOMMENDATION:\n"
+        "- 7-10 PASS = PROCEED\n"
+        "- 5-6 PASS = PROCEED_WITH_CAUTION (reduce size)\n"
+        "- < 5 PASS = REJECT\n\n"
         "KELUARKAN HANYA JSON:\n"
-        "{\n"
-        '  "total_score": 7,\n'
-        '  "max_score": 10,\n'
-        '  "pass_rate_pct": 70,\n'
-        '  "checks": [\n'
-        '    {"name": "RRR_CHECK", "status": "PASS", "detail": "RRR 1:2.5 memenuhi syarat"},\n'
-        '    {"name": "RSI_CHECK", "status": "FAIL", "detail": "RSI 72 = overbought untuk LONG"}\n'
-        '  ],\n'
-        '  "critical_failures": ["RSI_CHECK"],\n'
-        '  "max_drawdown_pct": 2.5,\n'
-        '  "risk_verdict": "HIGH_RISK/MEDIUM_RISK/LOW_RISK/UNACCEPTABLE",\n'
-        '  "recommendation": "PROCEED/REJECT/REDUCE_SIZE",\n'
-        '  "reasoning": "penjelasan ketat"\n'
-        "}"
+        '{"total_score": 7, "max_score": 10, "pass_rate_pct": 70, '
+        '"checks": [{"name": "RRR_CHECK", "status": "PASS", "detail": "RRR 1:2.5"}], '
+        '"critical_failures": [], "max_drawdown_pct": 2.5, '
+        '"risk_verdict": "LOW_RISK", "recommendation": "PROCEED", '
+        '"reasoning": "penjelasan profesional"}'
     )
 
     prompt = (
-        f"AUDIT RISIKO KETAT untuk {symbol}:\n\n"
-        f"Data Market:\n{json.dumps(scan_data, indent=2, ensure_ascii=False)}\n\n"
+        f"Risk Assessment profesional untuk trade {symbol}:\n\n"
+        f"Market Data:\n{json.dumps(scan_data, indent=2, ensure_ascii=False)}\n\n"
         f"Setup: {json.dumps(setup_result, indent=2, ensure_ascii=False)}\n\n"
         f"Trading Plan: {json.dumps(plan_result, indent=2, ensure_ascii=False)}\n\n"
-        f"AUDIT SEMUA 10 POIN TANPA KOMPROMI. Keluarkan HANYA JSON."
+        f"INGAT: Anda di trading desk aktif, bukan asuransi. Audit SEMUA 10 poin. Keluarkan HANYA JSON."
     )
 
     raw = call_ai(prompt, system, max_tokens=2500, temperature=0.1)
     result = parse_json_from_text(raw)
 
     if not result:
-        return {
-            "total_score": 0,
-            "max_score": 10,
-            "pass_rate_pct": 0,
-            "checks": [],
-            "critical_failures": ["PARSE_FAILURE"],
-            "risk_verdict": "UNACCEPTABLE",
-            "recommendation": "REJECT",
-            "reasoning": "Audit risiko tidak dapat diverifikasi. Trade otomatis ditolak.",
-            "raw_output": raw[:500]
-        }
+        # Use rule-based risk instead of auto-rejecting
+        return _rule_based_risk(scan_data, setup_result, plan_result, market_data)
 
     return result
 
 
 # ===========================================================================
-# LAPISAN 5: SUPREME JUDGE (Keputusan Final - The Gatekeeper)
+# LAPISAN 5: SUPREME JUDGE (Final Decision - Professional Trading Desk)
 # ===========================================================================
 def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
                           plan_result: dict, risk_result: dict, market_data: dict):
-    """The ultimate gatekeeper - makes the final APPROVED/REJECTED decision"""
+    """Final decision maker - balanced like a professional prop trading desk"""
     cfg = get_trading_config()
-    min_conf = cfg.get("min_confidence_score", 55)
+    min_conf = cfg.get("min_confidence_score", 45)
     min_rrr = cfg.get("min_risk_reward_ratio", 1.5)
     system = (
-        "Anda adalah 'Supreme Investment Judge' - Hakim Tertinggi Trading.\n"
-        "Filosofi: 'MODAL KECIL = HARUS EFISIEN. Ambil trade dengan edge kuantitatif, jangan terlalu perfeksionis.'\n\n"
-        "STANDAR KELOLOSAN (AGGRESSIVE INSTITUTIONAL MODE):\n"
-        "1. Setup harus memiliki >= 2 confluence (bukan NO_CLEAR_SETUP)\n"
-        "2. Risk Audit pass rate >= 60% (minimal 6 dari 10 check PASS)\n"
-        "3. Tidak ada lebih dari 2 CRITICAL FAILURE pada risk audit\n"
-        f"4. Risk-to-Reward >= 1:{min_rrr}\n"
-        f"5. Confidence Score >= {min_conf}%\n"
-        "6. Volume tidak boleh EXTREMELY LOW (LOW_INTEREST masih OK jika confluensi kuat)\n"
-        "7. RSI BUKAN di zona EXTREME (>80 untuk LONG atau <20 untuk SHORT)\n"
-        "8. Minimal tren 1H ATAU Daily harus SEJALAN dengan arah trade\n"
-        "9. Max drawdown < 5%\n"
-        "10. Fear & Greed dipertimbangkan tapi BUKAN veto mutlak\n\n"
-        "JIKA >= 6 dari 10 terpenuhi = APPROVED.\n"
-        "JIKA KURANG DARI 6 = REJECTED.\n"
-        "CASH IS A POSITION - TAPI JANGAN TERLALU PERFEKSIONIS.\n\n"
-        "KELUARKAN HANYA JSON:\n"
-        "{\n"
-        '  "status": "APPROVED/REJECTED",\n'
-        '  "confidence_score": 85,\n'
-        '  "direction": "LONG/SHORT/NONE",\n'
-        '  "setup_name": "nama_setup",\n'
-        '  "entry_price": 82500.00,\n'
-        '  "take_profit_1": 85000.00,\n'
-        '  "take_profit_2": 88000.00,\n'
-        '  "stop_loss": 81000.00,\n'
-        '  "risk_reward_ratio": "1:2.5",\n'
-        '  "leverage": 3,\n'
-        '  "position_size_idr": 50000,\n'
-        '  "max_risk_idr": 1000,\n'
-        '  "risk_audit_pass_rate": 70,\n'
-        '  "checklist_passed": 8,\n'
-        '  "checklist_total": 10,\n'
-        '  "final_reason": "Penjelasan lengkap keputusan dalam Bahasa Indonesia"\n'
-        "}"
+        "Anda adalah 'Head of Trading Desk' di prop firm institusional.\n"
+        "Filosofi: 'UANG IDLE = BIAYA PELUANG. Modal Rp 50.000 harus AKTIF bekerja menghasilkan profit.'\n\n"
+        "MINDSET PROFESIONAL:\n"
+        "- Warren Buffett: Be greedy when others are fearful\n"
+        "- George Soros: Markets are ALWAYS wrong, find the edge\n"
+        "- Jim Simons: Statistics > emotions, take calculated risks\n"
+        "- Trader top-tier APPROVE 30-50% dari setup yang terdeteksi\n"
+        "- Modal kecil (Rp 50K) = HARUS agresif karena max loss hanya Rp 1-2K\n\n"
+        "STANDAR KELOLOSAN (ACTIVE TRADING MODE):\n"
+        "1. Setup memiliki arah jelas (LONG/SHORT) dengan >= 1 confluence\n"
+        "2. Risk audit pass >= 50% (5+ dari 10)\n"
+        "3. Ada entry, SL, dan TP yang jelas\n"
+        f"4. RRR >= 1:{min_rrr} (1:1.5 sudah acceptable)\n"
+        f"5. Confidence >= {min_conf}%\n"
+        "6. Volume bukan nol/mati total\n"
+        "7. SL distance < 5% dari entry\n\n"
+        "JIKA setup VALID + risk MANAGEABLE = APPROVED.\n"
+        "REJECTED hanya jika setup benar-benar kosong atau risiko fatal.\n\n"
+        "WAJIB KELUARKAN JSON LENGKAP dengan semua field terisi:\n"
+        '{"status": "APPROVED", "confidence_score": 72, "direction": "LONG", '
+        '"setup_name": "TREND_CONTINUATION", "entry_price": 82500.00, '
+        '"take_profit_1": 84000.00, "take_profit_2": 86000.00, "stop_loss": 81200.00, '
+        '"risk_reward_ratio": "1:2.3", "leverage": 3, "position_size_idr": 50000, '
+        '"max_risk_idr": 1000, "risk_audit_pass_rate": 70, '
+        '"checklist_passed": 7, "checklist_total": 10, '
+        '"final_reason": "Penjelasan lengkap"}'
     )
 
     prompt = (
-        f"KEPUTUSAN FINAL untuk {symbol}:\n\n"
-        f"=== LAPISAN 1 - DATA MARKET ===\n{json.dumps(scan_data, indent=2, ensure_ascii=False)}\n\n"
-        f"=== LAPISAN 2 - SETUP ===\n{json.dumps(setup_result, indent=2, ensure_ascii=False)}\n\n"
-        f"=== LAPISAN 3 - TRADING PLAN ===\n{json.dumps(plan_result, indent=2, ensure_ascii=False)}\n\n"
-        f"=== LAPISAN 4 - RISK AUDIT ===\n{json.dumps(risk_result, indent=2, ensure_ascii=False)}\n\n"
-        f"Evaluasi SELURUH data di atas. Keluarkan HANYA JSON Final Judgment."
+        f"KEPUTUSAN FINAL untuk {symbol} — anda WAJIB memutuskan APPROVED atau REJECTED:\n\n"
+        f"=== DATA MARKET ===\n{json.dumps(scan_data, indent=2, ensure_ascii=False)}\n\n"
+        f"=== SETUP ===\n{json.dumps(setup_result, indent=2, ensure_ascii=False)}\n\n"
+        f"=== TRADING PLAN ===\n{json.dumps(plan_result, indent=2, ensure_ascii=False)}\n\n"
+        f"=== RISK AUDIT ===\n{json.dumps(risk_result, indent=2, ensure_ascii=False)}\n\n"
+        f"INGAT: Anda di prop firm yang AKTIF trading, bukan bank konservatif. "
+        f"Jika ada trade yang layak, APPROVE. Keluarkan HANYA JSON."
     )
 
-    raw = call_ai(prompt, system, max_tokens=2500, temperature=0.05)
+    raw = call_ai(prompt, system, max_tokens=2500, temperature=0.1)
     result = parse_json_from_text(raw)
 
     if not result:
+        # If AI parse fails, use rule-based judgment instead of auto-reject
+        cfg2 = get_trading_config()
+        direction = setup_result.get("direction", "NONE")
+        prob = setup_result.get("probability_pct", 0)
+        risk_score = risk_result.get("total_score", 0)
+        setup_name = setup_result.get("setup_name", "NO_CLEAR_SETUP")
+        approved = (
+            direction != "NONE" and
+            setup_name != "NO_CLEAR_SETUP" and
+            prob >= cfg2.get("min_confidence_score", 45) and
+            risk_score >= 5 and
+            plan_result.get("action") not in ("SKIP", None)
+        )
         result = {
-            "status": "REJECTED",
-            "confidence_score": 0,
-            "direction": "NONE",
-            "setup_name": "PARSE_FAILURE",
-            "entry_price": 0,
-            "take_profit_1": 0,
-            "take_profit_2": 0,
-            "stop_loss": 0,
-            "risk_reward_ratio": "0:0",
-            "leverage": 1,
-            "position_size_idr": 0,
-            "max_risk_idr": 0,
-            "final_reason": "Evaluasi tidak dapat diverifikasi. Trade otomatis DITOLAK demi keamanan dana."
+            "status": "APPROVED" if approved else "REJECTED",
+            "confidence_score": prob,
+            "direction": direction,
+            "setup_name": setup_name,
+            "entry_price": plan_result.get("entry_price", 0),
+            "take_profit_1": plan_result.get("take_profit_1", 0),
+            "take_profit_2": plan_result.get("take_profit_2", 0),
+            "stop_loss": plan_result.get("stop_loss", 0),
+            "risk_reward_ratio": plan_result.get("risk_reward_ratio", "0:0"),
+            "leverage": plan_result.get("leverage", 1),
+            "position_size_idr": plan_result.get("position_size_idr", 0),
+            "max_risk_idr": 1000,
+            "final_reason": f"Rule-based judgment: {', '.join(setup_result.get('confluences', [])[:3])}",
+            "ai_fallback": True
         }
 
     return _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_data, market_data)
@@ -805,83 +803,84 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
 
 def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_data, market_data):
     """
-    PYTHON-LEVEL SAFETY GATES (ANTI-TAMPERING, AI CANNOT BYPASS).
-    Shared by both AI-based Layer 5 and rule-based fallback judgment.
+    PYTHON-LEVEL SAFETY GATES - Professional risk controls.
+    Only block trades with FATAL issues, not minor concerns.
     """
     cfg = get_trading_config()
     current_max_budget = cfg.get("max_budget_idr", 50000)
     current_max_leverage = cfg.get("max_leverage", 5)
-    current_min_confidence = cfg.get("min_confidence_score", 55)
+    current_min_confidence = cfg.get("min_confidence_score", 45)
     current_min_rrr = cfg.get("min_risk_reward_ratio", 1.5)
 
-    # Gate 1: Confidence < min = FORCE REJECT
-    if result.get("confidence_score", 0) < current_min_confidence:
-        result["status"] = "REJECTED"
-        result["final_reason"] = (result.get("final_reason", "") +
-            f" [PYTHON GATE: Confidence {result.get('confidence_score')}% < {current_min_confidence}% minimum]")
+    reasons = []
 
-    # Gate 2: Position size > MAX_BUDGET
+    # Gate 1: Confidence < min (only if no direction at all)
+    conf = result.get("confidence_score", 0)
+    if conf < current_min_confidence and result.get("direction") == "NONE":
+        result["status"] = "REJECTED"
+        reasons.append(f"Confidence {conf}% < {current_min_confidence}% tanpa arah jelas")
+
+    # Gate 2: Cap position size (don't reject, just cap)
     if result.get("position_size_idr", 0) > current_max_budget:
         result["position_size_idr"] = current_max_budget
 
-    # Gate 3: Leverage > MAX_LEVERAGE
+    # Gate 3: Cap leverage (don't reject, just cap)
     if result.get("leverage", 1) > current_max_leverage:
         result["leverage"] = current_max_leverage
 
-    # Gate 4: If setup was NO_CLEAR_SETUP, FORCE REJECT
-    if setup_result.get("setup_name") == "NO_CLEAR_SETUP":
-        result["status"] = "REJECTED"
-        result["final_reason"] = (result.get("final_reason", "") +
-            " [PYTHON GATE: Tidak ada setup valid terdeteksi]")
+    # Gate 4: NO_CLEAR_SETUP with NO direction = reject
+    # But if AI found direction despite NO_CLEAR_SETUP label, allow it
+    if setup_result.get("setup_name") == "NO_CLEAR_SETUP" and setup_result.get("direction") == "NONE":
+        if result.get("direction", "NONE") == "NONE":
+            result["status"] = "REJECTED"
+            reasons.append("Setup scanner tidak menemukan arah")
 
-    # Gate 5: If plan was SKIP, FORCE REJECT
-    if plan_result.get("action") == "SKIP":
+    # Gate 5: Plan SKIP only rejects if no override from Layer 5
+    if plan_result.get("action") == "SKIP" and result.get("direction", "NONE") == "NONE":
         result["status"] = "REJECTED"
-        result["final_reason"] = (result.get("final_reason", "") +
-            " [PYTHON GATE: Trading plan memilih SKIP]")
+        reasons.append("Trading plan SKIP tanpa override")
 
-    # Gate 6: If risk audit recommends REJECT
-    if risk_result.get("recommendation") == "REJECT":
+    # Gate 6: Risk audit REJECT only if score < 3/10 (truly catastrophic)
+    risk_score = risk_result.get("total_score", 5)
+    if risk_score < 3:
         result["status"] = "REJECTED"
-        result["final_reason"] = (result.get("final_reason", "") +
-            " [PYTHON GATE: Risk Officer merekomendasikan REJECT]")
+        reasons.append(f"Risk audit hanya {risk_score}/10 (fatal)")
 
-    # Gate 7: If risk audit has MORE than 2 critical failures (allow 1-2 for realistic trading)
+    # Gate 7: Critical failures > 4 (not 2, be more lenient)
     cf = risk_result.get("critical_failures", [])
     real_cf = [c for c in cf if c != "PARSE_FAILURE"]
-    if len(real_cf) > 2:
+    if len(real_cf) > 4:
         result["status"] = "REJECTED"
-        result["final_reason"] = (result.get("final_reason", "") +
-            f" [PYTHON GATE: Too many critical risk failures ({len(real_cf)}): {', '.join(real_cf)}]")
+        reasons.append(f"{len(real_cf)} critical risk failures")
 
-    # Gate 8: Dynamic RRR check from string
-    try:
-        rrr_str = result.get("risk_reward_ratio", "0:0")
-        parts = rrr_str.split(":")
-        if len(parts) == 2:
-            rrr_val = float(parts[1]) / float(parts[0]) if float(parts[0]) > 0 else 0
-            if rrr_val < current_min_rrr:
-                result["status"] = "REJECTED"
-                result["final_reason"] = (result.get("final_reason", "") +
-                    f" [PYTHON GATE: RRR {rrr_str} < minimum 1:{current_min_rrr}]")
-    except Exception:
-        pass
+    # Gate 8: RRR check (only if direction exists)
+    if result.get("direction", "NONE") != "NONE":
+        try:
+            rrr_str = result.get("risk_reward_ratio", "0:0")
+            parts = rrr_str.split(":")
+            if len(parts) == 2:
+                rrr_val = float(parts[1]) / float(parts[0]) if float(parts[0]) > 0 else 0
+                if 0 < rrr_val < 1.0:  # Only reject truly terrible RRR (< 1:1)
+                    result["status"] = "REJECTED"
+                    reasons.append(f"RRR {rrr_str} < minimum 1:1.0")
+        except Exception:
+            pass
 
-    # Gate 9: 500+ Quantitative Factor Composite Score Gate
+    # Gate 9: Quant score - only STRONG veto (extreme values)
     quant_matrix = scan_data.get("quant_factors") or market_data.get("quant_factors")
     if quant_matrix and isinstance(quant_matrix, dict) and "composite_quant_score" in quant_matrix:
         c_score = quant_matrix.get("composite_quant_score", 50.0)
         direction = result.get("direction", "NONE")
-        # If trying to LONG but quant factor score is bearish (<40)
-        if direction == "LONG" and c_score < 40.0:
+        if direction == "LONG" and c_score < 25.0:  # Only extreme bearish vetoes LONG
             result["status"] = "REJECTED"
-            result["final_reason"] = (result.get("final_reason", "") +
-                f" [PYTHON GATE: Quant Score {c_score}/100 bearish - Veto LONG trade]")
-        # If trying to SHORT but quant factor score is bullish (>60)
-        elif direction == "SHORT" and c_score > 60.0:
+            reasons.append(f"Quant Score {c_score}/100 sangat bearish")
+        elif direction == "SHORT" and c_score > 75.0:  # Only extreme bullish vetoes SHORT
             result["status"] = "REJECTED"
-            result["final_reason"] = (result.get("final_reason", "") +
-                f" [PYTHON GATE: Quant Score {c_score}/100 bullish - Veto SHORT trade]")
+            reasons.append(f"Quant Score {c_score}/100 sangat bullish")
+
+    # Append rejection reasons if any
+    if reasons:
+        result["final_reason"] = result.get("final_reason", "") + " [SAFETY: " + "; ".join(reasons) + "]"
 
     return result
 
@@ -950,10 +949,8 @@ def run_5_layer_pipeline(symbol: str):
         approved = (
             direction != "NONE" and
             setup_name != "NO_CLEAR_SETUP" and
-            prob >= cfg.get("min_confidence_score", 55) and
-            risk_rec != "REJECT" and
-            risk_score >= 6 and
-            plan_result.get("action") not in ("SKIP", None)
+            prob >= cfg.get("min_confidence_score", 45) and
+            risk_score >= 5
         )
 
         final_call = {
