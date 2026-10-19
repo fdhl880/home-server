@@ -35,6 +35,14 @@ rm -f pluang-bot/results/active_positions.json
 mkdir -p pluang-bot/results
 echo "[]" > pluang-bot/results/active_positions.json
 
-# 4. Start Unified Bloomberg & Crypto Futures Engine
+# 4. Clean up any zombie process holding port 4000
+echo "[*] Ensuring Port 4000 is clean..."
+if command -v fuser &> /dev/null; then
+    fuser -k 4000/tcp 2>/dev/null || true
+fi
+pkill -9 -f "node server.js" 2>/dev/null || true
+sleep 1
+
+# 5. Start Unified Bloomberg & Crypto Futures Engine
 echo "[*] Launching Unified Bloomberg Terminal & Crypto Futures Engine on Port 4000..."
 exec node server.js
