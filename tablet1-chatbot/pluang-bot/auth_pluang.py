@@ -175,6 +175,8 @@ def login_pluang(force=False):
 
     with open(os.path.join(BASE_DIR, "login_url.txt"), "w", encoding="utf-8") as f:
         f.write(auth_url)
+    with open(os.path.join(BASE_DIR, "pending_auth.json"), "w", encoding="utf-8") as f:
+        json.dump({"client_id": client_id, "code_verifier": code_verifier, "url": auth_url}, f, indent=2)
 
     print("\n" + "="*70, flush=True)
     print("🔑 SILAKAN LOGIN KE AKUN PLUANG ANDA DI BROWSER", flush=True)
@@ -213,13 +215,10 @@ def login_pluang(force=False):
         if "error" in auth_code_holder:
             raise Exception(f"Login ditolak oleh Pluang: {auth_code_holder['error']}")
 
-        # Non-blocking check with short timeout
         time.sleep(1)
-        # If user runs in interactive terminal, prompt them
         if sys.stdin.isatty():
             try:
                 import select
-                # Windows doesn't support select on stdin, so use msvcrt if on windows
                 has_input = False
                 if sys.platform == "win32":
                     import msvcrt
@@ -271,6 +270,43 @@ def login_pluang(force=False):
         raise Exception(f"Gagal menukarkan token: {resp.status_code} - {resp.text}")
 
 if __name__ == "__main__":
+    if "--code" in sys.argv or "-c" in sys.argv:
+        flag = "--code" if "--code" in sys.argv else "-c"
+        idx = sys.argv.index(flag)
+        if idx + 1 < len(sys.argv):
+            raw_arg = sys.argv[idx + 1]
+            if "code=" in raw_arg:
+                code_val = parse_qs(urlparse(raw_arg).query).get("code", [raw_arg])[0]
+            else:
+                code_val = raw_arg
+            
+            pending_file = os.path.join(BASE_DIR, "pending_auth.json")
+            if not os.path.exists(pending_file):
+                print("[-] File pending_auth.json tidak ditemukan. Silakan generate auth URL terlebih dahulu.")
+                sys.exit(1)
+            with open(pending_file, "r", encoding="utf-8") as f:
+                pending = json.load(f)
+            
+            token_payload = {
+                "grant_type": "authorization_code",
+                "client_id": pending["client_id"],
+                "code": code_val,
+                "redirect_uri": REDIRECT_URI,
+                "code_verifier": pending["code_verifier"]
+            }
+            resp = requests.post(TOKEN_ENDPOINT, data=token_payload, timeout=15)
+            if resp.status_code == 200:
+                token_data = resp.json()
+                token_data["acquired_at"] = time.time()
+                with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+                    json.dump(token_data, f, indent=2)
+                print("[+] SUKSES! Token Pluang berhasil disimpan di tokens.json")
+                sys.exit(0)
+            else:
+                print(f"[-] Gagal menukarkan token: {resp.status_code} - {resp.text}")
+                sys.exit(1)
+
     force_login = "--force" in sys.argv or "-f" in sys.argv
     token = login_pluang(force=force_login)
     print(f"\n✅ Siap digunakan! Token Pluang aktif.")
+
