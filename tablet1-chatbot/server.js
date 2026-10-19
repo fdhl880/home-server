@@ -2559,6 +2559,30 @@ app.get('/api/crypto-futures/positions', (req, res) => {
     res.json(getLocalPositions());
 });
 
+// 4b. CLOSE POSITION ENDPOINTS (Native on Port 4000)
+app.post(['/api/crypto-futures/positions/close', '/api/positions/close'], (req, res) => {
+    const { id, symbol, direction } = req.body || {};
+    let positions = getLocalPositions();
+    const initialLen = positions.length;
+    if (id) {
+        positions = positions.filter(p => p.id !== id);
+    } else if (symbol) {
+        positions = positions.filter(p => !(p.symbol === symbol && (!direction || p.direction === direction)));
+    }
+    saveLocalPositions(positions);
+    res.json({ success: true, message: `Posisi ${symbol || id || ''} berhasil ditutup.`, remaining: positions.length });
+});
+
+// 4c. CLEAR ALL POSITIONS (Hapus Seluruh Posisi)
+app.all(['/api/crypto-futures/positions/clear', '/api/positions/clear'], (req, res) => {
+    saveLocalPositions([]);
+    res.json({ success: true, message: "Seluruh posisi aktif berhasil dihapus.", positions: [] });
+});
+app.delete(['/api/crypto-futures/positions', '/api/positions'], (req, res) => {
+    saveLocalPositions([]);
+    res.json({ success: true, message: "Seluruh posisi aktif berhasil dihapus.", positions: [] });
+});
+
 // 5. EXECUTE ENDPOINT (100% Native on Port 4000)
 app.post('/api/crypto-futures/execute', (req, res) => {
     const signal = req.body || {};

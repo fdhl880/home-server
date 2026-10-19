@@ -249,8 +249,13 @@ def record_position(signal: dict):
                 pos["pluang_synced"] = False
                 pos["pluang_execution"] = {"error": str(e)}
         else:
-            print(f"[PLUANG] ⚠️ No MCP client - recording locally only", flush=True)
-    
+            print(f"[PLUANG] ⚠️ No MCP client - skipping position recording because order was not opened on Pluang", flush=True)
+            return None
+
+    if not pos.get("pluang_synced"):
+        print(f"[PLUANG] ⚠️ Order not executed on Pluang - skipping position recording", flush=True)
+        return None
+
     positions.append(pos)
     try:
         with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
