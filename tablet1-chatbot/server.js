@@ -2622,11 +2622,17 @@ app.post('/api/crypto-futures/execute', (req, res) => {
         status: "OPEN",
         pnl_idr: 0,
         pnl_usd: 0,
-        pnl_pct: 0.0
+        pnl_pct: 0.0,
+        pluang_synced: false
     };
     const positions = [pos, ...getLocalPositions()];
     saveLocalPositions(positions);
-    res.json({ status: "SUCCESS", position: pos });
+    res.json({
+        status: "SUCCESS",
+        success: true,
+        position: pos,
+        message: "Order dicatat di terminal saja. Belum masuk ke Pluang asli karena token login Pluang belum aktif."
+    });
 });
 
 // 6. CONFIG & SETTINGS ENDPOINTS (100% Native on Port 4000)

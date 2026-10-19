@@ -3584,7 +3584,11 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 });
                 const d = await res.json();
                 if (res.ok && d.success) {
-                    showPopup(d.message || `ORDER EXECUTED ON PLUANG! ID: ${d.position?.id}`);
+                    if (d.position && d.position.pluang_synced) {
+                        showPopup(`✅ ORDER LIVE TERKIRIM KE PLUANG! ID: ${d.position?.id}`);
+                    } else {
+                        showPopup(`⚠️ SIMULASI LOKAL: Order tercatat di terminal, tapi BELUM dipesan ke akun Pluang asli karena Token Pluang belum login/expired.`);
+                    }
                     fetchCryptoFuturesData();
                 } else {
                     showPopup(`ORDER REJECTED: ${d.error || 'Execution failed'}`);

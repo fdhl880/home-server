@@ -466,7 +466,7 @@ class PluangMCPClient:
             execution_log["steps"]["leverage"] = self.set_leverage(symbol, leverage)
 
             # Step 3: Open position
-            execution_log["steps"]["open_position"] = self.open_position(
+            open_res = self.open_position(
                 symbol=symbol,
                 direction=direction,
                 amount=position_size,
@@ -474,6 +474,9 @@ class PluangMCPClient:
                 order_type=order_type,
                 margin_type=margin_type
             )
+            execution_log["steps"]["open_position"] = open_res
+            if isinstance(open_res, dict) and ("error" in open_res or not open_res):
+                raise Exception(f"Pluang API Error: {open_res.get('error', 'Unknown error / order rejected by Pluang')}")
 
             # Step 4: Set TP/SL
             if tp1 or tp2 or sl:
@@ -489,7 +492,7 @@ class PluangMCPClient:
 
             execution_log["status"] = "EXECUTED"
             execution_log["pluang_synced"] = True
-            print(f"[PluangMCP] ✅ Full trade executed: {direction} {symbol} ${position_size} {leverage}x")
+            print(f"[PluangMCP] ✅ Full trade executed on Pluang: {direction} {symbol} ${position_size} {leverage}x")
 
         except Exception as e:
             execution_log["status"] = "FAILED"
