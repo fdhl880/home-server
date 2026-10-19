@@ -3374,13 +3374,25 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
         async function fetchCryptoFuturesData() {
             // 1. Fetch Watchlist (0ms from unified server memory)
             try {
-                const res = await fetch('/api/crypto-futures/watchlist', { signal: AbortSignal.timeout(6000) });
+                const res = await fetch('/api/crypto-futures/watchlist', { signal: AbortSignal.timeout(10000) });
                 if (res.ok) {
-                    cryptoFuturesWatchlist = await res.json();
-                    renderCryptoFuturesWatchlist();
+                    const data = await res.json();
+                    if (Array.isArray(data) && data.length > 0) {
+                        cryptoFuturesWatchlist = data;
+                        renderCryptoFuturesWatchlist();
+                    }
                 }
             } catch (e) {
                 console.warn('Watchlist fetch warning:', e.message);
+                if (!cryptoFuturesWatchlist || cryptoFuturesWatchlist.length === 0) {
+                    try {
+                        const fallbackRes = await fetch('/api/watchlist', { signal: AbortSignal.timeout(5000) });
+                        if (fallbackRes.ok) {
+                            cryptoFuturesWatchlist = await fallbackRes.json();
+                            renderCryptoFuturesWatchlist();
+                        }
+                    } catch (err) {}
+                }
             }
 
             // 2. Fetch Status & Config

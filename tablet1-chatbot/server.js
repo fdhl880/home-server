@@ -2392,14 +2392,11 @@ async function refreshCryptoFuturesTickers() {
         } catch (err) {}
     }
 }
-// Run ticker refresh every 10 seconds in the background
-setInterval(refreshCryptoFuturesTickers, 10000);
-refreshCryptoFuturesTickers();
+// High-speed In-Memory Watchlist Cache
+let cryptoFuturesWatchlistCache = [];
 
-// 1. WATCHLIST ENDPOINT (100% Native, 0ms latency, All 43 Pairs)
-app.get('/api/crypto-futures/watchlist', (req, res) => {
+function updateCryptoFuturesWatchlistCache() {
     try {
-        // Quick screen movers lookup
         let qsMoversMap = {};
         if (fs.existsSync(quickScreenPath)) {
             try {
@@ -2432,6 +2429,7 @@ app.get('/api/crypto-futures/watchlist', (req, res) => {
                 pair: item.pair,
                 price: price,
                 change_24h: change,
+                rsi: 50,
                 rsi_14: 50,
                 trend: change > 3 ? "STRONG_BULLISH" : (change > 0 ? "BULLISH" : (change < -3 ? "STRONG_BEARISH" : "BEARISH")),
                 volatility: Math.abs(change) > 5 ? "HIGH" : "MODERATE",
@@ -2441,22 +2439,44 @@ app.get('/api/crypto-futures/watchlist', (req, res) => {
             };
         });
 
-        return res.json(enriched);
+        cryptoFuturesWatchlistCache = enriched;
     } catch (e) {
-        return res.json(FULL_CRYPTO_FUTURES_UNIVERSE.map(item => ({
-            symbol: item.symbol,
-            name: item.name,
-            pair: item.pair,
-            price: item.default_price,
-            change_24h: 1.0,
-            rsi_14: 50,
-            trend: "BULLISH",
-            volatility: "MODERATE",
-            leverage_max: item.leverage_max,
-            tier: item.tier,
-            last_scan: null
-        })));
+        console.error('Watchlist cache update error:', e.message);
     }
+}
+
+// Initial populate and periodic background refresh every 3 seconds
+updateCryptoFuturesWatchlistCache();
+setInterval(updateCryptoFuturesWatchlistCache, 3000);
+
+function getInstantWatchlist() {
+    if (cryptoFuturesWatchlistCache && cryptoFuturesWatchlistCache.length > 0) {
+        return cryptoFuturesWatchlistCache;
+    }
+    return FULL_CRYPTO_FUTURES_UNIVERSE.map(item => ({
+        symbol: item.symbol,
+        name: item.name,
+        pair: item.pair,
+        price: item.default_price,
+        change_24h: 1.0,
+        rsi: 50,
+        rsi_14: 50,
+        trend: "BULLISH",
+        volatility: "MODERATE",
+        leverage_max: item.leverage_max,
+        tier: item.tier,
+        last_scan: null
+    }));
+}
+
+// 1. WATCHLIST ENDPOINT (100% Native, 0ms latency, All 43 Pairs)
+app.get('/api/crypto-futures/watchlist', (req, res) => {
+    return res.json(getInstantWatchlist());
+});
+
+// Alias for Pluang Terminal (/pluang)
+app.get('/api/watchlist', (req, res) => {
+    return res.json(getInstantWatchlist());
 });
 
 // 2. STATUS ENDPOINT (100% Native on Port 4000)
@@ -2586,6 +2606,80 @@ app.get('/api/crypto-futures/settings', (req, res) => {
 app.post('/api/crypto-futures/settings', (req, res) => {
     const updated = saveLocalTradingConfig(req.body || {});
     res.json(updated);
+});
+
+// Pluang Glassmorphism Terminal API Aliases (/pluang)
+app.get('/api/status', (req, res) => {
+    const cfg = getLocalTradingConfig();
+    const positions = getLocalPositions();
+    let state = {};
+    try {
+        if (fs.existsSync(statePath)) state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    } catch (e) {}
+    const hasTokens = fs.existsSync(tokensPath);
+    res.json({
+        status: "online",
+        version: "3.0",
+        pluang_connected: hasTokens,
+        autotrader_state: state,
+        positions: positions,
+        active_positions_count: positions.filter(p => p.status === 'OPEN').length,
+        config: cfg
+    });
+});
+
+app.get('/api/positions', (req, res) => res.json(getLocalPositions()));
+app.get('/api/config', (req, res) => res.json(getLocalTradingConfig()));
+app.post('/api/config', (req, res) => res.json(saveLocalTradingConfig(req.body || {})));
+
+app.post('/api/scan', (req, res) => {
+    const symbol = (req.body && req.body.symbol) ? req.body.symbol : "BTC-USD";
+    const cleanSym = symbol.replace(/[^a-zA-Z0-9]/g, '_');
+    const resultFile = path.join(resultsDir, `${cleanSym}_latest.json`);
+    let cachedResult = null;
+    if (fs.existsSync(resultFile)) {
+        try { cachedResult = JSON.parse(fs.readFileSync(resultFile, 'utf8')); } catch (e) {}
+    }
+    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const pipelineScript = path.join(pluangDir, 'pipeline.py');
+    if (fs.existsSync(pipelineScript)) {
+        execFile(pyCmd, [pipelineScript, symbol], { cwd: pluangDir, timeout: 60000 }, (error, stdout) => {
+            if (fs.existsSync(resultFile)) {
+                try { return res.json(JSON.parse(fs.readFileSync(resultFile, 'utf8'))); } catch (e) {}
+            }
+            if (cachedResult) return res.json(cachedResult);
+            res.json(buildFallbackScan(symbol));
+        });
+    } else {
+        res.json(cachedResult || buildFallbackScan(symbol));
+    }
+});
+
+app.post('/api/execute', (req, res) => {
+    const body = req.body || {};
+    const symbol = body.symbol || "BTC-USD";
+    const pos = {
+        id: `POS_${symbol.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}`,
+        symbol: symbol,
+        binance_pair: body.binance_pair || symbol.replace('-USD', 'USDT'),
+        direction: body.direction || "LONG",
+        entry_price: body.entry_price || 0,
+        take_profit_1: body.take_profit_1 || 0,
+        take_profit_2: body.take_profit_2 || 0,
+        stop_loss: body.stop_loss || 0,
+        leverage: body.leverage || 5,
+        position_size_idr: body.amount_idr || body.position_size_idr || 50000,
+        position_size_usd: ((body.amount_idr || 50000) / 18000).toFixed(2),
+        opened_at: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
+        status: "OPEN",
+        pluang_synced: fs.existsSync(tokensPath),
+        pnl_idr: 0,
+        pnl_usd: 0,
+        pnl_pct: 0.0
+    };
+    const positions = [pos, ...getLocalPositions()];
+    saveLocalPositions(positions);
+    res.json({ success: true, message: `Order untuk ${symbol} berhasil didaftarkan.`, position: pos });
 });
 
 // 7. AUTO TOGGLE (100% Native on Port 4000)
