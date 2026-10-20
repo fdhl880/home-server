@@ -235,12 +235,40 @@ class PluangMCPClient:
     # ===================================================================
 
     def set_leverage(self, symbol: str, leverage: int):
-        """Record desired leverage setting"""
-        return {"status": "configured", "symbol": symbol, "leverage": leverage}
+        """Set leverage for futures trading via Pluang MCP"""
+        clean_sym = symbol.upper().replace("-USD", "").replace("USDT", "").replace("-USDT", "").strip()
+        try:
+            sess_id = self._get_chat_session_id()
+            result = self.call_tool("crypto_set_leverage", {
+                "symbol": clean_sym,
+                "leverage": leverage,
+                "user_query": f"set leverage {clean_sym} {leverage}x",
+                "chat_session_id": sess_id
+            })
+            print(f"[PluangMCP] Leverage set: {clean_sym} → {leverage}x", flush=True)
+            return result
+        except Exception as e:
+            print(f"[PluangMCP] set_leverage error (fallback): {e}", flush=True)
+            # Fallback: leverage will be sent with order params
+            return {"status": "configured_fallback", "symbol": clean_sym, "leverage": leverage}
 
     def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED"):
-        """Record desired margin type setting"""
-        return {"status": "configured", "symbol": symbol, "margin_type": margin_type}
+        """Set margin type (ISOLATED/CROSS) for futures trading via Pluang MCP"""
+        clean_sym = symbol.upper().replace("-USD", "").replace("USDT", "").replace("-USDT", "").strip()
+        try:
+            sess_id = self._get_chat_session_id()
+            result = self.call_tool("crypto_set_margin_type", {
+                "symbol": clean_sym,
+                "margin_type": margin_type.upper(),
+                "user_query": f"set margin type {clean_sym} {margin_type}",
+                "chat_session_id": sess_id
+            })
+            print(f"[PluangMCP] Margin type set: {clean_sym} → {margin_type}", flush=True)
+            return result
+        except Exception as e:
+            print(f"[PluangMCP] set_margin_type error (fallback): {e}", flush=True)
+            # Fallback: margin_type will be sent with order params
+            return {"status": "configured_fallback", "symbol": clean_sym, "margin_type": margin_type}
 
     # ===================================================================
     # REAL PLUANG ORDER EXECUTION
@@ -251,7 +279,10 @@ class PluangMCPClient:
                       limit_price: float = None,
                       margin_type: str = "ISOLATED"):
         """
-        Open a new position on Pluang via crypto_place_buy_order / crypto_place_sell_order.
+        Open a FUTURES position on Pluang (LONG or SHORT).
+        - LONG  → crypto_place_buy_order  with leverage & margin
+        - SHORT → crypto_place_sell_order  with leverage & margin
+        ALL orders go through Futures, never Spot.
         """
         clean_sym = symbol.upper().replace("-USD", "").replace("USDT", "").replace("-USDT", "").strip()
         side = "BUY" if direction.upper() == "LONG" else "SELL"
@@ -264,22 +295,24 @@ class PluangMCPClient:
         else:
             amount_idr = int(amount)
 
-        user_q = f"beli {clean_sym} {amount_idr}" if side == "BUY" else f"jual {clean_sym} {amount_idr}"
-
         clean_order_type = order_type.upper() if order_type else "MARKET"
 
-        if side == "SELL":
-            return {
-                "isError": True,
-                "error": f"Pluang Crypto Spot hanya mendukung posisi LONG (BUY). Sinyal SHORT untuk {clean_sym} tidak dapat dibuka secara riil di Pluang karena aset belum dimiliki di pocket."
-            }
-
+        # ── Build order params for FUTURES ──
         order_params = {
             "symbol": clean_sym,
             "order_type": clean_order_type,
             "amount": amount_idr,
+            "leverage": leverage,
+            "margin_type": margin_type.upper(),
             "chat_session_id": sess_id
         }
+
+        if side == "BUY":
+            tool_name = "crypto_place_buy_order"
+            action_verb = "beli"
+        else:
+            tool_name = "crypto_place_sell_order"
+            action_verb = "jual short"
 
         if clean_order_type == "LIMIT" and limit_price and float(limit_price) > 0:
             lp = float(limit_price)
@@ -289,15 +322,15 @@ class PluangMCPClient:
                 limit_price_idr = int(lp)
             order_params["limit_price"] = limit_price_idr
             order_params["time_in_force"] = "GOOD_TILL_CANCELLED"
-            user_q = f"beli limit {clean_sym} {amount_idr} di harga {limit_price_idr}"
+            user_q = f"{action_verb} limit futures {clean_sym} {amount_idr} leverage {leverage}x di harga {limit_price_idr}"
         else:
-            user_q = f"beli {clean_sym} {amount_idr}"
+            user_q = f"{action_verb} futures {clean_sym} {amount_idr} leverage {leverage}x margin {margin_type}"
 
         order_params["user_query"] = user_q
 
         try:
-            result = self.call_tool("crypto_place_buy_order", order_params)
-            print(f"[PluangMCP] Real order dispatched: BUY {clean_sym} IDR {amount_idr:,} ({clean_order_type})", flush=True)
+            result = self.call_tool(tool_name, order_params)
+            print(f"[PluangMCP] ✅ FUTURES order dispatched: {side} {clean_sym} IDR {amount_idr:,} ({clean_order_type}) Leverage: {leverage}x Margin: {margin_type}", flush=True)
             return result
         except Exception as e:
             print(f"[PluangMCP] open_position error: {e}", flush=True)
@@ -305,22 +338,33 @@ class PluangMCPClient:
 
     def close_position(self, symbol: str, direction: str = None, quantity: float = None):
         """
-        Close a position by placing opposite sell/buy order.
+        Close a FUTURES position by placing opposite order.
+        - Close LONG  → crypto_place_sell_order
+        - Close SHORT → crypto_place_buy_order
         """
         clean_sym = symbol.upper().replace("-USD", "").replace("USDT", "").replace("-USDT", "").strip()
         sess_id = self._get_chat_session_id()
-        user_q = f"jual semua {clean_sym}"
+
+        # Determine close tool based on position direction
+        if direction and direction.upper() == "SHORT":
+            tool_name = "crypto_place_buy_order"
+            user_q = f"tutup posisi short futures {clean_sym}"
+        else:
+            tool_name = "crypto_place_sell_order"
+            user_q = f"tutup posisi long futures {clean_sym}"
+
         order_params = {
             "symbol": clean_sym,
             "order_type": "MARKET",
+            "reduce_only": True,
             "user_query": user_q,
             "chat_session_id": sess_id
         }
         if quantity:
             order_params["quantity"] = quantity
         try:
-            result = self.call_tool("crypto_place_sell_order", order_params)
-            print(f"[PluangMCP] Position closed: {clean_sym}", flush=True)
+            result = self.call_tool(tool_name, order_params)
+            print(f"[PluangMCP] ✅ FUTURES position closed: {clean_sym} (was {direction or 'LONG'})", flush=True)
             return result
         except Exception as e:
             print(f"[PluangMCP] close_position error: {e}", flush=True)
