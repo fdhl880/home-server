@@ -269,6 +269,24 @@ def _rule_based_setup(scan_data: dict):
     elif macd_hist < 0 and "BEARISH" in macd_trend.upper():
         bear_score += 1; confluences.append("MACD bearish")
 
+    # 500+ Quant Factors Composite Score (Wall Street multi-pillar synthesis)
+    qf = scan_data.get("quant_factors") or {}
+    c_score = qf.get("composite_quant_score", 50.0)
+    total_f = qf.get("total_factors_evaluated", 500)
+    if c_score >= 60.0:
+        bull_score += 3
+        confluences.append(f"Quant Matrix Bullish ({c_score}/100 dari {total_f}+ faktor Wall Street)")
+    elif c_score <= 40.0:
+        bear_score += 3
+        confluences.append(f"Quant Matrix Bearish ({c_score}/100 dari {total_f}+ faktor Wall Street)")
+
+    # Smart Money Concepts from Quant Engine
+    smc_sum = qf.get("smc_summary", {})
+    if smc_sum.get("liquidity_sweep") == "BULLISH_SELL_SIDE_LIQUIDITY_SWEEP":
+        bull_score += 2; confluences.append("Smart Money: Sell-side liquidity swept")
+    elif smc_sum.get("liquidity_sweep") == "BEARISH_BUY_SIDE_LIQUIDITY_GRAB":
+        bear_score += 2; confluences.append("Smart Money: Buy-side liquidity grab")
+
     # Bollinger
     if bb_pct_b < 10:
         bull_score += 1; confluences.append(f"BB oversold (%B={bb_pct_b})")
@@ -573,10 +591,13 @@ def layer2_setup_hunter(symbol: str, scan_data: dict):
     scan_json = json.dumps(scan_data, indent=2, ensure_ascii=False)
 
     system = (
-        "Anda adalah 'Senior Quantitative Setup Analyst' di hedge fund institutional. "
-        "Gaya analisis: OBJEKTIF, SKEPTIS, dan BERBASIS DATA MURNI.\n\n"
+        "Anda adalah 'Senior Quantitative Setup Analyst' di Wall Street Institutional Hedge Fund "
+        "(gaya Renaissance Technologies / Jim Simons, Paul Tudor Jones, Mark Minervini, Richard Wyckoff).\n"
+        "Data scan mencakup 500+ faktor kuantitatif 5 pilar (Momentum, Mean Reversion, Volume & Order Flow, "
+        "Volatility Regime, Institutional Derivatives & Smart Money Concepts).\n\n"
+        "Gaya analisis: OBJEKTIF, SKEPTIS, dan BERBASIS DATA MURNI 500+ FAKTOR.\n\n"
         "PRINSIP UTAMA (KETAT):\n"
-        "- JANGAN paksakan trade jika data teknikal tidak mendukung\n"
+        "- JANGAN paksakan trade jika data teknikal 500+ faktor tidak mendukung\n"
         "- Minimal 3 konfirmasi teknikal INDEPENDEN yang KUAT untuk setup valid\n"
         "- RSI antara 35-65 = NETRAL, bukan sinyal\n"
         "- MACD flat/sideways = bukan sinyal\n"
@@ -1050,6 +1071,7 @@ def run_5_layer_pipeline(symbol: str):
             "long_short_ratio": market_data.get("long_short_ratio"),
             "fear_greed": market_data.get("fear_greed_index"),
             "levels": market_data.get("levels"),
+            "quant_factors": market_data.get("quant_factors"),
         },
         "layer2_setup": setup_result,
         "layer3_plan": plan_result,
