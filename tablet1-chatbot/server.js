@@ -2803,6 +2803,107 @@ function startBackgroundAutoTrader() {
     }
 }
 
+// ==============================================================
+// PERFORMANCE KPI: WIN RATE %, REALIZED & FLOATING PnL
+// ==============================================================
+app.get('/api/performance', (req, res) => {
+    const positions = [];
+    try {
+        if (fs.existsSync(positionsPath)) {
+            const raw = JSON.parse(fs.readFileSync(positionsPath, 'utf8'));
+            if (Array.isArray(raw)) positions.push(...raw);
+        }
+    } catch (e) {}
+
+    const closedPos = positions.filter(p => String(p.status || '').startsWith('CLOSED'));
+    const openPos = positions.filter(p => p.status === 'OPEN');
+
+    const winning = closedPos.filter(p => (p.pnl_idr || 0) > 0 || (p.pnl_pct || 0) > 0);
+    const losing = closedPos.filter(p => (p.pnl_idr || 0) <= 0 && (p.pnl_pct || 0) <= 0);
+    const closedCount = closedPos.length;
+    const winRate = closedCount > 0 ? Math.round((winning.length / closedCount) * 1000) / 10 : 0;
+
+    const realizedIdr = closedPos.reduce((s, p) => s + (p.pnl_idr || 0), 0);
+    const realizedUsd = closedPos.reduce((s, p) => s + (p.pnl_usd || 0), 0);
+    const unrealizedIdr = openPos.reduce((s, p) => s + (p.pnl_idr || 0), 0);
+    const unrealizedUsd = openPos.reduce((s, p) => s + (p.pnl_usd || 0), 0);
+
+    res.json({
+        win_rate_pct: winRate,
+        winning_trades: winning.length,
+        losing_trades: losing.length,
+        closed_trades: closedCount,
+        open_trades: openPos.length,
+        total_trades: positions.length,
+        realized_pnl_idr: Math.round(realizedIdr),
+        realized_pnl_usd: Math.round(realizedUsd * 100) / 100,
+        unrealized_pnl_idr: Math.round(unrealizedIdr),
+        unrealized_pnl_usd: Math.round(unrealizedUsd * 100) / 100,
+        net_total_pnl_idr: Math.round(realizedIdr + unrealizedIdr),
+        net_total_pnl_usd: Math.round((realizedUsd + unrealizedUsd) * 100) / 100,
+        updated_at: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
+    });
+});
+
+// ==============================================================
+// NEWS SENTINEL: Live Crypto News & Macro Sentiment (from Python or Native newsCache)
+// ==============================================================
+app.get('/api/news-sentinel', async (req, res) => {
+    try {
+        // Try fetching from Python server on port 5000 first
+        const ctrl = new AbortController();
+        const timeout = setTimeout(() => ctrl.abort(), 2000);
+        const r = await fetch('http://127.0.0.1:5000/api/news', { signal: ctrl.signal });
+        clearTimeout(timeout);
+        if (r.ok) {
+            const data = await r.json();
+            return res.json(data);
+        }
+    } catch (e) {}
+
+    // Native Fallback: compute sentiment dynamically from server's newsCache
+    const articles = (newsCache && Array.isArray(newsCache.items)) ? newsCache.items : [];
+    const BULLISH_KW = ['etf', 'inflow', 'surge', 'rally', 'breakout', 'ath', 'bull', 'buying', 'soar', 'gain', 'jump', 'approval', 'adoption', 'pump', 'green', 'climb', 'record'];
+    const BEARISH_KW = ['crash', 'plunge', 'dump', 'ban', 'hack', 'exploit', 'outflow', 'bear', 'lawsuit', 'sec', 'subpoena', 'fraud', 'bankrupt', 'drop', 'sink', 'selloff', 'slump', 'warning'];
+
+    let bull = 0, bear = 0;
+    const scoredArticles = articles.slice(0, 20).map(a => {
+        const text = `${a.title || ''} ${a.summary || ''}`.toLowerCase();
+        let bScore = 0, rScore = 0;
+        BULLISH_KW.forEach(k => { if (text.includes(k)) bScore++; });
+        BEARISH_KW.forEach(k => { if (text.includes(k)) rScore++; });
+        bull += bScore;
+        bear += rScore;
+        return {
+            title: a.title,
+            source: a.source || 'Bloomberg Wire',
+            pubDate: a.pubDate || new Date().toISOString(),
+            sentiment: bScore > rScore ? 'BULLISH' : (rScore > bScore ? 'BEARISH' : 'NEUTRAL')
+        };
+    });
+
+    const total = bull + bear;
+    let score = 50;
+    let sent = 'NEUTRAL';
+    if (total > 0) {
+        score = Math.round((bull / total) * 100);
+        if (score >= 60) sent = 'BULLISH';
+        else if (score <= 40) sent = 'BEARISH';
+    }
+
+    const latestTitle = scoredArticles[0]?.title || 'AI News Sentinel: Feeds live & scanning 43+ perpetuals';
+
+    res.json({
+        market_sentiment: sent,
+        sentiment_score: score,
+        breaking_alert: score > 75 ? 'SURGE IN BULLISH HEADLINES' : (score < 25 ? 'ELEVATED MARKET RISK' : null),
+        latest_headline: latestTitle,
+        top_articles: scoredArticles.slice(0, 5),
+        total_articles: articles.length,
+        updated_at: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
+    });
+});
+
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`================================================================`);
     console.log(`🏛️ BLOOMBERG PROFESSIONAL SERVICE - REAL-TIME TRADING DESK ON PORT ${PORT}`);

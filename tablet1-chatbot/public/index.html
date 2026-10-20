@@ -1374,6 +1374,65 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 </div>
             </div>
 
+            <!-- EXECUTIVE AI PERFORMANCE & WIN RATE KPI BAR -->
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:8px; margin-bottom:8px;">
+                <!-- Win Rate -->
+                <div style="background:#0a0a0a; border:1px solid #1a3322; border-top:3px solid #00FF66; padding:8px 10px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:10px; color:#888; font-weight:bold; letter-spacing:0.5px;">🎯 AI WIN RATE</span>
+                        <span style="font-size:9.5px; color:#00FF66; font-weight:bold;">LIVE AUDIT</span>
+                    </div>
+                    <div id="bbgKpiWinRate" style="font-size:22px; font-weight:900; color:#00FF66; font-family:'Courier New', monospace; margin:2px 0;">0.0%</div>
+                    <div id="bbgKpiTradesCount" style="font-size:9.5px; color:#aaa;">Menang: 0 | Kalah: 0 (Total: 0)</div>
+                </div>
+
+                <!-- Net Total PnL -->
+                <div style="background:#0a0a0a; border:1px solid #222; border-top:3px solid #F39F41; padding:8px 10px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:10px; color:#888; font-weight:bold; letter-spacing:0.5px;">💰 NET TOTAL P&amp;L</span>
+                        <span style="font-size:9.5px; color:#F39F41; font-weight:bold;">REALIZED + FLOATING</span>
+                    </div>
+                    <div id="bbgKpiNetTotalPnl" style="font-size:22px; font-weight:900; color:#FFFF00; font-family:'Courier New', monospace; margin:2px 0;">Rp 0</div>
+                    <div id="bbgKpiNetTotalUsd" style="font-size:9.5px; color:#aaa;">$0.00 USD (Net Total)</div>
+                </div>
+
+                <!-- Realized PnL -->
+                <div style="background:#0a0a0a; border:1px solid #222; border-top:3px solid #00EEEE; padding:8px 10px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:10px; color:#888; font-weight:bold; letter-spacing:0.5px;">📈 REALIZED P&amp;L</span>
+                        <span style="font-size:9.5px; color:#00EEEE; font-weight:bold;">CLOSED TRADES</span>
+                    </div>
+                    <div id="bbgKpiRealizedPnl" style="font-size:22px; font-weight:900; color:#00EEEE; font-family:'Courier New', monospace; margin:2px 0;">Rp 0</div>
+                    <div id="bbgKpiRealizedSub" style="font-size:9.5px; color:#aaa;">0 posisi selesai</div>
+                </div>
+
+                <!-- Floating PnL & Position Sentinel -->
+                <div style="background:#0a0a0a; border:1px solid #331a00; border-top:3px solid #FF5500; padding:8px 10px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:10px; color:#888; font-weight:bold; letter-spacing:0.5px;">⚡ FLOATING P&amp;L (OPEN)</span>
+                        <span id="bbgSentinelBadge" style="font-size:9px; background:rgba(0,255,102,0.15); color:#00FF66; padding:1px 5px; border-radius:3px; font-weight:bold;">● AI SENTINEL ACTIVE</span>
+                    </div>
+                    <div id="bbgKpiUnrealizedPnl" style="font-size:22px; font-weight:900; color:#00FF66; font-family:'Courier New', monospace; margin:2px 0;">Rp 0</div>
+                    <div id="bbgKpiOpenCount" style="font-size:9.5px; color:#aaa;">0 posisi aktif terpantau AI 24/7</div>
+                </div>
+            </div>
+
+            <!-- REAL-TIME AI NEWS & SENTINEL SURVEILLANCE TICKER -->
+            <div style="background:#050505; border:1px solid #332200; border-left:4px solid #F39F41; padding:6px 12px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:280px; overflow:hidden;">
+                    <span id="bbgNewsSentimentBadge" style="background:rgba(0,238,238,0.15); color:#00EEEE; border:1px solid #005555; padding:2px 6px; font-size:10px; font-weight:900; letter-spacing:0.5px; white-space:nowrap;">
+                        NEWS SENTINEL // NEUTRAL
+                    </span>
+                    <span id="bbgNewsHeadlineText" style="font-size:11px; color:#ddd; font-family:'Courier New', monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                        Memuat pemantauan breaking crypto news terkini...
+                    </span>
+                </div>
+                <div style="display:flex; align-items:center; gap:10px; font-size:10px; color:#888;">
+                    <span>SURVEILLANCE: <strong style="color:#00FF66;">LIVE AI SCAN (2-MIN)</strong></span>
+                    <span id="bbgNewsTimestamp" style="color:#666;">--:--:--</span>
+                </div>
+            </div>
+
             <!-- FUTURES PARAMETERS & RISK CONFIGURATION BAR -->
             <div style="background:#060606; border:1px solid #333; padding:8px 12px; margin-bottom:10px; display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between;">
                 <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
@@ -1690,6 +1749,7 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             fetchQuotesData();
             fetchNewsData();
             fetchMacroData();
+            fetchCryptoFuturesData();
 
             setInterval(fetchPortfolioData, 12000);
             setInterval(fetchQuotesData, 12000);
@@ -3450,6 +3510,12 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     renderCryptoFuturesPositions();
                 }
             } catch (e) {}
+
+            // 6. Fetch Executive Performance KPIs (Win Rate %, P&L)
+            loadCryptoPerformanceMetrics();
+
+            // 7. Fetch Real-time News Sentinel & Market Sentiment
+            loadCryptoNewsSentinel();
         }
 
         // Auto-refresh Crypto Futures data every 5 seconds when tab is active
@@ -3902,6 +3968,11 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 const sym = p.symbol || '-';
                 const dir = p.direction || 'LONG';
                 const posId = p.id || '-';
+                const pnlIdr = Number(p.pnl_idr || 0);
+                const pnlPct = Number(p.pnl_pct || 0);
+                const pnlColor = pnlIdr > 0 ? '#00FF66' : (pnlIdr < 0 ? '#FF4444' : '#00EEEE');
+                const pnlSign = pnlIdr > 0 ? '+' : '';
+                const pnlText = pnlIdr !== 0 ? `${pnlSign}Rp ${Math.abs(pnlIdr).toLocaleString('id-ID')} (${pnlSign}${pnlPct.toFixed(2)}%)` : '+0.00 IDR';
                 return `
                     <tr>
                         <td class="bbg-cyan" style="font-size:10px;">${posId}</td>
@@ -3913,7 +3984,7 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                         <td style="font-weight:bold;">Rp ${Number(p.position_size_idr || p.amount_idr || 50000).toLocaleString('id-ID')}</td>
                         <td class="bbg-green">$${Number(p.take_profit_1 || 0).toLocaleString()}</td>
                         <td class="bbg-red">$${Number(p.stop_loss || 0).toLocaleString()}</td>
-                        <td class="bbg-green">+0.00 IDR</td>
+                        <td style="font-weight:bold; color:${pnlColor};">${pnlText}</td>
                         <td><span class="bbg-green">● ${p.pluang_synced ? 'PLUANG LIVE' : 'OPEN'}</span></td>
                         <td style="text-align:center;">
                             <button class="btn-act" style="background:#440000; color:#ff4444; border-color:#ff4444; padding:2px 8px; font-size:10px;" onclick="closeCryptoPosition('${posId}', '${sym}', '${dir}')">
@@ -3943,6 +4014,108 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 showPopup(`CLOSE ERROR: ${e.message}`);
             }
             fetchCryptoFuturesData();
+        }
+
+        async function loadCryptoPerformanceMetrics() {
+            try {
+                const res = await fetch('/api/performance', { signal: AbortSignal.timeout(5000) });
+                if (!res.ok) return;
+                const d = await res.json();
+                
+                // Win Rate
+                const wrEl = document.getElementById('bbgKpiWinRate');
+                if (wrEl) {
+                    wrEl.innerText = `${(d.win_rate_pct || 0).toFixed(1)}%`;
+                    wrEl.style.color = (d.win_rate_pct || 0) >= 50 ? '#00FF66' : (d.closed_trades === 0 ? '#00FF66' : '#FF4444');
+                }
+                const tcEl = document.getElementById('bbgKpiTradesCount');
+                if (tcEl) {
+                    tcEl.innerText = `Menang: ${d.winning_trades || 0} | Kalah: ${d.losing_trades || 0} (Total: ${d.total_trades || 0})`;
+                }
+
+                // Net Total PnL
+                const netEl = document.getElementById('bbgKpiNetTotalPnl');
+                if (netEl) {
+                    const netVal = d.net_total_pnl_idr || 0;
+                    const prefix = netVal >= 0 ? '+' : '';
+                    netEl.innerText = `${prefix}Rp ${Math.abs(netVal).toLocaleString('id-ID')}`;
+                    netEl.style.color = netVal >= 0 ? '#00FF66' : '#FF4444';
+                }
+                const netUsdEl = document.getElementById('bbgKpiNetTotalUsd');
+                if (netUsdEl) {
+                    const netUsd = d.net_total_pnl_usd || 0;
+                    const prefix = netUsd >= 0 ? '+' : '';
+                    netUsdEl.innerText = `${prefix}$${netUsd.toFixed(2)} USD (Net Total)`;
+                }
+
+                // Realized PnL
+                const realEl = document.getElementById('bbgKpiRealizedPnl');
+                if (realEl) {
+                    const rVal = d.realized_pnl_idr || 0;
+                    const prefix = rVal >= 0 ? '+' : '';
+                    realEl.innerText = `${prefix}Rp ${Math.abs(rVal).toLocaleString('id-ID')}`;
+                    realEl.style.color = rVal >= 0 ? '#00EEEE' : '#FF4444';
+                }
+                const realSub = document.getElementById('bbgKpiRealizedSub');
+                if (realSub) {
+                    realSub.innerText = `${d.closed_trades || 0} posisi selesai (${d.winning_trades || 0}W / ${d.losing_trades || 0}L)`;
+                }
+
+                // Floating Unrealized PnL
+                const unEl = document.getElementById('bbgKpiUnrealizedPnl');
+                if (unEl) {
+                    const uVal = d.unrealized_pnl_idr || 0;
+                    const prefix = uVal >= 0 ? '+' : '';
+                    unEl.innerText = `${prefix}Rp ${Math.abs(uVal).toLocaleString('id-ID')}`;
+                    unEl.style.color = uVal >= 0 ? '#00FF66' : '#FF4444';
+                }
+                const opCount = document.getElementById('bbgKpiOpenCount');
+                if (opCount) {
+                    opCount.innerText = `${d.open_trades || 0} posisi aktif terpantau AI 24/7`;
+                }
+            } catch (e) {
+                console.warn('Crypto performance fetch warning:', e.message);
+            }
+        }
+
+        async function loadCryptoNewsSentinel() {
+            try {
+                const res = await fetch('/api/news-sentinel', { signal: AbortSignal.timeout(5000) });
+                if (!res.ok) return;
+                const d = await res.json();
+                
+                const badge = document.getElementById('bbgNewsSentimentBadge');
+                if (badge) {
+                    const sent = d.market_sentiment || 'NEUTRAL';
+                    const score = d.sentiment_score !== undefined ? d.sentiment_score : 50;
+                    badge.innerText = `NEWS SENTINEL // ${sent} (${score}/100)`;
+                    if (sent === 'BULLISH') {
+                        badge.style.background = 'rgba(0, 255, 102, 0.15)';
+                        badge.style.color = '#00FF66';
+                        badge.style.borderColor = '#008833';
+                    } else if (sent === 'BEARISH') {
+                        badge.style.background = 'rgba(255, 68, 68, 0.15)';
+                        badge.style.color = '#FF4444';
+                        badge.style.borderColor = '#881111';
+                    } else {
+                        badge.style.background = 'rgba(0, 238, 238, 0.15)';
+                        badge.style.color = '#00EEEE';
+                        badge.style.borderColor = '#005555';
+                    }
+                }
+                
+                const hl = document.getElementById('bbgNewsHeadlineText');
+                if (hl) {
+                    hl.innerText = d.latest_headline || 'AI News Sentinel monitoring feeds...';
+                }
+
+                const ts = document.getElementById('bbgNewsTimestamp');
+                if (ts && d.updated_at) {
+                    ts.innerText = d.updated_at;
+                }
+            } catch (e) {
+                console.warn('Crypto news sentinel warning:', e.message);
+            }
         }
 
         function submitCmd() {
