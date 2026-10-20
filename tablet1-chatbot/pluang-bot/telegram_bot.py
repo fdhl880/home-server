@@ -887,7 +887,7 @@ def start_bot_listener():
                         parts = msg_text.split()
                         if len(parts) >= 2:
                             coin = parts[1].upper().strip().replace("-USD", "").replace("USDT", "")
-                            execute_trade_with_pluang(coin, chat_id)
+                            threading.Thread(target=execute_trade_with_pluang, args=(coin, chat_id), daemon=True).start()
                         else:
                             # Look for latest approved signal
                             latest_approved = None
@@ -903,7 +903,7 @@ def start_bot_listener():
                                         except Exception:
                                             pass
                             if latest_approved:
-                                execute_trade_with_pluang(latest_approved, chat_id)
+                                threading.Thread(target=execute_trade_with_pluang, args=(latest_approved, chat_id), daemon=True).start()
                             else:
                                 send_telegram_message(
                                     chat_id,
@@ -914,12 +914,12 @@ def start_bot_listener():
                                 )
 
                     elif msg_lower in ["/scan", "scan", "cek", "cek pasar"]:
-                        run_radar_scan(chat_id)
+                        threading.Thread(target=run_radar_scan, args=(chat_id,), daemon=True).start()
                     
                     elif msg_lower.startswith("/scan "):
                         coin = msg_lower.replace("/scan ", "").strip()
                         if coin:
-                            handle_any_coin_scan(chat_id, coin)
+                            threading.Thread(target=handle_any_coin_scan, args=(chat_id, coin), daemon=True).start()
 
                     elif msg_lower in ["/universe", "universe"]:
                         handle_universe_command(chat_id)
@@ -1055,17 +1055,29 @@ def start_bot_listener():
                                 "Ketik <code>/help</code> untuk daftar perintah.\n"
                                 "Atau ketik nama coin langsung: <code>/btc</code> <code>/sol</code> dll.")
 
-                # Handle inline button click
-                elif "callback_query" in update:
+                # Handle inline button click (MUST be at same level as "if message")
+                if "callback_query" in update:
                     cb = update["callback_query"]
                     cb_id = cb["id"]
-                    cb_data = cb["data"]
-                    chat_id = cb["message"]["chat"]["id"]
+                    cb_data = cb.get("data", "")
+                    cb_chat = cb.get("message", {}).get("chat", {})
+                    chat_id = cb_chat.get("id")
+
+                    if not chat_id:
+                        answer_callback(cb_id, "Error: chat_id not found")
+                        continue
 
                     if cb_data.startswith("buy_") or cb_data.startswith("confirm_"):
                         symbol = cb_data.replace("buy_", "").replace("confirm_", "")
-                        answer_callback(cb_id, f"Menghubungi Pluang untuk order {symbol}...")
-                        execute_trade_with_pluang(symbol, chat_id, callback_query_id=cb_id)
+                        answer_callback(cb_id, f"⚡ Mengeksekusi order {symbol}...")
+                        # Run in thread for instant response - don't block polling
+                        t = threading.Thread(
+                            target=execute_trade_with_pluang,
+                            args=(symbol, chat_id),
+                            kwargs={"callback_query_id": cb_id},
+                            daemon=True
+                        )
+                        t.start()
 
                     elif cb_data.startswith("reject_") or cb_data.startswith("cancel_"):
                         symbol = cb_data.replace("reject_", "").replace("cancel_", "")
