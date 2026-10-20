@@ -552,14 +552,8 @@ def run_quick_screen():
     except Exception:
         pass
     
-    # Send Telegram alert for extreme moves
-    if alerts:
-        alert_text = "⚡ <b>PYROFUEL QUICK SCREEN ALERTS</b>\n\n"
-        for a in alerts[:5]:
-            emoji = "🔴" if "DUMP" in a.get("type", "") else "🟢" if "PUMP" in a.get("type", "") else "📊"
-            alert_text += f"{emoji} <code>{a['pair']}</code>: <b>{a['type']}</b> - {a['detail']}\n"
-        alert_text += f"\n🌐 Universe: {len(ranked)} pairs scanned"
-        send_telegram(alert_text)
+    # Quick screen alerts saved to file only — NOT sent to Telegram (too noisy)
+    # Data is still available in quick_screen.json for the Bloomberg dashboard
     
     print(f"[QUICK SCREEN] Done: {len(ranked)} pairs, {len(alerts)} alerts", flush=True)
     return alerts
@@ -684,17 +678,9 @@ def run_full_scan_cycle():
                     f"────────────────────────\n"
                     f"🏦 <b>Pluang:</b> {pluang_status}\n"
                     f"📝 <b>Alasan AI:</b>\n<i>{fc.get('final_reason', '-')[:300]}</i>\n\n"
-                    f"⚡ <i>Posisi otomatis dieksekusi di Pluang sesuai parameter AI.</i>"
+                    f"⚡ <b>AUTO-EXECUTE: Order langsung dieksekusi di Pluang Futures tanpa menunggu konfirmasi manual!</b>"
                 )
-                markup = {
-                    "inline_keyboard": [
-                        [
-                            {"text": f"✅ Konfirmasi ({sym})", "callback_data": f"confirm_{sym}"},
-                            {"text": "❌ Batalkan", "callback_data": f"cancel_{sym}"}
-                        ]
-                    ]
-                }
-                send_telegram(msg, markup)
+                send_telegram(msg)
             else:
                 reason_short = fc.get("final_reason", "")[:60]
                 print(f"REJECTED {sym}: {reason_short}...", flush=True)
