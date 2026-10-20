@@ -19,85 +19,131 @@ import os
 import time
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import socket
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ---------------------------------------------------------
+# ISP DNS Poisoning / DPI Bypass via DNS-over-HTTPS
+# ---------------------------------------------------------
+_orig_getaddrinfo = socket.getaddrinfo
+_dns_cache = {
+    "fapi.binance.com": "65.8.76.49",
+    "fapi1.binance.com": "65.8.76.14",
+    "fapi2.binance.com": "65.8.76.6",
+    "fapi3.binance.com": "65.8.76.4",
+}
+
+def _resolve_doh(domain: str):
+    if domain in _dns_cache:
+        return _dns_cache[domain]
+    for doh_url in [
+        f"https://1.1.1.1/dns-query?name={domain}&type=A",
+        f"https://dns.google/resolve?name={domain}&type=A"
+    ]:
+        try:
+            r = requests.get(doh_url, headers={"accept": "application/dns-json"}, timeout=3)
+            data = r.json()
+            ips = [ans["data"] for ans in data.get("Answer", []) if ans.get("type") == 1]
+            if ips:
+                _dns_cache[domain] = ips[0]
+                return ips[0]
+        except Exception:
+            continue
+    return None
+
+def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if isinstance(host, str) and ("binance" in host.lower()):
+        ip = _resolve_doh(host)
+        if ip:
+            return _orig_getaddrinfo(ip, port, family, type, proto, flags)
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+
+socket.getaddrinfo = _custom_getaddrinfo
+
 try:
     from quant_factors import evaluate_all_quant_factors
 except ImportError:
     evaluate_all_quant_factors = None
 
 # ===================================================================
-# PLUANG-RESTRICTED CRYPTO FUTURES UNIVERSE (43 COINS)
+# UNIVERSAL SYMBOL NORMALIZATION
 # ===================================================================
-# ONLY coins that exist on BOTH Pluang Spot AND Binance USDT Perpetuals
-# This is the HARD GATE — no coin outside this list will ever be scanned.
-# Last verified: 2026-10-19 from Pluang MCP search_assets + Binance fapi
+K1000_COINS = {
+    "PEPE": "1000PEPEUSDT",
+    "SHIB": "1000SHIBUSDT",
+    "BONK": "1000BONKUSDT",
+    "FLOKI": "1000FLOKIUSDT",
+    "LUNC": "1000LUNCUSDT",
+    "SATS": "1000SATSUSDT",
+    "RATS": "1000RATSUSDT",
+    "CAT": "1000CATUSDT",
+    "MOG": "1000000MOGUSDT",
+    "CHEEMS": "1000000CHEEMSUSDT",
+}
+
+def normalize_symbol_to_pair(symbol: str) -> str:
+    """
+    Convert any symbol format (BTC, btc, BTC-USD, BTCUSDT, pepe, PEPE, 1000pepe)
+    into the exact Binance USDT Perpetual Futures pair name.
+    """
+    if not symbol:
+        return "BTCUSDT"
+    s = str(symbol).upper().strip().replace("-USD", "").replace("USDT", "")
+    if s in K1000_COINS:
+        return K1000_COINS[s]
+    if s.startswith("1000") and s[4:] in K1000_COINS:
+        return s + "USDT"
+    return s + "USDT"
+
 # ===================================================================
-PLUANG_FUTURES_UNIVERSE = [
-    # --- TIER 1: MEGA CAPS (BTC, ETH) ---
-    {"symbol": "BTC-USD", "name": "Bitcoin",    "pair": "BTCUSDT",   "pluang_symbol": "BTC",    "leverage_max": 20, "tier": "T1_MEGA"},
-    {"symbol": "ETH-USD", "name": "Ethereum",   "pair": "ETHUSDT",   "pluang_symbol": "ETH",    "leverage_max": 20, "tier": "T1_MEGA"},
-    # --- TIER 2: LARGE CAPS ---
-    {"symbol": "SOL-USD",  "name": "Solana",     "pair": "SOLUSDT",   "pluang_symbol": "SOL",    "leverage_max": 15, "tier": "T2_LARGE"},
-    {"symbol": "BNB-USD",  "name": "BNB",        "pair": "BNBUSDT",   "pluang_symbol": "BNB",    "leverage_max": 15, "tier": "T2_LARGE"},
-    {"symbol": "XRP-USD",  "name": "Ripple",     "pair": "XRPUSDT",   "pluang_symbol": "XRP",    "leverage_max": 15, "tier": "T2_LARGE"},
-    {"symbol": "ADA-USD",  "name": "Cardano",    "pair": "ADAUSDT",   "pluang_symbol": "ADA",    "leverage_max": 10, "tier": "T2_LARGE"},
-    {"symbol": "DOGE-USD", "name": "Dogecoin",   "pair": "DOGEUSDT",  "pluang_symbol": "DOGE",   "leverage_max": 10, "tier": "T2_LARGE"},
-    {"symbol": "TRX-USD",  "name": "TRON",       "pair": "TRXUSDT",   "pluang_symbol": "TRX",    "leverage_max": 10, "tier": "T2_LARGE"},
-    {"symbol": "AVAX-USD", "name": "Avalanche",  "pair": "AVAXUSDT",  "pluang_symbol": "AVAX",   "leverage_max": 10, "tier": "T2_LARGE"},
-    {"symbol": "LINK-USD", "name": "Chainlink",  "pair": "LINKUSDT",  "pluang_symbol": "LINK",   "leverage_max": 10, "tier": "T2_LARGE"},
-    {"symbol": "DOT-USD",  "name": "Polkadot",   "pair": "DOTUSDT",   "pluang_symbol": "DOT",    "leverage_max": 10, "tier": "T2_LARGE"},
-    {"symbol": "LTC-USD",  "name": "Litecoin",   "pair": "LTCUSDT",   "pluang_symbol": "LTC",    "leverage_max": 10, "tier": "T2_LARGE"},
-    {"symbol": "BCH-USD",  "name": "Bitcoin Cash","pair": "BCHUSDT",   "pluang_symbol": "BCH",    "leverage_max": 10, "tier": "T2_LARGE"},
-    {"symbol": "XLM-USD",  "name": "Stellar",    "pair": "XLMUSDT",   "pluang_symbol": "XLM",    "leverage_max": 10, "tier": "T2_LARGE"},
-    {"symbol": "ICP-USD",  "name": "ICP",        "pair": "ICPUSDT",   "pluang_symbol": "ICP",    "leverage_max": 10, "tier": "T2_LARGE"},
-    {"symbol": "UNI-USD",  "name": "Uniswap",    "pair": "UNIUSDT",   "pluang_symbol": "UNI",    "leverage_max": 10, "tier": "T2_LARGE"},
-    {"symbol": "ATOM-USD", "name": "Cosmos",     "pair": "ATOMUSDT",  "pluang_symbol": "ATOM",   "leverage_max": 10, "tier": "T2_LARGE"},
-    # --- TIER 3: MID CAPS (Pluang-listed, Binance Futures available) ---
-    {"symbol": "SUI-USD",  "name": "Sui",        "pair": "SUIUSDT",   "pluang_symbol": "SUI",    "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "NEAR-USD", "name": "NEAR",       "pair": "NEARUSDT",  "pluang_symbol": "NEAR",   "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "APT-USD",  "name": "Aptos",      "pair": "APTUSDT",   "pluang_symbol": "APT",    "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "FIL-USD",  "name": "Filecoin",   "pair": "FILUSDT",   "pluang_symbol": "FIL",    "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "ARB-USD",  "name": "Arbitrum",   "pair": "ARBUSDT",   "pluang_symbol": "ARB",    "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "OP-USD",   "name": "Optimism",   "pair": "OPUSDT",    "pluang_symbol": "OP",     "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "IMX-USD",  "name": "Immutable",  "pair": "IMXUSDT",   "pluang_symbol": "IMX",    "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "INJ-USD",  "name": "Injective",  "pair": "INJUSDT",   "pluang_symbol": "INJ",    "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "AAVE-USD", "name": "Aave",       "pair": "AAVEUSDT",  "pluang_symbol": "AAVE",   "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "ALGO-USD", "name": "Algorand",   "pair": "ALGOUSDT",  "pluang_symbol": "ALGO",   "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "RENDER-USD","name": "Render",     "pair": "RENDERUSDT","pluang_symbol": "RENDER",  "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "FET-USD",  "name": "Fetch.ai",   "pair": "FETUSDT",   "pluang_symbol": "FET",    "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "STX-USD",  "name": "Stacks",     "pair": "STXUSDT",   "pluang_symbol": "STX",    "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "TIA-USD",  "name": "Celestia",   "pair": "TIAUSDT",   "pluang_symbol": "TIA",    "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "POL-USD",  "name": "Polygon",    "pair": "POLUSDT",   "pluang_symbol": "POL",    "leverage_max": 10, "tier": "T3_MID"},
-    # --- TIER 4: SMALL/MEME CAPS (High vol, Pluang available) ---
-    {"symbol": "PEPE-USD", "name": "Pepe",       "pair": "PEPEUSDT",  "pluang_symbol": "PEPE",   "leverage_max": 5,  "tier": "T4_MEME"},
-    {"symbol": "SHIB-USD", "name": "Shiba Inu",  "pair": "SHIBUSDT",  "pluang_symbol": "SHIB",   "leverage_max": 5,  "tier": "T4_MEME"},
-    {"symbol": "BONK-USD", "name": "Bonk",       "pair": "BONKUSDT",  "pluang_symbol": "BONK",   "leverage_max": 5,  "tier": "T4_MEME"},
-    {"symbol": "FLOKI-USD","name": "Floki",      "pair": "FLOKIUSDT", "pluang_symbol": "FLOKI",  "leverage_max": 5,  "tier": "T4_MEME"},
-    {"symbol": "WIF-USD",  "name": "dogwifhat",  "pair": "WIFUSDT",   "pluang_symbol": "WIF",    "leverage_max": 5,  "tier": "T4_MEME"},
-    # --- TIER 5: AI & DEFI NARRATIVES ---
-    {"symbol": "TAO-USD",  "name": "Bittensor",  "pair": "TAOUSDT",   "pluang_symbol": "TAO",    "leverage_max": 10, "tier": "T5_NARRATIVE"},
-    {"symbol": "KAS-USD",  "name": "Kaspa",      "pair": "KASUSDT",   "pluang_symbol": "KAS",    "leverage_max": 10, "tier": "T5_NARRATIVE"},
-    {"symbol": "SUI20947-USD", "name": "Sui Perp", "pair": "SUIUSDT", "pluang_symbol": "SUI",   "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "RAY-USD",  "name": "Raydium",    "pair": "RAYUSDT",   "pluang_symbol": "RAY",    "leverage_max": 10, "tier": "T3_MID"},
-    {"symbol": "VANRY-USD","name": "Vanar Chain","pair": "VANRYUSDT", "pluang_symbol": "VANRY",  "leverage_max": 5,  "tier": "T4_MEME"},
-    {"symbol": "VIC-USD",  "name": "Viction",    "pair": "VICUSDT",   "pluang_symbol": "VIC",    "leverage_max": 5,  "tier": "T4_MEME"},
+# STATIC CORE UNIVERSE (INSTANT FALLBACK / BOOTSTRAP)
+# ===================================================================
+STATIC_CORE_UNIVERSE = [
+    {"symbol": "BTC-USD", "name": "Bitcoin", "pair": "BTCUSDT", "base_asset": "BTC", "leverage_max": 20, "tier": "T1_MEGA"},
+    {"symbol": "ETH-USD", "name": "Ethereum", "pair": "ETHUSDT", "base_asset": "ETH", "leverage_max": 20, "tier": "T1_MEGA"},
+    {"symbol": "SOL-USD", "name": "Solana", "pair": "SOLUSDT", "base_asset": "SOL", "leverage_max": 15, "tier": "T2_LARGE"},
+    {"symbol": "BNB-USD", "name": "BNB", "pair": "BNBUSDT", "base_asset": "BNB", "leverage_max": 15, "tier": "T2_LARGE"},
+    {"symbol": "XRP-USD", "name": "Ripple", "pair": "XRPUSDT", "base_asset": "XRP", "leverage_max": 15, "tier": "T2_LARGE"},
+    {"symbol": "DOGE-USD", "name": "Dogecoin", "pair": "DOGEUSDT", "base_asset": "DOGE", "leverage_max": 10, "tier": "T2_LARGE"},
+    {"symbol": "SUI-USD", "name": "Sui", "pair": "SUIUSDT", "base_asset": "SUI", "leverage_max": 10, "tier": "T2_LARGE"},
+    {"symbol": "ADA-USD", "name": "Cardano", "pair": "ADAUSDT", "base_asset": "ADA", "leverage_max": 10, "tier": "T2_LARGE"},
+    {"symbol": "AVAX-USD", "name": "Avalanche", "pair": "AVAXUSDT", "base_asset": "AVAX", "leverage_max": 10, "tier": "T2_LARGE"},
+    {"symbol": "LINK-USD", "name": "Chainlink", "pair": "LINKUSDT", "base_asset": "LINK", "leverage_max": 10, "tier": "T2_LARGE"},
+    {"symbol": "NEAR-USD", "name": "NEAR", "pair": "NEARUSDT", "base_asset": "NEAR", "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "APT-USD", "name": "Aptos", "pair": "APTUSDT", "base_asset": "APT", "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "ARB-USD", "name": "Arbitrum", "pair": "ARBUSDT", "base_asset": "ARB", "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "OP-USD", "name": "Optimism", "pair": "OPUSDT", "base_asset": "OP", "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "INJ-USD", "name": "Injective", "pair": "INJUSDT", "base_asset": "INJ", "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "AAVE-USD", "name": "Aave", "pair": "AAVEUSDT", "base_asset": "AAVE", "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "1000PEPE-USD", "name": "Pepe (1000x)", "pair": "1000PEPEUSDT", "base_asset": "1000PEPE", "leverage_max": 5, "tier": "T4_MEME"},
+    {"symbol": "1000SHIB-USD", "name": "Shiba (1000x)", "pair": "1000SHIBUSDT", "base_asset": "1000SHIB", "leverage_max": 5, "tier": "T4_MEME"},
+    {"symbol": "1000BONK-USD", "name": "Bonk (1000x)", "pair": "1000BONKUSDT", "base_asset": "1000BONK", "leverage_max": 5, "tier": "T4_MEME"},
+    {"symbol": "1000FLOKI-USD", "name": "Floki (1000x)", "pair": "1000FLOKIUSDT", "base_asset": "1000FLOKI", "leverage_max": 5, "tier": "T4_MEME"},
+    {"symbol": "WIF-USD", "name": "dogwifhat", "pair": "WIFUSDT", "base_asset": "WIF", "leverage_max": 5, "tier": "T4_MEME"},
+    {"symbol": "ZEC-USD", "name": "Zcash", "pair": "ZECUSDT", "base_asset": "ZEC", "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "WLD-USD", "name": "Worldcoin", "pair": "WLDUSDT", "base_asset": "WLD", "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "HYPE-USD", "name": "Hyperliquid", "pair": "HYPEUSDT", "base_asset": "HYPE", "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "ENA-USD", "name": "Ethena", "pair": "ENAUSDT", "base_asset": "ENA", "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "ONDO-USD", "name": "Ondo", "pair": "ONDOUSDT", "base_asset": "ONDO", "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "TAO-USD", "name": "Bittensor", "pair": "TAOUSDT", "base_asset": "TAO", "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "STRK-USD", "name": "Starknet", "pair": "STRKUSDT", "base_asset": "STRK", "leverage_max": 10, "tier": "T3_MID"},
+    {"symbol": "PUMP-USD", "name": "Pump", "pair": "PUMPUSDT", "base_asset": "PUMP", "leverage_max": 5, "tier": "T4_MEME"},
+    {"symbol": "DOT-USD", "name": "Polkadot", "pair": "DOTUSDT", "base_asset": "DOT", "leverage_max": 10, "tier": "T2_LARGE"},
+    {"symbol": "LTC-USD", "name": "Litecoin", "pair": "LTCUSDT", "base_asset": "LTC", "leverage_max": 10, "tier": "T2_LARGE"},
+    {"symbol": "BCH-USD", "name": "Bitcoin Cash", "pair": "BCHUSDT", "base_asset": "BCH", "leverage_max": 10, "tier": "T2_LARGE"},
+    {"symbol": "TRX-USD", "name": "TRON", "pair": "TRXUSDT", "base_asset": "TRX", "leverage_max": 10, "tier": "T2_LARGE"},
 ]
 
-# The locked universe set - for fast lookup
-PLUANG_BINANCE_PAIRS = {c["pair"] for c in PLUANG_FUTURES_UNIVERSE}
-PLUANG_PAIR_MAP = {c["symbol"]: c["pair"] for c in PLUANG_FUTURES_UNIVERSE}
-PLUANG_SYMBOL_MAP = {c["pair"]: c["pluang_symbol"] for c in PLUANG_FUTURES_UNIVERSE}
-
-# Backward-compatible alias
-CRYPTO_FUTURES_WATCHLIST = PLUANG_FUTURES_UNIVERSE
+# Backward compatibility alias
+PLUANG_FUTURES_UNIVERSE = STATIC_CORE_UNIVERSE
+CRYPTO_FUTURES_WATCHLIST = STATIC_CORE_UNIVERSE
 
 # Cache for dynamic universe
-_DYNAMIC_UNIVERSE_CACHE = {"data": [], "last_fetch": 0, "ttl": 300}  # 5 min cache
-_FX_RATE_CACHE = {"usd_idr": 16000, "last_fetch": 0, "ttl": 600}   # 10 min cache
+_DYNAMIC_UNIVERSE_CACHE = {"data": [], "last_fetch": 0, "ttl": 600}  # 10 min cache
+_FX_RATE_CACHE = {"usd_idr": 16000, "last_fetch": 0, "ttl": 600}     # 10 min cache
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 
 # ===================================================================
 # CURRENCY CONVERSION ENGINE
@@ -108,7 +154,6 @@ def get_usd_idr_rate():
     if now - _FX_RATE_CACHE["last_fetch"] < _FX_RATE_CACHE["ttl"]:
         return _FX_RATE_CACHE["usd_idr"]
 
-    # Try multiple sources
     sources = [
         ("https://api.exchangerate-api.com/v4/latest/USD", lambda d: d["rates"]["IDR"]),
         ("https://open.er-api.com/v6/latest/USD", lambda d: d["rates"]["IDR"]),
@@ -125,7 +170,7 @@ def get_usd_idr_rate():
         except Exception:
             continue
 
-    return _FX_RATE_CACHE["usd_idr"]  # Return cached/default
+    return _FX_RATE_CACHE["usd_idr"]
 
 
 def convert_usd_to_idr(usd_amount):
@@ -152,81 +197,143 @@ def get_fx_info():
         "cached": time.time() - _FX_RATE_CACHE["last_fetch"] < _FX_RATE_CACHE["ttl"]
     }
 
-
 # ===================================================================
-# DYNAMIC UNIVERSE: FETCH ALL BINANCE USDT PERPETUAL FUTURES
+# DYNAMIC UNIVERSE: FETCH ALL BINANCE USDT PERPETUAL FUTURES (500+ COINS)
 # ===================================================================
 def fetch_all_binance_futures_pairs():
     """
-    Fetch ONLY Pluang-listed coins from Binance USDT tickers.
-    HARD GATE: Any pair NOT in PLUANG_BINANCE_PAIRS is rejected.
+    Dynamically fetch ALL active USDT Perpetual Futures pairs from Binance Futures API.
+    Retrieves full specifications, lot sizes, tick sizes, 24h volumes, and prices.
+    Returns complete 500+ coin universe.
     """
     now = time.time()
     if now - _DYNAMIC_UNIVERSE_CACHE["last_fetch"] < _DYNAMIC_UNIVERSE_CACHE["ttl"] and _DYNAMIC_UNIVERSE_CACHE["data"]:
         return _DYNAMIC_UNIVERSE_CACHE["data"]
 
     endpoints = [
-        "https://data-api.binance.vision/api/v3/ticker/24hr",
-        "https://fapi.binance.com/fapi/v1/ticker/24hr",
+        "https://fapi.binance.com",
+        "https://fapi1.binance.com",
+        "https://fapi2.binance.com",
+        "https://fapi3.binance.com",
     ]
 
-    # Build lookup from our fixed Pluang universe
-    pluang_lookup = {c["pair"]: c for c in PLUANG_FUTURES_UNIVERSE}
-
-    for url in endpoints:
+    symbols_raw = None
+    for base in endpoints:
         try:
-            resp = requests.get(url, timeout=8, verify=False)
-            if resp.status_code != 200:
-                continue
-            data = resp.json()
-            if not isinstance(data, list):
-                continue
-
-            pairs = []
-            for item in data:
-                sym = item.get("symbol", "")
-                # HARD GATE: must be in Pluang universe
-                if sym not in PLUANG_BINANCE_PAIRS:
-                    continue
-
-                template = pluang_lookup[sym]
-                quote_vol = float(item.get("quoteVolume", 0) or 0)
-
-                pairs.append({
-                    **template,
-                    "quote_asset": "USDT",
-                    "base_asset": sym[:-4],
-                    "last_price": float(item.get("lastPrice", 0) or 0),
-                    "price_change_24h_pct": float(item.get("priceChangePercent", 0) or 0),
-                    "volume_24h_usd": quote_vol,
-                    "high_24h": float(item.get("highPrice", 0) or 0),
-                    "low_24h": float(item.get("lowPrice", 0) or 0),
-                })
-
-            if len(pairs) > 10:
-                _DYNAMIC_UNIVERSE_CACHE["data"] = pairs
-                _DYNAMIC_UNIVERSE_CACHE["last_fetch"] = now
-                return pairs
-
+            url = f"{base}/fapi/v1/exchangeInfo"
+            resp = requests.get(url, timeout=10, verify=False)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, dict) and "symbols" in data:
+                    symbols_raw = [
+                        s for s in data["symbols"]
+                        if s.get("contractType") == "PERPETUAL"
+                        and s.get("quoteAsset") == "USDT"
+                        and s.get("status") == "TRADING"
+                    ]
+                    break
         except Exception:
             continue
 
-    return _DYNAMIC_UNIVERSE_CACHE["data"] or list(PLUANG_FUTURES_UNIVERSE)
+    if not symbols_raw:
+        return _DYNAMIC_UNIVERSE_CACHE["data"] or list(STATIC_CORE_UNIVERSE)
+
+    # Fetch 24hr tickers for live volume and price action
+    ticker_map = {}
+    for base in endpoints:
+        try:
+            url = f"{base}/fapi/v1/ticker/24hr"
+            t_resp = requests.get(url, timeout=10, verify=False)
+            if t_resp.status_code == 200:
+                t_list = t_resp.json()
+                if isinstance(t_list, list):
+                    for t in t_list:
+                        sym = t.get("symbol")
+                        if sym:
+                            ticker_map[sym] = t
+                    break
+        except Exception:
+            continue
+
+    all_pairs = []
+    for s in symbols_raw:
+        pair = s.get("symbol")
+        base_asset = s.get("baseAsset", pair.replace("USDT", ""))
+        lot = next((f for f in s.get("filters", []) if f["filterType"] == "LOT_SIZE"), {})
+        p_filt = next((f for f in s.get("filters", []) if f["filterType"] == "PRICE_FILTER"), {})
+        min_not = next((f for f in s.get("filters", []) if f["filterType"] == "MIN_NOTIONAL"), {})
+
+        tk = ticker_map.get(pair, {})
+        vol_usd = float(tk.get("quoteVolume", 0) or 0)
+        last_p = float(tk.get("lastPrice", 0) or 0)
+        change_24h = float(tk.get("priceChangePercent", 0) or 0)
+        high_24h = float(tk.get("highPrice", 0) or 0)
+        low_24h = float(tk.get("lowPrice", 0) or 0)
+
+        # Categorize tier
+        if pair in ("BTCUSDT", "ETHUSDT"):
+            tier = "T1_MEGA"
+            lev_max = 20
+        elif vol_usd > 100_000_000:
+            tier = "T2_LARGE"
+            lev_max = 15
+        elif pair.startswith("1000") or "PEPE" in pair or "DOGE" in pair or "MEME" in pair:
+            tier = "T4_MEME"
+            lev_max = 5
+        elif vol_usd > 20_000_000:
+            tier = "T3_MID"
+            lev_max = 10
+        else:
+            tier = "T5_EXTENDED"
+            lev_max = 10
+
+        all_pairs.append({
+            "symbol": f"{base_asset}-USD",
+            "name": base_asset,
+            "pair": pair,
+            "base_asset": base_asset,
+            "quote_asset": "USDT",
+            "tier": tier,
+            "leverage_max": lev_max,
+            "last_price": last_p,
+            "price_change_24h_pct": change_24h,
+            "volume_24h_usd": vol_usd,
+            "high_24h": high_24h,
+            "low_24h": low_24h,
+            "quantityPrecision": s.get("quantityPrecision", 3),
+            "pricePrecision": s.get("pricePrecision", 2),
+            "stepSize": float(lot.get("stepSize", 0.001)),
+            "minQty": float(lot.get("minQty", 0.001)),
+            "tickSize": float(p_filt.get("tickSize", 0.01)),
+            "minNotional": float(min_not.get("notional", 5.0))
+        })
+
+    # Sort descending by volume
+    all_pairs.sort(key=lambda x: x["volume_24h_usd"], reverse=True)
+
+    if len(all_pairs) > 50:
+        _DYNAMIC_UNIVERSE_CACHE["data"] = all_pairs
+        _DYNAMIC_UNIVERSE_CACHE["last_fetch"] = now
+        return all_pairs
+
+    return _DYNAMIC_UNIVERSE_CACHE["data"] or list(STATIC_CORE_UNIVERSE)
 
 
 def get_full_universe():
-    """Get the PLUANG-RESTRICTED universe of tradeable crypto futures (43 coins max)"""
+    """Get the complete universe of ALL tradeable Binance USDT Perpetual Futures (500+ coins)"""
     return fetch_all_binance_futures_pairs()
 
 
 # ===================================================================
-# SMART PRIORITIZATION: RANK BY MOVERS
+# SMART PRIORITIZATION: RANK BY MOVERS & OPPORTUNITY
 # ===================================================================
 def get_binance_24h_tickers():
     """Get 24h ticker data for ALL Binance pairs at once (1 API call)"""
     endpoints = [
-        "https://data-api.binance.vision/api/v3/ticker/24hr",
         "https://fapi.binance.com/fapi/v1/ticker/24hr",
+        "https://fapi1.binance.com/fapi/v1/ticker/24hr",
+        "https://fapi2.binance.com/fapi/v1/ticker/24hr",
+        "https://data-api.binance.vision/api/v3/ticker/24hr",
     ]
     for url in endpoints:
         try:
@@ -242,71 +349,72 @@ def get_binance_24h_tickers():
 
 def rank_universe_by_opportunity():
     """
-    Rank ALL crypto futures by trading opportunity score.
-    Factors: volume spike, price change %, volatility.
-    Returns sorted list with top movers first.
+    Rank ALL crypto futures in Binance universe by trading opportunity score.
+    Considers 500+ active pairs, prioritizing by:
+    - 24h Absolute Volatility / Momentum
+    - Liquidity / Institutional Volume
+    - High-Low Range expansion
     """
     universe = get_full_universe()
     tickers = get_binance_24h_tickers()
     
     if not tickers:
-        return universe  # Return unsorted if API fails
+        return universe
 
-    # Build ticker lookup
-    ticker_map = {}
-    for t in tickers:
-        if t.get("symbol", "").endswith("USDT"):
-            ticker_map[t["symbol"]] = t
+    ticker_map = {t["symbol"]: t for t in tickers if t.get("symbol", "").endswith("USDT")}
 
     ranked = []
     for coin in universe:
-        t = ticker_map.get(coin["pair"], {})
+        pair = coin["pair"]
+        t = ticker_map.get(pair)
         if not t:
+            # Use cached metrics from coin object
+            vol_usd = coin.get("volume_24h_usd", 0)
+            change = coin.get("price_change_24h_pct", 0)
+            last_p = coin.get("last_price", 0)
+            high = coin.get("high_24h", last_p)
+            low = coin.get("low_24h", last_p)
+        else:
+            vol_usd = float(t.get("quoteVolume", 0) or 0)
+            change = float(t.get("priceChangePercent", 0) or 0)
+            last_p = float(t.get("lastPrice", 0) or 0)
+            high = float(t.get("highPrice", 0) or 0)
+            low = float(t.get("lowPrice", 0) or 0)
+
+        # Skip extremely illiquid pairs below $100K daily volume
+        if vol_usd < 100_000:
             continue
 
-        try:
-            volume_usd = float(t.get("quoteVolume", 0))
-            price_change_pct = abs(float(t.get("priceChangePercent", 0)))
-            high_low_range = 0
-            high = float(t.get("highPrice", 0))
-            low = float(t.get("lowPrice", 0))
-            last_price = float(t.get("lastPrice", 0))
-            
-            if low > 0:
-                high_low_range = ((high - low) / low) * 100
-            
-            # Skip dust pairs with very low volume
-            if volume_usd < 1_000_000:  # < $1M daily volume = skip
-                continue
+        high_low_range = ((high - low) / low * 100) if low > 0 else 0
+        abs_change = abs(change)
 
-            # Opportunity score (higher = more interesting to scan first)
-            # Weights: volume (40%), price change (35%), range (25%)
-            vol_score = min(volume_usd / 1_000_000_000, 10)  # Cap at 10
-            change_score = min(price_change_pct / 2, 10)  # 20% change = max
-            range_score = min(high_low_range / 3, 10)  # 30% range = max
-            
-            opportunity_score = (vol_score * 0.4) + (change_score * 0.35) + (range_score * 0.25)
-            
-            # Core coins get a boost
-            if coin["tier"] == "CORE":
-                opportunity_score += 3.0
+        # Opportunity score components:
+        # 1. Volume score (log scale, rewards high liquidity)
+        vol_score = min(math.log10(max(vol_usd, 1)) * 1.0, 10.0)
+        # 2. Volatility score (rewards actionable moves)
+        change_score = min(abs_change / 2.0, 10.0)
+        # 3. High-Low range score
+        range_score = min(high_low_range / 3.0, 10.0)
 
-            coin_ranked = dict(coin)
-            coin_ranked.update({
-                "volume_24h_usd": volume_usd,
-                "price_change_24h_pct": float(t.get("priceChangePercent", 0)),
-                "last_price": last_price,
-                "high_24h": high,
-                "low_24h": low,
-                "high_low_range_pct": round(high_low_range, 2),
-                "opportunity_score": round(opportunity_score, 3),
-                "volume_rank": "HIGH" if volume_usd > 100_000_000 else ("MEDIUM" if volume_usd > 10_000_000 else "LOW")
-            })
-            ranked.append(coin_ranked)
-        except (ValueError, TypeError):
-            continue
+        opp_score = (vol_score * 0.35) + (change_score * 0.40) + (range_score * 0.25)
 
-    # Sort by opportunity score descending
+        # Core anchor coins get slight priority for consistent baseline
+        if pair in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+            opp_score += 1.5
+
+        c_copy = dict(coin)
+        c_copy.update({
+            "volume_24h_usd": vol_usd,
+            "price_change_24h_pct": change,
+            "last_price": last_p,
+            "high_24h": high,
+            "low_24h": low,
+            "high_low_range_pct": round(high_low_range, 2),
+            "opportunity_score": round(opp_score, 3),
+            "volume_rank": "HIGH" if vol_usd > 100_000_000 else ("MEDIUM" if vol_usd > 10_000_000 else "LOW")
+        })
+        ranked.append(c_copy)
+
     ranked.sort(key=lambda x: x.get("opportunity_score", 0), reverse=True)
     return ranked
 
@@ -700,12 +808,16 @@ def get_crypto_fear_greed():
 # ===================================================================
 def get_binance_klines(pair="BTCUSDT", interval="1h", limit=120):
     """
-    Fetch klines from Binance API with mirror fallback.
+    Fetch klines from Binance Futures API with multi-endpoint failover.
     Returns OHLCV data.
     """
+    pair = normalize_symbol_to_pair(pair)
     endpoints = [
-        f"https://data-api.binance.vision/api/v3/klines?symbol={pair}&interval={interval}&limit={limit}",
         f"https://fapi.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={limit}",
+        f"https://fapi1.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={limit}",
+        f"https://fapi2.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={limit}",
+        f"https://fapi3.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={limit}",
+        f"https://data-api.binance.vision/api/v3/klines?symbol={pair}&interval={interval}&limit={limit}",
     ]
     for url in endpoints:
         try:
@@ -1008,9 +1120,8 @@ def get_multi_timeframe(symbol="BTC-USD"):
     """
     result = {"symbol": symbol}
 
-    # Determine Binance pair
-    pair_map = {item["symbol"]: item["pair"] for item in CRYPTO_FUTURES_WATCHLIST}
-    binance_pair = pair_map.get(symbol, symbol.replace("-USD", "USDT").replace("20947", ""))
+    # Determine Binance pair via universal normalizer
+    binance_pair = normalize_symbol_to_pair(symbol)
 
     # 1H timeframe (using fast Binance path)
     result["tf_1h"] = get_market_indicators_fast(binance_pair, symbol)

@@ -63,14 +63,14 @@ OPENROUTER_MODEL = ENV.get("OPENROUTER_MODEL", "minimax/minimax-m3.1-flash:free"
 GEMINI_API_KEY = ENV.get("GEMINI_API_KEY", "")
 CEREBRAS_API_KEY = ENV.get("CEREBRAS_API_KEY", "")
 
-# Free backup models on OpenRouter — RANKED FROM SMARTEST TO LEAST SMART
-# Based on LMSYS Arena + benchmark scores + parameter count
+# Free backup models on OpenRouter — verified active free models
 OPENROUTER_FREE_MODELS = [
-    "minimax/minimax-m3.1-flash:free",      # #2: 1M context, strong agentic/coding
-    "nvidia/nemotron-3-super-120b-a12b:free", # #3: 120B MoE, high reasoning
-    "google/gemma-4-31b-it:free",            # #4: 31B, near-proprietary logic
-    "cohere/north-mini-code:free",           # #5: Specialized coding
-    "openrouter/free",                       # #6: Auto-router (picks any available)
+    "minimax/minimax-m3.1-flash:free",
+    "xingchen-agi/xing4.0-29b-a4b:free",
+    "nvidia/nemotron-3.5-super-vl:free",
+    "dots-studio/dots-3-note-preview:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "liquid/lfm-2.5-2.6b:free",
 ]
 
 CONFIG_FILE = os.path.join(BASE_DIR, "trading_config.json")

@@ -1,5 +1,5 @@
 {
-  "max_budget_idr": 500000,
+  "max_budget_idr": 50000,
   "max_leverage": 25,
   "min_confidence_score": 45,
   "min_risk_reward_ratio": 1.5,
@@ -15,6 +15,7 @@
   "currency": "USDT",
   "auto_execute_on_pluang": true,
   "trading_mode": "AI_QUANT_AUTONOMOUS",
-  "updated_at": "2026-10-20 14:10:00 UTC",
-  "note": "AI fully governs leverage, limit/market order type, modal (position size), and single Take Profit for Pluang"
+  "updated_at": "2026-10-20 09:21:22 UTC",
+  "note": "AI fully governs leverage, limit/market order type, modal (position size), and single Take Profit for Pluang",
+  "updated_by": "user"
 }

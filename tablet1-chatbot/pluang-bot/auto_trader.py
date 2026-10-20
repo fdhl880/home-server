@@ -61,6 +61,7 @@ from market_data import (
     get_binance_24h_tickers,
 )
 from pluang_mcp import PluangMCPClient
+from binance_futures import BinanceFuturesClient
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(RESULTS_DIR, "autotrader_state.json")
@@ -73,6 +74,23 @@ TOKEN_FILE = os.path.join(BASE_DIR, "tokens.json")
 ENV = load_env()
 TELEGRAM_TOKEN = ENV.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELE_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
+# === BINANCE FUTURES CLIENT ===
+binance_client = None
+
+def get_binance_client():
+    """Initialize Binance Futures client if API keys are configured"""
+    global binance_client
+    if binance_client is not None:
+        return binance_client
+    current_env = load_env()
+    ak = current_env.get("BINANCE_API_KEY", "").strip()
+    sk = current_env.get("BINANCE_API_SECRET", "").strip()
+    if ak and sk:
+        binance_client = BinanceFuturesClient(api_key=ak, api_secret=sk)
+        print(f"[BINANCE] ✅ Binance Futures Engine initialized ({ak[:8]}...)", flush=True)
+        return binance_client
+    return None
 
 # === PLUANG MCP CLIENT ===
 def get_pluang_client():
@@ -282,14 +300,12 @@ def record_position(signal: dict):
         "pluang_execution": None
     }
     
-    # === EXECUTE ON PLUANG ===
+    # === EXECUTE REAL TRADE (BINANCE FUTURES PRIMARY) ===
     if auto_execute:
-        if pluang_client is None:
-            pluang_client = get_pluang_client()
-        
-        if pluang_client:
+        bn_client = get_binance_client()
+        if bn_client:
             try:
-                execution_result = pluang_client.execute_full_trade(signal={
+                execution_result = bn_client.execute_full_trade(signal={
                     "binance_pair": pos["binance_pair"],
                     "symbol": pos["symbol"],
                     "direction": pos["direction"],
@@ -299,32 +315,61 @@ def record_position(signal: dict):
                     "limit_price": pos["limit_price"],
                     "entry_price": pos["entry_price"],
                     "take_profit": pos["take_profit"],
-                    "take_profit_1": pos["take_profit"],
-                    "take_profit_2": pos["take_profit"],
                     "stop_loss": pos["stop_loss"],
-                    "position_size_idr": pos["position_size_idr"],
                     "position_size_usdt": pos["position_size_usdt"]
                 }, config=cfg)
                 
-                pos["pluang_synced"] = execution_result.get("pluang_synced", False)
-                pos["pluang_execution"] = execution_result
+                pos["binance_synced"] = execution_result.get("binance_synced", False)
+                pos["binance_execution"] = execution_result
+                pos["exchange"] = "BINANCE_FUTURES"
+                pos["order_id"] = execution_result.get("order_id")
                 
-                if pos["pluang_synced"]:
+                if pos["binance_synced"]:
                     limit_str = f" @ ${limit_price:,.4f}" if order_type == "LIMIT" else ""
-                    print(f"[PLUANG] ✅ Trade executed on Pluang: {pos['direction']} {pos['symbol']} "
-                          f"${pos_size_usd} ({pos_size:,.0f} IDR) {leverage}x {margin_type} {order_type}{limit_str} TP: ${tp} SL: ${sl}", flush=True)
+                    print(f"[BINANCE] ✅ Real trade executed on Binance Futures: {pos['direction']} {pos['binance_pair']} "
+                          f"${pos_size_usd} {leverage}x {margin_type} {order_type}{limit_str} TP: ${tp} SL: ${sl} (Order #{pos['order_id']})", flush=True)
                 else:
-                    print(f"[PLUANG] ⚠️ Trade recorded locally but Pluang execution failed", flush=True)
+                    print(f"[BINANCE] ⚠️ Binance execution rejected: {execution_result.get('error')}", flush=True)
+                    return None
             except Exception as e:
-                print(f"[PLUANG] ❌ Execution error: {e}", flush=True)
-                pos["pluang_synced"] = False
-                pos["pluang_execution"] = {"error": str(e)}
+                print(f"[BINANCE] ❌ Execution exception: {e}", flush=True)
+                return None
         else:
-            print(f"[PLUANG] ⚠️ No MCP client - skipping position recording because order was not opened on Pluang", flush=True)
-            return None
+            # Fallback to Pluang
+            if pluang_client is None:
+                pluang_client = get_pluang_client()
+            
+            if pluang_client:
+                try:
+                    execution_result = pluang_client.execute_full_trade(signal={
+                        "binance_pair": pos["binance_pair"],
+                        "symbol": pos["symbol"],
+                        "direction": pos["direction"],
+                        "leverage": pos["leverage"],
+                        "margin_type": pos["margin_type"],
+                        "order_type": pos["order_type"],
+                        "limit_price": pos["limit_price"],
+                        "entry_price": pos["entry_price"],
+                        "take_profit": pos["take_profit"],
+                        "take_profit_1": pos["take_profit"],
+                        "take_profit_2": pos["take_profit"],
+                        "stop_loss": pos["stop_loss"],
+                        "position_size_idr": pos["position_size_idr"],
+                        "position_size_usdt": pos["position_size_usdt"]
+                    }, config=cfg)
+                    
+                    pos["pluang_synced"] = execution_result.get("pluang_synced", False)
+                    pos["pluang_execution"] = execution_result
+                    pos["exchange"] = "PLUANG"
+                except Exception as e:
+                    print(f"[PLUANG] ❌ Execution error: {e}", flush=True)
+                    pos["pluang_synced"] = False
+            else:
+                print(f"[EXECUTION] ⚠️ No active exchange client configured", flush=True)
+                return None
 
-    if not pos.get("pluang_synced"):
-        print(f"[PLUANG] ⚠️ Order not executed on Pluang - skipping position recording", flush=True)
+    if not pos.get("binance_synced") and not pos.get("pluang_synced"):
+        print(f"[EXECUTION] ⚠️ Order not executed on exchange - skipping recording to prevent fake reports", flush=True)
         return None
 
     positions.append(pos)
@@ -645,8 +690,15 @@ def run_full_scan_cycle():
                 pos = record_position(fc)
                 approved_signals.append({"symbol": sym, "pos": pos, "fc": fc, "name": name})
 
-                # Telegram Rich Notification with Pluang execution status
-                pluang_status = "✅ EXECUTED ON PLUANG" if pos and pos.get("pluang_synced") else "📝 Recorded Locally"
+                # Telegram Rich Notification with real execution status
+                if pos and pos.get("binance_synced"):
+                    order_id_str = f" (Order #{pos.get('order_id')})" if pos.get('order_id') else ""
+                    exchange_status = f"✅ EXECUTED ON BINANCE FUTURES{order_id_str}"
+                elif pos and pos.get("pluang_synced"):
+                    exchange_status = "✅ EXECUTED ON PLUANG"
+                else:
+                    exchange_status = "📝 Recorded Locally"
+
                 margin_t = fc.get("margin_type") or cfg.get("margin_type", "ISOLATED")
                 order_t = (fc.get("order_type") or "MARKET").upper()
                 limit_p_str = f" (@ ${fc.get('limit_price', 0):,.4f})" if order_t == "LIMIT" else ""
@@ -657,8 +709,8 @@ def run_full_scan_cycle():
                 lev_val = fc.get("leverage", 5)
 
                 msg = (
-                    f"🚨 <b>PYROFUEL AI // TRADE SIGNAL APPROVED!</b>\n\n"
-                    f"💎 <b>Aset:</b> <code>{sym}</code> ({name})\n"
+                    f"🚨 <b>PYROFUEL AI // BINANCE FUTURES TRADE EXECUTED!</b>\n\n"
+                    f"💎 <b>Aset:</b> <code>{pair}</code> ({name})\n"
                     f"📊 <b>Tier:</b> {tier} | <b>Opp Score:</b> {item.get('opportunity_score', 0):.2f}\n"
                     f"🎯 <b>Arah:</b> <b>{fc.get('direction', 'LONG')}</b>\n"
                     f"────────────────────────\n"
@@ -666,19 +718,19 @@ def run_full_scan_cycle():
                     f"   📊 Leverage: <b>{lev_val}x</b>\n"
                     f"   📋 Order Type: <b>{order_t}{limit_p_str}</b>\n"
                     f"   🔒 Margin: <b>{margin_t}</b>\n"
-                    f"   💰 Modal: <b>Rp {pos_idr:,}</b> (${pos_usd:.2f})\n"
+                    f"   💰 Modal: <b>${pos_usd:.2f} USDT</b> (~Rp {pos_idr:,})\n"
                     f"────────────────────────\n"
                     f"📊 <b>Setup:</b> <code>{fc.get('setup_name')}</code>\n"
                     f"⭐ <b>Keyakinan:</b> <b>{conf}%</b>\n"
                     f"⚖️ <b>RRR:</b> {fc.get('risk_reward_ratio')}\n"
                     f"────────────────────────\n"
                     f"📍 <b>Entry:</b> ${fc.get('entry_price', 0):,.4f}\n"
-                    f"🎯 <b>Take Profit (Single TP):</b> ${tp_val:,.4f}\n"
+                    f"🎯 <b>Take Profit:</b> ${tp_val:,.4f}\n"
                     f"🛑 <b>Stop Loss:</b> ${sl_val:,.4f}\n"
                     f"────────────────────────\n"
-                    f"🏦 <b>Pluang:</b> {pluang_status}\n"
+                    f"🏦 <b>Status Bursa:</b> {exchange_status}\n"
                     f"📝 <b>Alasan AI:</b>\n<i>{fc.get('final_reason', '-')[:300]}</i>\n\n"
-                    f"⚡ <b>AUTO-EXECUTE: Order langsung dieksekusi di Pluang Futures tanpa menunggu konfirmasi manual!</b>"
+                    f"⚡ <b>AUTO-EXECUTE: Posisi riil telah terpasang di Binance Futures tanpa menunggu konfirmasi manual!</b>"
                 )
                 send_telegram(msg)
             else:
@@ -736,19 +788,30 @@ def start_loop():
     
     print(f"{'='*70}", flush=True)
     print(f"[*] PYROFUEL AUTONOMOUS CRYPTO FUTURES TRADER v3.0", flush=True)
-    print(f"[*] MODE: FULL UNIVERSE + PLUANG EXECUTION", flush=True)
+    print(f"[*] PRIMARY EXECUTION ENGINE: BINANCE FUTURES", flush=True)
     print(f"[*] Margin: {cfg.get('margin_type', 'ISOLATED')} | Order: {cfg.get('order_type', 'MARKET')}", flush=True)
     print(f"[*] Max Leverage: {cfg.get('max_leverage', 5)}x | Max Budget: Rp {cfg.get('max_budget_idr', 50000):,}", flush=True)
-    print(f"[*] Auto Execute on Pluang: {cfg.get('auto_execute_on_pluang', True)}", flush=True)
+    print(f"[*] Auto Execute: {cfg.get('auto_execute_on_pluang', True)}", flush=True)
     print(f"[*] Quick Screen: Every 60 sec | Full AI: Every 5 min", flush=True)
     print(f"{'='*70}", flush=True)
     
-    # Initialize Pluang MCP
+    bn_client = get_binance_client()
+    if bn_client:
+        try:
+            bal = bn_client.get_balance()
+            usdt_bal = bal.get("total_wallet_balance", 0) if isinstance(bal, dict) else 0
+            print(f"[*] ✅ Binance Futures Engine LIVE! Wallet balance: ${usdt_bal:.2f} USDT", flush=True)
+        except Exception as e:
+            print(f"[*] ⚠️ Binance Futures check warning: {e}", flush=True)
+    else:
+        print(f"[*] ⚠️ Binance Futures not configured in .env", flush=True)
+
+    # Initialize Pluang MCP as fallback
     pluang_client = get_pluang_client()
     if pluang_client:
-        print(f"[*] ✅ Pluang MCP connected - trades will be auto-executed", flush=True)
+        print(f"[*] ✅ Pluang MCP connected (Secondary)", flush=True)
     else:
-        print(f"[*] ⚠️ Pluang MCP not connected - recording locally only", flush=True)
+        print(f"[*] ⚪ Pluang MCP not active (Binance is Primary)", flush=True)
     
     load_state()
     last_full_scan = 0

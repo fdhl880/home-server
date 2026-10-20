@@ -108,6 +108,20 @@ def get_status():
         except Exception:
             pass
 
+    # Read Binance Futures Balance
+    bn_connected = False
+    bn_balance_usdt = 0.0
+    try:
+        from binance_futures import BinanceFuturesClient
+        bn_client = BinanceFuturesClient()
+        if bn_client.api_key and bn_client.api_secret:
+            bal = bn_client.get_balance()
+            if isinstance(bal, dict) and "total_wallet_balance" in bal:
+                bn_connected = True
+                bn_balance_usdt = float(bal["total_wallet_balance"])
+    except Exception:
+        pass
+
     cfg = get_trading_config()
     universe = get_full_universe()
     fx = get_fx_info()
@@ -115,25 +129,24 @@ def get_status():
     return jsonify({
         "status": "online",
         "version": "3.0",
-        "market": "CRYPTO_FUTURES_PLUANG_ONLY",
+        "market": "CRYPTO_FUTURES_BINANCE_FULL_UNIVERSE",
         "universe_size": len(universe),
         "core_assets_count": len(CRYPTO_FUTURES_WATCHLIST),
+        "binance_connected": bn_connected,
+        "binance_balance_usdt": bn_balance_usdt,
         "pluang_connected": pluang_connected,
         "max_budget_idr": cfg.get("max_budget_idr", 50000),
         "max_budget_usd": convert_idr_to_usd(cfg.get("max_budget_idr", 50000)),
         "max_leverage": cfg.get("max_leverage", 5),
-        "min_confidence_score": cfg.get("min_confidence_score", 65),
-        "min_risk_reward_ratio": cfg.get("min_risk_reward_ratio", 1.8),
+        "min_confidence_score": cfg.get("min_confidence_score", 45),
+        "min_risk_reward_ratio": cfg.get("min_risk_reward_ratio", 1.5),
         "margin_type": cfg.get("margin_type", "ISOLATED"),
         "order_type": cfg.get("order_type", "MARKET"),
-        "tp_sl_mode": cfg.get("tp_sl_mode", "DUAL_TP"),
-        "tp1_close_pct": cfg.get("tp1_close_pct", 50),
-        "tp1_move_sl_to_breakeven": cfg.get("tp1_move_sl_to_breakeven", True),
-        "max_concurrent_positions": cfg.get("max_concurrent_positions", 3),
-        "max_daily_trades": cfg.get("max_daily_trades", 10),
-        "auto_execute_on_pluang": cfg.get("auto_execute_on_pluang", True),
+        "tp_sl_mode": cfg.get("tp_sl_mode", "SINGLE_TP"),
+        "max_concurrent_positions": cfg.get("max_concurrent_positions", 5),
+        "max_daily_trades": cfg.get("max_daily_trades", 15),
+        "auto_execute_on_binance": True,
         "ai_provider": env.get("AI_PROVIDER", "groq"),
-        "model": env.get("GROQ_MODEL", "openai/gpt-oss-120b"),
         "telegram_bot": "@idrisginting_bot",
         "active_positions_count": len([p for p in positions if p.get("status") == "OPEN"]),
         "autonomous_running": state.get("is_running", True),
