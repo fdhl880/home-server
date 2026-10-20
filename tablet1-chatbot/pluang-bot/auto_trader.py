@@ -210,12 +210,33 @@ def record_position(signal: dict):
     """Record position locally AND execute on Pluang if connected"""
     global pluang_client
     cfg = _get_config()
-    max_budget = cfg.get("max_budget_idr", 50000)
-    max_lev = cfg.get("max_leverage", 5)
-    margin_type = cfg.get("margin_type", "ISOLATED")
-    order_type = cfg.get("order_type", "MARKET")
+    max_budget = cfg.get("max_budget_idr", 500000)
+    max_lev = cfg.get("max_leverage", 25)
+    margin_type = signal.get("margin_type") or cfg.get("margin_type", "ISOLATED")
+    
+    # 1. AI GOVERNS ORDER TYPE & LIMIT PRICE
+    order_type = (signal.get("order_type") or cfg.get("order_type", "MARKET")).upper()
+    limit_price = float(signal.get("limit_price") or signal.get("entry_price", 0))
+
+    # 2. AI GOVERNS MODAL (POSITION SIZE)
+    pos_size = float(signal.get("position_size_idr") or cfg.get("max_budget_idr", 50000))
+    if max_budget > 0:
+        pos_size = min(pos_size, max_budget)
+
+    # 3. AI GOVERNS LEVERAGE
+    leverage = int(signal.get("leverage") or 5)
+    if max_lev > 0:
+        leverage = min(leverage, max_lev)
+
+    # 4. PLUANG ONLY SUPPORTS SINGLE TAKE PROFIT (NO DUAL TP)
+    tp = float(signal.get("take_profit") or signal.get("take_profit_2") or signal.get("take_profit_1", 0))
+    sl = float(signal.get("stop_loss", 0))
+
+    fx = get_fx_info()
+    pos_size_usd = round(pos_size / fx["usd_idr"], 4)
+
     auto_execute = cfg.get("auto_execute_on_pluang", True)
-    max_concurrent = cfg.get("max_concurrent_positions", 3)
+    max_concurrent = cfg.get("max_concurrent_positions", 5)
     
     # Check concurrent position limit
     positions = []
@@ -230,11 +251,6 @@ def record_position(signal: dict):
     if open_count >= max_concurrent:
         print(f"[POSITION] ⚠️ Max concurrent positions ({max_concurrent}) reached. Skipping.", flush=True)
         return None
-
-    pos_size = min(signal.get("position_size_idr", max_budget), max_budget)
-    leverage = min(signal.get("leverage", 1), max_lev)
-    fx = get_fx_info()
-    pos_size_usd = round(pos_size / fx["usd_idr"], 4)
     
     pos = {
         "id": f"POS_{signal.get('symbol', 'UNK')}_{int(time.time())}",
@@ -243,12 +259,14 @@ def record_position(signal: dict):
         "direction": signal.get("direction", "LONG"),
         "entry_price": signal.get("entry_price", 0),
         "entry_price_idr": convert_usd_to_idr(signal.get("entry_price", 0)),
-        "take_profit_1": signal.get("take_profit_1", 0),
-        "take_profit_2": signal.get("take_profit_2", 0),
-        "stop_loss": signal.get("stop_loss", 0),
+        "take_profit": tp,
+        "take_profit_1": tp,  # alias for backward compat
+        "take_profit_2": tp,  # alias for backward compat
+        "stop_loss": sl,
         "leverage": leverage,
         "margin_type": margin_type,
         "order_type": order_type,
+        "limit_price": limit_price,
         "position_size_idr": pos_size,
         "position_size_usd": pos_size_usd,
         "position_size_usdt": pos_size_usd,  # USDT ≈ USD for execution
@@ -276,10 +294,15 @@ def record_position(signal: dict):
                     "symbol": pos["symbol"],
                     "direction": pos["direction"],
                     "leverage": pos["leverage"],
+                    "margin_type": pos["margin_type"],
+                    "order_type": pos["order_type"],
+                    "limit_price": pos["limit_price"],
                     "entry_price": pos["entry_price"],
-                    "take_profit_1": pos["take_profit_1"],
-                    "take_profit_2": pos["take_profit_2"],
+                    "take_profit": pos["take_profit"],
+                    "take_profit_1": pos["take_profit"],
+                    "take_profit_2": pos["take_profit"],
                     "stop_loss": pos["stop_loss"],
+                    "position_size_idr": pos["position_size_idr"],
                     "position_size_usdt": pos["position_size_usdt"]
                 }, config=cfg)
                 
@@ -287,8 +310,9 @@ def record_position(signal: dict):
                 pos["pluang_execution"] = execution_result
                 
                 if pos["pluang_synced"]:
+                    limit_str = f" @ ${limit_price:,.4f}" if order_type == "LIMIT" else ""
                     print(f"[PLUANG] ✅ Trade executed on Pluang: {pos['direction']} {pos['symbol']} "
-                          f"${pos_size_usd} {leverage}x {margin_type} {order_type}", flush=True)
+                          f"${pos_size_usd} ({pos_size:,.0f} IDR) {leverage}x {margin_type} {order_type}{limit_str} TP: ${tp} SL: ${sl}", flush=True)
                 else:
                     print(f"[PLUANG] ⚠️ Trade recorded locally but Pluang execution failed", flush=True)
             except Exception as e:
@@ -355,8 +379,8 @@ def monitor_and_update_positions():
         leverage = float(pos.get("leverage", 1))
         pos_idr = float(pos.get("position_size_idr", 50000))
         pos_usd = float(pos.get("position_size_usd", pos_idr / fx_rate))
-        tp1 = float(pos.get("take_profit_1", 0))
-        tp2 = float(pos.get("take_profit_2", 0))
+        # Single Take Profit on Pluang (NO dual TP)
+        tp = float(pos.get("take_profit") or pos.get("take_profit_2") or pos.get("take_profit_1", 0))
         sl = float(pos.get("stop_loss", 0))
 
         if entry_price <= 0:
@@ -377,35 +401,46 @@ def monitor_and_update_positions():
         pos["pnl_idr"] = round(pnl_idr, 2)
         pos["pnl_usd"] = round(pnl_usd, 4)
         pos["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        
+        # AI Position Sentinel & News Surveillance
+        try:
+            from news_sentinel import get_news_sentiment_summary
+            news_sum = get_news_sentiment_summary()
+            pos["news_sentiment"] = news_sum.get("market_sentiment", "NEUTRAL")
+            pos["ai_sentinel_status"] = "ACTIVE_AI_MONITORED"
+            pos["last_ai_check"] = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+
+            b_alert = news_sum.get("breaking_alert")
+            sym_raw = pos.get("symbol", "").split("-")[0].lower()
+            if b_alert and sym_raw in b_alert.lower() and not pos.get("sentinel_alerted"):
+                pos["sentinel_alerted"] = True
+                send_telegram(
+                    f"⚠️ <b>[AI SENTINEL] PERINGATAN BERITA KRITIS!</b>\n\n"
+                    f"💎 <b>Aset Terbuka:</b> <code>{pos.get('symbol')}</code> ({direction})\n"
+                    f"🚨 <b>Breaking News:</b> <i>{b_alert}</i>\n"
+                    f"📊 <b>Floating PnL Saat Ini:</b> {pnl_pct:.2f}% (Rp {pnl_idr:,.0f})\n"
+                    f"🛡️ <i>AI Sentinel memonitor ketat batas Stop Loss (${sl:,.4f}) untuk proteksi modal.</i>"
+                )
+        except Exception:
+            pass
+
         updated = True
 
-        # Check TP2 (Max Take Profit)
-        tp2_hit = (direction == "LONG" and current_price >= tp2 > 0) or (direction == "SHORT" and current_price <= tp2 > 0)
-        if tp2_hit:
-            pos["status"] = "CLOSED_TP2"
+        # Check Single Take Profit (Pluang only supports Single TP)
+        tp_hit = (direction == "LONG" and current_price >= tp > 0) or (direction == "SHORT" and current_price <= tp > 0)
+        if tp_hit:
+            pos["status"] = "CLOSED_TP"
             pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             pos["close_price"] = current_price
             send_telegram(
-                f"🎉 <b>PYROFUEL // TAKE PROFIT 2 TERCAPAI!</b>\n\n"
+                f"🎉 <b>PYROFUEL // TAKE PROFIT TERCAPAI!</b>\n\n"
                 f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction})\n"
                 f"💰 <b>Profit:</b> +{pnl_pct:.2f}% (+Rp {pnl_idr:,.0f} / +${pnl_usd:.2f})\n"
                 f"📍 <b>Entry:</b> ${entry_price:,.4f} ➔ <b>Exit:</b> ${current_price:,.4f}\n"
-                f"⚡ Posisi otomatis ditutup dengan keuntungan maksimal!"
+                f"🎯 <b>Target TP:</b> ${tp:,.4f}\n"
+                f"⚡ Posisi Take Profit berhasil ditutup penuh di Pluang!"
             )
             continue
-
-        # Check TP1 (Partial Profit / Move to Breakeven)
-        tp1_hit = (direction == "LONG" and current_price >= tp1 > 0) or (direction == "SHORT" and current_price <= tp1 > 0)
-        if tp1_hit and not pos.get("tp1_secured"):
-            pos["tp1_secured"] = True
-            pos["stop_loss"] = entry_price  # Trailing stop to breakeven!
-            send_telegram(
-                f"🎯 <b>PYROFUEL // TAKE PROFIT 1 HIT!</b>\n\n"
-                f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction})\n"
-                f"📈 <b>Floating Profit:</b> +{pnl_pct:.2f}% (+Rp {pnl_idr:,.0f})\n"
-                f"🛡️ <b>Tindakan:</b> Stop Loss dipindahkan ke Entry (${entry_price:,.4f})!\n"
-                f"<i>Modal Anda kini 100% terlindungi dari kerugian (Risk-Free Trade). Menuju TP2...</i>"
-            )
 
         # Check Stop Loss
         sl_hit = (direction == "LONG" and current_price <= sl > 0) or (direction == "SHORT" and current_price >= sl > 0)
@@ -417,9 +452,11 @@ def monitor_and_update_positions():
                 f"🛑 <b>PYROFUEL // STOP LOSS DITRIGGER</b>\n\n"
                 f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction})\n"
                 f"📍 <b>Entry:</b> ${entry_price:,.4f} ➔ <b>Exit:</b> ${current_price:,.4f}\n"
+                f"🛑 <b>Level SL:</b> ${sl:,.4f}\n"
                 f"📉 <b>PnL:</b> {pnl_pct:.2f}% (Rp {pnl_idr:,.0f} / ${pnl_usd:.2f})\n"
                 f"🛡️ Posisi otomatis di-cut untuk melindungi modal utama."
             )
+            continue
 
     if updated:
         try:
@@ -616,34 +653,38 @@ def run_full_scan_cycle():
 
                 # Telegram Rich Notification with Pluang execution status
                 pluang_status = "✅ EXECUTED ON PLUANG" if pos and pos.get("pluang_synced") else "📝 Recorded Locally"
-                margin_t = cfg.get("margin_type", "ISOLATED")
-                order_t = cfg.get("order_type", "MARKET")
-                pos_idr = pos['position_size_idr'] if pos else max_budget
-                pos_usd = pos.get('position_size_usd', 0) if pos else 0
+                margin_t = fc.get("margin_type") or cfg.get("margin_type", "ISOLATED")
+                order_t = (fc.get("order_type") or "MARKET").upper()
+                limit_p_str = f" (@ ${fc.get('limit_price', 0):,.4f})" if order_t == "LIMIT" else ""
+                pos_idr = pos['position_size_idr'] if pos else fc.get("position_size_idr", max_budget)
+                pos_usd = pos.get('position_size_usd', round(pos_idr / 16500.0, 2)) if pos else round(pos_idr / 16500.0, 2)
+                tp_val = fc.get("take_profit") or fc.get("take_profit_2") or fc.get("take_profit_1", 0)
+                sl_val = fc.get("stop_loss", 0)
+                lev_val = fc.get("leverage", 5)
+
                 msg = (
                     f"🚨 <b>PYROFUEL AI // TRADE SIGNAL APPROVED!</b>\n\n"
                     f"💎 <b>Aset:</b> <code>{sym}</code> ({name})\n"
                     f"📊 <b>Tier:</b> {tier} | <b>Opp Score:</b> {item.get('opportunity_score', 0):.2f}\n"
                     f"🎯 <b>Arah:</b> <b>{fc.get('direction', 'LONG')}</b>\n"
                     f"────────────────────────\n"
-                    f"⚙️ <b>Futures Settings:</b>\n"
-                    f"   📊 Leverage: <b>{fc.get('leverage', 3)}x</b>\n"
+                    f"⚙️ <b>Futures Parameters (Ditentukan AI):</b>\n"
+                    f"   📊 Leverage: <b>{lev_val}x</b>\n"
+                    f"   📋 Order Type: <b>{order_t}{limit_p_str}</b>\n"
                     f"   🔒 Margin: <b>{margin_t}</b>\n"
-                    f"   📋 Order: <b>{order_t}</b>\n"
+                    f"   💰 Modal: <b>Rp {pos_idr:,}</b> (${pos_usd:.2f})\n"
                     f"────────────────────────\n"
                     f"📊 <b>Setup:</b> <code>{fc.get('setup_name')}</code>\n"
                     f"⭐ <b>Keyakinan:</b> <b>{conf}%</b>\n"
                     f"⚖️ <b>RRR:</b> {fc.get('risk_reward_ratio')}\n"
                     f"────────────────────────\n"
                     f"📍 <b>Entry:</b> ${fc.get('entry_price', 0):,.4f}\n"
-                    f"🎯 <b>TP1:</b> ${fc.get('take_profit_1', 0):,.4f} (50% close)\n"
-                    f"🎯 <b>TP2:</b> ${fc.get('take_profit_2', 0):,.4f} (full close)\n"
-                    f"🛑 <b>SL:</b> ${fc.get('stop_loss', 0):,.4f}\n"
-                    f"🔒 <b>Modal:</b> Rp {pos_idr:,} (${pos_usd:.2f})\n"
+                    f"🎯 <b>Take Profit (Single TP):</b> ${tp_val:,.4f}\n"
+                    f"🛑 <b>Stop Loss:</b> ${sl_val:,.4f}\n"
                     f"────────────────────────\n"
                     f"🏦 <b>Pluang:</b> {pluang_status}\n"
-                    f"📝 <b>Alasan:</b>\n<i>{fc.get('final_reason', '-')[:300]}</i>\n\n"
-                    f"⚡ <i>Posisi otomatis didaftarkan.</i>"
+                    f"📝 <b>Alasan AI:</b>\n<i>{fc.get('final_reason', '-')[:300]}</i>\n\n"
+                    f"⚡ <i>Posisi otomatis dieksekusi di Pluang sesuai parameter AI.</i>"
                 )
                 markup = {
                     "inline_keyboard": [

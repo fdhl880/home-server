@@ -280,6 +280,57 @@ def get_positions():
             positions = []
     return jsonify(positions)
 
+@app.route("/api/performance")
+def get_performance():
+    """Consolidated performance metrics: Win Rate, Realized PnL, Floating PnL, Total Trades"""
+    positions = []
+    if os.path.exists(POSITIONS_FILE):
+        try:
+            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+                positions = json.load(f)
+        except Exception:
+            positions = []
+
+    closed_pos = [p for p in positions if str(p.get("status", "")).startswith("CLOSED")]
+    open_pos = [p for p in positions if p.get("status") == "OPEN"]
+
+    winning = [p for p in closed_pos if p.get("pnl_idr", 0) > 0 or p.get("pnl_pct", 0) > 0]
+    losing = [p for p in closed_pos if p.get("pnl_idr", 0) <= 0 and p.get("pnl_pct", 0) <= 0]
+
+    closed_count = len(closed_pos)
+    win_rate = round((len(winning) / closed_count * 100), 1) if closed_count > 0 else 0.0
+
+    realized_idr = sum(p.get("pnl_idr", 0) for p in closed_pos)
+    realized_usd = sum(p.get("pnl_usd", 0) for p in closed_pos)
+
+    unrealized_idr = sum(p.get("pnl_idr", 0) for p in open_pos)
+    unrealized_usd = sum(p.get("pnl_usd", 0) for p in open_pos)
+
+    total_pnl_idr = realized_idr + unrealized_idr
+    total_pnl_usd = realized_usd + unrealized_usd
+
+    return jsonify({
+        "win_rate_pct": win_rate,
+        "total_trades": len(positions),
+        "open_trades": len(open_pos),
+        "closed_trades": closed_count,
+        "winning_trades": len(winning),
+        "losing_trades": len(losing),
+        "realized_pnl_idr": round(realized_idr, 2),
+        "realized_pnl_usd": round(realized_usd, 4),
+        "unrealized_pnl_idr": round(unrealized_idr, 2),
+        "unrealized_pnl_usd": round(unrealized_usd, 4),
+        "net_total_pnl_idr": round(total_pnl_idr, 2),
+        "net_total_pnl_usd": round(total_pnl_usd, 4),
+        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    })
+
+@app.route("/api/news")
+def get_news():
+    """Return live breaking crypto news with sentiment analysis."""
+    from news_sentinel import get_news_sentiment_summary
+    return jsonify(get_news_sentiment_summary())
+
 @app.route("/api/quick-screen")
 def get_quick_screen():
     """Return latest quick screen results"""
@@ -300,13 +351,12 @@ def execute_order():
     leverage = int(data.get("leverage", 1))
     margin_type = data.get("margin_type", "ISOLATED").upper()
     order_type = data.get("order_type", "MARKET").upper()
-    tp1_price = float(data.get("tp1_price", 0))
-    tp2_price = float(data.get("tp2_price", 0))
-    sl_price = float(data.get("sl_price", 0))
+    tp_price = float(data.get("tp_price") or data.get("take_profit") or data.get("tp1_price") or data.get("tp2_price", 0))
+    sl_price = float(data.get("sl_price") or data.get("stop_loss", 0))
 
     cfg = get_trading_config()
-    MAX_BUDGET_IDR = cfg.get("max_budget_idr", 50000)
-    MAX_LEVERAGE = cfg.get("max_leverage", 5)
+    MAX_BUDGET_IDR = cfg.get("max_budget_idr", 500000)
+    MAX_LEVERAGE = cfg.get("max_leverage", 25)
 
     # HARD PYTHON SECURITY GATES (ANTI-TAMPERING)
     if amount_idr > MAX_BUDGET_IDR:
@@ -341,9 +391,12 @@ def execute_order():
                     "symbol": symbol,
                     "direction": direction,
                     "leverage": leverage,
-                    "take_profit_1": tp1_price,
-                    "take_profit_2": tp2_price,
+                    "order_type": order_type,
+                    "take_profit": tp_price,
+                    "take_profit_1": tp_price,
+                    "take_profit_2": tp_price,
                     "stop_loss": sl_price,
+                    "position_size_idr": amount_idr,
                     "position_size_usdt": pos_usd
                 },
                 config={
@@ -373,8 +426,11 @@ def execute_order():
         "order_type": order_type,
         "amount_idr": amount_idr,
         "amount_usd": convert_idr_to_usd(amount_idr),
-        "take_profit_1": tp1_price,
-        "take_profit_2": tp2_price,
+        "position_size_idr": amount_idr,
+        "position_size_usd": convert_idr_to_usd(amount_idr),
+        "take_profit": tp_price,
+        "take_profit_1": tp_price,
+        "take_profit_2": tp_price,
         "stop_loss": sl_price,
         "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "status": "OPEN",

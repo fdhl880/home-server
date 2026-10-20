@@ -60,6 +60,18 @@ GROQ_API_KEY = ENV.get("GROQ_API_KEY", "")
 GROQ_MODEL = ENV.get("GROQ_MODEL", "openai/gpt-oss-120b")
 OPENROUTER_API_KEY = ENV.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = ENV.get("OPENROUTER_MODEL", "minimax/minimax-m3.1-flash:free")
+GEMINI_API_KEY = ENV.get("GEMINI_API_KEY", "")
+CEREBRAS_API_KEY = ENV.get("CEREBRAS_API_KEY", "")
+
+# Free backup models on OpenRouter — RANKED FROM SMARTEST TO LEAST SMART
+# Based on LMSYS Arena + benchmark scores + parameter count
+OPENROUTER_FREE_MODELS = [
+    "minimax/minimax-m3.1-flash:free",      # #2: 1M context, strong agentic/coding
+    "nvidia/nemotron-3-super-120b-a12b:free", # #3: 120B MoE, high reasoning
+    "google/gemma-4-31b-it:free",            # #4: 31B, near-proprietary logic
+    "cohere/north-mini-code:free",           # #5: Specialized coding
+    "openrouter/free",                       # #6: Auto-router (picks any available)
+]
 
 CONFIG_FILE = os.path.join(BASE_DIR, "trading_config.json")
 
@@ -105,7 +117,7 @@ _GROQ_DAILY_EXHAUSTED = {"exhausted": False, "detected_at": 0}
 
 
 def _call_single_provider(url, headers, data, timeout=60):
-    """Single provider call with response parsing."""
+    """Single provider call with response parsing (OpenAI-compatible endpoints)."""
     resp = requests.post(url, headers=headers, json=data, timeout=timeout)
     if resp.status_code != 200:
         error_text = resp.text[:300]
@@ -130,6 +142,54 @@ def _call_single_provider(url, headers, data, timeout=60):
     return content
 
 
+def _call_gemini_provider(api_key, model, messages, max_tokens=1500, temperature=0.1, timeout=60):
+    """Call Google Gemini API directly (different format from OpenAI-compatible)."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    
+    # Convert OpenAI messages format to Gemini format
+    gemini_contents = []
+    system_instruction = None
+    for msg in messages:
+        if msg["role"] == "system":
+            system_instruction = msg["content"]
+        elif msg["role"] == "user":
+            gemini_contents.append({"role": "user", "parts": [{"text": msg["content"]}]})
+        elif msg["role"] == "assistant":
+            gemini_contents.append({"role": "model", "parts": [{"text": msg["content"]}]})
+    
+    payload = {
+        "contents": gemini_contents,
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+            "responseMimeType": "application/json"
+        }
+    }
+    if system_instruction:
+        payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+    
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    
+    if resp.status_code != 200:
+        error_text = resp.text[:300]
+        if resp.status_code == 429:
+            raise Exception(f"Gemini rate limited: {error_text[:200]}")
+        raise Exception(f"Gemini HTTP {resp.status_code}: {error_text[:200]}")
+    
+    result = resp.json()
+    candidates = result.get("candidates", [])
+    if not candidates:
+        raise Exception("No candidates in Gemini response")
+    parts = candidates[0].get("content", {}).get("parts", [])
+    if not parts:
+        raise Exception("No parts in Gemini response")
+    content = parts[0].get("text", "")
+    if not content:
+        raise Exception("Empty text in Gemini response")
+    return content
+
+
 class DailyLimitExhausted(Exception):
     """Raised when a provider's daily token limit is hit — no point retrying."""
     pass
@@ -137,12 +197,17 @@ class DailyLimitExhausted(Exception):
 
 def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature: float = 0.1, is_json: bool = True):
     """
-    Robust AI caller with SMART provider cascade:
-    1. If Groq daily limit NOT exhausted → try Groq (1 attempt, fast fail on 429 TPD)
-    2. If Groq fails → immediately try OpenRouter (3 attempts with backoff)
-    3. If ALL fail → raise exception (pipeline uses rule-based fallback as LAST RESORT)
+    ULTIMATE AI caller — 6-deep provider cascade, NEVER falls back to rule-based math.
     
-    KEY: 429 TPD (daily limit) → ZERO retries, instant cascade to next provider.
+    CASCADE ORDER (configurable via AI_PROVIDER):
+    1. Primary provider (OpenRouter or Groq based on AI_PROVIDER setting)
+    2. Secondary provider (the other one)
+    3. OpenRouter FREE model rotation (gemma-4, nemotron, cohere, auto-router)
+    4. Google Gemini Flash (free, different infrastructure entirely)
+    5. Cerebras (free, ultra-fast inference)
+    
+    If ALL 6+ providers fail → raises Exception (pipeline handles gracefully).
+    NEVER returns rule-based/manual calculations. Always AI.
     """
     global _GROQ_DAILY_EXHAUSTED
 
@@ -158,66 +223,136 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
     if is_json:
         base_data["response_format"] = {"type": "json_object"}
 
-    # Build provider chain based on AI_PROVIDER preference
+    # ===== BUILD PROVIDER CHAIN — SORTED BY INTELLIGENCE (SMARTEST FIRST) =====
     providers = []
     
+    # --- Tier 1: Google Gemini 3.8 Flash (proprietary Google reasoning model — SMARTEST) ---
+    gemini_prov = None
+    if GEMINI_API_KEY:
+        gemini_prov = {
+            "name": "Gemini-Flash",
+            "type": "gemini",
+            "api_key": GEMINI_API_KEY,
+            "model": "gemini-3.8-flash",
+            "max_retries": 1,
+        }
+
+    # --- Tier 2: Groq (GPT-OSS-120B — 120B reasoning model) ---
     groq_prov = {
         "name": "Groq",
+        "type": "openai_compat",
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
         "model": GROQ_MODEL,
         "max_retries": 1,
     }
-    
+
+    # --- Tier 3: Primary OpenRouter ---
     openrouter_prov = {
         "name": "OpenRouter",
+        "type": "openai_compat",
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "headers": {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
         "model": OPENROUTER_MODEL,
-        "max_retries": 3,
+        "max_retries": 2,
     }
 
-    if AI_PROVIDER.lower() == "openrouter":
-        if OPENROUTER_API_KEY:
-            providers.append(openrouter_prov)
-        if GROQ_API_KEY and not _GROQ_DAILY_EXHAUSTED["exhausted"]:
-            providers.append(groq_prov)
-    else:
+    # Build order based on AI_PROVIDER preference (default: Gemini first if available, else Groq, else OpenRouter)
+    if AI_PROVIDER.lower() == "gemini" and gemini_prov:
+        providers.append(gemini_prov)
         if GROQ_API_KEY and not _GROQ_DAILY_EXHAUSTED["exhausted"]:
             providers.append(groq_prov)
         if OPENROUTER_API_KEY:
             providers.append(openrouter_prov)
+    elif AI_PROVIDER.lower() == "openrouter":
+        if gemini_prov:
+            providers.append(gemini_prov)  # Smartest first
+        if OPENROUTER_API_KEY:
+            providers.append(openrouter_prov)
+        if GROQ_API_KEY and not _GROQ_DAILY_EXHAUSTED["exhausted"]:
+            providers.append(groq_prov)
+    else:  # groq or default
+        if gemini_prov:
+            providers.append(gemini_prov)  # Smartest first
+        if GROQ_API_KEY and not _GROQ_DAILY_EXHAUSTED["exhausted"]:
+            providers.append(groq_prov)
+        if OPENROUTER_API_KEY:
+            providers.append(openrouter_prov)
+
+    # --- Tier 4: OpenRouter FREE model rotation (backup, sorted by intelligence) ---
+    if OPENROUTER_API_KEY:
+        for free_model in OPENROUTER_FREE_MODELS:
+            if free_model != OPENROUTER_MODEL:  # Don't duplicate primary
+                providers.append({
+                    "name": f"OR-{free_model.split('/')[0]}",
+                    "type": "openai_compat",
+                    "url": "https://openrouter.ai/api/v1/chat/completions",
+                    "headers": {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
+                    "model": free_model,
+                    "max_retries": 1,
+                })
+
+    # --- Tier 5: Cerebras (free, ultra-fast) ---
+    if CEREBRAS_API_KEY:
+        providers.append({
+            "name": "Cerebras",
+            "type": "openai_compat",
+            "url": "https://api.cerebras.ai/v1/chat/completions",
+            "headers": {"Authorization": f"Bearer {CEREBRAS_API_KEY}", "Content-Type": "application/json"},
+            "model": "qwen-3.8-27b",
+            "max_retries": 2,
+        })
 
     if not providers:
-        raise Exception("No AI providers configured (both GROQ_API_KEY and OPENROUTER_API_KEY are empty)")
+        raise Exception(
+            "⛔ ZERO AI providers configured! Set at least one of: "
+            "OPENROUTER_API_KEY, GROQ_API_KEY, GEMINI_API_KEY, CEREBRAS_API_KEY in .env"
+        )
 
     last_error = ""
+    providers_tried = []
     for prov in providers:
-        data = {**base_data, "model": prov["model"]}
+        prov_name = prov["name"]
+        providers_tried.append(prov_name)
+        
         for attempt in range(prov["max_retries"]):
             try:
-                content = _call_single_provider(prov["url"], prov["headers"], data, timeout=45)
-                # Success! If we were using OpenRouter, log it
-                if prov["name"] != "Groq":
-                    print(f"[AI OK] {prov['name']} responded successfully", flush=True)
+                if prov["type"] == "gemini":
+                    # Gemini has its own API format
+                    content = _call_gemini_provider(
+                        prov["api_key"], prov["model"], messages,
+                        max_tokens=max_tokens, temperature=temperature, timeout=35
+                    )
+                else:
+                    # OpenAI-compatible endpoint (Groq, OpenRouter, Cerebras)
+                    data = {**base_data, "model": prov["model"]}
+                    content = _call_single_provider(prov["url"], prov["headers"], data, timeout=45)
+                
+                # Success!
+                print(f"[AI OK] {prov_name} ({prov.get('model', '?')}) responded ✅", flush=True)
                 return content
+                
             except DailyLimitExhausted as e:
-                # Daily limit = NO retry, mark Groq as dead, jump to next provider
                 _GROQ_DAILY_EXHAUSTED["exhausted"] = True
                 _GROQ_DAILY_EXHAUSTED["detected_at"] = time.time()
-                print(f"[AI] ⛔ {prov['name']} DAILY LIMIT HIT — switching to next provider", flush=True)
+                print(f"[AI] ⛔ {prov_name} DAILY LIMIT HIT — cascading to next provider", flush=True)
                 last_error = str(e)
                 break  # Break inner retry loop, continue to next provider
             except Exception as e:
-                last_error = f"{prov['name']} attempt {attempt+1}: {e}"
+                last_error = f"{prov_name} attempt {attempt+1}: {e}"
                 if attempt < prov["max_retries"] - 1:
-                    wait = (attempt + 1) * 2  # 2s, 4s
+                    wait = (attempt + 1) * 2
                     print(f"[AI RETRY] {last_error} — retrying in {wait}s...", flush=True)
                     time.sleep(wait)
                 else:
-                    print(f"[AI FAIL] {prov['name']} exhausted after {prov['max_retries']} attempts", flush=True)
+                    print(f"[AI SKIP] {prov_name} exhausted after {prov['max_retries']} attempts", flush=True)
 
-    raise Exception(f"All AI providers failed. Last: {last_error}")
+    raise Exception(
+        f"⛔ ALL {len(providers_tried)} AI providers failed! "
+        f"Tried: {' → '.join(providers_tried)}. "
+        f"Last error: {last_error}"
+    )
+
 
 
 # ===================================================================
@@ -381,40 +516,41 @@ def _rule_based_plan(scan_data: dict, setup: dict, market_data: dict):
     direction = setup.get("direction", "NONE")
 
     if direction == "NONE" or price <= 0:
-        return {"action": "SKIP", "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
-                "take_profit_2": 0, "risk_reward_ratio": "0:0", "position_size_idr": 0,
+        return {"action": "SKIP", "order_type": "MARKET", "entry_price": 0, "limit_price": 0,
+                "stop_loss": 0, "take_profit": 0, "take_profit_1": 0, "take_profit_2": 0,
+                "risk_reward_ratio": "0:0", "position_size_idr": 0,
                 "leverage": 1, "reasoning": "No setup detected (rule-based)", "ai_fallback": True}
 
     sl_mult = 1.5
-    tp1_mult = 2.0
-    tp2_mult = 3.5
+    tp_mult = 3.0  # Single Take Profit target (RRR 1:2.0)
 
     if direction == "LONG":
         sl = price - (atr * sl_mult)
-        tp1 = price + (atr * tp1_mult)
-        tp2 = price + (atr * tp2_mult)
+        tp = price + (atr * tp_mult)
     else:
         sl = price + (atr * sl_mult)
-        tp1 = price - (atr * tp1_mult)
-        tp2 = price - (atr * tp2_mult)
+        tp = price - (atr * tp_mult)
 
     sl_dist = abs(price - sl)
-    tp2_dist = abs(tp2 - price)
-    rrr = round(tp2_dist / sl_dist, 1) if sl_dist > 0 else 0
+    tp_dist = abs(tp - price)
+    rrr = round(tp_dist / sl_dist, 1) if sl_dist > 0 else 0
 
-    cfg = get_trading_config()
     return {
         "action": direction,
+        "order_type": "MARKET",
         "entry_price": round(price, 6),
+        "limit_price": round(price, 6),
         "stop_loss": round(sl, 6),
-        "take_profit_1": round(tp1, 6),
-        "take_profit_2": round(tp2, 6),
+        "take_profit": round(tp, 6),
+        "take_profit_1": round(tp, 6),  # backward compatibility alias
+        "take_profit_2": round(tp, 6),  # backward compatibility alias
         "risk_reward_ratio": f"1:{rrr}",
-        "position_size_idr": cfg.get("max_budget_idr", 50000),
-        "leverage": min(3, cfg.get("max_leverage", 5)),
+        "position_size_idr": 50000,
+        "leverage": 5,
         "risk_pct_of_capital": 2.0,
         "sl_distance_pct": round((sl_dist / price) * 100, 2),
-        "reasoning": f"ATR-based plan: SL {sl_mult}x ATR, TP1 {tp1_mult}x ATR, TP2 {tp2_mult}x ATR",
+        "tp_distance_pct": round((tp_dist / price) * 100, 2),
+        "reasoning": f"ATR Single TP plan: SL {sl_mult}x ATR, TP {tp_mult}x ATR (Pluang Single TP)",
         "ai_fallback": True
     }
 
@@ -587,6 +723,13 @@ def layer1_scanning(symbol: str):
         "daily_macd": data_1d.get("macd") if isinstance(data_1d, dict) else None,
     }
 
+    # Macro Breaking News & Sentiment Sentinel
+    try:
+        from news_sentinel import get_news_sentiment_summary
+        scan_summary["news_macro"] = get_news_sentiment_summary()
+    except Exception:
+        scan_summary["news_macro"] = {"market_sentiment": "NEUTRAL", "sentiment_score": 50}
+
     return data_1h, scan_summary
 
 
@@ -660,30 +803,31 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
     atr = market_data.get("atr_14", 0)
 
     system = (
-        "Anda adalah 'Quantitative Trading Plan Architect' untuk crypto futures.\n"
+        "Anda adalah 'Quantitative Trading Plan Architect' untuk crypto futures di Pluang.\n"
         "Tugas: Menyusun rencana trading yang PRESISI berdasarkan data kuantitatif.\n\n"
-        "ATURAN BESI:\n"
-        f"1. Modal MAKSIMAL: Rp 50.000 (TIDAK BOLEH LEBIH)\n"
-        f"2. Leverage MAKSIMAL: 5x\n"
-        f"3. Stop Loss WAJIB berdasarkan ATR (1.5x ATR dari entry)\n"
-        f"4. Risk per trade MAKSIMAL 2% dari modal (Rp 1.000)\n"
-        f"5. Take Profit MINIMUM 2x jarak Stop Loss (RRR >= 1:2)\n"
-        f"6. Jika setup = NO_CLEAR_SETUP, langsung buat plan SKIP\n\n"
+        "AI MEMEGANG KENDALI PENUH EKSEKUSI:\n"
+        "1. LEVERAGE DIATUR OLEH AI: Tentukan leverage secara cerdas (1x - 20x) berdasarkan volatilitas ATR, jarak SL, dan keyakinan setup. Volatilitas tinggi -> leverage rendah (2x-5x); setup solid/volatilitas terukur -> leverage lebih tinggi.\n"
+        "2. ORDER TYPE DIATUR OLEH AI: Pilih 'MARKET' (jika butuh eksekusi instan saat momentum/breakout) atau 'LIMIT' (jika butuh entry di harga tertentu/pullback support-resistance). Jika LIMIT, wajib berikan 'limit_price'.\n"
+        "3. MODAL (POSITION SIZE) DIATUR OLEH AI: Hitung alokasi modal per trade (position_size_idr) secara dinamis sesuai risk management dan jarak Stop Loss (misal Rp 25.000 - Rp 250.000).\n"
+        "4. PLUANG HANYA MENDUKUNG SINGLE TAKE PROFIT: DILARANG membuat dual TP (TP1/TP2). Buat TEPAT 1 target Take Profit ('take_profit') dan 1 Stop Loss ('stop_loss'). RRR minimal 1:1.5.\n"
+        "5. Stop Loss WAJIB dihitung logis berdasarkan ATR (1.5x - 2x ATR dari entry) atau struktur SMC.\n"
+        "6. Jika setup = NO_CLEAR_SETUP, buat action SKIP.\n\n"
         "WAJIB output JSON berikut:\n"
         "{\n"
         '  "action": "LONG/SHORT/SKIP",\n'
+        '  "order_type": "MARKET/LIMIT",\n'
         '  "entry_price": 0.0,\n'
+        '  "limit_price": 0.0,\n'
         '  "stop_loss": 0.0,\n'
-        '  "take_profit_1": 0.0,\n'
-        '  "take_profit_2": 0.0,\n'
+        '  "take_profit": 0.0,\n'
         '  "risk_reward_ratio": "1:2.5",\n'
-        '  "risk_amount_idr": 1000,\n'
         '  "position_size_idr": 50000,\n'
-        '  "leverage": 3,\n'
+        '  "leverage": 5,\n'
+        '  "risk_amount_idr": 1000,\n'
         '  "risk_pct_of_capital": 2.0,\n'
         '  "sl_distance_pct": 1.5,\n'
-        '  "tp1_distance_pct": 3.0,\n'
-        '  "reasoning": "penjelasan singkat"\n'
+        '  "tp_distance_pct": 3.75,\n'
+        '  "reasoning": "penjelasan singkat mengenai alasan entry, level SL/TP, leverage, dan order type"\n'
         "}"
     )
 
@@ -698,7 +842,7 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
         f"- Bollinger: {json.dumps(scan_data.get('bollinger_1h', {}))}\n"
         f"- Volume: {json.dumps(scan_data.get('volume', {}))}\n\n"
         f"Setup yang terdeteksi:\n{json.dumps(setup_result, indent=2, ensure_ascii=False)}\n\n"
-        f"Buat Trading Plan PRESISI. Keluarkan HANYA JSON."
+        f"Buat Trading Plan PRESISI. Tentukan leverage, order_type (MARKET/LIMIT), limit_price, modal IDR, dan SINGLE take_profit. Keluarkan HANYA JSON."
     )
 
     raw = call_ai(prompt, system, max_tokens=2000, temperature=0.1)
@@ -709,15 +853,27 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
         print(f"[FALLBACK] Layer 3 AI parse failed for {symbol} — using rule-based plan", flush=True)
         return _rule_based_plan(scan_data, setup_result, market_data)
 
-    # === HARD SAFETY ENFORCEMENT ===
-    # Cap position size
-    if result.get("position_size_idr", 0) > MAX_BUDGET_IDR:
-        result["position_size_idr"] = MAX_BUDGET_IDR
-    # Cap leverage
-    if result.get("leverage", 1) > MAX_LEVERAGE:
-        result["leverage"] = MAX_LEVERAGE
-    # If setup was NO_CLEAR_SETUP, allow AI to still propose a plan
-    # (professional traders sometimes override scanner with discretion)
+    # Standardize single take_profit and aliases
+    tp = result.get("take_profit") or result.get("take_profit_2") or result.get("take_profit_1") or 0
+    result["take_profit"] = tp
+    result["take_profit_1"] = tp
+    result["take_profit_2"] = tp
+
+    # Default order_type & limit_price if omitted
+    if not result.get("order_type"):
+        result["order_type"] = "MARKET"
+    if result["order_type"].upper() == "LIMIT" and not result.get("limit_price"):
+        result["limit_price"] = result.get("entry_price", current_price)
+    elif result["order_type"].upper() != "LIMIT":
+        result["limit_price"] = result.get("entry_price", current_price)
+
+    # Cap leverage to exchange maximum safety (25x)
+    lev = int(result.get("leverage") or 5)
+    result["leverage"] = max(1, min(lev, 25))
+
+    # Fallback position size if invalid
+    if not result.get("position_size_idr") or result.get("position_size_idr") <= 0:
+        result["position_size_idr"] = 50000
 
     return result
 
@@ -736,7 +892,7 @@ def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_res
         "- Leverage >3x tanpa support/resistance kuat = WARNING\n"
         "- Volume rendah = FAIL (tidak ada likuiditas untuk exit)\n"
         "- RSI netral (35-65) dengan LONG/SHORT = WARNING (tidak ada edge)\n\n"
-        "AUDIT 10 POIN (berikan PASS/FAIL/WARNING per poin, JUJUR):\n"
+        "AUDIT 11 POIN (berikan PASS/FAIL/WARNING per poin, JUJUR):\n"
         "1. RRR_CHECK: RRR >= 1:2 = PASS. RRR < 1:1.5 = FAIL\n"
         "2. RSI_CHECK: FAIL jika LONG saat RSI>70 atau SHORT saat RSI<30\n"
         "3. VOLUME_CHECK: FAIL jika volume di bawah rata-rata 20 periode\n"
@@ -746,13 +902,14 @@ def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_res
         "7. SENTIMENT_CHECK: WARNING jika Fear & Greed extreme\n"
         "8. LONG_SHORT_CHECK: WARNING jika 70%+ crowd di sisi yang sama\n"
         "9. LIQUIDITY_CHECK: FAIL jika leverage >5x atau spread terlalu lebar\n"
-        "10. MAX_DRAWDOWN: FAIL jika potential drawdown >3% dari modal\n\n"
+        "10. MAX_DRAWDOWN: FAIL jika potential drawdown >3% dari modal\n"
+        "11. NEWS_CHECK: FAIL jika ada breaking news negatif/hack/exploit pada koin ini; WARNING jika sentiment berita BEARISH saat posisi LONG\n\n"
         "RECOMMENDATION:\n"
-        "- 8-10 PASS = PROCEED\n"
-        "- 6-7 PASS = PROCEED_WITH_CAUTION\n"
-        "- < 6 PASS = REJECT\n\n"
+        "- 9-11 PASS = PROCEED\n"
+        "- 7-8 PASS = PROCEED_WITH_CAUTION\n"
+        "- < 7 PASS = REJECT\n\n"
         "KELUARKAN HANYA JSON:\n"
-        '{"total_score": 7, "max_score": 10, "pass_rate_pct": 70, '
+        '{"total_score": 8, "max_score": 11, "pass_rate_pct": 73, '
         '"checks": [{"name": "RRR_CHECK", "status": "PASS", "detail": "RRR 1:2.5"}], '
         '"critical_failures": [], "max_drawdown_pct": 2.5, '
         '"risk_verdict": "LOW_RISK", "recommendation": "PROCEED", '
@@ -810,9 +967,10 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
         "- Volume rendah (tidak ada likuiditas)\n\n"
         "WAJIB KELUARKAN JSON LENGKAP:\n"
         '{"status": "APPROVED", "confidence_score": 72, "direction": "LONG", '
+        '"order_type": "MARKET", "limit_price": 82500.00, '
         '"setup_name": "TREND_CONTINUATION", "entry_price": 82500.00, '
-        '"take_profit_1": 84000.00, "take_profit_2": 86000.00, "stop_loss": 81200.00, '
-        '"risk_reward_ratio": "1:2.3", "leverage": 3, "position_size_idr": 50000, '
+        '"take_profit": 86000.00, "stop_loss": 81200.00, '
+        '"risk_reward_ratio": "1:2.3", "leverage": 5, "position_size_idr": 50000, '
         '"max_risk_idr": 1000, "risk_audit_pass_rate": 70, '
         '"checklist_passed": 7, "checklist_total": 10, '
         '"final_reason": "Penjelasan lengkap"}'
@@ -824,7 +982,7 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
         f"=== SETUP ===\n{json.dumps(setup_result, indent=2, ensure_ascii=False)}\n\n"
         f"=== TRADING PLAN ===\n{json.dumps(plan_result, indent=2, ensure_ascii=False)}\n\n"
         f"=== RISK AUDIT ===\n{json.dumps(risk_result, indent=2, ensure_ascii=False)}\n\n"
-        f"Analisis JUJUR. Jangan approve hanya karena ada setup. "
+        f"Analisis JUJUR. Keputusan eksekusi (leverage, order_type, modal IDR, dan SINGLE take_profit untuk Pluang) ditentukan secara presisi oleh AI. "
         f"APPROVE hanya jika edge statistik JELAS. Keluarkan HANYA JSON."
     )
 
@@ -845,22 +1003,39 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
             risk_score >= 5 and
             plan_result.get("action") not in ("SKIP", None)
         )
+        tp_val = plan_result.get("take_profit") or plan_result.get("take_profit_2") or plan_result.get("take_profit_1", 0)
         result = {
             "status": "APPROVED" if approved else "REJECTED",
             "confidence_score": prob,
             "direction": direction,
             "setup_name": setup_name,
+            "order_type": plan_result.get("order_type", "MARKET"),
+            "limit_price": plan_result.get("limit_price", plan_result.get("entry_price", 0)),
             "entry_price": plan_result.get("entry_price", 0),
-            "take_profit_1": plan_result.get("take_profit_1", 0),
-            "take_profit_2": plan_result.get("take_profit_2", 0),
+            "take_profit": tp_val,
+            "take_profit_1": tp_val,
+            "take_profit_2": tp_val,
             "stop_loss": plan_result.get("stop_loss", 0),
             "risk_reward_ratio": plan_result.get("risk_reward_ratio", "0:0"),
-            "leverage": plan_result.get("leverage", 1),
-            "position_size_idr": plan_result.get("position_size_idr", 0),
+            "leverage": plan_result.get("leverage", 5),
+            "position_size_idr": plan_result.get("position_size_idr", 50000),
             "max_risk_idr": 1000,
             "final_reason": f"Rule-based judgment: {', '.join(setup_result.get('confluences', [])[:3])}",
             "ai_fallback": True
         }
+    else:
+        tp_val = result.get("take_profit") or result.get("take_profit_2") or result.get("take_profit_1") or plan_result.get("take_profit") or plan_result.get("take_profit_2", 0)
+        result["take_profit"] = tp_val
+        result["take_profit_1"] = tp_val
+        result["take_profit_2"] = tp_val
+        if not result.get("order_type"):
+            result["order_type"] = plan_result.get("order_type", "MARKET")
+        if not result.get("limit_price"):
+            result["limit_price"] = plan_result.get("limit_price", result.get("entry_price", 0))
+        if not result.get("leverage"):
+            result["leverage"] = plan_result.get("leverage", 5)
+        if not result.get("position_size_idr"):
+            result["position_size_idr"] = plan_result.get("position_size_idr", 50000)
 
     return _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_data, market_data)
 
@@ -869,13 +1044,21 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
     """
     PYTHON-LEVEL SAFETY GATES - Balanced institutional risk controls.
     Block only CLEARLY dangerous trades, allow setups with reasonable edge.
-    532 quant factors already provide the selectivity — gates are guardrails, not walls.
+    AI governs leverage, limit/market order type, modal, and single Take Profit.
     """
     cfg = get_trading_config()
-    current_max_budget = cfg.get("max_budget_idr", 50000)
-    current_max_leverage = cfg.get("max_leverage", 5)
+    current_max_budget = cfg.get("max_budget_idr", 500000)
+    current_max_leverage = cfg.get("max_leverage", 25)
     current_min_confidence = cfg.get("min_confidence_score", 45)
     current_min_rrr = cfg.get("min_risk_reward_ratio", 1.5)
+
+    # Preserve AI-governed parameters
+    tp_val = result.get("take_profit") or plan_result.get("take_profit") or plan_result.get("take_profit_2", 0)
+    result["take_profit"] = tp_val
+    result["take_profit_1"] = tp_val
+    result["take_profit_2"] = tp_val
+    result["order_type"] = result.get("order_type") or plan_result.get("order_type", "MARKET")
+    result["limit_price"] = result.get("limit_price") or plan_result.get("limit_price", result.get("entry_price", 0))
 
     reasons = []
 
@@ -885,13 +1068,17 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
         result["status"] = "REJECTED"
         reasons.append(f"Confidence score {conf}% di bawah batas {current_min_confidence}%")
 
-    # Gate 2: Cap position size (don't reject, just cap)
+    # Gate 2: Bounded by max capital setting (AI manages modal)
     if result.get("position_size_idr", 0) > current_max_budget:
         result["position_size_idr"] = current_max_budget
+    elif result.get("position_size_idr", 0) <= 0:
+        result["position_size_idr"] = 50000
 
-    # Gate 3: Cap leverage (don't reject, just cap)
+    # Gate 3: Bounded by max leverage setting (AI manages leverage)
     if result.get("leverage", 1) > current_max_leverage:
         result["leverage"] = current_max_leverage
+    elif result.get("leverage", 1) < 1:
+        result["leverage"] = 1
 
     # Gate 4: NO_CLEAR_SETUP or Direction NONE = REJECT
     if result.get("direction", "NONE") == "NONE" or setup_result.get("setup_name") == "NO_CLEAR_SETUP":
@@ -1081,13 +1268,16 @@ def run_5_layer_pipeline(symbol: str):
             "confidence_score": prob,
             "direction": direction,
             "setup_name": setup_name,
+            "order_type": plan_result.get("order_type", "MARKET"),
+            "limit_price": plan_result.get("limit_price", plan_result.get("entry_price", 0)),
             "entry_price": plan_result.get("entry_price", 0),
-            "take_profit_1": plan_result.get("take_profit_1", 0),
-            "take_profit_2": plan_result.get("take_profit_2", 0),
+            "take_profit": plan_result.get("take_profit") or plan_result.get("take_profit_2", 0),
+            "take_profit_1": plan_result.get("take_profit") or plan_result.get("take_profit_2", 0),
+            "take_profit_2": plan_result.get("take_profit") or plan_result.get("take_profit_2", 0),
             "stop_loss": plan_result.get("stop_loss", 0),
             "risk_reward_ratio": plan_result.get("risk_reward_ratio", "0:0"),
-            "leverage": plan_result.get("leverage", 1),
-            "position_size_idr": plan_result.get("position_size_idr", 0),
+            "leverage": plan_result.get("leverage", 5),
+            "position_size_idr": plan_result.get("position_size_idr", 50000),
             "max_risk_idr": 1000,
             "risk_audit_pass_rate": risk_result.get("pass_rate_pct", 0),
             "checklist_passed": risk_score,

@@ -45,7 +45,7 @@ if hasattr(sys.stderr, 'reconfigure'):
     except Exception:
         pass
 
-from pipeline import run_5_layer_pipeline, load_env, get_trading_config, save_trading_config, RESULTS_DIR
+from pipeline import run_5_layer_pipeline, load_env, get_trading_config, save_trading_config, RESULTS_DIR, AI_PROVIDER, GEMINI_API_KEY, GROQ_MODEL
 from market_data import (
     CRYPTO_FUTURES_WATCHLIST, get_market_indicators, get_market_indicators_fast,
     get_full_universe, get_top_movers, get_universe_summary, get_fx_info,
@@ -167,6 +167,13 @@ def format_pipeline_report(res: dict):
     total_f = qf.get("total_factors_evaluated", 532)
     regime = qf.get("regime", "NORMAL")
 
+    tp_val = plan.get('take_profit') or plan.get('take_profit_1') or plan.get('take_profit_2', 0)
+    sl_val = plan.get('stop_loss', 0)
+    order_t = (plan.get('order_type') or 'MARKET').upper()
+    limit_p_str = f" (@ ${plan.get('limit_price', 0):,})" if order_t == 'LIMIT' else ""
+    lev_val = plan.get('leverage') or fc.get('leverage', 1)
+    modal_val = plan.get('position_size_idr') or fc.get('position_size_idr', max_budget)
+
     text = (
         f"🛡️ <b>PYROFUEL 5-LAYER FUTURES AUDIT</b>\n"
         f"<b>Aset:</b> <code>{symbol}</code> (${layer1.get('current_price', 0):,})\n"
@@ -177,15 +184,16 @@ def format_pipeline_report(res: dict):
         f"────────────────────────\n"
         f"🎯 <b>1. Setup Hunter:</b> <code>{setup.get('setup_name', 'N/A')}</code> ({setup.get('direction', 'NONE')})\n"
         f"<i>\"{setup.get('explanation_id', '')}\"</i>\n\n"
-        f"📐 <b>2. Trading Plan:</b> {plan.get('action', 'SKIP')}\n"
-        f"• Entry: ${plan.get('entry_price', 0):,} | SL: ${plan.get('stop_loss', 0):,}\n"
-        f"• TP1: ${plan.get('take_profit_1', 0):,} | TP2: ${plan.get('take_profit_2', 0):,}\n"
-        f"• RRR: {plan.get('risk_reward_ratio', 'N/A')} | Lev: {plan.get('leverage', 1)}x\n\n"
+        f"📐 <b>2. Trading Plan (AI Governed):</b> {plan.get('action', 'SKIP')}\n"
+        f"• Order: {order_t}{limit_p_str} | Lev: {lev_val}x\n"
+        f"• Entry: ${plan.get('entry_price', 0):,} | SL: ${sl_val:,}\n"
+        f"• Take Profit: ${tp_val:,}\n"
+        f"• Modal: Rp {modal_val:,} | RRR: {plan.get('risk_reward_ratio', 'N/A')}\n\n"
         f"🔍 <b>3. CRO Risk Audit:</b> {risk.get('risk_verdict', 'N/A')}\n"
         f"• Score: {risk.get('total_score', 0)}/{risk.get('max_score', 10)} ({risk.get('pass_rate_pct', 0)}%)\n\n"
         f"⚖️ <b>4. Supreme Judge Decision:</b> {badge}\n"
         f"• <b>Skor Keyakinan:</b> {fc.get('confidence_score', 0)}% (Min {min_conf}%)\n"
-        f"• <b>Maks Modal:</b> Rp {min(fc.get('position_size_idr', max_budget), max_budget):,}\n\n"
+        f"• <b>Modal AI:</b> Rp {modal_val:,}\n\n"
         f"📌 <b>Pertimbangan Final:</b>\n{fc.get('final_reason', '-')[:450]}\n"
     )
     return text, status
@@ -264,13 +272,28 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
             return False
 
     direction = signal.get("direction", "LONG")
-    entry_price = signal.get("entry_price", 0)
-    tp1 = signal.get("take_profit_1", 0)
-    tp2 = signal.get("take_profit_2", 0)
-    sl = signal.get("stop_loss", 0)
-    leverage = min(signal.get("leverage", 3), max_lev)
+    entry_price = float(signal.get("entry_price", 0))
+    order_type = (signal.get("order_type") or cfg.get("order_type", "MARKET")).upper()
+    limit_price = float(signal.get("limit_price") or entry_price)
 
-    send_telegram_message(chat_id, f"⚡ <i>Mengirim order {direction} {raw_sym} senilai Rp {max_budget:,} (${budget_usd:.2f} USDT) ke Pluang Futures...</i>")
+    # AI governs modal/position size
+    pos_idr = float(signal.get("position_size_idr") or max_budget)
+    pos_usd = round(pos_idr / 16500.0, 2)
+
+    # AI governs leverage
+    leverage = int(signal.get("leverage") or 5)
+    if max_lev > 0:
+        leverage = min(leverage, max_lev)
+
+    # Pluang only supports Single Take Profit (NO dual TP)
+    tp = float(signal.get("take_profit") or signal.get("take_profit_2") or signal.get("take_profit_1", 0))
+    sl = float(signal.get("stop_loss", 0))
+
+    limit_info = f" (@ ${limit_price:,.4f})" if order_type == "LIMIT" else ""
+    send_telegram_message(
+        chat_id,
+        f"⚡ <i>Mengirim order {order_type}{limit_info} {direction} {raw_sym} ({leverage}x) senilai Rp {pos_idr:,} (${pos_usd:.2f} USDT) ke Pluang Futures...</i>"
+    )
 
     # 3. Call Pluang MCP execute_full_trade
     try:
@@ -280,16 +303,22 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
                 "symbol": raw_sym,
                 "direction": direction,
                 "leverage": leverage,
+                "margin_type": margin_type,
+                "order_type": order_type,
+                "limit_price": limit_price,
                 "entry_price": entry_price,
-                "take_profit_1": tp1,
-                "take_profit_2": tp2,
+                "take_profit": tp,
+                "take_profit_1": tp,
+                "take_profit_2": tp,
                 "stop_loss": sl,
-                "position_size_usdt": budget_usd
+                "position_size_idr": pos_idr,
+                "position_size_usdt": pos_usd
             },
             config={
                 "margin_type": margin_type,
                 "order_type": order_type,
-                "max_leverage": max_lev
+                "max_leverage": max_lev,
+                "max_budget_idr": max_budget
             }
         )
 
@@ -315,15 +344,17 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
                 "direction": direction,
                 "entry_price": entry_price,
                 "entry_price_idr": convert_usd_to_idr(entry_price),
-                "take_profit_1": tp1,
-                "take_profit_2": tp2,
+                "take_profit": tp,
+                "take_profit_1": tp,
+                "take_profit_2": tp,
                 "stop_loss": sl,
                 "leverage": leverage,
                 "margin_type": margin_type,
                 "order_type": order_type,
-                "position_size_idr": max_budget,
-                "position_size_usd": budget_usd,
-                "position_size_usdt": budget_usd,
+                "limit_price": limit_price,
+                "position_size_idr": pos_idr,
+                "position_size_usd": pos_usd,
+                "position_size_usdt": pos_usd,
                 "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "status": "OPEN",
                 "pluang_synced": True,
@@ -337,14 +368,16 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
             if callback_query_id:
                 answer_callback(callback_query_id, f"Order {raw_sym} berhasil dibuka di Pluang!", show_alert=False)
 
+            limit_txt = f" (@ ${limit_price:,.4f})" if order_type == "LIMIT" else ""
             msg = (
                 f"⚡ <b>ORDER BERHASIL DIEKSEKUSI DI PLUANG!</b>\n\n"
                 f"💎 <b>Aset:</b> <code>{raw_sym}</code>\n"
                 f"🎯 <b>Arah:</b> <b>{direction}</b>\n"
+                f"📋 <b>Order Type:</b> <b>{order_type}{limit_txt}</b>\n"
                 f"📊 <b>Leverage:</b> <b>{leverage}x</b> ({margin_type})\n"
-                f"💰 <b>Margin:</b> <b>Rp {max_budget:,}</b> (${budget_usd:.2f} USDT)\n"
+                f"💰 <b>Modal (AI):</b> <b>Rp {pos_idr:,}</b> (${pos_usd:.2f} USDT)\n"
                 f"📍 <b>Entry:</b> ${entry_price:,.4f}\n"
-                f"🎯 <b>TP1:</b> ${tp1:,.4f} | <b>TP2:</b> ${tp2:,.4f}\n"
+                f"🎯 <b>Take Profit (Single TP):</b> ${tp:,.4f}\n"
                 f"🛑 <b>Stop Loss:</b> ${sl:,.4f}\n"
                 f"🆔 <b>Order ID Pluang:</b> <code>{order_id}</code>\n"
                 f"⏰ <b>Waktu:</b> {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}\n\n"
@@ -674,11 +707,13 @@ def get_system_status():
     client = get_pluang_client()
     pluang_badge = "🟢 <b>CONNECTED & VERIFIED</b>" if client else "🔴 <b>TOKEN EXPIRED (Ketik /login)</b>"
 
+    ai_desc = "Google Gemini 3.8 Flash (Flagship AI)" if GEMINI_API_KEY else f"Groq ({GROQ_MODEL})"
+
     text = (
         f"📊 <b>STATUS SISTEM TRADING AI CRYPTO FUTURES</b>\n"
         f"────────────────────────\n"
         f"🏦 <b>Pluang Status:</b> {pluang_badge}\n"
-        f"🤖 <b>AI Provider:</b> Groq (openai/gpt-oss-120b)\n"
+        f"🤖 <b>AI Utama:</b> {ai_desc} (6+ AI Cascade)\n"
         f"📈 <b>Quant Matrix:</b> 500+ Factors (Simons, Wyckoff, Minervini, DeMark)\n"
         f"🌐 <b>Universe:</b> {len(universe)} crypto futures pairs\n"
         f"🔒 <b>Limit Modal:</b> Rp {cfg.get('max_budget_idr', 50000):,} per trade\n"
@@ -802,6 +837,78 @@ def handle_convert_command(chat_id, args):
         send_telegram_message(chat_id, text)
     except ValueError:
         send_telegram_message(chat_id, "❌ Format salah. Contoh: <code>/convert 50000 idr</code>")
+
+def handle_pnl_command(chat_id):
+    """Calculate and report Win Rate, Realized PnL, and Floating PnL to Telegram"""
+    positions = []
+    if os.path.exists(POSITIONS_FILE):
+        try:
+            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+                positions = json.load(f)
+        except Exception:
+            positions = []
+
+    closed_pos = [p for p in positions if str(p.get("status", "")).startswith("CLOSED")]
+    open_pos = [p for p in positions if p.get("status") == "OPEN"]
+
+    winning = [p for p in closed_pos if p.get("pnl_idr", 0) > 0 or p.get("pnl_pct", 0) > 0]
+    losing = [p for p in closed_pos if p.get("pnl_idr", 0) <= 0 and p.get("pnl_pct", 0) <= 0]
+    closed_count = len(closed_pos)
+    win_rate = round((len(winning) / closed_count * 100), 1) if closed_count > 0 else 0.0
+
+    realized_idr = sum(p.get("pnl_idr", 0) for p in closed_pos)
+    realized_usd = sum(p.get("pnl_usd", 0) for p in closed_pos)
+    unrealized_idr = sum(p.get("pnl_idr", 0) for p in open_pos)
+    unrealized_usd = sum(p.get("pnl_usd", 0) for p in open_pos)
+    total_idr = realized_idr + unrealized_idr
+    total_usd = realized_usd + unrealized_usd
+
+    sign_tot = "+" if total_idr >= 0 else ""
+    sign_real = "+" if realized_idr >= 0 else ""
+    sign_un = "+" if unrealized_idr >= 0 else ""
+
+    text = (
+        f"📊 <b>PERFORMA TRADING & WIN RATE AI</b>\n"
+        f"────────────────────────\n"
+        f"🏆 <b>Win Rate:</b> <b>{win_rate:.1f}%</b>\n"
+        f"📊 <b>Statistik:</b> {len(winning)} Menang / {len(losing)} Kalah ({closed_count} selesai)\n"
+        f"────────────────────────\n"
+        f"💰 <b>Net Total P&L:</b> <b>{sign_tot}Rp {total_idr:,.0f} ({sign_tot}${total_usd:.2f})</b>\n"
+        f"📈 <b>Realized P&L:</b> {sign_real}Rp {realized_idr:,.0f} ({sign_real}${realized_usd:.2f})\n"
+        f"🌊 <b>Floating P&L:</b> {sign_un}Rp {unrealized_idr:,.0f} ({sign_un}${unrealized_usd:.2f})\n"
+        f"💼 <b>Posisi Terbuka:</b> {len(open_pos)} posisi aktif\n"
+        f"────────────────────────\n"
+        f"🛡️ <i>Semua posisi diawasi real-time oleh AI Sentinel tiap 10 detik.</i>"
+    )
+    send_telegram_message(chat_id, text)
+
+def handle_news_command(chat_id):
+    """Fetch and report breaking crypto news and macro sentiment to Telegram"""
+    try:
+        from news_sentinel import get_news_sentiment_summary
+        ns = get_news_sentiment_summary()
+    except Exception as e:
+        send_telegram_message(chat_id, f"❌ Error news: {e}")
+        return
+
+    m_sent = ns.get("market_sentiment", "NEUTRAL")
+    score = ns.get("sentiment_score", 50)
+    top_arts = ns.get("top_articles", [])[:5]
+
+    badge = "🟢 BULLISH" if m_sent == "BULLISH" else ("🔴 BEARISH" if m_sent == "BEARISH" else "⚪ NEUTRAL")
+    text = (
+        f"📰 <b>CRYPTO BREAKING NEWS & SENTIMENT SENTINEL</b>\n"
+        f"────────────────────────\n"
+        f"🌡️ <b>Sentimen Pasar:</b> {badge} ({score}/100)\n"
+        f"🚨 <b>Alert Berita:</b> <i>{ns.get('breaking_alert') or 'Kondisi berita makro stabil'}</i>\n"
+        f"────────────────────────\n"
+        f"<b>Headline Terkini:</b>\n"
+    )
+    for a in top_arts:
+        sent_icon = "🟢" if a.get("sentiment") == "BULLISH" else ("🔴" if a.get("sentiment") == "BEARISH" else "⚪")
+        text += f"• {sent_icon} <b>[{a.get('source')}]</b> {a.get('title')}\n"
+    text += f"\n<i>Diperbarui otomatis dari CoinTelegraph, CoinDesk & Decrypt.</i>"
+    send_telegram_message(chat_id, text)
 
 def handle_any_coin_scan(chat_id, coin_name):
     coin_name = coin_name.upper().strip()
@@ -928,7 +1035,9 @@ def start_bot_listener():
                             "• <code>/universe</code> - Status full universe 200+ pairs\n"
                             "• <code>/top</code> - Top 20 movers saat ini\n"
                             "• <code>/btc</code> <code>/eth</code> <code>/sol</code> - Analisis cepat\n"
-                            "• <code>/status</code> - Portfolio & posisi aktif\n"
+                            "• <code>/status</code> - Portfolio & posisi aktif (AI Sentinel)\n"
+                            "• <code>/pnl</code> - Win Rate % & Total P&L Real-time\n"
+                            "• <code>/news</code> - AI Crypto News & Macro Sentiment\n"
                             "• <code>/auto</code> - Status auto-trading\n"
                             "• <code>/limit [n]</code> - Ubah batas modal\n"
                             "• <code>/leverage [n]</code> - Ubah batas leverage\n"
@@ -1100,6 +1209,12 @@ def start_bot_listener():
                     
                     elif msg_lower in ["/sui", "sui"]:
                         handle_any_coin_scan(chat_id, "SUI")
+
+                    elif msg_lower in ["/pnl", "pnl", "/winrate", "winrate", "/performance"]:
+                        handle_pnl_command(chat_id)
+
+                    elif msg_lower in ["/news", "news", "/berita", "berita", "/sentiment"]:
+                        handle_news_command(chat_id)
                     
                     # Catch-all: scan any other coin name
                     elif msg_lower.startswith("/"):

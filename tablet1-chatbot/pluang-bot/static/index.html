@@ -292,6 +292,116 @@
             transform: none;
         }
 
+        /* Executive Performance & KPI Grid */
+        .performance-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 14px;
+        }
+
+        .kpi-card {
+            background: var(--bg-card);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--border-glass);
+            border-radius: 16px;
+            padding: 16px 18px;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s;
+        }
+
+        .kpi-card:hover {
+            border-color: rgba(6, 182, 212, 0.4);
+            transform: translateY(-2px);
+        }
+
+        .kpi-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+
+        .kpi-title {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+        }
+
+        .kpi-icon {
+            font-size: 16px;
+        }
+
+        .kpi-value {
+            font-size: 22px;
+            font-weight: 800;
+            font-family: 'Outfit', sans-serif;
+            letter-spacing: -0.5px;
+        }
+
+        .kpi-sub {
+            font-size: 11px;
+            color: var(--text-sub);
+            margin-top: 4px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        /* News Sentinel Bar */
+        .news-sentinel-bar {
+            background: rgba(15, 23, 42, 0.7);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--border-glass);
+            border-radius: 14px;
+            padding: 12px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+        }
+
+        .news-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+            flex: 1;
+        }
+
+        .news-tag {
+            font-size: 10px;
+            font-weight: 800;
+            padding: 4px 8px;
+            border-radius: 6px;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .news-headline {
+            font-size: 13px;
+            color: #e2e8f0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .sentinel-pill {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            color: #34d399;
+            background: rgba(16, 185, 129, 0.12);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            padding: 4px 10px;
+            border-radius: 20px;
+            white-space: nowrap;
+        }
+
         /* 5-Layer Pipeline Cards */
         .pipeline-stepper {
             display: flex;
@@ -554,6 +664,53 @@
         <!-- Right: 5-Layer AI Pipeline Workspace -->
         <main class="main-workspace">
             
+            <!-- Executive Performance & Win Rate KPI Grid -->
+            <div class="performance-grid" id="performance-bar">
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span class="kpi-title">🏆 AI Win Rate</span>
+                        <span class="kpi-icon">🎯</span>
+                    </div>
+                    <div class="kpi-value" id="kpi-winrate" style="color:#34d399;">0.0%</div>
+                    <div class="kpi-sub" id="kpi-trades-count">Menang: 0 | Kalah: 0 (Total: 0)</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span class="kpi-title">💰 Net Total P&L</span>
+                        <span class="kpi-icon">💵</span>
+                    </div>
+                    <div class="kpi-value" id="kpi-total-pnl" style="color:#f8fafc;">Rp 0</div>
+                    <div class="kpi-sub" id="kpi-total-pnl-usd">$0.00 USD</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span class="kpi-title">📈 Realized P&L</span>
+                        <span class="kpi-icon">✅</span>
+                    </div>
+                    <div class="kpi-value" id="kpi-realized-pnl" style="color:#cbd5e1;">Rp 0</div>
+                    <div class="kpi-sub" id="kpi-realized-usd">0 posisi selesai</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span class="kpi-title">🌊 Floating P&L</span>
+                        <span class="kpi-icon">⚡</span>
+                    </div>
+                    <div class="kpi-value" id="kpi-unrealized-pnl" style="color:#06b6d4;">Rp 0</div>
+                    <div class="kpi-sub" id="kpi-open-count">0 posisi aktif terpantau</div>
+                </div>
+            </div>
+
+            <!-- Real-Time AI News & Sentinel Surveillance Ticker -->
+            <div class="news-sentinel-bar" id="news-bar">
+                <div class="news-left">
+                    <span class="news-tag" id="news-sentiment-badge" style="background:rgba(6,182,212,0.15); color:#06b6d4;">NEWS SENTINEL</span>
+                    <span class="news-headline" id="news-headline-text">Memuat breaking crypto news terkini...</span>
+                </div>
+                <div class="sentinel-pill" id="sentinel-status-badge">
+                    <span class="pulse-dot"></span> AI Position Sentinel: Aktif
+                </div>
+            </div>
+
             <!-- Hero Asset Card -->
             <div class="hero-banner">
                 <div class="hero-title">
@@ -828,15 +985,98 @@
                                     <br><span style="font-size:11px; color:var(--text-muted);">Rp ${Number(p.position_size_idr || 0).toLocaleString()}</span>
                                 </div>
                             </div>
-                            <div style="display:flex; gap:6px; margin-top:6px; font-size:10px; color:var(--text-sub);">
-                                <span>TP1: $${Number(p.take_profit_1 || 0).toFixed(2)}</span>
-                                <span>TP2: $${Number(p.take_profit_2 || 0).toFixed(2)}</span>
-                                <span>SL: $${Number(p.stop_loss || 0).toFixed(2)}</span>
+                            <div style="display:flex; gap:10px; margin-top:6px; font-size:10px; color:var(--text-sub);">
+                                <span style="color:#34d399; font-weight:600;">🎯 TP: $${Number(p.take_profit || p.take_profit_1 || 0).toFixed(2)}</span>
+                                <span style="color:#f87171; font-weight:600;">🛑 SL: $${Number(p.stop_loss || 0).toFixed(2)}</span>
+                                <span style="color:#38bdf8;">🛡️ ${p.ai_sentinel_status || 'AI Sentinel Aktif'}</span>
                             </div>
                         </div>
                     `).join('');
                 }
             } catch(e) { console.error(e); }
+        }
+
+        async function loadPerformanceMetrics() {
+            try {
+                const res = await fetch('/api/performance');
+                const data = await res.json();
+                
+                // Win Rate
+                const wrEl = document.getElementById('kpi-winrate');
+                if (wrEl) {
+                    wrEl.innerText = `${data.win_rate_pct.toFixed(1)}%`;
+                    wrEl.style.color = data.win_rate_pct >= 50 ? '#34d399' : (data.closed_trades === 0 ? '#34d399' : '#f87171');
+                }
+                const tcEl = document.getElementById('kpi-trades-count');
+                if (tcEl) {
+                    tcEl.innerText = `Menang: ${data.winning_trades} | Kalah: ${data.losing_trades} (Total: ${data.total_trades})`;
+                }
+
+                // Net Total PnL
+                const totEl = document.getElementById('kpi-total-pnl');
+                if (totEl) {
+                    const isPos = data.net_total_pnl_idr >= 0;
+                    totEl.innerText = `${isPos ? '+' : ''}Rp ${Math.abs(data.net_total_pnl_idr).toLocaleString()}`;
+                    totEl.style.color = isPos ? '#34d399' : '#f87171';
+                }
+                const totUsdEl = document.getElementById('kpi-total-pnl-usd');
+                if (totUsdEl) {
+                    const isPos = data.net_total_pnl_usd >= 0;
+                    totUsdEl.innerText = `${isPos ? '+' : ''}$${data.net_total_pnl_usd.toFixed(2)} USD (Net Total)`;
+                }
+
+                // Realized PnL
+                const realEl = document.getElementById('kpi-realized-pnl');
+                if (realEl) {
+                    const isPos = data.realized_pnl_idr >= 0;
+                    realEl.innerText = `${isPos ? '+' : ''}Rp ${Math.abs(data.realized_pnl_idr).toLocaleString()}`;
+                    realEl.style.color = isPos ? '#34d399' : '#f87171';
+                }
+                const realUsdEl = document.getElementById('kpi-realized-usd');
+                if (realUsdEl) {
+                    realUsdEl.innerText = `${data.closed_trades} posisi selesai (${data.winning_trades}W / ${data.losing_trades}L)`;
+                }
+
+                // Floating PnL
+                const unEl = document.getElementById('kpi-unrealized-pnl');
+                if (unEl) {
+                    const isPos = data.unrealized_pnl_idr >= 0;
+                    unEl.innerText = `${isPos ? '+' : ''}Rp ${Math.abs(data.unrealized_pnl_idr).toLocaleString()}`;
+                    unEl.style.color = isPos ? '#06b6d4' : '#f87171';
+                }
+                const openCountEl = document.getElementById('kpi-open-count');
+                if (openCountEl) {
+                    openCountEl.innerText = `${data.open_trades} posisi aktif terpantau AI`;
+                }
+            } catch(e) { console.error('Error loading performance:', e); }
+        }
+
+        async function loadNewsSentiment() {
+            try {
+                const res = await fetch('/api/news');
+                const data = await res.json();
+                
+                const badge = document.getElementById('news-sentiment-badge');
+                if (badge) {
+                    badge.innerText = data.market_sentiment || 'NEUTRAL';
+                    if (data.market_sentiment === 'BULLISH') {
+                        badge.style.background = 'rgba(16, 185, 129, 0.15)';
+                        badge.style.color = '#34d399';
+                    } else if (data.market_sentiment === 'BEARISH') {
+                        badge.style.background = 'rgba(239, 68, 68, 0.15)';
+                        badge.style.color = '#f87171';
+                    } else {
+                        badge.style.background = 'rgba(6, 182, 212, 0.15)';
+                        badge.style.color = '#06b6d4';
+                    }
+                }
+
+                const hl = document.getElementById('news-headline-text');
+                if (hl) {
+                    hl.innerText = data.latest_headline || 'Tidak ada berita baru';
+                    hl.title = data.latest_headline || '';
+                }
+            } catch(e) { console.error('Error loading news:', e); }
         }
 
         async function loadAutoTraderStatus() {
@@ -871,6 +1111,8 @@
         loadWatchlist();
         loadPositions();
         loadAutoTraderStatus();
+        loadPerformanceMetrics();
+        loadNewsSentiment();
         loadFuturesSettings();
         loadExecutionLog();
         
@@ -880,11 +1122,13 @@
             checkStatus();
             loadPositions();
             loadAutoTraderStatus();
+            loadPerformanceMetrics();
             loadFuturesSettings();
         }, 5000);
 
-        // Execution log refresh every 15 seconds
+        // News & execution log refresh every 15 seconds
         setInterval(() => {
+            loadNewsSentiment();
             loadExecutionLog();
         }, 15000);
 
@@ -897,28 +1141,20 @@
                 panel.innerHTML = `
                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
                         <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px;">
-                            <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">Margin Type</span>
-                            <div style="font-size:14px; font-weight:700; color:#f472b6;">${cfg.margin_type || 'ISOLATED'}</div>
+                            <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">AI Governed</span>
+                            <div style="font-size:13px; font-weight:700; color:#34d399;">✅ Full AI</div>
                         </div>
                         <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px;">
                             <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">Order Type</span>
-                            <div style="font-size:14px; font-weight:700; color:#818cf8;">${cfg.order_type || 'MARKET'}</div>
+                            <div style="font-size:13px; font-weight:700; color:#818cf8;">AI (MKT/LMT)</div>
                         </div>
                         <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px;">
-                            <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">Max Leverage</span>
-                            <div style="font-size:14px; font-weight:700; color:#fbbf24;">${cfg.max_leverage || 5}x</div>
+                            <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">Leverage</span>
+                            <div style="font-size:13px; font-weight:700; color:#fbbf24;">AI (1x-25x)</div>
                         </div>
                         <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px;">
-                            <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">TP/SL Mode</span>
-                            <div style="font-size:14px; font-weight:700; color:#34d399;">${cfg.tp_sl_mode || 'DUAL_TP'}</div>
-                        </div>
-                        <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px;">
-                            <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">TP1 Close %</span>
-                            <div style="font-size:14px; font-weight:700; color:#06b6d4;">${cfg.tp1_close_pct || 50}%</div>
-                        </div>
-                        <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px;">
-                            <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">Max Positions</span>
-                            <div style="font-size:14px; font-weight:700; color:#fb923c;">${cfg.max_concurrent_positions || 3}</div>
+                            <span style="font-size:9px; color:var(--text-sub); text-transform:uppercase;">TP Mode</span>
+                            <div style="font-size:13px; font-weight:700; color:#34d399;">SINGLE TP</div>
                         </div>
                     </div>
                     <div style="margin-top:8px; padding:6px 10px; background:rgba(0,0,0,0.3); border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
@@ -926,8 +1162,8 @@
                         <span style="font-size:12px; font-weight:700; color:${cfg.auto_execute_on_pluang ? '#34d399' : '#f87171'};">${cfg.auto_execute_on_pluang ? '✅ ON' : '❌ OFF'}</span>
                     </div>
                     <div style="margin-top:6px; padding:6px 10px; background:rgba(0,0,0,0.3); border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
-                        <span style="font-size:10px; color:var(--text-sub);">TP1 → SL to Breakeven</span>
-                        <span style="font-size:12px; font-weight:700; color:${cfg.tp1_move_sl_to_breakeven ? '#34d399' : '#f87171'};">${cfg.tp1_move_sl_to_breakeven ? '✅ ON' : '❌ OFF'}</span>
+                        <span style="font-size:10px; color:var(--text-sub);">AI Position Sentinel</span>
+                        <span style="font-size:12px; font-weight:700; color:#34d399;">🛡️ REAL-TIME</span>
                     </div>
                 `;
             } catch(e) { console.error(e); }
