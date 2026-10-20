@@ -1,9 +1,9 @@
 {
   "max_budget_idr": 50000,
   "max_leverage": 5,
-  "min_confidence_score": 65,
-  "min_risk_reward_ratio": 1.8,
-  "max_drawdown_pct": 3.0,
+  "min_confidence_score": 45,
+  "min_risk_reward_ratio": 1.5,
+  "max_drawdown_pct": 5.0,
   "margin_type": "ISOLATED",
   "order_type": "MARKET",
   "tp_sl_mode": "DUAL_TP",
@@ -13,7 +13,7 @@
   "max_daily_trades": 10,
   "currency": "USDT",
   "auto_execute_on_pluang": true,
-  "trading_mode": "INSTITUTIONAL_ALPHA",
-  "updated_at": "2026-10-20 03:33:00 UTC",
-  "note": "Institutional Grade - 65% min confidence, 1.8x min RRR, selective A+ setups only (filters out chop)"
+  "trading_mode": "BALANCED_ALPHA",
+  "updated_at": "2026-10-20 04:27:00 UTC",
+  "note": "Balanced Alpha - 45% min confidence, 1.5x min RRR, 532 quant factors provide selectivity, gates are guardrails not walls"
 }

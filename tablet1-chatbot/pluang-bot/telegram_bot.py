@@ -27,8 +27,11 @@ import os
 import sys
 import time
 import json
+import threading
 import requests
 from datetime import datetime, timezone
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 
 if hasattr(sys.stdout, 'reconfigure'):
     try:
@@ -343,6 +346,67 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
         send_telegram_message(chat_id, f"❌ <b>Error Eksekusi Pluang:</b>\n<code>{e}</code>")
         return False
 
+class OAuthCallbackHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/callback":
+            qs = parse_qs(parsed.query)
+            if "code" in qs:
+                code = qs["code"][0]
+                target_chat_id = None
+                pending_file = os.path.join(BASE_DIR, "pending_auth.json")
+                if os.path.exists(pending_file):
+                    try:
+                        with open(pending_file, "r", encoding="utf-8") as pf:
+                            target_chat_id = json.load(pf).get("chat_id")
+                    except Exception:
+                        pass
+                if not target_chat_id:
+                    last_cid_file = os.path.join(BASE_DIR, "last_chat_id.txt")
+                    if os.path.exists(last_cid_file):
+                        try:
+                            with open(last_cid_file, "r") as cf:
+                                target_chat_id = int(cf.read().strip())
+                        except Exception:
+                            pass
+
+                success = exchange_oauth_code(code, target_chat_id)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                status_color = "#22c55e" if success else "#ef4444"
+                status_title = "✅ Login Berhasil! Akun Pluang Terhubung" if success else "⚠️ Gagal Menukar Token"
+                status_desc = "Akun Pluang Anda berhasil dihubungkan ke Bot Telegram. Status Pluang di Telegram kini 🟢 HIJAU (Aktif)." if success else "Kode otentikasi gagal ditukar. Silakan coba /login ulang dari Telegram."
+                html = f"""
+                <html>
+                <body style="font-family:sans-serif; text-align:center; padding:50px; background:#0f172a; color:#f8fafc;">
+                    <h1 style="color:{status_color};">{status_title}</h1>
+                    <p style="font-size:18px;">{status_desc}</p>
+                    <p style="color:#94a3b8;">Anda boleh menutup tab browser ini dan kembali ke Telegram.</p>
+                </body>
+                </html>
+                """
+                self.wfile.write(html.encode("utf-8"))
+            elif "error" in qs:
+                self.send_response(400)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(f"<h1>Error Login: {qs['error'][0]}</h1>".encode("utf-8"))
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+def start_callback_server():
+    try:
+        server = HTTPServer(("0.0.0.0", 8080), OAuthCallbackHandler)
+        print("[*] Local OAuth Callback Server listening on port 8080...", flush=True)
+        server.serve_forever()
+    except Exception as e:
+        print(f"[!] Info: Port 8080 callback notice ({e})", flush=True)
+
 def handle_login_command(chat_id):
     """Generate official Pluang OAuth URL, save pending PKCE, and send interactive instructions"""
     try:
@@ -359,16 +423,23 @@ def handle_login_command(chat_id):
             f"&code_challenge_method=S256"
         )
 
-        # Save pending_auth.json with code_verifier for instant mobile exchange
+        # Save pending_auth.json with code_verifier and chat_id for instant callback
         pending_file = os.path.join(BASE_DIR, "pending_auth.json")
         with open(pending_file, "w", encoding="utf-8") as pf:
             json.dump({
                 "client_id": cid,
                 "code_verifier": cv,
                 "url": auth_url,
+                "chat_id": chat_id,
                 "timestamp": time.time()
             }, pf, indent=2)
-        
+
+        try:
+            with open(os.path.join(BASE_DIR, "last_chat_id.txt"), "w") as cf:
+                cf.write(str(chat_id))
+        except Exception:
+            pass
+
         reply_markup = {
             "inline_keyboard": [
                 [{"text": "🔑 Buka Halaman Login Pluang", "url": auth_url}]
@@ -378,25 +449,27 @@ def handle_login_command(chat_id):
             chat_id,
             "🔐 <b>LOGIN / SAMBUNGKAN AKUN PLUANG (INSTAN)</b>\n\n"
             "Untuk membuka posisi futures otomatis dengan USDT/IDR Anda, akun Pluang harus dihubungkan via OAuth resmi:\n\n"
-            "👉 <b>Langkah Mudah (Langsung dari HP):</b>\n"
+            "👉 <b>Langkah Mudah:</b>\n"
             "1. Klik tombol <b>Buka Halaman Login Pluang</b> di bawah\n"
             "2. Masukkan nomor HP & PIN Pluang Anda di browser\n"
             "3. Setujui izin akses trading untuk bot\n"
-            "4. Browser akan redirect ke link localhost (bisa jadi layar kosong / error koneksi)\n"
-            "5. <b>Cukup COPY URL di browser itu atau kodenya, lalu PASTE LANGSUNG ke chat bot ini!</b>\n\n"
+            "4. <b>Di PC/Laptop:</b> Bot akan otomatis menangkap login Anda & langsung IJO!\n"
+            "5. <b>Di HP / Browser Eksternal:</b> Jika dialihkan ke link localhost, cukup <b>COPY URL tersebut atau kodenya, lalu PASTE LANGSUNG ke chat bot ini!</b>\n\n"
             "<i>Bot akan otomatis menukar kode & status Pluang Anda langsung IJO (🟢 Terhubung & Verified)!</i>",
             reply_markup=reply_markup
         )
     except Exception as e:
         send_telegram_message(chat_id, f"❌ Gagal membuat link login: {e}")
 
-def exchange_oauth_code(code_str: str, chat_id: int):
+def exchange_oauth_code(code_str: str, chat_id: int = None):
     """Exchange OAuth code or redirect URL for tokens and activate immediately"""
     code_val = code_str.strip()
     if "code=" in code_val:
         from urllib.parse import urlparse, parse_qs
         try:
-            code_val = parse_qs(urlparse(code_val).query).get("code", [code_val])[0]
+            parsed = parse_qs(urlparse(code_val).query)
+            if "code" in parsed:
+                code_val = parsed["code"][0]
         except Exception:
             for part in code_val.split("&"):
                 if "code=" in part:
@@ -404,16 +477,20 @@ def exchange_oauth_code(code_str: str, chat_id: int):
 
     pending_file = os.path.join(BASE_DIR, "pending_auth.json")
     if not os.path.exists(pending_file):
-        send_telegram_message(
-            chat_id,
-            "⚠️ <b>Tidak ada sesi login aktif.</b>\n"
-            "Ketik <code>/login</code> terlebih dahulu untuk membuat link otentikasi baru."
-        )
+        if chat_id:
+            send_telegram_message(
+                chat_id,
+                "⚠️ <b>Tidak ada sesi login aktif.</b>\n"
+                "Ketik <code>/login</code> terlebih dahulu untuk membuat link otentikasi baru."
+            )
         return False
 
     try:
         with open(pending_file, "r", encoding="utf-8") as f:
             pending = json.load(f)
+
+        if not chat_id and pending.get("chat_id"):
+            chat_id = pending.get("chat_id")
 
         token_payload = {
             "grant_type": "authorization_code",
@@ -422,7 +499,8 @@ def exchange_oauth_code(code_str: str, chat_id: int):
             "redirect_uri": "http://localhost:8080/callback",
             "code_verifier": pending["code_verifier"]
         }
-        send_telegram_message(chat_id, "⏳ <i>Menghubungkan ke server Pluang untuk aktivasi token...</i>")
+        if chat_id:
+            send_telegram_message(chat_id, "⏳ <i>Menghubungkan ke server Pluang untuk aktivasi token...</i>")
         resp = requests.post("https://mcp.pluang.com/token", data=token_payload, timeout=15)
         if resp.status_code == 200:
             token_data = resp.json()
@@ -441,29 +519,36 @@ def exchange_oauth_code(code_str: str, chat_id: int):
                 except Exception:
                     pass
 
-                send_telegram_message(
-                    chat_id,
-                    f"🟢 <b>LOGIN BERHASIL! STATUS KONEKSI PLUANG IJO!</b>\n\n"
-                    f"✅ Akun Pluang Anda berhasil terhubung via OAuth resmi.\n"
-                    f"✅ Akses token aktif & verified live terhadap Pluang MCP.\n"
-                    f"✅ AI Trading Engine kini siap membuka posisi otomatis.{bal_info}\n\n"
-                    f"Ketik <code>/status</code> untuk melihat portofolio Anda, atau <code>/scan</code> untuk mencari peluang trade."
-                )
+                if chat_id:
+                    send_telegram_message(
+                        chat_id,
+                        f"🟢 <b>LOGIN BERHASIL! STATUS KONEKSI PLUANG IJO!</b>\n\n"
+                        f"✅ Akun Pluang Anda berhasil terhubung via OAuth resmi.\n"
+                        f"✅ Akses token aktif & verified live terhadap Pluang MCP.\n"
+                        f"✅ AI Trading Engine kini siap membuka posisi otomatis.{bal_info}\n\n"
+                        f"Ketik <code>/status</code> untuk melihat portofolio Anda, atau <code>/scan</code> untuk mencari peluang trade."
+                    )
+                print("[+] OAuth token exchanged successfully & saved to tokens.json!", flush=True)
                 return True
             else:
-                send_telegram_message(chat_id, "⚠️ Token diterima namun inisialisasi Pluang MCP gagal. Silakan coba <code>/login</code> ulang.")
+                if chat_id:
+                    send_telegram_message(chat_id, "⚠️ Token diterima namun inisialisasi Pluang MCP gagal. Silakan coba <code>/login</code> ulang.")
                 return False
         else:
-            send_telegram_message(
-                chat_id,
-                f"❌ <b>Gagal Menukar Kode Pluang:</b>\n"
-                f"Status: {resp.status_code}\n"
-                f"Detail: <code>{resp.text[:300]}</code>\n\n"
-                f"<i>Kode otentikasi hanya berlaku satu kali. Ketik <code>/login</code> untuk membuat yang baru.</i>"
-            )
+            if chat_id:
+                send_telegram_message(
+                    chat_id,
+                    f"❌ <b>Gagal Menukar Kode Pluang:</b>\n"
+                    f"Status: {resp.status_code}\n"
+                    f"Detail: <code>{resp.text[:300]}</code>\n\n"
+                    f"<i>Kode otentikasi hanya berlaku satu kali. Ketik <code>/login</code> untuk membuat yang baru.</i>"
+                )
+            print(f"[-] Token exchange failed ({resp.status_code}): {resp.text}", flush=True)
             return False
     except Exception as e:
-        send_telegram_message(chat_id, f"❌ Terjadi kesalahan saat aktivasi: {e}")
+        if chat_id:
+            send_telegram_message(chat_id, f"❌ Terjadi kesalahan saat aktivasi: {e}")
+        print(f"[-] Activation exception: {e}", flush=True)
         return False
 
 def run_radar_scan(chat_id):
@@ -714,6 +799,8 @@ def handle_any_coin_scan(chat_id, coin_name):
 
 def start_bot_listener():
     print(f"[*] Menjalankan Telegram Bot v3.0 - Full Universe Crypto Futures (@idrisginting_bot)...", flush=True)
+    cb_thread = threading.Thread(target=start_callback_server, daemon=True)
+    cb_thread.start()
     offset = 0
     while True:
         try:
@@ -733,10 +820,28 @@ def start_bot_listener():
                 # Handle text messages
                 if "message" in update and "text" in update["message"]:
                     chat_id = update["message"]["chat"]["id"]
+                    try:
+                        with open(os.path.join(BASE_DIR, "last_chat_id.txt"), "w") as cf:
+                            cf.write(str(chat_id))
+                    except Exception:
+                        pass
                     msg_text = update["message"]["text"].strip()
+                    msg_lower = msg_text.lower()
+
                     # Intercept OAuth code / redirect URL pasted by user
-                    if ("code=" in msg_text or "callback" in msg_text or msg_lower.startswith("/code") or 
-                        (len(msg_text) > 35 and " " not in msg_text and not msg_text.startswith("/") and not msg_text.startswith("http"))):
+                    # Catches: http://localhost:8080/callback?code=XXX, raw code strings, /code XXX
+                    is_oauth = False
+                    if "code=" in msg_text:
+                        is_oauth = True
+                    elif msg_lower.startswith("/code"):
+                        is_oauth = True
+                    elif "callback" in msg_lower and "localhost" in msg_lower:
+                        is_oauth = True
+                    elif len(msg_text) > 35 and " " not in msg_text and not msg_text.startswith("/"):
+                        # Likely a raw OAuth code pasted directly
+                        is_oauth = True
+
+                    if is_oauth:
                         code_cand = msg_text
                         if msg_lower.startswith("/code"):
                             parts = msg_text.split()

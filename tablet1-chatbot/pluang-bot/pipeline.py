@@ -323,9 +323,9 @@ def _rule_based_setup(scan_data: dict):
     elif mss == "BEARISH":
         bear_score += 1
 
-    # === INSTITUTIONAL SETUP DETERMINATION (Selective Wall Street Quality) ===
-    # A true institutional desk only trades when edge is clear (3+ confluences).
-    # Choppy sideways markets (net between -2 and +2) are REJECTED to preserve cash.
+    # === BALANCED SETUP DETERMINATION (532 Quant Factors + Technical Edge) ===
+    # Trade when 2+ independent confluences align. Markets rarely give 3+ perfect signals.
+    # Choppy sideways (net between -1 and +1) = REJECTED to preserve cash.
     net = bull_score - bear_score
     direction = "NONE"
     setup_name = "NO_CLEAR_SETUP"
@@ -333,22 +333,22 @@ def _rule_based_setup(scan_data: dict):
 
     if net >= 3:
         direction = "LONG"
+        setup_name = "RULE_BASED_STRONG_BULLISH"
+        prob = min(72 + (net - 3) * 4, 88)
+    elif net >= 2:
+        direction = "LONG"
         setup_name = "RULE_BASED_BULLISH_CONFLUENCE"
-        prob = min(68 + (net - 3) * 5, 85)
+        prob = min(58 + (net - 2) * 5, 75)
     elif net <= -3:
         direction = "SHORT"
-        setup_name = "RULE_BASED_BEARISH_CONFLUENCE"
-        prob = min(68 + (abs(net) - 3) * 5, 85)
-    elif net == 2 and vol_ratio > 1.4:
-        direction = "LONG"
-        setup_name = "RULE_BASED_BREAKOUT_LONG"
-        prob = 66
-    elif net == -2 and vol_ratio > 1.4:
+        setup_name = "RULE_BASED_STRONG_BEARISH"
+        prob = min(72 + (abs(net) - 3) * 4, 88)
+    elif net <= -2:
         direction = "SHORT"
-        setup_name = "RULE_BASED_BREAKDOWN_SHORT"
-        prob = 66
+        setup_name = "RULE_BASED_BEARISH_CONFLUENCE"
+        prob = min(58 + (abs(net) - 2) * 5, 75)
     else:
-        # Choppy, low-conviction market: explicitly keep in CASH
+        # Net -1 to +1: truly choppy, no clear edge
         direction = "NONE"
         setup_name = "NO_CLEAR_SETUP"
         prob = 40
@@ -860,22 +860,23 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
 
 def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_data, market_data):
     """
-    PYTHON-LEVEL SAFETY GATES - Strict institutional risk controls.
-    Block trades without clear statistical edge.
+    PYTHON-LEVEL SAFETY GATES - Balanced institutional risk controls.
+    Block only CLEARLY dangerous trades, allow setups with reasonable edge.
+    532 quant factors already provide the selectivity — gates are guardrails, not walls.
     """
     cfg = get_trading_config()
     current_max_budget = cfg.get("max_budget_idr", 50000)
     current_max_leverage = cfg.get("max_leverage", 5)
-    current_min_confidence = cfg.get("min_confidence_score", 65)
-    current_min_rrr = cfg.get("min_risk_reward_ratio", 1.8)
+    current_min_confidence = cfg.get("min_confidence_score", 45)
+    current_min_rrr = cfg.get("min_risk_reward_ratio", 1.5)
 
     reasons = []
 
-    # Gate 1: Confidence < min (Institutional standard: must meet min confidence)
+    # Gate 1: Confidence < min
     conf = result.get("confidence_score", 0)
     if conf < current_min_confidence:
         result["status"] = "REJECTED"
-        reasons.append(f"Confidence score {conf}% di bawah batas institusional {current_min_confidence}%")
+        reasons.append(f"Confidence score {conf}% di bawah batas {current_min_confidence}%")
 
     # Gate 2: Cap position size (don't reject, just cap)
     if result.get("position_size_idr", 0) > current_max_budget:
@@ -888,29 +889,29 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
     # Gate 4: NO_CLEAR_SETUP or Direction NONE = REJECT
     if result.get("direction", "NONE") == "NONE" or setup_result.get("setup_name") == "NO_CLEAR_SETUP":
         result["status"] = "REJECTED"
-        reasons.append("Pasar sideways/konsolidasi tanpa setup arah konvergen yang jelas")
+        reasons.append("Pasar sideways/konsolidasi tanpa setup arah yang jelas")
 
     # Gate 5: Plan SKIP rejects
     if plan_result.get("action") == "SKIP":
         result["status"] = "REJECTED"
-        reasons.append("Trading plan SKIP (level SL/TP tidak memiliki edge statistik)")
+        reasons.append("Trading plan SKIP")
 
-    # Gate 6: Risk audit must pass at least 7/10 checks
+    # Gate 6: Risk audit must pass at least 5/10 checks (balanced, not ultra-strict)
     risk_score = risk_result.get("total_score", 5)
-    if risk_score < 7:
+    if risk_score < 5:
         result["status"] = "REJECTED"
-        reasons.append(f"Risk audit hanya lolos {risk_score}/10 (minimum 7/10)")
+        reasons.append(f"Risk audit hanya lolos {risk_score}/10 (minimum 5/10)")
 
-    # Gate 6b: Confluence count minimum 3
+    # Gate 6b: Confluence count minimum 2 (real markets rarely have 3+ perfect confluences)
     confluence_count = setup_result.get("confluence_count", 0)
-    if confluence_count < 3 and setup_result.get("setup_name") != "NO_CLEAR_SETUP":
+    if confluence_count < 2 and setup_result.get("setup_name") != "NO_CLEAR_SETUP":
         result["status"] = "REJECTED"
-        reasons.append(f"Hanya {confluence_count} confluence (minimum 3)")
+        reasons.append(f"Hanya {confluence_count} confluence (minimum 2)")
 
-    # Gate 7: Critical failures >= 2 = REJECT
+    # Gate 7: Critical failures >= 3 = REJECT (allow 1-2 warnings)
     cf = risk_result.get("critical_failures", [])
     real_cf = [c for c in cf if c != "PARSE_FAILURE"]
-    if len(real_cf) >= 2:
+    if len(real_cf) >= 3:
         result["status"] = "REJECTED"
         reasons.append(f"Terdapat {len(real_cf)} kegagalan risiko kritis: {', '.join(real_cf)}")
 
@@ -927,27 +928,27 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
         except Exception:
             pass
 
-    # Gate 9: Quant score veto (moderate range)
+    # Gate 9: Quant score veto (only extreme contradictions)
     quant_matrix = scan_data.get("quant_factors") or market_data.get("quant_factors")
     if quant_matrix and isinstance(quant_matrix, dict) and "composite_quant_score" in quant_matrix:
         c_score = quant_matrix.get("composite_quant_score", 50.0)
         direction = result.get("direction", "NONE")
-        if direction == "LONG" and c_score < 35.0:
+        if direction == "LONG" and c_score < 25.0:
             result["status"] = "REJECTED"
-            reasons.append(f"Quant Score {c_score}/100 bearish — tidak mendukung LONG")
-        elif direction == "SHORT" and c_score > 65.0:
+            reasons.append(f"Quant Score {c_score}/100 sangat bearish — tidak mendukung LONG")
+        elif direction == "SHORT" and c_score > 75.0:
             result["status"] = "REJECTED"
-            reasons.append(f"Quant Score {c_score}/100 bullish — tidak mendukung SHORT")
+            reasons.append(f"Quant Score {c_score}/100 sangat bullish — tidak mendukung SHORT")
 
-    # Gate 10: SL distance must be < 3%
+    # Gate 10: SL distance must be < 5% (expanded from 3% for volatile crypto)
     try:
         entry = float(result.get("entry_price", 0))
         sl = float(result.get("stop_loss", 0))
         if entry > 0 and sl > 0:
             sl_dist_pct = abs(entry - sl) / entry * 100
-            if sl_dist_pct > 3.0:
+            if sl_dist_pct > 5.0:
                 result["status"] = "REJECTED"
-                reasons.append(f"SL distance {sl_dist_pct:.1f}% melebihi batas 3%")
+                reasons.append(f"SL distance {sl_dist_pct:.1f}% melebihi batas 5%")
     except Exception:
         pass
 
