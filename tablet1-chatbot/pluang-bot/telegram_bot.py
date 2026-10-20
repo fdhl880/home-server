@@ -202,6 +202,29 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
     order_type = cfg.get("order_type", "MARKET")
     budget_usd = convert_idr_to_usd(max_budget)
 
+    # 0. Check duplicate active position
+    positions = []
+    if os.path.exists(POSITIONS_FILE):
+        try:
+            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+                positions = json.load(f)
+        except Exception:
+            positions = []
+    existing_open = [p for p in positions if p.get("symbol") == raw_sym and p.get("status") == "OPEN"]
+    if existing_open:
+        last_pos = existing_open[-1]
+        msg = (
+            f"ℹ️ <b>POSISI {raw_sym} SUDAH AKTIF DI PLUANG!</b>\n\n"
+            f"🎯 <b>Arah:</b> {last_pos.get('direction', 'LONG')}\n"
+            f"📍 <b>Entry:</b> ${last_pos.get('entry_price', 0):,.4f}\n"
+            f"🆔 <b>Order ID:</b> <code>{last_pos.get('order_id', 'N/A')}</code>\n\n"
+            f"<i>Posisi sedang aktif dipantau. Modal Anda aman dan order tidak diduplikasi.</i>"
+        )
+        if callback_query_id:
+            answer_callback(callback_query_id, f"Posisi {raw_sym} sudah aktif!", show_alert=False)
+        send_telegram_message(chat_id, msg)
+        return True
+
     # 1. Check Pluang Client & Token
     client = get_pluang_client()
     if not client:
@@ -801,6 +824,18 @@ def start_bot_listener():
     print(f"[*] Menjalankan Telegram Bot v3.0 - Full Universe Crypto Futures (@idrisginting_bot)...", flush=True)
     cb_thread = threading.Thread(target=start_callback_server, daemon=True)
     cb_thread.start()
+
+    def _run_autotrader():
+        try:
+            import auto_trader
+            print("[*] 🤖 Launching Autonomous 5-Minute AI Scanner in background thread...", flush=True)
+            auto_trader.start_loop()
+        except Exception as e:
+            print(f"[-] Auto trader background thread error: {e}", flush=True)
+
+    trader_thread = threading.Thread(target=_run_autotrader, daemon=True)
+    trader_thread.start()
+
     offset = 0
     while True:
         try:

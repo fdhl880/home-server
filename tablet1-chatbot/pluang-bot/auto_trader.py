@@ -163,27 +163,48 @@ def save_state():
 def send_telegram(text, reply_markup=None):
     if not TELEGRAM_TOKEN:
         return
-    try:
-        r = requests.get(f"{TELE_API}/getUpdates?limit=5", timeout=10)
-        if r.status_code == 200:
-            updates = r.json().get("result", [])
-            chat_ids = set()
-            for u in updates:
-                msg = u.get("message") or u.get("callback_query", {}).get("message")
-                if msg and "chat" in msg:
-                    chat_ids.add(msg["chat"]["id"])
+    chat_ids = set()
+    cid_file = os.path.join(BASE_DIR, "last_chat_id.txt")
+    if os.path.exists(cid_file):
+        try:
+            with open(cid_file, "r", encoding="utf-8") as f:
+                cid = f.read().strip()
+                if cid:
+                    chat_ids.add(int(cid))
+        except Exception:
+            pass
+    env_cid = ENV.get("TELEGRAM_CHAT_ID", "").strip()
+    if env_cid:
+        try:
+            chat_ids.add(int(env_cid))
+        except Exception:
+            pass
 
-            for cid in chat_ids:
-                payload = {
-                    "chat_id": cid,
-                    "text": text,
-                    "parse_mode": "HTML"
-                }
-                if reply_markup:
-                    payload["reply_markup"] = reply_markup
-                requests.post(f"{TELE_API}/sendMessage", json=payload, timeout=10)
-    except Exception as e:
-        print(f"[TELEGRAM ERROR] {e}")
+    if not chat_ids:
+        # Fallback to getUpdates only if no chat_id has ever been recorded
+        try:
+            r = requests.get(f"{TELE_API}/getUpdates?limit=5", timeout=10)
+            if r.status_code == 200:
+                updates = r.json().get("result", [])
+                for u in updates:
+                    msg = u.get("message") or u.get("callback_query", {}).get("message")
+                    if msg and "chat" in msg:
+                        chat_ids.add(msg["chat"]["id"])
+        except Exception:
+            pass
+
+    for cid in chat_ids:
+        payload = {
+            "chat_id": cid,
+            "text": text,
+            "parse_mode": "HTML"
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        try:
+            requests.post(f"{TELE_API}/sendMessage", json=payload, timeout=10)
+        except Exception as e:
+            print(f"[TELEGRAM ERROR] {e}")
 
 def record_position(signal: dict):
     """Record position locally AND execute on Pluang if connected"""

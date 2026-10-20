@@ -266,6 +266,12 @@ class PluangMCPClient:
 
         user_q = f"beli {clean_sym} {amount_idr}" if side == "BUY" else f"jual {clean_sym} {amount_idr}"
 
+        if side == "SELL":
+            return {
+                "isError": True,
+                "error": f"Pluang Crypto Spot hanya mendukung posisi LONG (BUY). Sinyal SHORT untuk {clean_sym} tidak dapat dibuka secara riil di Pluang karena aset belum dimiliki di pocket."
+            }
+
         order_params = {
             "symbol": clean_sym,
             "order_type": "MARKET",
@@ -275,11 +281,8 @@ class PluangMCPClient:
         }
 
         try:
-            if side == "BUY":
-                result = self.call_tool("crypto_place_buy_order", order_params)
-            else:
-                result = self.call_tool("crypto_place_sell_order", order_params)
-            print(f"[PluangMCP] Real order dispatched: {side} {clean_sym} IDR {amount_idr:,}", flush=True)
+            result = self.call_tool("crypto_place_buy_order", order_params)
+            print(f"[PluangMCP] Real order dispatched: BUY {clean_sym} IDR {amount_idr:,}", flush=True)
             return result
         except Exception as e:
             print(f"[PluangMCP] open_position error: {e}", flush=True)
@@ -498,7 +501,13 @@ class PluangMCPClient:
             if open_res.get("content"):
                 txt = open_res["content"][0].get("text", "")
                 if '"success":false' in txt.replace(" ", "") or '"success": false' in txt:
-                    raise Exception(f"Pluang Rejected Order: {txt}")
+                    msg = txt
+                    try:
+                        d = json.loads(txt)
+                        msg = d.get("message") or d.get("error") or txt
+                    except Exception:
+                        pass
+                    raise Exception(f"Pluang Ditolak: {msg}")
 
             # Step 4: Set TP/SL
             if tp1 or tp2 or sl:
