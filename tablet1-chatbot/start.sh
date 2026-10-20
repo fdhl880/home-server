@@ -12,6 +12,9 @@ echo "🏛️ STARTING BLOOMBERG TERMINAL & PYROFUEL 5-LAYER AI TRADING ENGINE"
 echo "📂 Location: $DIR"
 echo "=================================================================="
 
+# 0. Automatically bootstrap and inject credentials into .env
+node -e "try { require('./bootstrap_credentials')(); } catch (e) {}" 2>/dev/null || true
+
 # 1. Install Node.js dependencies if node_modules missing
 if [ ! -d "node_modules" ]; then
     echo "[*] Installing Node.js dependencies..."
