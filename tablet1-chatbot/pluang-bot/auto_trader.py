@@ -547,37 +547,44 @@ def run_full_scan_cycle():
     print(f"[FULL SCAN] MODE: FULL UNIVERSE | MAX BUDGET: Rp {max_budget:,}", flush=True)
     print(f"{'='*70}", flush=True)
     
-    # Build scan list: CORE + TOP MOVERS
-    core_pairs = {item["pair"] for item in CRYPTO_FUTURES_WATCHLIST}
+    # Build scan list: Top 5 actionable coins by opportunity score
     ranked = rank_universe_by_opportunity()
     
-    # Always scan core coins
-    scan_list = list(CRYPTO_FUTURES_WATCHLIST)
-    
-    # Add top 40 non-core movers
-    movers_added = 0
+    scan_list = [
+        {"symbol": "BTC-USD", "pair": "BTCUSDT", "name": "Bitcoin", "tier": "T1_MEGA"},
+        {"symbol": "ETH-USD", "pair": "ETHUSDT", "name": "Ethereum", "tier": "T1_MEGA"},
+        {"symbol": "SOL-USD", "pair": "SOLUSDT", "name": "Solana", "tier": "T2_LARGE"},
+    ]
     for coin in ranked:
-        if coin["pair"] not in core_pairs and movers_added < 40:
+        if coin.get("pair") not in ("BTCUSDT", "ETHUSDT", "SOLUSDT") and len(scan_list) < 5:
             scan_list.append(coin)
-            movers_added += 1
     
     state["coins_scanned_this_cycle"] = len(scan_list)
     state["universe_size"] = len(ranked)
     
-    print(f"[FULL SCAN] Scanning {len(scan_list)} coins (10 core + {movers_added} top movers from {len(ranked)} total)", flush=True)
+    print(f"[FULL SCAN] Scanning Top {len(scan_list)} actionable coins (from {len(ranked)} total)", flush=True)
     
     approved_signals = []
-    
-    for idx, item in enumerate(scan_list):
+
+    def _scan_one(item):
         sym = item.get("symbol", item.get("pair", "").replace("USDT", "-USD"))
         pair = item.get("pair", sym.replace("-USD", "USDT"))
         name = item.get("name", item.get("base_asset", sym))
         tier = item.get("tier", "EXTENDED")
-        
-        print(f"[{idx+1}/{len(scan_list)}] {sym} ({name}) [{tier}]...", flush=True, end=" ")
-        
         try:
             res = run_5_layer_pipeline(sym)
+            return item, sym, pair, name, tier, res
+        except Exception as e:
+            print(f"[ERROR] {sym}: {e}", flush=True)
+            return item, sym, pair, name, tier, None
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(_scan_one, it) for it in scan_list]
+        for f in as_completed(futures):
+            item, sym, pair, name, tier, res = f.result()
+            if not res or "error" in res:
+                continue
+
             fc = res.get("layer5_final_call", {})
             status = fc.get("status", "REJECTED")
             conf = fc.get("confidence_score", 0)
@@ -600,7 +607,7 @@ def run_full_scan_cycle():
 
             if status == "APPROVED":
                 state["signals_approved_count"] += 1
-                print(f"🔥 APPROVED! Score: {conf}%", flush=True)
+                print(f"🔥 APPROVED! {sym} Score: {conf}%", flush=True)
                 
                 fc["symbol"] = sym
                 fc["binance_pair"] = pair
@@ -611,6 +618,8 @@ def run_full_scan_cycle():
                 pluang_status = "✅ EXECUTED ON PLUANG" if pos and pos.get("pluang_synced") else "📝 Recorded Locally"
                 margin_t = cfg.get("margin_type", "ISOLATED")
                 order_t = cfg.get("order_type", "MARKET")
+                pos_idr = pos['position_size_idr'] if pos else max_budget
+                pos_usd = pos.get('position_size_usd', 0) if pos else 0
                 msg = (
                     f"🚨 <b>PYROFUEL AI // TRADE SIGNAL APPROVED!</b>\n\n"
                     f"💎 <b>Aset:</b> <code>{sym}</code> ({name})\n"
@@ -623,14 +632,14 @@ def run_full_scan_cycle():
                     f"   📋 Order: <b>{order_t}</b>\n"
                     f"────────────────────────\n"
                     f"📊 <b>Setup:</b> <code>{fc.get('setup_name')}</code>\n"
-                    f"⭐ <b>Keyakinan:</b> <b>{conf}%</b> (Min 65%)\n"
+                    f"⭐ <b>Keyakinan:</b> <b>{conf}%</b>\n"
                     f"⚖️ <b>RRR:</b> {fc.get('risk_reward_ratio')}\n"
                     f"────────────────────────\n"
                     f"📍 <b>Entry:</b> ${fc.get('entry_price', 0):,.4f}\n"
                     f"🎯 <b>TP1:</b> ${fc.get('take_profit_1', 0):,.4f} (50% close)\n"
                     f"🎯 <b>TP2:</b> ${fc.get('take_profit_2', 0):,.4f} (full close)\n"
                     f"🛑 <b>SL:</b> ${fc.get('stop_loss', 0):,.4f}\n"
-                    f"🔒 <b>Modal:</b> Rp {pos['position_size_idr']:,} (${pos.get('position_size_usd', 0):.2f})\n"
+                    f"🔒 <b>Modal:</b> Rp {pos_idr:,} (${pos_usd:.2f})\n"
                     f"────────────────────────\n"
                     f"🏦 <b>Pluang:</b> {pluang_status}\n"
                     f"📝 <b>Alasan:</b>\n<i>{fc.get('final_reason', '-')[:300]}</i>\n\n"
@@ -647,13 +656,8 @@ def run_full_scan_cycle():
                 send_telegram(msg, markup)
             else:
                 reason_short = fc.get("final_reason", "")[:60]
-                print(f"REJECTED: {reason_short}...", flush=True)
+                print(f"REJECTED {sym}: {reason_short}...", flush=True)
                 state["signals_rejected_count"] += 1
-
-        except Exception as e:
-            print(f"ERROR: {e}", flush=True)
-
-        time.sleep(1.0)  # Rate limit respect
 
     state["total_scans_done"] += 1
     state["last_scan_time"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -679,7 +683,7 @@ def run_full_scan_cycle():
     summary_msg = (
         f"📊 <b>PYROFUEL SCAN CYCLE #{state['total_scans_done']} COMPLETE</b>\n\n"
         f"🌐 Universe: {len(ranked)} pairs total\n"
-        f"🔍 Scanned: {len(scan_list)} coins (10 core + {movers_added} movers)\n"
+        f"🔍 Scanned: {len(scan_list)} top actionable coins\n"
         f"✅ Approved: {len(approved_signals)}\n"
         f"❌ Rejected: {len(scan_list) - len(approved_signals)}\n"
         f"💰 Budget: Rp {max_budget:,}\n"

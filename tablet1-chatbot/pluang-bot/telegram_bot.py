@@ -32,6 +32,7 @@ import requests
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 if hasattr(sys.stdout, 'reconfigure'):
     try:
@@ -575,65 +576,86 @@ def exchange_oauth_code(code_str: str, chat_id: int = None):
         return False
 
 def run_radar_scan(chat_id):
-    """Scan CORE + Top movers"""
-    universe = get_full_universe()
-    movers = get_top_movers(20)
+    """Fast Parallel Quant Radar Scan (Top 3 Candidates in Parallel - <10s)"""
+    try:
+        ranked = rank_universe_by_opportunity()
+    except Exception:
+        ranked = []
     
+    if not ranked:
+        ranked = list(CRYPTO_FUTURES_WATCHLIST)
+
+    # Scan BTC, ETH, and highest-opportunity mover
+    top_candidates = [
+        {"symbol": "BTC-USD", "pair": "BTCUSDT", "name": "Bitcoin"},
+        {"symbol": "ETH-USD", "pair": "ETHUSDT", "name": "Ethereum"},
+    ]
+    top_mover = next((c for c in ranked if c.get("pair") not in ("BTCUSDT", "ETHUSDT")), None)
+    if top_mover:
+        top_candidates.append(top_mover)
+    else:
+        top_candidates.append({"symbol": "SOL-USD", "pair": "SOLUSDT", "name": "Solana"})
+
+    cand_names = ", ".join([c.get("symbol", "").replace("-USD", "") for c in top_candidates])
+
     send_telegram_message(
         chat_id,
-        f"🔍 <b>MEMULAI FULL UNIVERSE SCAN...</b>\n"
-        f"🌐 Universe: {len(universe)} pairs tersedia\n"
-        f"📊 Akan scan: 10 CORE + 20 Top Movers = ~30 coins\n"
-        f"<i>Menganalisa melalui 5-Layer AI Pipeline. Mohon tunggu ~2-5 menit.</i>"
+        f"⚡ <b>RADAR QUANT SCAN AKTIF</b>\n"
+        f"────────────────────────\n"
+        f"🔍 <b>Top 3 Peluang Tertinggi:</b> <code>{cand_names}</code>\n"
+        f"⏳ <i>Menjalankan 5-Layer AI Pipeline secara paralel... Jawaban siap dalam ~5 detik!</i>"
     )
-
-    core_pairs = {item["pair"] for item in CRYPTO_FUTURES_WATCHLIST}
-    scan_list = list(CRYPTO_FUTURES_WATCHLIST)
-    for m in movers:
-        if m["pair"] not in core_pairs:
-            scan_list.append(m)
-            if len(scan_list) >= 30:
-                break
 
     approved_count = 0
-    total = len(scan_list)
-    
-    for idx, item in enumerate(scan_list):
-        sym = item.get("symbol", item.get("pair", "").replace("USDT", "-USD"))
-        try:
-            res = run_5_layer_pipeline(sym)
-            if "error" in res:
-                continue
+    results = []
 
-            fc = res.get("layer5_final_call", {})
-            status = fc.get("status", "REJECTED")
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_to_item = {
+            executor.submit(run_5_layer_pipeline, item.get("symbol", item.get("pair", "").replace("USDT", "-USD"))): item
+            for item in top_candidates
+        }
+        for future in as_completed(future_to_item):
+            item = future_to_item[future]
+            sym = item.get("symbol", item.get("pair", "").replace("USDT", "-USD"))
+            try:
+                res = future.result()
+                results.append((sym, res))
+                fc = res.get("layer5_final_call", {})
+                status = fc.get("status", "REJECTED")
 
-            if status == "APPROVED":
-                approved_count += 1
-                text, _ = format_pipeline_report(res)
-                reply_markup = {
-                    "inline_keyboard": [
-                        [
-                            {"text": f"✅ Konfirmasi & Eksekusi ({sym})", "callback_data": f"confirm_{sym}"},
-                            {"text": "❌ Batalkan", "callback_data": f"cancel_{sym}"}
+                if status == "APPROVED":
+                    approved_count += 1
+                    text, _ = format_pipeline_report(res)
+                    reply_markup = {
+                        "inline_keyboard": [
+                            [
+                                {"text": f"✅ Konfirmasi & Eksekusi ({sym})", "callback_data": f"confirm_{sym}"},
+                                {"text": "❌ Batalkan", "callback_data": f"cancel_{sym}"}
+                            ]
                         ]
-                    ]
-                }
-                send_telegram_message(chat_id, text, reply_markup)
-            time.sleep(1)
-        except Exception as e:
-            print(f"[-] Scan error {sym}: {e}")
+                    }
+                    send_telegram_message(chat_id, text, reply_markup)
+            except Exception as e:
+                print(f"[-] Scan error {sym}: {e}", flush=True)
 
-    summary = (
-        f"🛡️ <b>HASIL FULL UNIVERSE SCAN:</b>\n"
-        f"🌐 Total Universe: {len(universe)} pairs\n"
-        f"🔍 Discan: {total} coins\n"
-        f"{'✅' if approved_count > 0 else '❌'} <b>{approved_count} TRADE APPROVED</b>\n"
-        f"{'🛡️' if approved_count == 0 else ''} <b>{total - approved_count} REJECTED (SAFETY FIRST)</b>\n\n"
-    )
     if approved_count == 0:
-        summary += "<i>Filosofi: Tidak ada setup yang memenuhi standar institusional keyakinan & RRR 1:1.8. Dana Anda aman.</i>"
-    send_telegram_message(chat_id, summary)
+        summary_lines = []
+        for sym, res in results:
+            fc = res.get("layer5_final_call", {})
+            reason = fc.get("final_reason", "Pasar sideways tanpa setup directional yang jelas")
+            conf = fc.get("confidence_score", 0)
+            summary_lines.append(f"• <b>{sym}</b>: REJECTED ({conf}%)\n  <i>{reason[:120]}</i>")
+
+        summary = (
+            f"🛡️ <b>HASIL RADAR SCAN (TOP 3 AKTIF):</b>\n"
+            f"────────────────────────\n"
+            + "\n\n".join(summary_lines) + "\n"
+            f"────────────────────────\n"
+            f"🔒 <b>0 TRADE APPROVED</b>\n"
+            f"🛡️ <i>Sesuai prinsip proteksi modal, order tidak dipaksakan saat kondisi sideways. Modal Anda 100% aman dalam USDT.</i>\n\n"
+            f"👉 Ketik <code>/btc</code> atau <code>/eth</code> untuk analisis instan koin tertentu."
+        )
+        send_telegram_message(chat_id, summary)
 
 def get_system_status():
     positions = []

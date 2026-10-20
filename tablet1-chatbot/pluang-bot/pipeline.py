@@ -158,28 +158,35 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
     if is_json:
         base_data["response_format"] = {"type": "json_object"}
 
-    # Build provider chain
+    # Build provider chain based on AI_PROVIDER preference
     providers = []
     
-    # Groq (primary) — skip if daily limit already detected
-    if GROQ_API_KEY and not _GROQ_DAILY_EXHAUSTED["exhausted"]:
-        providers.append({
-            "name": "Groq",
-            "url": "https://api.groq.com/openai/v1/chat/completions",
-            "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            "model": GROQ_MODEL,
-            "max_retries": 2,  # Quick: 1 try + 1 retry for transient errors
-        })
+    groq_prov = {
+        "name": "Groq",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+        "model": GROQ_MODEL,
+        "max_retries": 1,
+    }
     
-    # OpenRouter (fallback) — always available
-    if OPENROUTER_API_KEY:
-        providers.append({
-            "name": "OpenRouter",
-            "url": "https://openrouter.ai/api/v1/chat/completions",
-            "headers": {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
-            "model": OPENROUTER_MODEL,
-            "max_retries": 3,  # More retries for fallback
-        })
+    openrouter_prov = {
+        "name": "OpenRouter",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "headers": {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
+        "model": OPENROUTER_MODEL,
+        "max_retries": 3,
+    }
+
+    if AI_PROVIDER.lower() == "openrouter":
+        if OPENROUTER_API_KEY:
+            providers.append(openrouter_prov)
+        if GROQ_API_KEY and not _GROQ_DAILY_EXHAUSTED["exhausted"]:
+            providers.append(groq_prov)
+    else:
+        if GROQ_API_KEY and not _GROQ_DAILY_EXHAUSTED["exhausted"]:
+            providers.append(groq_prov)
+        if OPENROUTER_API_KEY:
+            providers.append(openrouter_prov)
 
     if not providers:
         raise Exception("No AI providers configured (both GROQ_API_KEY and OPENROUTER_API_KEY are empty)")
@@ -990,6 +997,48 @@ def run_5_layer_pipeline(symbol: str):
         print(f"[FALLBACK] Layer 2 AI failed for {symbol}: {e} — using rule-based setup", flush=True)
         setup_result = _rule_based_setup(scan_summary)
         ai_fallback_used = True
+
+    # Quick short-circuit if no valid setup detected: saves 3 AI API calls & 10+ seconds per coin
+    if setup_result.get("setup_name") == "NO_CLEAR_SETUP" or setup_result.get("direction") in ("NONE", "SKIP", None):
+        plan_result = _rule_based_plan(scan_summary, setup_result, market_data)
+        risk_result = _rule_based_risk(scan_summary, setup_result, plan_result, market_data)
+        final_call = {
+            "status": "REJECTED",
+            "confidence_score": setup_result.get("probability_pct", 30),
+            "direction": "NONE",
+            "setup_name": "NO_CLEAR_SETUP",
+            "entry_price": scan_summary.get("price", 0),
+            "take_profit_1": 0,
+            "take_profit_2": 0,
+            "stop_loss": 0,
+            "risk_reward_ratio": "0:0",
+            "leverage": 1,
+            "position_size_idr": 0,
+            "final_reason": setup_result.get("reasoning") or "Pasar sideways tanpa setup terkonfirmasi. Dana aman di USDT.",
+            "checklist_passed": 0,
+            "checklist_total": 10
+        }
+        res_payload = {
+            "pipeline_id": pipeline_id,
+            "symbol": symbol,
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "execution_time_sec": round(time.time() - start_time, 2),
+            "status": "COMPLETED",
+            "ai_fallback_used": ai_fallback_used,
+            "layer1_scanning": scan_summary,
+            "layer2_setup": setup_result,
+            "layer3_plan": plan_result,
+            "layer4_risk": risk_result,
+            "layer5_final_call": final_call
+        }
+        try:
+            os.makedirs(RESULTS_DIR, exist_ok=True)
+            fname = os.path.join(RESULTS_DIR, f"{symbol.replace('-', '_')}_latest.json")
+            with open(fname, "w", encoding="utf-8") as f:
+                json.dump(res_payload, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+        return res_payload
 
     # === LAYER 3: BUILD PLAN (AI with fallback) ===
     try:
