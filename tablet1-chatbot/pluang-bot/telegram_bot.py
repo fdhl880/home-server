@@ -65,31 +65,53 @@ def _max_leverage():
     return get_trading_config().get("max_leverage", 5)
 
 def get_pluang_client():
-    """Load client and verify access token live against Pluang MCP"""
+    """Load client and verify access token live against Pluang MCP.
+    Tries refresh_token automatically if access_token is expired."""
     if not os.path.exists(TOKEN_FILE):
         return None
     try:
         with open(TOKEN_FILE, "r", encoding="utf-8") as f:
             t = json.load(f)
         token = t.get("access_token")
+        refresh = t.get("refresh_token")
         if not token:
             return None
+
+        # Check if token is likely expired (>55 min old)
+        acquired = t.get("acquired_at", 0)
+        expires_in = t.get("expires_in", 3600)
+        if time.time() - acquired > (expires_in - 300):
+            # Token likely expired, try refresh first
+            if refresh:
+                print("[Pluang] Token likely expired, attempting refresh...", flush=True)
+                client = PluangMCPClient(token)
+                if client._refresh_token():
+                    try:
+                        client.initialize()
+                        if not (client._last_error and "401" in str(client._last_error)):
+                            print("[Pluang] ✅ Token refreshed and verified!", flush=True)
+                            return client
+                    except Exception:
+                        pass
+            return None
+
+        # Token still within TTL, verify it
         client = PluangMCPClient(token)
         try:
             client.initialize()
             if client._last_error and "401" in str(client._last_error):
-                # Token expired, try refreshing
-                if client._refresh_token():
+                # Unexpected 401, try refresh
+                if refresh and client._refresh_token():
                     return client
                 return None
             return client
         except Exception as e:
-            if "401" in str(e):
+            if "401" in str(e) and refresh:
                 if client._refresh_token():
                     return client
             return None
     except Exception as e:
-        print(f"[-] Pluang client error: {e}")
+        print(f"[-] Pluang client error: {e}", flush=True)
         return None
 
 def send_telegram_message(chat_id, text, reply_markup=None):

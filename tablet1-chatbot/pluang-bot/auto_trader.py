@@ -76,17 +76,43 @@ TELE_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # === PLUANG MCP CLIENT ===
 def get_pluang_client():
-    """Initialize Pluang MCP client if tokens exist"""
+    """Initialize Pluang MCP client with auto-refresh if token expired"""
     if os.path.exists(TOKEN_FILE):
         try:
             with open(TOKEN_FILE, "r") as f:
                 data = json.load(f)
             token = data.get("access_token")
-            if token:
-                client = PluangMCPClient(token)
-                client.initialize()
-                print(f"[PLUANG] ✅ MCP Client connected", flush=True)
-                return client
+            refresh = data.get("refresh_token")
+            if not token:
+                return None
+
+            # Check if token is likely expired (>55 min old)
+            acquired = data.get("acquired_at", 0)
+            expires_in = data.get("expires_in", 3600)
+            if time.time() - acquired > (expires_in - 300):
+                if refresh:
+                    print(f"[PLUANG] Token likely expired, attempting refresh...", flush=True)
+                    client = PluangMCPClient(token)
+                    if client._refresh_token():
+                        try:
+                            client.initialize()
+                            if not (client._last_error and "401" in str(client._last_error)):
+                                print(f"[PLUANG] ✅ Token refreshed and verified!", flush=True)
+                                return client
+                        except Exception:
+                            pass
+                print(f"[PLUANG] ⚠️ Token expired and refresh failed. Need re-login.", flush=True)
+                return None
+
+            client = PluangMCPClient(token)
+            client.initialize()
+            if client._last_error and "401" in str(client._last_error):
+                if refresh and client._refresh_token():
+                    print(f"[PLUANG] ✅ Token refreshed on 401", flush=True)
+                    return client
+                return None
+            print(f"[PLUANG] ✅ MCP Client connected", flush=True)
+            return client
         except Exception as e:
             print(f"[PLUANG] ⚠️ MCP connection failed: {e}", flush=True)
     return None
@@ -675,6 +701,7 @@ def start_loop():
     load_state()
     last_full_scan = 0
     last_quick_scan = 0
+    last_pluang_check = 0
     
     while True:
         try:
@@ -690,6 +717,23 @@ def start_loop():
                 monitor_and_update_positions()
             except Exception as e:
                 print(f"[-] Position monitor error: {e}", flush=True)
+
+            # Re-check Pluang connection every 5 minutes
+            if now - last_pluang_check >= 300:
+                old_client = pluang_client
+                pluang_client = get_pluang_client()
+                if pluang_client and not old_client:
+                    print("[PLUANG] 🔄 Reconnected to Pluang MCP!", flush=True)
+                    send_telegram("🟢 <b>PLUANG RECONNECTED!</b>\nToken berhasil di-refresh. Auto-trading kembali aktif.")
+                elif not pluang_client and old_client:
+                    print("[PLUANG] ⚠️ Lost connection to Pluang MCP", flush=True)
+                    send_telegram(
+                        "🔴 <b>PLUANG TOKEN EXPIRED</b>\n\n"
+                        "Token Pluang kadaluarsa dan refresh gagal.\n"
+                        "Auto-trading dihentikan sementara.\n\n"
+                        "👉 Ketik <code>/login</code> di Telegram untuk re-login."
+                    )
+                last_pluang_check = now
 
             # Quick screen every 60 seconds (or configured interval)
             if now - last_quick_scan >= state.get("quick_screen_interval_sec", 60):
