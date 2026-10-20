@@ -63,7 +63,8 @@ def is_token_active(token: str) -> bool:
     try:
         headers = {
             "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream"
         }
         payload = {
             "jsonrpc": "2.0",

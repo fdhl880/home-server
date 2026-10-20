@@ -124,6 +124,12 @@ class PluangMCPClient:
         return self._tool_cache
 
     def call_tool(self, name: str, arguments: dict):
+        if not isinstance(arguments, dict):
+            arguments = {}
+        if "user_query" not in arguments:
+            arguments["user_query"] = f"execute {name}"
+        if name != "generate_new_session_id" and "chat_session_id" not in arguments:
+            arguments["chat_session_id"] = self._get_chat_session_id()
         params = {
             "name": name,
             "arguments": arguments
@@ -161,14 +167,21 @@ class PluangMCPClient:
         if hasattr(self, "_session_id") and self._session_id:
             return self._session_id
         try:
-            res = self.call_tool("generate_new_session_id", {"user_query": "init session"})
+            res = self._rpc("tools/call", {
+                "name": "generate_new_session_id",
+                "arguments": {"user_query": "init session"}
+            })
             if isinstance(res, dict) and "content" in res and res["content"]:
                 txt = res["content"][0].get("text", "")
                 try:
                     data = json.loads(txt)
-                    self._session_id = data.get("session_id", txt.strip())
+                    cid = data.get("data", {}).get("chatSessionId") or data.get("chatSessionId") or data.get("session_id")
+                    self._session_id = cid or txt.strip()
                 except Exception:
                     self._session_id = txt.strip()
+            elif isinstance(res, dict) and "structuredContent" in res:
+                cid = res["structuredContent"].get("data", {}).get("chatSessionId")
+                self._session_id = cid or "pyrofuel-auto-session"
             else:
                 self._session_id = "pyrofuel-auto-session"
         except Exception:
