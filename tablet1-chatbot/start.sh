@@ -38,6 +38,9 @@ fi
 
 # 4. Clean up any zombie process holding port 4000
 echo "[*] Ensuring Port 4000 & previous bot processes are clean..."
+killall -9 node 2>/dev/null || true
+killall -9 python 2>/dev/null || true
+killall -9 python3 2>/dev/null || true
 if command -v fuser &> /dev/null; then
     fuser -k 4000/tcp 2>/dev/null || true
 fi
