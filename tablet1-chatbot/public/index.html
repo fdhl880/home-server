@@ -1672,6 +1672,17 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     <div id="bbgThesisText" style="margin-top:6px; color:#aaa; font-style:italic;">
                         Pilih simbol pada form di bawah lalu klik CONVENE COMMITTEE NOW untuk menjalankan 9 agen AI serentak.
                     </div>
+
+                    <!-- Live Multi-Agent Collaboration Transcript -->
+                    <div style="margin-top:8px; border-top:1px dashed #222; padding-top:6px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; flex-wrap:wrap; gap:4px;">
+                            <span class="bbg-amber" style="font-weight:bold; font-size:10px;">💬 LIVE 9-AGENT COLLABORATION &amp; ADVERSARIAL DEBATE TRANSCRIPT:</span>
+                            <span id="bbgAutoScanStatus" style="font-size:9.5px; color:#00FF66; font-weight:bold;">● AUTONOMOUS COMMITTEE: ACTIVE (AUTO-DEBATING EVERY 5 MIN)</span>
+                        </div>
+                        <div id="bbgCollaborationTranscript" style="background:#020202; border:1px solid #1a1a1a; padding:6px 8px; max-height:180px; overflow-y:auto; font-family:'Courier New', monospace; font-size:10px; line-height:1.5; color:#ccc;">
+                            <div style="color:#666;">Menunggu sidang pertama atau siklus auto-scan berikutnya...</div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -4406,14 +4417,28 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
 
             const thesisEl = document.getElementById('bbgThesisText');
             if (thesisEl) {
-                const bullReason = agents.bull_researcher?.core_thesis || '';
-                const bearReason = agents.bear_researcher?.core_thesis || '';
+                const bullReason = agents.bull_researcher?.core_thesis || agents.bull_researcher?.argument || '';
+                const bearReason = agents.bear_researcher?.core_thesis || agents.bear_researcher?.argument || '';
                 const pmSummary = consensus.executive_summary || consensus.summary || d.thesis || '';
                 thesisEl.innerHTML = `
                     <div style="margin-bottom:4px;"><b>Consensus Thesis:</b> ${pmSummary || 'Sinyal terverifikasi oleh 9 agen spesialis.'}</div>
                     ${bullReason ? `<div style="color:#00FF66;">• <b>Bull Case:</b> ${bullReason}</div>` : ''}
                     ${bearReason ? `<div style="color:#FF5555;">• <b>Bear Risk:</b> ${bearReason}</div>` : ''}
                 `;
+            }
+
+            // Render Multi-Round Collaboration Transcript
+            const transcriptEl = document.getElementById('bbgCollaborationTranscript');
+            if (transcriptEl && d.collaboration_transcript && d.collaboration_transcript.length > 0) {
+                transcriptEl.innerHTML = d.collaboration_transcript.map(t => {
+                    const spk = t.speaker || '';
+                    const col = spk.includes('Bull') ? '#00FF66' :
+                                (spk.includes('Bear') ? '#FF2233' :
+                                (spk.includes('Trader') ? '#CC66FF' :
+                                (spk.includes('Risk') ? '#FF9900' :
+                                (spk.includes('Portfolio') ? '#00EEEE' : '#AAAAAA'))));
+                    return `<div style="margin-bottom:3px; border-bottom:1px solid #111; padding-bottom:2px;"><span style="color:#888;">[R${t.round || '-'}]</span> <strong style="color:${col};">${spk}</strong> <span style="color:#555;">(${t.role || ''})</span>: <span style="color:#ddd;">${t.content}</span></div>`;
+                }).join('');
             }
 
             const plan = d.trade_plan || {};
@@ -4457,6 +4482,45 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             showPopup(`COPIED 9-AGENT COMMITTEE PLAN FOR ${p.symbol} TO DMA TICKET!`);
         }
 
+        // Auto-poll committee autonomous background status & active thesis
+        async function pollCommitteeAutoStatus() {
+            try {
+                const res = await fetch('/api/committee/auto-status');
+                if (!res.ok) return;
+                const d = await res.json();
+                
+                const statusBadge = document.getElementById('bbgAutoScanStatus');
+                if (statusBadge) {
+                    statusBadge.textContent = `● AUTONOMOUS: CYCLE #${d.total_scans_done || 0} ACTIVE | APPROVED: ${d.signals_approved_count || 0} | LAST: ${d.last_scan_time || 'Running'}`;
+                    statusBadge.style.color = d.autonomous_active ? '#00FF66' : '#FF2233';
+                }
+
+                // If user hasn't clicked a manual button yet, display the latest autonomous thesis!
+                if (!latestCommitteePlan && d.theses) {
+                    const keys = Object.keys(d.theses);
+                    if (keys.length > 0) {
+                        const latestSym = keys[keys.length - 1];
+                        const t = d.theses[latestSym];
+                        if (t && t.collaboration_transcript) {
+                            renderBbgCommittee({
+                                symbol: latestSym,
+                                consensus: { action: t.direction, confidence_pct: t.confidence, approved: t.approved },
+                                agents: {
+                                    bull_researcher: { argument: t.bull_arg, signal: 'BULLISH', core_thesis: t.bull_arg },
+                                    bear_researcher: { argument: t.bear_arg, signal: 'BEARISH', core_thesis: t.bear_arg },
+                                    trader: { decision: t.trader_decision, signal: t.direction },
+                                    risk_officer: t.risk || {},
+                                    portfolio_manager: { decision: t.approved ? 'APPROVED (Autonomous)' : 'REJECTED', approved: t.approved }
+                                },
+                                collaboration_transcript: t.collaboration_transcript,
+                                trade_plan: t.trade_plan
+                            });
+                        }
+                    }
+                }
+            } catch(e) {}
+        }
+
         // Support direct navigation via query params (e.g. ?tab=10)
         window.addEventListener('DOMContentLoaded', () => {
             const params = new URLSearchParams(window.location.search);
@@ -4464,6 +4528,9 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             if (tab === '10' || tab === 'crypto' || tab === 'cryptofutures') {
                 setTimeout(() => showView('cryptofutures'), 100);
             }
+            // Start real-time autonomous committee poller
+            setInterval(pollCommitteeAutoStatus, 8000);
+            setTimeout(pollCommitteeAutoStatus, 1500);
         });
     </script>
 </body>

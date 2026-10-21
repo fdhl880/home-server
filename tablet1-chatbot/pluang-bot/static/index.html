@@ -886,6 +886,18 @@
                         <div id="comm-bear-arg" style="font-size:12px; color:#cbd5e1; line-height:1.5;">—</div>
                     </div>
                 </div>
+
+                <!-- Live Multi-Round Collaboration Transcript -->
+                <div style="margin-top:12px; margin-bottom:10px; padding:12px; background:rgba(0,0,0,0.3); border:1px solid var(--border-glass); border-radius:10px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:4px;">
+                        <div style="font-size:11px; font-weight:700; color:#38bdf8;">💬 MULTI-ROUND COLLABORATIVE DEBATE TRANSCRIPT</div>
+                        <span id="comm-auto-status" style="font-size:10px; color:#34d399; font-weight:600;">● Autonomous Trader Active</span>
+                    </div>
+                    <div id="comm-transcript" style="font-family:'Courier New', monospace; font-size:11px; line-height:1.6; max-height:180px; overflow-y:auto; color:#cbd5e1;">
+                        <div style="color:var(--text-muted);">Menunggu proses sidang atau auto-cycle berikutnya...</div>
+                    </div>
+                </div>
+
                 <!-- Execute button -->
                 <div id="comm-execute-row" style="display:none;">
                     <button class="btn-execute" onclick="executeCommitteeTrade()" style="width:100%;">
@@ -1432,6 +1444,18 @@
                 document.getElementById('comm-bull-arg').innerText = bull.argument || '—';
                 document.getElementById('comm-bear-arg').innerText = bear.argument || '—';
 
+                // Render Multi-Round Collaboration Transcript
+                const transEl = document.getElementById('comm-transcript');
+                if (transEl && d.collaboration_transcript && d.collaboration_transcript.length > 0) {
+                    transEl.innerHTML = d.collaboration_transcript.map(t => {
+                        const col = t.speaker.includes('Bull') ? '#34d399' :
+                                    (t.speaker.includes('Bear') ? '#f87171' :
+                                    (t.speaker.includes('Trader') ? '#c084fc' :
+                                    (t.speaker.includes('Risk') ? '#fbbf24' : '#38bdf8')));
+                        return `<div style="margin-bottom:4px; padding-bottom:3px; border-bottom:1px solid rgba(255,255,255,0.05);"><span style="color:#64748b;">[R${t.round}]</span> <strong style="color:${col};">${t.speaker}</strong> <span style="color:#64748b;">(${t.role})</span>: <span>${t.content}</span></div>`;
+                    }).join('');
+                }
+
                 // Execute button
                 const execRow = document.getElementById('comm-execute-row');
                 if (isApproved && tp) {
@@ -1485,6 +1509,60 @@
                 alert('Error eksekusi: ' + e);
             }
         }
+
+        // Auto-poll committee autonomous background status & active thesis
+        async function pollAutoCommittee() {
+            try {
+                const res = await fetch('/api/committee/auto-status');
+                if (!res.ok) return;
+                const d = await res.json();
+                const stEl = document.getElementById('comm-auto-status');
+                if (stEl) {
+                    stEl.textContent = `● Autonomous: Cycle #${d.total_scans_done || 0} (${d.signals_approved_count || 0} Approved)`;
+                    stEl.style.color = d.autonomous_active ? '#34d399' : '#f87171';
+                }
+                if (!lastCommitteeResult && d.theses) {
+                    const keys = Object.keys(d.theses);
+                    if (keys.length > 0) {
+                        const latestSym = keys[keys.length - 1];
+                        const t = d.theses[latestSym];
+                        if (t) {
+                            renderAutoCommitteeData(latestSym, t);
+                        }
+                    }
+                }
+            } catch(e) {}
+        }
+
+        function renderAutoCommitteeData(sym, t) {
+            document.getElementById('comm-direction').innerText = t.direction || '—';
+            document.getElementById('comm-confidence').innerText = (t.confidence || 0) + '%';
+            document.getElementById('comm-bull-arg').innerText = t.bull_arg || '—';
+            document.getElementById('comm-bear-arg').innerText = t.bear_arg || '—';
+            const pmEl = document.getElementById('comm-pm-decision');
+            if (pmEl) {
+                pmEl.innerHTML = t.approved ? '✅ APPROVED (Autonomous Multi-Agent Consensus)' : '🛑 REJECTED: Resiko tidak memenuhi syarat';
+                pmEl.style.color = t.approved ? '#34d399' : '#f87171';
+            }
+            if (t.risk) {
+                document.getElementById('comm-budget').innerText = 'Rp ' + Number(t.risk.recommended_budget_idr || 50000).toLocaleString();
+                document.getElementById('comm-leverage').innerText = (t.risk.recommended_leverage || 5) + 'x';
+                document.getElementById('comm-rrr').innerText = '1:' + (t.risk.actual_rrr || 2.0);
+                document.getElementById('comm-var').innerText = '$' + (t.risk.var_95_usd || 0);
+            }
+            const transEl = document.getElementById('comm-transcript');
+            if (transEl && t.collaboration_transcript && t.collaboration_transcript.length > 0) {
+                transEl.innerHTML = t.collaboration_transcript.map(item => {
+                    const col = item.speaker.includes('Bull') ? '#34d399' : (item.speaker.includes('Bear') ? '#f87171' : (item.speaker.includes('Trader') ? '#c084fc' : '#38bdf8'));
+                    return `<div style="margin-bottom:4px; padding-bottom:3px; border-bottom:1px solid rgba(255,255,255,0.05);"><span style="color:#64748b;">[R${item.round}]</span> <strong style="color:${col};">${item.speaker}</strong> <span style="color:#64748b;">(${item.role})</span>: <span>${item.content}</span></div>`;
+                }).join('');
+            }
+            document.getElementById('committee-result').style.display = 'block';
+            document.getElementById('committee-idle').style.display = 'none';
+        }
+
+        setInterval(pollAutoCommittee, 8000);
+        setTimeout(pollAutoCommittee, 2000);
     </script>
 </body>
 </html>

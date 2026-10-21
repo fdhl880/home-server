@@ -48,6 +48,7 @@ if hasattr(sys.stderr, 'reconfigure'):
         pass
 
 from pipeline import run_5_layer_pipeline, load_env, RESULTS_DIR, get_trading_config, save_trading_config
+from multi_agent_committee import run_multi_agent_committee, get_active_thesis
 from market_data import (
     CRYPTO_FUTURES_WATCHLIST,
     get_full_universe,
@@ -648,16 +649,27 @@ def run_full_scan_cycle():
         name = item.get("name", item.get("base_asset", sym))
         tier = item.get("tier", "EXTENDED")
         try:
+            # 1. Jalankan 5-Layer Institutional AI Pipeline
             res = run_5_layer_pipeline(sym)
-            return item, sym, pair, name, tier, res
+
+            # 2. Sidang 9-Agent Multi-Committee (TradingAgents + ai-hedge-fund + Vibe + LangAlpha + hummingbot)
+            positions = []
+            if os.path.exists(POSITIONS_FILE):
+                try:
+                    with open(POSITIONS_FILE, "r", encoding="utf-8") as pf:
+                        positions = json.load(pf)
+                except Exception:
+                    pass
+            com_res = run_multi_agent_committee(sym, positions)
+            return item, sym, pair, name, tier, res, com_res
         except Exception as e:
             print(f"[ERROR] {sym}: {e}", flush=True)
-            return item, sym, pair, name, tier, None
+            return item, sym, pair, name, tier, None, None
 
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(_scan_one, it) for it in scan_list]
         for f in as_completed(futures):
-            item, sym, pair, name, tier, res = f.result()
+            item, sym, pair, name, tier, res, com_res = f.result()
             if not res or "error" in res:
                 continue
 
@@ -666,31 +678,73 @@ def run_full_scan_cycle():
             conf = fc.get("confidence_score", 0)
             setup = res.get("layer2_setup", {}).get("setup_name", "N/A")
 
+            # Evaluasi konsensus kolaboratif 9-Agent Committee
+            com_approved = bool(com_res and com_res.get("approved"))
+            com_dir = com_res.get("direction", "SKIP") if com_res else "SKIP"
+            com_conf = com_res.get("confidence_pct", 0) if com_res else 0
+
+            # Cek veto komite: jika komite menolak (misal Risk Officer atau Bear veto), batalkan demi keamanan modal
+            is_trade_approved = False
+            if com_approved and com_dir in ("LONG", "SHORT") and com_conf >= 60:
+                is_trade_approved = True
+                status = "APPROVED_BY_COMMITTEE"
+            elif status == "APPROVED" and (not com_res or com_approved):
+                is_trade_approved = True
+            elif status == "APPROVED" and com_res and not com_approved:
+                pm_dec = com_res.get("portfolio_manager", {}).get("decision", "Risk veto")
+                print(f"[COMMITTEE VETO] {sym}: Pipeline lolos tapi 9-Agent Committee mem-veto: {pm_dec}", flush=True)
+                status = "REJECTED_BY_COMMITTEE"
+
             sig_entry = {
                 "symbol": sym,
                 "binance_pair": pair,
                 "name": name,
                 "tier": tier,
-                "status": status,
-                "confidence": conf,
-                "direction": fc.get("direction", "NONE"),
+                "status": "APPROVED" if is_trade_approved else status,
+                "confidence": max(conf, com_conf),
+                "direction": com_dir if com_dir in ("LONG", "SHORT") else fc.get("direction", "NONE"),
                 "setup": setup,
+                "committee_approved": com_approved,
                 "time": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
                 "opportunity_score": item.get("opportunity_score", 0)
             }
 
             state["recent_signals"] = [sig_entry] + state["recent_signals"][:49]
 
-            if status == "APPROVED":
+            if is_trade_approved:
                 state["signals_approved_count"] += 1
-                print(f"🔥 APPROVED! {sym} Score: {conf}%", flush=True)
+                final_dir = com_dir if com_dir in ("LONG", "SHORT") else fc.get("direction", "LONG")
+                trade_params = (com_res.get("trade_params") or {}) if com_res else {}
                 
-                fc["symbol"] = sym
-                fc["binance_pair"] = pair
-                pos = record_position(fc)
-                approved_signals.append({"symbol": sym, "pos": pos, "fc": fc, "name": name})
+                # Gunakan Kelly sizing dan leverage dari Risk Officer komite
+                budget_allocated = trade_params.get("budget_idr") or fc.get("position_size_idr", max_budget)
+                if max_budget > 0:
+                    budget_allocated = min(budget_allocated, max_budget)
+                leverage_allocated = trade_params.get("leverage") or fc.get("leverage", 5)
 
-                # Telegram Rich Notification with real execution status
+                exec_plan = {
+                    "symbol": sym,
+                    "binance_pair": pair,
+                    "direction": final_dir,
+                    "action": final_dir,
+                    "confidence_score": max(conf, com_conf),
+                    "setup_name": setup,
+                    "entry_price": trade_params.get("entry_price") or fc.get("entry_price"),
+                    "position_size_idr": budget_allocated,
+                    "leverage": leverage_allocated,
+                    "take_profit_1": trade_params.get("tp1_price") or fc.get("take_profit_1"),
+                    "take_profit_2": trade_params.get("tp2_price") or fc.get("take_profit_2"),
+                    "take_profit": trade_params.get("tp2_price") or fc.get("take_profit"),
+                    "stop_loss": trade_params.get("sl_price") or fc.get("stop_loss"),
+                    "margin_type": "ISOLATED",
+                    "order_type": "MARKET"
+                }
+
+                print(f"🔥 KONSENSUS MULTI-AGENT APPROVED! {sym} ({final_dir}) Keyakinan: {exec_plan['confidence_score']}%", flush=True)
+                pos = record_position(exec_plan)
+                approved_signals.append({"symbol": sym, "pos": pos, "fc": exec_plan, "name": name})
+
+                # Telegram Rich Notification with multi-agent collaborative debate
                 if pos and pos.get("binance_synced"):
                     order_id_str = f" (Order #{pos.get('order_id')})" if pos.get('order_id') else ""
                     exchange_status = f"✅ EXECUTED ON BINANCE FUTURES{order_id_str}"
@@ -699,42 +753,38 @@ def run_full_scan_cycle():
                 else:
                     exchange_status = "📝 Recorded Locally"
 
-                margin_t = fc.get("margin_type") or cfg.get("margin_type", "ISOLATED")
-                order_t = (fc.get("order_type") or "MARKET").upper()
-                limit_p_str = f" (@ ${fc.get('limit_price', 0):,.4f})" if order_t == "LIMIT" else ""
-                pos_idr = pos['position_size_idr'] if pos else fc.get("position_size_idr", max_budget)
+                pos_idr = pos['position_size_idr'] if pos else budget_allocated
                 pos_usd = pos.get('position_size_usd', round(pos_idr / 16500.0, 2)) if pos else round(pos_idr / 16500.0, 2)
-                tp_val = fc.get("take_profit") or fc.get("take_profit_2") or fc.get("take_profit_1", 0)
-                sl_val = fc.get("stop_loss", 0)
-                lev_val = fc.get("leverage", 5)
+                tp_val = exec_plan.get("take_profit_2") or exec_plan.get("take_profit_1", 0)
+                sl_val = exec_plan.get("stop_loss", 0)
+                lev_val = exec_plan.get("leverage", 5)
+
+                bull_note = com_res.get("bull_researcher", {}).get("argument", "")[:120] if com_res else ""
+                bear_note = com_res.get("bear_researcher", {}).get("argument", "")[:120] if com_res else ""
 
                 msg = (
-                    f"🚨 <b>PYROFUEL AI // BINANCE FUTURES TRADE EXECUTED!</b>\n\n"
+                    f"🚨 <b>PYROFUEL // 9-AGENT COMMITTEE TRADE EXECUTED!</b>\n\n"
                     f"💎 <b>Aset:</b> <code>{pair}</code> ({name})\n"
-                    f"📊 <b>Tier:</b> {tier} | <b>Opp Score:</b> {item.get('opportunity_score', 0):.2f}\n"
-                    f"🎯 <b>Arah:</b> <b>{fc.get('direction', 'LONG')}</b>\n"
+                    f"🎯 <b>Arah:</b> <b>{final_dir}</b> (Keyakinan: <b>{exec_plan['confidence_score']}%</b>)\n"
                     f"────────────────────────\n"
-                    f"⚙️ <b>Futures Parameters (Ditentukan AI):</b>\n"
-                    f"   📊 Leverage: <b>{lev_val}x</b>\n"
-                    f"   📋 Order Type: <b>{order_t}{limit_p_str}</b>\n"
-                    f"   🔒 Margin: <b>{margin_t}</b>\n"
+                    f"⚙️ <b>Parameters (Kelly Criterion + VaR):</b>\n"
+                    f"   📊 Leverage: <b>{lev_val}x ISOLATED</b>\n"
                     f"   💰 Modal: <b>${pos_usd:.2f} USDT</b> (~Rp {pos_idr:,})\n"
+                    f"   📍 Entry: ${exec_plan.get('entry_price', 0):,.4f}\n"
+                    f"   🎯 Take Profit: ${tp_val:,.4f}\n"
+                    f"   🛑 Stop Loss: ${sl_val:,.4f}\n"
                     f"────────────────────────\n"
-                    f"📊 <b>Setup:</b> <code>{fc.get('setup_name')}</code>\n"
-                    f"⭐ <b>Keyakinan:</b> <b>{conf}%</b>\n"
-                    f"⚖️ <b>RRR:</b> {fc.get('risk_reward_ratio')}\n"
-                    f"────────────────────────\n"
-                    f"📍 <b>Entry:</b> ${fc.get('entry_price', 0):,.4f}\n"
-                    f"🎯 <b>Take Profit:</b> ${tp_val:,.4f}\n"
-                    f"🛑 <b>Stop Loss:</b> ${sl_val:,.4f}\n"
+                    f"🏛️ <b>Kolaborasi Sidang Multi-Agent:</b>\n"
+                    f"   🟢 <i>Bull Case:</i> {bull_note}\n"
+                    f"   🔴 <i>Bear Risk:</i> {bear_note}\n"
+                    f"   👑 <i>Konsensus:</i> {com_res.get('portfolio_manager',{}).get('decision','') if com_res else 'Approved'}\n"
                     f"────────────────────────\n"
                     f"🏦 <b>Status Bursa:</b> {exchange_status}\n"
-                    f"📝 <b>Alasan AI:</b>\n<i>{fc.get('final_reason', '-')[:300]}</i>\n\n"
-                    f"⚡ <b>AUTO-EXECUTE: Posisi riil telah terpasang di Binance Futures tanpa menunggu konfirmasi manual!</b>"
+                    f"⚡ <b>100% OTOMATIS: Posisi terpasang langsung di pasar futures tanpa intervensi manual!</b>"
                 )
                 send_telegram(msg)
             else:
-                reason_short = fc.get("final_reason", "")[:60]
+                reason_short = (com_res.get("portfolio_manager", {}).get("decision") if com_res else fc.get("final_reason", ""))[:70]
                 print(f"REJECTED {sym}: {reason_short}...", flush=True)
                 state["signals_rejected_count"] += 1
 

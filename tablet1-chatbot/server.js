@@ -3108,6 +3108,28 @@ app.get('/api/committee/status', (req, res) => {
     });
 });
 
+// GET /api/committee/auto-status — Status real-time autonomous multi-agent loop
+app.get('/api/committee/auto-status', (req, res) => {
+    const autotraderStatePath = path.join(resultsDir, 'autotrader_state.json');
+    let autoState = {};
+    if (fs.existsSync(autotraderStatePath)) {
+        try { autoState = JSON.parse(fs.readFileSync(autotraderStatePath, 'utf8')); } catch (e) {}
+    }
+    let thesisData = {};
+    if (fs.existsSync(thesisPath)) {
+        try { thesisData = JSON.parse(fs.readFileSync(thesisPath, 'utf8')); } catch (e) {}
+    }
+    res.json({
+        autonomous_active: autoState.is_running !== false,
+        total_scans_done: autoState.total_scans_done || 0,
+        signals_approved_count: autoState.signals_approved_count || 0,
+        last_scan_time: autoState.last_scan_time || 'Standby',
+        recent_signals: (autoState.recent_signals || []).slice(0, 10),
+        active_theses_count: Object.keys(thesisData).length,
+        theses: thesisData
+    });
+});
+
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`================================================================`);
     console.log(`🏛️ BLOOMBERG PROFESSIONAL SERVICE - REAL-TIME TRADING DESK ON PORT ${PORT}`);
