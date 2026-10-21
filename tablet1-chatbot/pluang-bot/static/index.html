@@ -785,9 +785,127 @@
         </main>
     </div>
 
+    <!-- Multi-Agent Committee Panel -->
+    <div style="max-width:1360px; margin:24px auto; padding:0 24px;">
+        <div class="glass-panel" style="padding:24px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
+                <div>
+                    <h3 style="font-size:20px; font-weight:800; display:flex; align-items:center; gap:10px;">
+                        🏛️ Multi-Agent Committee Engine
+                        <span style="font-size:11px; padding:3px 8px; background:rgba(16,185,129,0.15); color:#34d399; border-radius:6px; border:1px solid rgba(16,185,129,0.3);">v2.0</span>
+                    </h3>
+                    <p style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+                        Inspired by: TradingAgents · ai-hedge-fund · Vibe-Trading · LangAlpha · hummingbot
+                    </p>
+                </div>
+                <button class="scan-action-btn" id="run-committee-btn" onclick="runCommittee()" style="padding:10px 20px; font-size:13px;">
+                    🤖 Run Committee
+                </button>
+            </div>
+
+            <!-- Agent Status Row -->
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px,1fr)); gap:8px; margin-bottom:18px;">
+                <div style="padding:8px 10px; background:rgba(6,182,212,0.08); border:1px solid rgba(6,182,212,0.2); border-radius:10px; text-align:center;">
+                    <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">📡 Technical</div>
+                    <div id="agent-technical" style="font-size:12px; font-weight:700; color:#06b6d4; margin-top:3px;">—</div>
+                </div>
+                <div style="padding:8px 10px; background:rgba(6,182,212,0.08); border:1px solid rgba(6,182,212,0.2); border-radius:10px; text-align:center;">
+                    <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">💬 Sentiment</div>
+                    <div id="agent-sentiment" style="font-size:12px; font-weight:700; color:#06b6d4; margin-top:3px;">—</div>
+                </div>
+                <div style="padding:8px 10px; background:rgba(6,182,212,0.08); border:1px solid rgba(6,182,212,0.2); border-radius:10px; text-align:center;">
+                    <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">📊 Fundamentals</div>
+                    <div id="agent-fundamentals" style="font-size:12px; font-weight:700; color:#06b6d4; margin-top:3px;">—</div>
+                </div>
+                <div style="padding:8px 10px; background:rgba(6,182,212,0.08); border:1px solid rgba(6,182,212,0.2); border-radius:10px; text-align:center;">
+                    <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">🌐 Macro</div>
+                    <div id="agent-macro" style="font-size:12px; font-weight:700; color:#06b6d4; margin-top:3px;">—</div>
+                </div>
+                <div style="padding:8px 10px; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.2); border-radius:10px; text-align:center;">
+                    <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">🐂 Bull</div>
+                    <div id="agent-bull" style="font-size:12px; font-weight:700; color:#34d399; margin-top:3px;">—</div>
+                </div>
+                <div style="padding:8px 10px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:10px; text-align:center;">
+                    <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">🐻 Bear</div>
+                    <div id="agent-bear" style="font-size:12px; font-weight:700; color:#f87171; margin-top:3px;">—</div>
+                </div>
+                <div style="padding:8px 10px; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.2); border-radius:10px; text-align:center;">
+                    <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">🎯 Trader</div>
+                    <div id="agent-trader" style="font-size:12px; font-weight:700; color:#fbbf24; margin-top:3px;">—</div>
+                </div>
+                <div style="padding:8px 10px; background:rgba(167,139,250,0.08); border:1px solid rgba(167,139,250,0.2); border-radius:10px; text-align:center;">
+                    <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">🛡️ Risk</div>
+                    <div id="agent-risk" style="font-size:12px; font-weight:700; color:#a78bfa; margin-top:3px;">—</div>
+                </div>
+                <div style="padding:8px 10px; background:rgba(236,72,153,0.08); border:1px solid rgba(236,72,153,0.2); border-radius:10px; text-align:center;">
+                    <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">⚖️ PM</div>
+                    <div id="agent-pm" style="font-size:12px; font-weight:700; color:#f472b6; margin-top:3px;">—</div>
+                </div>
+            </div>
+
+            <!-- Committee Result -->
+            <div id="committee-result" style="display:none;">
+                <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:10px; margin-bottom:14px;">
+                    <div style="padding:12px 16px; background:rgba(0,0,0,0.3); border-radius:10px; border:1px solid var(--border-glass);">
+                        <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">Direction</div>
+                        <div id="comm-direction" style="font-size:20px; font-weight:800; margin-top:4px;">—</div>
+                    </div>
+                    <div style="padding:12px 16px; background:rgba(0,0,0,0.3); border-radius:10px; border:1px solid var(--border-glass);">
+                        <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">Confidence</div>
+                        <div id="comm-confidence" style="font-size:20px; font-weight:800; margin-top:4px; color:#34d399;">—</div>
+                    </div>
+                    <div style="padding:12px 16px; background:rgba(0,0,0,0.3); border-radius:10px; border:1px solid var(--border-glass);">
+                        <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">Budget (IDR)</div>
+                        <div id="comm-budget" style="font-size:16px; font-weight:800; margin-top:4px; color:#fbbf24;">—</div>
+                    </div>
+                    <div style="padding:12px 16px; background:rgba(0,0,0,0.3); border-radius:10px; border:1px solid var(--border-glass);">
+                        <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">Leverage (Kelly)</div>
+                        <div id="comm-leverage" style="font-size:20px; font-weight:800; margin-top:4px; color:#06b6d4;">—</div>
+                    </div>
+                    <div style="padding:12px 16px; background:rgba(0,0,0,0.3); border-radius:10px; border:1px solid var(--border-glass);">
+                        <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">RRR Actual</div>
+                        <div id="comm-rrr" style="font-size:20px; font-weight:800; margin-top:4px; color:#a78bfa;">—</div>
+                    </div>
+                    <div style="padding:12px 16px; background:rgba(0,0,0,0.3); border-radius:10px; border:1px solid var(--border-glass);">
+                        <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">VaR(95%)</div>
+                        <div id="comm-var" style="font-size:16px; font-weight:800; margin-top:4px; color:#f87171;">—</div>
+                    </div>
+                </div>
+                <!-- Spread info (hummingbot) -->
+                <div id="comm-spread-bar" style="padding:8px 14px; background:rgba(0,0,0,0.25); border-radius:8px; font-size:12px; color:var(--text-muted); margin-bottom:10px;"></div>
+                <!-- PM Decision -->
+                <div id="comm-pm-decision" style="padding:12px 16px; border-radius:10px; font-size:14px; font-weight:600; margin-bottom:10px;"></div>
+                <!-- Bull vs Bear args -->
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">
+                    <div style="padding:12px; background:rgba(16,185,129,0.06); border:1px solid rgba(16,185,129,0.2); border-radius:10px;">
+                        <div style="font-size:11px; font-weight:700; color:#34d399; margin-bottom:6px;">🐂 BULL ARGUMENT</div>
+                        <div id="comm-bull-arg" style="font-size:12px; color:#cbd5e1; line-height:1.5;">—</div>
+                    </div>
+                    <div style="padding:12px; background:rgba(239,68,68,0.06); border:1px solid rgba(239,68,68,0.2); border-radius:10px;">
+                        <div style="font-size:11px; font-weight:700; color:#f87171; margin-bottom:6px;">🐻 BEAR ARGUMENT</div>
+                        <div id="comm-bear-arg" style="font-size:12px; color:#cbd5e1; line-height:1.5;">—</div>
+                    </div>
+                </div>
+                <!-- Execute button -->
+                <div id="comm-execute-row" style="display:none;">
+                    <button class="btn-execute" onclick="executeCommitteeTrade()" style="width:100%;">
+                        🚀 Eksekusi Committee Trade
+                    </button>
+                </div>
+            </div>
+
+            <!-- Idle state -->
+            <div id="committee-idle" style="text-align:center; padding:20px; color:var(--text-muted); font-size:13px;">
+                Pilih aset dari watchlist, lalu klik <b>Run Committee</b> untuk menjalankan 9 agent secara paralel.
+            </div>
+        </div>
+    </div>
+
     <!-- Client-side Logic -->
     <script>
         let currentSelectedSymbol = "BTC-USD";
+        let lastCommitteeResult = null;
+
 
         async function checkStatus() {
             try {
@@ -1051,6 +1169,29 @@
             } catch(e) { console.error('Error loading performance:', e); }
         }
 
+        async function loadBloombergDashboard() {
+            try {
+                const res = await fetch('/api/quick-screen');
+                const data = await res.json();
+                const container = document.getElementById('bloomberg-content');
+                if (!container) return;
+                container.innerHTML = `
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px,1fr)); gap:8px;">
+                        <div style="background:rgba(0,0,0,0.3); padding:8px; border-radius:8px; text-align:center;">
+                            <span style="font-size:10px; color:var(--text-muted);">Alerts</span>
+                            <div style="font-size:14px; font-weight:700; color:#f59e0b;">${data.alerts?.length || 0}</div>
+                        </div>
+                        <div style="background:rgba(0,0,0,0.3); padding:8px; border-radius:8px; text-align:center;">
+                            <span style="font-size:10px; color:var(--text-muted);">Screened</span>
+                            <div style="font-size:14px; font-weight:700; color:#34d399;">${data.screened || 0}</div>
+                        </div>
+                    </div>
+                `;
+            } catch (e) {
+                console.error('Error loading Bloomberg data:', e);
+            }
+        }
+
         async function loadNewsSentiment() {
             try {
                 const res = await fetch('/api/news');
@@ -1193,6 +1334,158 @@
                 }).join('');
             } catch(e) { console.error(e); }
         }
+
+        // ============================================================
+        // MULTI-AGENT COMMITTEE FUNCTIONS
+        // ============================================================
+
+        async function runCommittee() {
+            const btn = document.getElementById('run-committee-btn');
+            btn.disabled = true;
+            btn.innerHTML = `<div class="spinner"></div> Running 9 Agents...`;
+
+            // Reset agent displays to loading
+            ['technical','sentiment','fundamentals','macro','bull','bear','trader','risk','pm'].forEach(a => {
+                const el = document.getElementById(`agent-${a}`);
+                if (el) el.innerHTML = `<div class="spinner" style="width:12px;height:12px;margin:auto;"></div>`;
+            });
+
+            document.getElementById('committee-idle').style.display = 'none';
+            document.getElementById('committee-result').style.display = 'none';
+
+            try {
+                const res = await fetch('/api/committee/run', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ symbol: currentSelectedSymbol })
+                });
+                const d = await res.json();
+
+                if (d.error) {
+                    alert('Committee error: ' + d.error);
+                    return;
+                }
+
+                lastCommitteeResult = d;
+
+                // Update agent displays
+                const tech = d.technical_analyst || {};
+                const sent = d.sentiment_analyst || {};
+                const fund = d.fundamentals_agent || {};
+                const mac = d.macro_analyst || {};
+                const bull = d.bull_researcher || {};
+                const bear = d.bear_researcher || {};
+                const trader = d.trader_agent || {};
+                const risk = d.risk_officer || {};
+                const pm = d.portfolio_manager || {};
+
+                const setAgent = (id, text) => {
+                    const el = document.getElementById(`agent-${id}`);
+                    if (el) el.innerHTML = text;
+                };
+
+                setAgent('technical', tech.verdict || '—');
+                setAgent('sentiment', (sent.sentiment || '—').replace('_',' '));
+                setAgent('fundamentals', fund.fundamental_bias || '—');
+                setAgent('macro', mac.macro_regime || '—');
+                setAgent('bull', `${((bull.bull_strength||0)*100).toFixed(0)}%`);
+                setAgent('bear', `${((bear.bear_strength||0)*100).toFixed(0)}%`);
+                setAgent('trader', trader.direction || '—');
+                setAgent('risk', risk.risk_approved ? '✅ OK' : '❌ FAIL');
+                setAgent('pm', pm.approved ? '✅ OK' : '❌ VETO');
+
+                // Main result
+                const isApproved = d.approved;
+                const direction = d.direction || 'SKIP';
+                const dirColor = direction === 'LONG' ? '#34d399' : direction === 'SHORT' ? '#f87171' : '#94a3b8';
+
+                document.getElementById('comm-direction').innerHTML =
+                    `<span style="color:${dirColor}">${direction === 'LONG' ? '📈 LONG' : direction === 'SHORT' ? '📉 SHORT' : '⏸ SKIP'}</span>`;
+                document.getElementById('comm-confidence').innerText = `${d.confidence_pct?.toFixed(1)}%`;
+
+                const tp = d.trade_params;
+                if (tp) {
+                    document.getElementById('comm-budget').innerText = `Rp ${Number(tp.budget_idr).toLocaleString()}`;
+                    document.getElementById('comm-leverage').innerText = `${tp.leverage}x`;
+                    document.getElementById('comm-rrr').innerText = `1:${tp.actual_rrr?.toFixed(2)}`;
+                    document.getElementById('comm-var').innerText = `$${tp.var_95_usd?.toFixed(2)}`;
+                } else {
+                    ['comm-budget','comm-leverage','comm-rrr','comm-var'].forEach(id => {
+                        const el = document.getElementById(id);
+                        if (el) el.innerText = 'N/A';
+                    });
+                }
+
+                // Spread info (hummingbot)
+                const spread = d.spread_info || {};
+                document.getElementById('comm-spread-bar').innerHTML =
+                    `🔄 <b>hummingbot Spread:</b> ${spread.spread_pct}% | Bid: $${Number(spread.bid_price).toLocaleString()} | Ask: $${Number(spread.ask_price).toLocaleString()} | Mid: $${Number(spread.midpoint).toLocaleString()}`;
+
+                // PM decision
+                const pmEl = document.getElementById('comm-pm-decision');
+                pmEl.innerHTML = pm.decision || '—';
+                pmEl.style.background = isApproved ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)';
+                pmEl.style.border = isApproved ? '1px solid rgba(16,185,129,0.3)' : '1px solid rgba(239,68,68,0.3)';
+                pmEl.style.color = isApproved ? '#34d399' : '#f87171';
+
+                // Bull/Bear args
+                document.getElementById('comm-bull-arg').innerText = bull.argument || '—';
+                document.getElementById('comm-bear-arg').innerText = bear.argument || '—';
+
+                // Execute button
+                const execRow = document.getElementById('comm-execute-row');
+                if (isApproved && tp) {
+                    execRow.style.display = 'block';
+                } else {
+                    execRow.style.display = 'none';
+                }
+
+                document.getElementById('committee-result').style.display = 'block';
+
+            } catch(e) {
+                alert('Gagal memanggil committee: ' + e);
+                document.getElementById('committee-idle').style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '🤖 Run Committee';
+            }
+        }
+
+        async function executeCommitteeTrade() {
+            if (!lastCommitteeResult || !lastCommitteeResult.trade_params) return;
+            const tp = lastCommitteeResult.trade_params;
+            const sym = lastCommitteeResult.symbol;
+
+            if (!confirm(`Konfirmasi eksekusi Committee Trade:\n` +
+                `Aset: ${sym}\nArah: ${tp.direction}\n` +
+                `Budget: Rp ${Number(tp.budget_idr).toLocaleString()}\n` +
+                `Leverage: ${tp.leverage}x\nRRR: 1:${tp.actual_rrr}\n\nLanjutkan?`)) return;
+
+            try {
+                const res = await fetch('/api/execute', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        symbol: sym,
+                        direction: tp.direction,
+                        amount_idr: tp.budget_idr,
+                        leverage: tp.leverage,
+                        tp_price: tp.tp1_price,
+                        sl_price: tp.sl_price
+                    })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    alert('✅ Committee trade berhasil dieksekusi!\n' + result.message);
+                    loadPositions();
+                } else {
+                    alert('❌ Gagal: ' + result.error);
+                }
+            } catch(e) {
+                alert('Error eksekusi: ' + e);
+            }
+        }
     </script>
 </body>
 </html>
+

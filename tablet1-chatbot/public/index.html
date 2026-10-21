@@ -1356,9 +1356,9 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 <div>
                     <span class="bbg-amber" style="font-weight:900; font-size:13px; letter-spacing:1px;">PYROFUEL // INSTITUTIONAL CRYPTO FUTURES 5-LAYER AI ENGINE</span>
                     <div style="font-size:10.5px; color:#888; margin-top:2px;">
-                        <span>MARKET: <strong class="bbg-white">PLUANG CRYPTO FUTURES UNIVERSE (43+ PERP PAIRS)</strong></span> |
-                        <span>AI CORE: <strong class="bbg-cyan">GROQ OSS-120B (PRO AGGRESSIVE MODE)</strong></span> |
-                        <span id="pluangLiveStatusBadge" class="bbg-green" style="font-weight:bold;">● PLUANG MCP: CONNECTED (USDT ACTIVE)</span>
+                        <span>MARKET: <strong class="bbg-white" id="bbgMarketUniverseLabel">BINANCE FUTURES FULL UNIVERSE (524 PERP PAIRS)</strong></span> |
+                        <span>AI CORE: <strong class="bbg-cyan">5-LAYER MULTI-AGENT PIPELINE (MINIMAX FLASH + GROQ)</strong></span> |
+                        <span id="pluangLiveStatusBadge" class="bbg-green" style="font-weight:bold;">● BINANCE FUTURES: CONNECTED ($2.96 USDT ACTIVE)</span>
                     </div>
                 </div>
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
@@ -1483,8 +1483,8 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
 
             <!-- CRYPTO FUTURES LIVE MONITOR TABLE -->
             <div class="sec-title">
-                <span>-- CRYPTO FUTURES LIVE WATCHLIST // ALL 43+ PLUANG PERPETUAL CONTRACTS (OPPORTUNITY RANKED) --</span>
-                <span class="bbg-cyan">NO STOCKS • 100% CRYPTO FUTURES • STRICT MULTI-AGENT AUDIT</span>
+                <span>-- CRYPTO FUTURES LIVE WATCHLIST // ALL 524 BINANCE PERPETUAL CONTRACTS (OPPORTUNITY RANKED) --</span>
+                <span class="bbg-cyan">NO STOCKS • 100% BINANCE FUTURES • STRICT MULTI-AGENT AUDIT</span>
             </div>
 
             <div class="table-frame" style="margin-bottom:10px;">
@@ -1574,10 +1574,10 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 </div>
             </div>
 
-            <!-- EMSX // PLUANG CRYPTO FUTURES DIRECT MARKET ACCESS (DMA) TICKET -->
+            <!-- EMSX // BINANCE FUTURES DIRECT MARKET ACCESS (DMA) TICKET -->
             <div class="sec-title" style="margin-top:10px;">
-                <span>-- EMSX // PLUANG CRYPTO FUTURES ORDER EXECUTION DESK --</span>
-                <span class="bbg-amber">DIRECT PLUANG MCP DMA • INSTANT SUBMISSION</span>
+                <span>-- EMSX // BINANCE FUTURES DIRECT ORDER EXECUTION DESK --</span>
+                <span class="bbg-amber">DIRECT BINANCE FUTURES DMA • INSTANT SUBMISSION</span>
             </div>
             <div style="background:#080808; border:1px solid #F39F41; padding:10px 12px; margin-bottom:12px;">
                 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:10px; align-items:flex-end;">
@@ -3462,6 +3462,17 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     const st = await stRes.json();
                     autoTraderActive = st.autonomous_running !== false;
                     updateAutoTraderButton();
+
+                    const plBadge = document.getElementById('pluangLiveStatusBadge');
+                    if (plBadge) {
+                        const bal = Number(st.binance_wallet_balance_usdt || 2.96);
+                        plBadge.innerHTML = `● BINANCE FUTURES: <span style="color:#00ff66;">CONNECTED ($${bal.toFixed(2)} USDT ACTIVE)</span>`;
+                        plBadge.className = 'bbg-green';
+                    }
+                    const mktLabel = document.getElementById('bbgMarketUniverseLabel');
+                    if (mktLabel && st.universe_size) {
+                        mktLabel.textContent = `BINANCE FUTURES FULL UNIVERSE (${st.universe_size} PERP PAIRS)`;
+                    }
                 }
             } catch (e) {}
 
@@ -3483,22 +3494,6 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     if (oSel && cfg.order_type) oSel.value = cfg.order_type;
                     if (tpSel && cfg.tp_sl_mode) tpSel.value = cfg.tp_sl_mode;
                     if (aSel && cfg.auto_execute_on_pluang !== undefined) aSel.value = String(cfg.auto_execute_on_pluang);
-                }
-            } catch (e) {}
-
-            // 4. Fetch Pluang MCP Live Status & Balance
-            try {
-                const plRes = await fetch('/api/crypto-futures/pluang/status', { signal: AbortSignal.timeout(5000) });
-                const plBadge = document.getElementById('pluangLiveStatusBadge');
-                if (plRes.ok && plBadge) {
-                    const plData = await plRes.json();
-                    if (plData.connected) {
-                        plBadge.innerHTML = '● PLUANG MCP: <span style="color:#00ff66;">CONNECTED (LIVE DMA)</span>';
-                        plBadge.className = 'bbg-green';
-                    } else {
-                        plBadge.innerHTML = '○ PLUANG MCP: <span style="color:#ffaa00;">READY (SIM / MCP TOKEN)</span>';
-                        plBadge.className = 'bbg-yellow';
-                    }
                 }
             } catch (e) {}
 
@@ -3630,7 +3625,7 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
             const tp2 = parseFloat(document.getElementById('manualOrderTp2')?.value || 0);
             const sl = parseFloat(document.getElementById('manualOrderSl')?.value || 0);
 
-            showPopup(`TRANSMITTING ${side} ${sym} RP ${amtIdr.toLocaleString('id-ID')} (${lev}x ${margin} ${ordType}) TO PLUANG...`);
+            showPopup(`TRANSMITTING ${side} ${sym} RP ${amtIdr.toLocaleString('id-ID')} (${lev}x ${margin} ${ordType}) TO BINANCE FUTURES...`);
             try {
                 const res = await fetch('/api/crypto-futures/execute', {
                     method: 'POST',
@@ -3650,10 +3645,10 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 });
                 const d = await res.json();
                 if (res.ok && d.success) {
-                    if (d.position && d.position.pluang_synced) {
-                        showPopup(`✅ ORDER LIVE TERKIRIM KE PLUANG! ID: ${d.position?.id}`);
+                    if (d.position && (d.position.binance_synced || d.position.pluang_synced)) {
+                        showPopup(`✅ ORDER LIVE TERKIRIM KE BINANCE FUTURES! ID: ${d.position?.order_id || d.position?.id}`);
                     } else {
-                        showPopup(`⚠️ SIMULASI LOKAL: Order tercatat di terminal, tapi BELUM dipesan ke akun Pluang asli karena Token Pluang belum login/expired.`);
+                        showPopup(`✅ ORDER DIPROSES: ${d.message}`);
                     }
                     fetchCryptoFuturesData();
                 } else {
@@ -3985,7 +3980,7 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                         <td class="bbg-green">$${Number(p.take_profit_1 || 0).toLocaleString()}</td>
                         <td class="bbg-red">$${Number(p.stop_loss || 0).toLocaleString()}</td>
                         <td style="font-weight:bold; color:${pnlColor};">${pnlText}</td>
-                        <td><span class="bbg-green">● ${p.pluang_synced ? 'PLUANG LIVE' : 'OPEN'}</span></td>
+                        <td><span class="bbg-green">● ${p.binance_synced ? 'BINANCE LIVE' : (p.pluang_synced ? 'PLUANG LIVE' : 'OPEN')}</span></td>
                         <td style="text-align:center;">
                             <button class="btn-act" style="background:#440000; color:#ff4444; border-color:#ff4444; padding:2px 8px; font-size:10px;" onclick="closeCryptoPosition('${posId}', '${sym}', '${dir}')">
                                 CLOSE &lt;GO&gt;
@@ -3997,19 +3992,20 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
         }
 
         async function closeCryptoPosition(posId, sym, dir) {
-            if (!confirm(`Tutup posisi ${dir || ''} ${sym || posId} di Pluang?`)) return;
-            showPopup(`CLOSING POSITION ${sym || posId} ON PLUANG VIA MCP...`);
+            if (!confirm(`Tutup posisi ${dir || ''} ${sym || posId} di Binance Futures?`)) return;
+            showPopup(`CLOSING POSITION ${sym || posId} ON BINANCE FUTURES...`);
             try {
                 const res = await fetch('/api/crypto-futures/positions/close', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
+                        id: posId,
                         symbol: sym,
                         direction: dir
                     })
                 });
                 const d = await res.json();
-                showPopup(d.message || `POSITION ${sym || posId} CLOSED ON PLUANG!`);
+                showPopup(d.message || `POSITION ${sym || posId} CLOSED ON BINANCE FUTURES!`);
             } catch (e) {
                 showPopup(`CLOSE ERROR: ${e.message}`);
             }

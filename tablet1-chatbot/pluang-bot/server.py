@@ -40,6 +40,17 @@ from market_data import (
 )
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pluang_mcp import PluangMCPClient
+try:
+    from multi_agent_committee import (
+        run_multi_agent_committee, run_quick_committee,
+        get_active_thesis, COMMITTEE_LOG_FILE, THESIS_FILE
+    )
+    COMMITTEE_AVAILABLE = True
+except ImportError as _e:
+    COMMITTEE_AVAILABLE = False
+    COMMITTEE_LOG_FILE = os.path.join("results", "committee_log.json")
+    THESIS_FILE = os.path.join("results", "active_thesis.json")
+    print(f"[Server] Multi-agent committee not available: {_e}")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -618,10 +629,123 @@ def close_pluang_position():
     result = client.close_position(symbol, direction)
     return jsonify(result)
 
+# ============================================================
+# MULTI-AGENT COMMITTEE API ENDPOINTS
+# ============================================================
+
+@app.route("/api/committee/run", methods=["POST"])
+def run_committee():
+    """Jalankan full 7-agent committee untuk satu simbol."""
+    if not COMMITTEE_AVAILABLE:
+        return jsonify({"error": "Multi-agent committee module tidak tersedia"}), 503
+    data = request.get_json() or {}
+    symbol = data.get("symbol", "BTC-USD")
+    positions = []
+    if os.path.exists(POSITIONS_FILE):
+        try:
+            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+                positions = json.load(f)
+        except Exception:
+            pass
+    try:
+        result = run_multi_agent_committee(symbol, positions)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/committee/thesis")
+def get_thesis():
+    """Ambil thesis aktif untuk semua simbol (LangAlpha-inspired workspace)."""
+    symbol = request.args.get("symbol")
+    if not os.path.exists(THESIS_FILE):
+        return jsonify({} if symbol else {})
+    try:
+        with open(THESIS_FILE, "r", encoding="utf-8") as f:
+            thesis = json.load(f)
+        if symbol:
+            return jsonify(thesis.get(symbol, {"message": "No thesis for this symbol"}))
+        return jsonify(thesis)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/committee/log")
+def get_committee_log():
+    """Ambil log committee decisions (ringkasan semua run)."""
+    limit = request.args.get("limit", 50, type=int)
+    if not os.path.exists(COMMITTEE_LOG_FILE):
+        return jsonify({"count": 0, "logs": []})
+    try:
+        with open(COMMITTEE_LOG_FILE, "r", encoding="utf-8") as f:
+            logs = json.load(f)
+        return jsonify({"count": len(logs[:limit]), "logs": logs[:limit]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/committee/quick-screen")
+def committee_quick_screen():
+    """Quick committee screening untuk top N pairs."""
+    if not COMMITTEE_AVAILABLE:
+        return jsonify({"error": "Committee tidak tersedia"}), 503
+    limit = request.args.get("limit", 20, type=int)
+    try:
+        from market_data import rank_universe_by_opportunity
+        ranked = rank_universe_by_opportunity()[:limit]
+        results = []
+        for coin in ranked:
+            sym = coin.get("symbol", coin.get("pair", "").replace("USDT", "-USD"))
+            quick = run_quick_committee(sym, coin)
+            if quick.get("direction") != "SKIP":
+                results.append(quick)
+        results.sort(key=lambda x: x.get("confidence_pct", 0), reverse=True)
+        return jsonify({"count": len(results), "alerts": results})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/committee/status")
+def committee_status():
+    """Status modul committee — termasuk source repo credits."""
+    return jsonify({
+        "available": COMMITTEE_AVAILABLE,
+        "version": "2.0",
+        "agents": [
+            {"name": "TechnicalAnalyst", "source": "TradingAgents (Tauric Research)"},
+            {"name": "SentimentAnalyst", "source": "TradingAgents + Vibe-Trading (HKUDS)"},
+            {"name": "FundamentalsAgent", "source": "ai-hedge-fund (virattt)"},
+            {"name": "MacroAnalyst", "source": "Vibe-Trading (HKUDS)"},
+            {"name": "BullResearcher", "source": "TradingAgents (Tauric Research)"},
+            {"name": "BearResearcher", "source": "TradingAgents (Tauric Research)"},
+            {"name": "TraderAgent", "source": "TradingAgents + LangAlpha (ginlix)"},
+            {"name": "RiskOfficer", "source": "Vibe-Trading + hummingbot (Kelly sizing)"},
+            {"name": "PortfolioManager", "source": "TradingAgents + LangAlpha"},
+        ],
+        "features": [
+            "Parallel analyst team (4 agents)",
+            "Bull vs Bear researcher debate",
+            "Kelly Criterion position sizing",
+            "VaR(95%) calculation",
+            "hummingbot-inspired spread calculator",
+            "LangAlpha-inspired thesis workspace",
+        ],
+        "source_repos": [
+            "https://github.com/TauricResearch/TradingAgents",
+            "https://github.com/virattt/ai-hedge-fund",
+            "https://github.com/HKUDS/Vibe-Trading",
+            "https://github.com/ginlix-ai/LangAlpha",
+            "https://github.com/hummingbot/hummingbot",
+        ]
+    })
+
+
 if __name__ == "__main__":
     os.makedirs(STATIC_DIR, exist_ok=True)
     port = int(os.environ.get("PORT", 5000))
-    print(f"[*] PYROFUEL v3.0 Dashboard Server: http://localhost:{port}", flush=True)
-    print(f"[*] Mode: FULL UNIVERSE + PLUANG EXECUTION", flush=True)
+    print(f"[*] PYROFUEL v4.0 Dashboard Server: http://localhost:{port}", flush=True)
+    print(f"[*] Mode: FULL UNIVERSE + MULTI-AGENT COMMITTEE + PLUANG EXECUTION", flush=True)
     print(f"[*] Futures Settings API: /api/futures/settings", flush=True)
+    print(f"[*] Committee API: /api/committee/run | /api/committee/status", flush=True)
+    print(f"[*] Inspired by: TradingAgents, ai-hedge-fund, Vibe-Trading, LangAlpha, hummingbot", flush=True)
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
