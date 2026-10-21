@@ -2981,6 +2981,133 @@ app.get('/api/news-sentinel', async (req, res) => {
     });
 });
 
+// ============================================================
+// MULTI-AGENT COMMITTEE — Native on Port 4000
+// (TradingAgents + ai-hedge-fund + Vibe-Trading + LangAlpha + hummingbot)
+// ============================================================
+const committeePath   = path.join(pluangDir, 'multi_agent_committee.py');
+const committeeLogPath = path.join(resultsDir, 'committee_log.json');
+const thesisPath       = path.join(resultsDir, 'active_thesis.json');
+
+// Helper: run a Python committee script and return JSON result via callback
+function runCommitteePy(symbol, positions, callback) {
+    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    if (!fs.existsSync(committeePath)) {
+        return callback(new Error('multi_agent_committee.py not found'), null);
+    }
+    const posJson = JSON.stringify(positions || []);
+    const child = execFile(
+        pyCmd,
+        ['-c',
+         `import sys, json; sys.path.insert(0,'${pluangDir.replace(/\\/g,'/')}'); ` +
+         `from multi_agent_committee import run_multi_agent_committee; ` +
+         `result = run_multi_agent_committee('${symbol}', json.loads(sys.argv[1])); ` +
+         `print(json.dumps(result, ensure_ascii=False))`,
+         posJson],
+        { cwd: pluangDir, timeout: 90000, maxBuffer: 5 * 1024 * 1024 },
+        (error, stdout, stderr) => {
+            if (error && !stdout) return callback(error, null);
+            try {
+                const jsonMatch = stdout.match(/\{[\s\S]*\}/);
+                if (jsonMatch) return callback(null, JSON.parse(jsonMatch[0]));
+            } catch (e) {}
+            callback(new Error('No valid JSON from committee'), null);
+        }
+    );
+}
+
+// POST /api/committee/run — jalankan full 9-agent committee
+app.post('/api/committee/run', (req, res) => {
+    const symbol = (req.body || {}).symbol || 'BTC-USD';
+    const positions = getLocalPositions();
+    runCommitteePy(symbol, positions, (err, result) => {
+        if (err) {
+            // Fallback: baca hasil terbaru dari thesis file jika ada
+            if (fs.existsSync(thesisPath)) {
+                try {
+                    const thesis = JSON.parse(fs.readFileSync(thesisPath, 'utf8'));
+                    if (thesis[symbol]) return res.json({ ...thesis[symbol], from_cache: true });
+                } catch (e2) {}
+            }
+            return res.status(500).json({ error: err.message });
+        }
+        res.json(result);
+    });
+});
+
+// GET /api/committee/thesis — persistent thesis workspace (LangAlpha-inspired)
+app.get('/api/committee/thesis', (req, res) => {
+    const symbol = req.query.symbol;
+    if (!fs.existsSync(thesisPath)) return res.json(symbol ? {} : {});
+    try {
+        const thesis = JSON.parse(fs.readFileSync(thesisPath, 'utf8'));
+        res.json(symbol ? (thesis[symbol] || { message: 'No thesis yet' }) : thesis);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/committee/log — riwayat keputusan committee
+app.get('/api/committee/log', (req, res) => {
+    const limit = parseInt(req.query.limit || '50', 10);
+    if (!fs.existsSync(committeeLogPath)) return res.json({ count: 0, logs: [] });
+    try {
+        const logs = JSON.parse(fs.readFileSync(committeeLogPath, 'utf8'));
+        res.json({ count: logs.length, logs: logs.slice(0, limit) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/committee/quick-screen — quick rule-based screening (tanpa AI)
+app.get('/api/committee/quick-screen', (req, res) => {
+    const limit = parseInt(req.query.limit || '20', 10);
+    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    execFile(
+        pyCmd,
+        ['-c',
+         `import sys, json; sys.path.insert(0,'${pluangDir.replace(/\\/g,'/')}'); ` +
+         `from multi_agent_committee import run_quick_committee; ` +
+         `from market_data import rank_universe_by_opportunity; ` +
+         `ranked = rank_universe_by_opportunity()[:${limit}]; ` +
+         `out=[run_quick_committee(c.get('symbol',c.get('pair','').replace('USDT','-USD')),c) for c in ranked]; ` +
+         `hits=[x for x in out if x.get('direction')!='SKIP']; ` +
+         `hits.sort(key=lambda x:x.get('confidence_pct',0),reverse=True); ` +
+         `print(json.dumps({'count':len(hits),'alerts':hits},ensure_ascii=False))`],
+        { cwd: pluangDir, timeout: 30000, maxBuffer: 2 * 1024 * 1024 },
+        (error, stdout) => {
+            try {
+                const m = stdout.match(/\{[\s\S]*\}/);
+                if (m) return res.json(JSON.parse(m[0]));
+            } catch (e) {}
+            res.json({ count: 0, alerts: [], error: error ? error.message : 'Parse error' });
+        }
+    );
+});
+
+// GET /api/committee/status — info modul + source credits
+app.get('/api/committee/status', (req, res) => {
+    res.json({
+        available: fs.existsSync(committeePath),
+        port: PORT,
+        version: '2.0',
+        agents: [
+            { name: 'TechnicalAnalyst',  source: 'TradingAgents (Tauric Research)' },
+            { name: 'SentimentAnalyst',  source: 'TradingAgents + Vibe-Trading (HKUDS)' },
+            { name: 'FundamentalsAgent', source: 'ai-hedge-fund (virattt) — Kelly Criterion' },
+            { name: 'MacroAnalyst',      source: 'Vibe-Trading (HKUDS)' },
+            { name: 'BullResearcher',    source: 'TradingAgents (Tauric Research)' },
+            { name: 'BearResearcher',    source: 'TradingAgents (Tauric Research)' },
+            { name: 'TraderAgent',       source: 'TradingAgents + LangAlpha (ginlix)' },
+            { name: 'RiskOfficer',       source: 'Vibe-Trading + hummingbot (Kelly + VaR)' },
+            { name: 'PortfolioManager',  source: 'TradingAgents + LangAlpha governance' },
+        ],
+        source_repos: [
+            'https://github.com/TauricResearch/TradingAgents',
+            'https://github.com/virattt/ai-hedge-fund',
+            'https://github.com/HKUDS/Vibe-Trading',
+            'https://github.com/ginlix-ai/LangAlpha',
+            'https://github.com/hummingbot/hummingbot',
+        ]
+    });
+});
+
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`================================================================`);
     console.log(`🏛️ BLOOMBERG PROFESSIONAL SERVICE - REAL-TIME TRADING DESK ON PORT ${PORT}`);
@@ -2988,6 +3115,7 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 Akses di browser: http://localhost:${PORT}`);
     console.log(`⚡ Crypto Futures Desk (Tab 10): http://localhost:${PORT}/?tab=10`);
     console.log(`🤖 Pluang Dashboard: http://localhost:${PORT}/pluang/`);
+    console.log(`🏛️ Committee API: http://localhost:${PORT}/api/committee/status`);
     console.log(`================================================================`);
     startBackgroundAutoTrader();
 });

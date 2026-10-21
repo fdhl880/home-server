@@ -1371,6 +1371,12 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     <button class="btn-act" onclick="scanAllCryptoFutures()">
                         SCAN ALL UNIVERSE &lt;GO&gt;
                     </button>
+                    <button class="btn-act" style="background:#00EEEE; color:#000; font-weight:bold;" onclick="runBbgCommittee()">
+                        🏛️ 9-AGENT COMMITTEE &lt;GO&gt;
+                    </button>
+                    <a href="/pluang/" target="_blank" class="btn-act" style="background:#F39F41; color:#000; font-weight:bold; text-decoration:none; display:inline-flex; align-items:center;">
+                        🖥️ FULL GLASS DASHBOARD &lt;GO&gt;
+                    </a>
                 </div>
             </div>
 
@@ -1570,6 +1576,101 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     </div>
                     <div id="l5Content" style="font-size:10.5px; line-height:1.5; color:#aaa;">
                         Hakim Tertinggi konsensus multi-agent. Syarat kelolosan mutlak: Keyakinan &gt;=80%, RRR &gt;=1:2.0, 0 critical failures, dan 8 Python security gates.
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============================================================== -->
+            <!-- 9-AGENT MULTI-COMMITTEE (TradingAgents + ai-hedge-fund + Vibe + LangAlpha + hummingbot) -->
+            <!-- ============================================================== -->
+            <div class="sec-title" style="margin-top:10px;">
+                <span id="bbgCommitteeTitle">-- 🏛️ MULTI-AGENT INVESTMENT COMMITTEE // 9-SPECIALIST CONSENSUS ENGINE --</span>
+                <span id="bbgCommitteeStatusBadge" class="bbg-cyan">STANDBY: READY TO CONVENE</span>
+            </div>
+
+            <div style="background:#080808; border:1px solid #00EEEE; padding:10px 12px; margin-bottom:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+                    <div>
+                        <span class="bbg-white" style="font-size:11px; font-weight:bold;">SPECIALIST AGENTS:</span>
+                        <span style="font-size:10px; color:#888;">
+                            Technical (TradingAgents) • Sentiment (Vibe) • Fundamentals (ai-hedge-fund/Kelly) • Macro • Bull/Bear Debaters • Trader (LangAlpha) • Risk (hummingbot/VaR) • PM
+                        </span>
+                    </div>
+                    <div style="display:flex; gap:6px;">
+                        <button class="btn-act" style="background:#00EEEE; color:#000; font-weight:bold; font-size:10px; padding:3px 10px;" onclick="runBbgCommittee()">
+                            CONVENE COMMITTEE NOW &lt;GO&gt;
+                        </button>
+                        <button class="btn-act" style="background:#151515; border-color:#555; color:#00FF00; font-size:10px; padding:3px 10px;" onclick="loadBbgCommitteeToTicket()">
+                            LOAD COMMITTEE PLAN TO TICKET &lt;GO&gt;
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 9 Agents Grid -->
+                <div id="bbgCommitteeGrid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:6px; margin-bottom:10px;">
+                    <div style="background:#040404; border:1px solid #222; border-top:2px solid #00EEEE; padding:6px; font-size:10px;">
+                        <div class="bbg-cyan" style="font-weight:bold;">1. TECHNICAL</div>
+                        <div style="color:#666; font-size:9px;">TradingAgents</div>
+                        <div id="bbgAgTech" style="color:#888; margin-top:3px;">Standby</div>
+                    </div>
+                    <div style="background:#040404; border:1px solid #222; border-top:2px solid #F39F41; padding:6px; font-size:10px;">
+                        <div class="bbg-amber" style="font-weight:bold;">2. SENTIMENT</div>
+                        <div style="color:#666; font-size:9px;">Vibe-Trading</div>
+                        <div id="bbgAgSent" style="color:#888; margin-top:3px;">Standby</div>
+                    </div>
+                    <div style="background:#040404; border:1px solid #222; border-top:2px solid #FFFF00; padding:6px; font-size:10px;">
+                        <div class="bbg-yellow" style="font-weight:bold;">3. FUNDAMENTALS</div>
+                        <div style="color:#666; font-size:9px;">ai-hedge-fund</div>
+                        <div id="bbgAgFund" style="color:#888; margin-top:3px;">Standby</div>
+                    </div>
+                    <div style="background:#040404; border:1px solid #222; border-top:2px solid #00CCCC; padding:6px; font-size:10px;">
+                        <div class="bbg-cyan" style="font-weight:bold;">4. MACRO</div>
+                        <div style="color:#666; font-size:9px;">Vibe-Trading</div>
+                        <div id="bbgAgMacro" style="color:#888; margin-top:3px;">Standby</div>
+                    </div>
+                    <div style="background:#040404; border:1px solid #222; border-top:2px solid #00FF00; padding:6px; font-size:10px;">
+                        <div class="bbg-green" style="font-weight:bold;">5. BULL DEBATER</div>
+                        <div style="color:#666; font-size:9px;">TradingAgents</div>
+                        <div id="bbgAgBull" style="color:#888; margin-top:3px;">Standby</div>
+                    </div>
+                    <div style="background:#040404; border:1px solid #222; border-top:2px solid #FF2233; padding:6px; font-size:10px;">
+                        <div class="bbg-red" style="font-weight:bold;">6. BEAR DEBATER</div>
+                        <div style="color:#666; font-size:9px;">TradingAgents</div>
+                        <div id="bbgAgBear" style="color:#888; margin-top:3px;">Standby</div>
+                    </div>
+                    <div style="background:#040404; border:1px solid #222; border-top:2px solid #AA00FF; padding:6px; font-size:10px;">
+                        <div style="color:#CC66FF; font-weight:bold;">7. TRADER</div>
+                        <div style="color:#666; font-size:9px;">LangAlpha</div>
+                        <div id="bbgAgTrader" style="color:#888; margin-top:3px;">Standby</div>
+                    </div>
+                    <div style="background:#040404; border:1px solid #222; border-top:2px solid #FF5500; padding:6px; font-size:10px;">
+                        <div class="bbg-red" style="font-weight:bold;">8. RISK (VaR/Kelly)</div>
+                        <div style="color:#666; font-size:9px;">hummingbot</div>
+                        <div id="bbgAgRisk" style="color:#888; margin-top:3px;">Standby</div>
+                    </div>
+                    <div style="background:#040404; border:1px solid #222; border-top:2px solid #FFFFFF; padding:6px; font-size:10px;">
+                        <div class="bbg-white" style="font-weight:bold;">9. PORTFOLIO MGR</div>
+                        <div style="color:#666; font-size:9px;">Final Consensus</div>
+                        <div id="bbgAgPm" style="color:#888; margin-top:3px;">Standby</div>
+                    </div>
+                </div>
+
+                <!-- Committee Thesis & Quantitative Metrics Box -->
+                <div id="bbgCommitteeThesisBox" style="background:#030303; border:1px solid #1a1a1a; padding:8px 10px; font-size:10.5px; line-height:1.6; color:#bbb;">
+                    <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+                        <div>
+                            <span class="bbg-cyan" style="font-weight:bold;">CONSENSUS VERDICT:</span>
+                            <span id="bbgConsensusAction" class="bbg-amber" style="font-weight:900; margin-left:4px;">AWAITING CONVOCATION</span>
+                            <span id="bbgConsensusConf" style="color:#888; margin-left:6px;"></span>
+                        </div>
+                        <div style="display:flex; gap:12px; font-size:10px; flex-wrap:wrap;">
+                            <span>KELLY ALLOC: <strong id="bbgKellyBudget" class="bbg-green">Rp 50.000</strong></span>
+                            <span>VaR (95%): <strong id="bbgVarEst" class="bbg-yellow">-</strong></span>
+                            <span>HUMMINGBOT SPREAD: <strong id="bbgSpreadEst" class="bbg-cyan">-</strong></span>
+                        </div>
+                    </div>
+                    <div id="bbgThesisText" style="margin-top:6px; color:#aaa; font-style:italic;">
+                        Pilih simbol pada form di bawah lalu klik CONVENE COMMITTEE NOW untuk menjalankan 9 agen AI serentak.
                     </div>
                 </div>
             </div>
@@ -4198,6 +4299,162 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     showPopup(`ATTEMPTING GP LOAD FOR '${raw}'...`);
                 }
             }
+        }
+
+        // ============================================================
+        // 9-AGENT INVESTMENT COMMITTEE LOGIC (Port 4000 Native)
+        // ============================================================
+        let latestCommitteePlan = null;
+
+        async function runBbgCommittee() {
+            const sym = document.getElementById('manualOrderSymbol')?.value || 'BTC-USD';
+            showPopup(`CONVENING 9-AGENT COMMITTEE FOR ${sym}...`);
+
+            const statusBadge = document.getElementById('bbgCommitteeStatusBadge');
+            const titleEl = document.getElementById('bbgCommitteeTitle');
+            if (titleEl) titleEl.textContent = `-- 🏛️ MULTI-AGENT INVESTMENT COMMITTEE // ${sym} (DELIBERATING...) --`;
+            if (statusBadge) {
+                statusBadge.textContent = 'CONVENING 9 AGENTS (~15-20s)...';
+                statusBadge.className = 'bbg-amber';
+            }
+
+            const agentIds = ['bbgAgTech', 'bbgAgSent', 'bbgAgFund', 'bbgAgMacro', 'bbgAgBull', 'bbgAgBear', 'bbgAgTrader', 'bbgAgRisk', 'bbgAgPm'];
+            agentIds.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) { el.textContent = 'Deliberating...'; el.style.color = '#FFFF00'; }
+            });
+
+            try {
+                const res = await fetch('/api/committee/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol: sym })
+                });
+
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.error || `HTTP ${res.status}`);
+                }
+
+                const data = await res.json();
+                renderBbgCommittee(data);
+                showPopup(`COMMITTEE DELIBERATION COMPLETE FOR ${sym}: ${data.consensus?.action || 'DONE'}`);
+            } catch (e) {
+                if (badgeEl = document.getElementById('bbgCommitteeStatusBadge')) {
+                    badgeEl.textContent = 'COMMITTEE ERROR: ' + e.message;
+                    badgeEl.className = 'bbg-red';
+                }
+                showPopup(`ERROR CONVENING COMMITTEE FOR ${sym}: ${e.message}`);
+            }
+        }
+
+        function renderBbgCommittee(d) {
+            const sym = d.symbol || 'N/A';
+            const consensus = d.consensus || {};
+            const act = consensus.action || 'HOLD';
+            const conf = consensus.confidence_pct || 0;
+
+            const titleEl = document.getElementById('bbgCommitteeTitle');
+            const badgeEl = document.getElementById('bbgCommitteeStatusBadge');
+            if (titleEl) titleEl.textContent = `-- 🏛️ MULTI-AGENT INVESTMENT COMMITTEE // ${sym} (${new Date().toLocaleTimeString()}) --`;
+            if (badgeEl) {
+                badgeEl.textContent = `CONSENSUS: ${act} (${conf}%)`;
+                badgeEl.className = (act === 'BUY' || act === 'LONG') ? 'bbg-green' : ((act === 'SELL' || act === 'SHORT') ? 'bbg-red' : 'bbg-yellow');
+            }
+
+            const agents = d.agents || {};
+            const setAg = (id, obj) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                if (!obj) { el.textContent = 'No data'; el.style.color = '#666'; return; }
+                const sig = obj.signal || obj.bias || obj.direction || obj.verdict || (typeof obj === 'string' ? obj : 'OK');
+                const confVal = obj.confidence_pct ? ` (${obj.confidence_pct}%)` : '';
+                el.textContent = `${sig}${confVal}`;
+                el.style.color = (sig === 'BUY' || sig === 'BULLISH' || sig === 'APPROVED') ? '#00FF66' :
+                                 (sig === 'SELL' || sig === 'BEARISH' || sig === 'REJECTED') ? '#FF2233' : '#F39F41';
+            };
+
+            setAg('bbgAgTech', agents.technical);
+            setAg('bbgAgSent', agents.sentiment);
+            setAg('bbgAgFund', agents.fundamentals);
+            setAg('bbgAgMacro', agents.macro);
+            setAg('bbgAgBull', agents.bull_researcher);
+            setAg('bbgAgBear', agents.bear_researcher);
+            setAg('bbgAgTrader', agents.trader);
+            setAg('bbgAgRisk', agents.risk_officer);
+            setAg('bbgAgPm', agents.portfolio_manager);
+
+            const vAction = document.getElementById('bbgConsensusAction');
+            const vConf = document.getElementById('bbgConsensusConf');
+            if (vAction) {
+                vAction.textContent = act;
+                vAction.className = (act === 'BUY' || act === 'LONG') ? 'bbg-green' : ((act === 'SELL' || act === 'SHORT') ? 'bbg-red' : 'bbg-yellow');
+            }
+            if (vConf) vConf.textContent = `• Confidence: ${conf}% • RRR: ${consensus.risk_reward_ratio || '1:2.0'}`;
+
+            const risk = agents.risk_officer || {};
+            const kelly = risk.kelly_suggested_idr || d.trade_plan?.position_size_idr || 50000;
+            const varVal = risk.var_pct_daily ? `${risk.var_pct_daily}%` : '-';
+            const spreadVal = risk.hummingbot_spread_pct ? `${risk.hummingbot_spread_pct}%` : '0.25%';
+
+            const kEl = document.getElementById('bbgKellyBudget');
+            if (kEl) kEl.textContent = `Rp ${Number(kelly).toLocaleString('id-ID')}`;
+            const varEl = document.getElementById('bbgVarEst');
+            if (varEl) varEl.textContent = varVal;
+            const sprEl = document.getElementById('bbgSpreadEst');
+            if (sprEl) sprEl.textContent = spreadVal;
+
+            const thesisEl = document.getElementById('bbgThesisText');
+            if (thesisEl) {
+                const bullReason = agents.bull_researcher?.core_thesis || '';
+                const bearReason = agents.bear_researcher?.core_thesis || '';
+                const pmSummary = consensus.executive_summary || consensus.summary || d.thesis || '';
+                thesisEl.innerHTML = `
+                    <div style="margin-bottom:4px;"><b>Consensus Thesis:</b> ${pmSummary || 'Sinyal terverifikasi oleh 9 agen spesialis.'}</div>
+                    ${bullReason ? `<div style="color:#00FF66;">• <b>Bull Case:</b> ${bullReason}</div>` : ''}
+                    ${bearReason ? `<div style="color:#FF5555;">• <b>Bear Risk:</b> ${bearReason}</div>` : ''}
+                `;
+            }
+
+            const plan = d.trade_plan || {};
+            latestCommitteePlan = {
+                symbol: sym,
+                action: act === 'BUY' ? 'LONG' : (act === 'SELL' ? 'SHORT' : act),
+                entry_price: plan.entry_price || d.market_data?.current_price,
+                take_profit_1: plan.take_profit_1,
+                take_profit_2: plan.take_profit_2,
+                stop_loss: plan.stop_loss,
+                leverage: plan.leverage || 5,
+                position_size_idr: kelly
+            };
+        }
+
+        function loadBbgCommitteeToTicket() {
+            if (!latestCommitteePlan) {
+                showPopup('NO COMMITTEE PLAN YET. CLICK "CONVENE COMMITTEE NOW" FIRST &lt;GO&gt;');
+                return;
+            }
+            const p = latestCommitteePlan;
+            const symEl = document.getElementById('manualOrderSymbol');
+            const sideEl = document.getElementById('manualOrderSide');
+            const levEl = document.getElementById('manualOrderLev');
+            const amtEl = document.getElementById('manualOrderAmountIdr');
+            const tp1El = document.getElementById('manualOrderTp1');
+            const tp2El = document.getElementById('manualOrderTp2');
+            const slEl = document.getElementById('manualOrderSl');
+            const limEl = document.getElementById('manualLimitPrice');
+
+            if (symEl && p.symbol) symEl.value = p.symbol;
+            if (sideEl && (p.action === 'LONG' || p.action === 'BUY')) sideEl.value = 'LONG';
+            if (sideEl && (p.action === 'SHORT' || p.action === 'SELL')) sideEl.value = 'SHORT';
+            if (levEl && p.leverage) levEl.value = p.leverage;
+            if (amtEl && p.position_size_idr) amtEl.value = p.position_size_idr;
+            if (tp1El && p.take_profit_1) tp1El.value = p.take_profit_1;
+            if (tp2El && p.take_profit_2) tp2El.value = p.take_profit_2;
+            if (slEl && p.stop_loss) slEl.value = p.stop_loss;
+            if (limEl && p.entry_price) limEl.value = p.entry_price;
+
+            showPopup(`COPIED 9-AGENT COMMITTEE PLAN FOR ${p.symbol} TO DMA TICKET!`);
         }
 
         // Support direct navigation via query params (e.g. ?tab=10)
