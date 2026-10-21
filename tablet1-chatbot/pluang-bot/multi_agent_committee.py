@@ -263,54 +263,135 @@ def run_trader_agent(symbol, price, bull_report, bear_report, rebuttal, analyst_
 # ============================================================
 
 def run_risk_officer(symbol, price, direction, confidence, market_data, config):
-    max_budget_idr = config.get("max_budget_idr", 50000)
-    max_leverage = config.get("max_leverage", 10)
+    """
+    Risk Officer v2: Dynamic leverage 2x-25x (ATR-based), wallet-based Kelly sizing,
+    and estimated holding time to TP1 (inspired by ai-hedge-fund + Vibe-Trading).
+    """
+    # ── 1. Fetch live wallet balance from Binance ──────────────────────
+    try:
+        from binance_futures import BinanceFuturesClient
+        import os as _os
+        _ak = config.get("BINANCE_API_KEY") or _os.environ.get("BINANCE_API_KEY", "")
+        _sk = config.get("BINANCE_API_SECRET") or _os.environ.get("BINANCE_API_SECRET", "")
+        if _ak and _sk:
+            _bn = BinanceFuturesClient(api_key=_ak, api_secret=_sk)
+            _bal = _bn.get_balance()
+            available_usdt = float(_bal.get("available_balance", 0))
+        else:
+            available_usdt = 0.0
+    except Exception:
+        available_usdt = 0.0
+
+    fx_rate = convert_usd_to_idr(1.0)   # USDT→IDR FX rate
+    wallet_idr = available_usdt * fx_rate
+
+    # ── 2. Risk parameters ─────────────────────────────────────────────
+    max_leverage = config.get("max_leverage", 25)
     min_rrr = config.get("min_risk_reward_ratio", 1.5)
 
     change_24h = abs(market_data.get("change_24h_pct", 3))
-    bb_width = market_data.get("bb_width_pct", 5)
+    bb_width   = market_data.get("bb_width_pct", 5)
     volatility = (change_24h + bb_width) / 2
 
-    # Kelly Criterion sizing (ai-hedge-fund inspired)
+    # ── 3. Dynamic leverage (ATR/volatility tier, cap to config max) ──
+    sym_base = symbol.upper().replace("-USD", "").replace("USDT", "")
+    mega_majors = {"BTC", "ETH"}
+    large_caps  = {"BNB", "SOL", "XRP", "ADA", "AVAX", "LINK", "LTC", "DOT", "MATIC", "UNI"}
+    memecoins   = {"DOGE", "PEPE", "SHIB", "FLOKI", "BONK", "WIF", "BOME", "NOT", "MEW", "BRETT"}
+
+    if volatility > 12:
+        lev_range = (2, 5)          # extreme volatility
+    elif sym_base in mega_majors:
+        lev_range = (10, 20)        # BTC/ETH: moderate-high leverage safe
+    elif sym_base in large_caps:
+        lev_range = (5, 15)         # large caps
+    elif sym_base in memecoins or volatility > 8:
+        lev_range = (3, 10)         # memecoins / high vol
+    else:
+        lev_range = (5, 15)         # general mid-cap
+
+    # Confidence modulation: higher confidence → higher leverage (within tier)
+    conf_factor = confidence / 100.0
+    raw_lev = int(lev_range[0] + conf_factor * (lev_range[1] - lev_range[0]))
+    leverage = max(2, min(raw_lev, max_leverage))
+
+    # ── 4. Wallet-based Kelly budget ──────────────────────────────────
     win_rate = confidence / 100
     kelly = win_rate - (1 - win_rate) / min_rrr
-    kelly = max(0.08, min(0.35, kelly))
+    kelly = max(0.08, min(0.40, kelly))
 
     vol_adj = 0.5 if volatility > 10 else (0.75 if volatility > 5 else 1.0)
-    budget_idr = max(10000, min(max_budget_idr, int(max_budget_idr * kelly * vol_adj)))
 
-    leverage = min(3, max_leverage) if volatility > 10 else (min(5, max_leverage) if volatility > 5 else min(10, max_leverage))
+    if wallet_idr > 1000:    # live wallet available
+        # Use Kelly fraction of live available USDT wallet
+        budget_idr = max(10000, int(wallet_idr * kelly * vol_adj))
+    else:
+        # Wallet unavailable (offline/no key) — fall back to IDR config floor
+        budget_floor = config.get("max_budget_idr") or 50000
+        budget_idr = max(10000, int(budget_floor * kelly * vol_adj))
 
+    # ── 5. SL / TP calculation ─────────────────────────────────────────
     atr_pct = volatility * 0.6
     if direction == "LONG":
-        sl = price * (1 - atr_pct / 100 * 1.5)
+        sl  = price * (1 - atr_pct / 100 * 1.5)
         tp1 = price * (1 + atr_pct / 100 * min_rrr)
         tp2 = price * (1 + atr_pct / 100 * min_rrr * 2)
     elif direction == "SHORT":
-        sl = price * (1 + atr_pct / 100 * 1.5)
+        sl  = price * (1 + atr_pct / 100 * 1.5)
         tp1 = price * (1 - atr_pct / 100 * min_rrr)
         tp2 = price * (1 - atr_pct / 100 * min_rrr * 2)
     else:
         sl = tp1 = tp2 = price
 
-    risk_pp = abs(price - sl)
+    risk_pp   = abs(price - sl)
     reward_pp = abs(tp1 - price)
     actual_rrr = reward_pp / risk_pp if risk_pp > 0 else 0
 
     pos_usd = convert_idr_to_usd(budget_idr) * leverage
-    var95 = pos_usd * volatility / 100 * 1.65
+    var95   = pos_usd * volatility / 100 * 1.65
 
     risk_approved = actual_rrr >= min_rrr and confidence >= 60 and direction != "SKIP"
+
+    # ── 6. Estimated holding time to TP1 ──────────────────────────────
+    # Formula: hours = (TP1 dist %) / (ATR% per hour * momentum factor)
+    # ATR 1H ≈ daily ATR / sqrt(24)
+    atr_1h_pct = (change_24h / 24**0.5) if change_24h > 0 else 0.2
+    tp1_dist_pct = abs(tp1 - price) / price * 100 if price > 0 else 1
+    momentum_factor = 1.2 if confidence >= 75 else (0.9 if confidence < 60 else 1.0)
+    if atr_1h_pct > 0:
+        est_hours = tp1_dist_pct / (atr_1h_pct * momentum_factor)
+    else:
+        est_hours = 2.0
+    est_hours = max(0.25, min(est_hours, 96))
+
+    # Format as readable Indonesian duration
+    if est_hours < 1:
+        lo, hi = int(est_hours * 60 * 0.7), int(est_hours * 60 * 1.3)
+        style = "Scalp Momentum" if confidence >= 75 else "Scalp"
+        time_horizon = f"~{lo}-{hi} menit ({style})"
+    elif est_hours < 4:
+        lo, hi = round(est_hours * 0.7, 1), round(est_hours * 1.3, 1)
+        style = "Intraday Trend" if confidence >= 70 else "Intraday"
+        time_horizon = f"~{lo}-{hi} jam ({style})"
+    elif est_hours < 24:
+        lo, hi = int(est_hours * 0.7), int(est_hours * 1.3)
+        time_horizon = f"~{lo}-{hi} jam (Swing Pendek)"
+    else:
+        lo, hi = int(est_hours / 24 * 0.7), int(est_hours / 24 * 1.3)
+        time_horizon = f"~{lo}-{hi} hari (Swing)"
 
     return {
         "agent": "RiskOfficer",
         "signal": "APPROVED" if risk_approved else "VETOED",
         "risk_approved": risk_approved,
         "confidence_pct": round(confidence, 1),
+        "wallet_usdt_available": round(available_usdt, 4),
+        "wallet_idr_available": round(wallet_idr, 0),
         "recommended_budget_idr": budget_idr,
         "kelly_suggested_idr": budget_idr,
         "recommended_leverage": leverage,
         "leverage": leverage,
+        "leverage_tier": f"{lev_range[0]}x-{lev_range[1]}x (vol={volatility:.1f}%)",
         "kelly_fraction": round(kelly, 3),
         "vol_adjustment": vol_adj,
         "sl_price": round(sl, 6),
@@ -320,8 +401,9 @@ def run_risk_officer(symbol, price, direction, confidence, market_data, config):
         "var_95_usd": round(var95, 2),
         "var_pct_daily": round(volatility * 1.65, 2),
         "volatility_pct": round(volatility, 2),
+        "estimated_time_horizon": time_horizon,
         "hummingbot_spread_pct": round(max(0.1, min(1.2, volatility * 0.08)), 2),
-        "risk_note": f"VaR(95%)=${var95:.2f}, RRR={actual_rrr:.2f}, Vol={volatility:.1f}%, Kelly={kelly:.1%}"
+        "risk_note": f"VaR(95%)=${var95:.2f}, RRR={actual_rrr:.2f}, Vol={volatility:.1f}%, Kelly={kelly:.1%}, Lev={leverage}x, Wallet=${available_usdt:.2f}"
     }
 
 
@@ -513,6 +595,7 @@ def run_multi_agent_committee(symbol, existing_positions=None):
         {"round": 7, "speaker": "Portfolio Manager", "role": "Supreme Verdict", "content": pm.get("decision", "")}
     ]
 
+    time_horizon = risk.get("estimated_time_horizon", "N/A")
     trade_plan = {
         "direction": final_dir,
         "entry_price": price,
@@ -523,6 +606,7 @@ def run_multi_agent_committee(symbol, existing_positions=None):
         "tp2_price": risk["tp2_price"],
         "actual_rrr": risk["actual_rrr"],
         "var_95_usd": risk["var_95_usd"],
+        "estimated_time_horizon": time_horizon,
     } if pm["approved"] else None
 
     result = {
@@ -534,6 +618,7 @@ def run_multi_agent_committee(symbol, existing_positions=None):
         "confidence_pct": trader["confidence_pct"],
         "elapsed_sec": elapsed,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "estimated_time_horizon": risk.get("estimated_time_horizon", "N/A"),
         "spread_info": spread_info,
         "consensus": {
             "action": final_act,

@@ -2229,14 +2229,14 @@ function getLocalTradingConfig() {
         }
     } catch (e) {}
     return {
-        max_budget_idr: 50000,
-        max_leverage: 5,
-        min_confidence_score: 65,
-        min_risk_reward_ratio: 1.8,
+        max_budget_idr: 0,
+        max_leverage: 25,
+        min_confidence_score: 45,
+        min_risk_reward_ratio: 1.5,
         margin_type: "ISOLATED",
         order_type: "MARKET",
-        tp_sl_mode: "DUAL_TP",
-        tp1_close_pct: 50,
+        tp_sl_mode: "SINGLE_TP",
+        tp1_close_pct: 100,
         tp1_move_sl_to_breakeven: true,
         auto_execute_on_pluang: true
     };
@@ -2684,12 +2684,13 @@ print(json.dumps(res))
             take_profit_1: signal.take_profit_1 || signal.take_profit || 0,
             take_profit_2: signal.take_profit_2 || signal.take_profit || 0,
             stop_loss: signal.stop_loss || 0,
-            leverage: signal.leverage || 5,
-            position_size_idr: 50000,
-            position_size_usd: (50000 / 18000).toFixed(2),
+            leverage: signal.leverage || 10,
+            position_size_idr: signal.position_size_idr || 0,
+            position_size_usd: signal.position_size_usd || (signal.position_size_idr ? (signal.position_size_idr / 16500).toFixed(2) : "0.00"),
             risk_reward_ratio: signal.risk_reward_ratio || "1:2.0",
             confidence_score: signal.confidence_score || 85,
             setup_name: signal.setup_name || "MANUAL_EXECUTION",
+            estimated_time_horizon: signal.estimated_time_horizon || "N/A",
             opened_at: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
             status: "OPEN",
             pnl_idr: 0,

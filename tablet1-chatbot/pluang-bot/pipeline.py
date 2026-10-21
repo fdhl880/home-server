@@ -77,8 +77,8 @@ CONFIG_FILE = os.path.join(BASE_DIR, "trading_config.json")
 
 def get_trading_config():
     cfg = {
-        "max_budget_idr": 50000,
-        "max_leverage": 5,
+        "max_budget_idr": 0,           # 0 = AI uses dynamic wallet-based Kelly sizing
+        "max_leverage": 25,             # AI selects 2x-25x dynamically based on ATR & confidence
         "min_confidence_score": 45,
         "min_risk_reward_ratio": 1.5,
         "max_drawdown_pct": 5.0
@@ -105,8 +105,8 @@ def save_trading_config(new_config: dict):
 
 # Initial config
 _cfg = get_trading_config()
-MAX_BUDGET_IDR = _cfg.get("max_budget_idr", 50000)
-MAX_LEVERAGE = _cfg.get("max_leverage", 5)
+MAX_BUDGET_IDR = _cfg.get("max_budget_idr", 0)       # 0 = dynamic wallet-based
+MAX_LEVERAGE = _cfg.get("max_leverage", 25)            # dynamic 2x-25x
 MIN_CONFIDENCE_SCORE = _cfg.get("min_confidence_score", 45)
 MIN_RISK_REWARD_RATIO = _cfg.get("min_risk_reward_ratio", 1.5)
 MAX_DRAWDOWN_PCT = _cfg.get("max_drawdown_pct", 5.0)
@@ -545,8 +545,8 @@ def _rule_based_plan(scan_data: dict, setup: dict, market_data: dict):
         "take_profit_1": round(tp, 6),  # backward compatibility alias
         "take_profit_2": round(tp, 6),  # backward compatibility alias
         "risk_reward_ratio": f"1:{rrr}",
-        "position_size_idr": 50000,
-        "leverage": 5,
+        "position_size_idr": 0,          # 0 = auto_trader resolves via dynamic wallet Kelly sizing
+        "leverage": 0,                   # 0 = auto_trader resolves via dynamic ATR-based leverage
         "risk_pct_of_capital": 2.0,
         "sl_distance_pct": round((sl_dist / price) * 100, 2),
         "tp_distance_pct": round((tp_dist / price) * 100, 2),
@@ -867,13 +867,13 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
     elif result["order_type"].upper() != "LIMIT":
         result["limit_price"] = result.get("entry_price", current_price)
 
-    # Cap leverage to exchange maximum safety (25x)
-    lev = int(result.get("leverage") or 5)
-    result["leverage"] = max(1, min(lev, 25))
+    # Cap leverage to exchange maximum safety (25x); AI free range 2-25x
+    lev = int(result.get("leverage") or 10)
+    result["leverage"] = max(2, min(lev, 25))
 
-    # Fallback position size if invalid
-    if not result.get("position_size_idr") or result.get("position_size_idr") <= 0:
-        result["position_size_idr"] = 50000
+    # Fallback position size: 0 means auto_trader resolves dynamically from wallet balance
+    if result.get("position_size_idr") is None or result.get("position_size_idr") < 0:
+        result["position_size_idr"] = 0   # resolved later from wallet
 
     return result
 
@@ -1017,8 +1017,8 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
             "take_profit_2": tp_val,
             "stop_loss": plan_result.get("stop_loss", 0),
             "risk_reward_ratio": plan_result.get("risk_reward_ratio", "0:0"),
-            "leverage": plan_result.get("leverage", 5),
-            "position_size_idr": plan_result.get("position_size_idr", 50000),
+            "leverage": plan_result.get("leverage") or 10,   # dynamic
+            "position_size_idr": plan_result.get("position_size_idr") or 0,  # 0=wallet-based
             "max_risk_idr": 1000,
             "final_reason": f"Rule-based judgment: {', '.join(setup_result.get('confluences', [])[:3])}",
             "ai_fallback": True
@@ -1033,9 +1033,9 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
         if not result.get("limit_price"):
             result["limit_price"] = plan_result.get("limit_price", result.get("entry_price", 0))
         if not result.get("leverage"):
-            result["leverage"] = plan_result.get("leverage", 5)
+            result["leverage"] = plan_result.get("leverage") or 10
         if not result.get("position_size_idr"):
-            result["position_size_idr"] = plan_result.get("position_size_idr", 50000)
+            result["position_size_idr"] = plan_result.get("position_size_idr") or 0  # 0=wallet-based
 
     return _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_data, market_data)
 
@@ -1068,11 +1068,11 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
         result["status"] = "REJECTED"
         reasons.append(f"Confidence score {conf}% di bawah batas {current_min_confidence}%")
 
-    # Gate 2: Bounded by max capital setting (AI manages modal)
-    if result.get("position_size_idr", 0) > current_max_budget:
+    # Gate 2: If max_budget_idr > 0 cap to it; 0 means dynamic wallet-based (no cap)
+    if current_max_budget > 0 and result.get("position_size_idr", 0) > current_max_budget:
         result["position_size_idr"] = current_max_budget
-    elif result.get("position_size_idr", 0) <= 0:
-        result["position_size_idr"] = 50000
+    elif result.get("position_size_idr", 0) < 0:
+        result["position_size_idr"] = 0   # 0 triggers dynamic wallet sizing in auto_trader
 
     # Gate 3: Bounded by max leverage setting (AI manages leverage)
     if result.get("leverage", 1) > current_max_leverage:

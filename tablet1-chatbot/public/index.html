@@ -1445,11 +1445,11 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     <div style="display:flex; align-items:center; gap:4px;">
                         <span class="bbg-amber" style="font-weight:bold; font-size:10px;">CAP/POS:</span>
                         <span style="color:#aaa; font-size:10px;">RP</span>
-                        <input type="number" id="cfgMaxBudgetInput" value="50000" step="5000" min="10000" style="width:75px; background:#000; border:1px solid #442a00; color:#FFFF00; font-family:inherit; font-weight:bold; font-size:11px; padding:2px 4px;">
+                        <input type="number" id="cfgMaxBudgetInput" value="0" step="10000" min="0" placeholder="0=Dynamic" title="0 = Dynamic Kelly Wallet Sizing (No Cap)" style="width:85px; background:#000; border:1px solid #442a00; color:#FFFF00; font-family:inherit; font-weight:bold; font-size:11px; padding:2px 4px;">
                     </div>
                     <div style="display:flex; align-items:center; gap:4px;">
                         <span class="bbg-amber" style="font-weight:bold; font-size:10px;">MAX LEV:</span>
-                        <input type="number" id="cfgMaxLevInput" value="5" step="1" min="1" max="20" style="width:40px; background:#000; border:1px solid #442a00; color:#FFFF00; font-family:inherit; font-weight:bold; font-size:11px; padding:2px 4px;">
+                        <input type="number" id="cfgMaxLevInput" value="25" step="1" min="1" max="25" style="width:40px; background:#000; border:1px solid #442a00; color:#FFFF00; font-family:inherit; font-weight:bold; font-size:11px; padding:2px 4px;">
                         <span style="color:#aaa; font-size:10px;">x</span>
                     </div>
                     <div style="display:flex; align-items:center; gap:4px;">
@@ -1789,13 +1789,14 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                             <th>ALLOCATION (IDR)</th>
                             <th>TAKE PROFIT</th>
                             <th>STOP LOSS</th>
+                            <th>EST. HOLD TIME</th>
                             <th>UNREAL P&amp;L</th>
                             <th>STATUS</th>
                             <th style="text-align:center;">ACTION</th>
                         </tr>
                     </thead>
                     <tbody id="cryptoFuturesPositionsTbody">
-                        <tr><td colspan="12" style="text-align:center; padding:15px; color:#888;">TIDAK ADA POSISI TERBUKA. MODAL ANDA 100% AMAN TERSIMPAN DI CASH.</td></tr>
+                        <tr><td colspan="13" style="text-align:center; padding:15px; color:#888;">TIDAK ADA POSISI TERBUKA. MODAL ANDA 100% AMAN TERSIMPAN DI CASH.</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -3600,8 +3601,8 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                     const tpSel = document.getElementById('cfgTpSlModeSelect');
                     const aSel = document.getElementById('cfgAutoExecuteSelect');
 
-                    if (bIn && cfg.max_budget_idr) bIn.value = cfg.max_budget_idr;
-                    if (lIn && cfg.max_leverage) lIn.value = cfg.max_leverage;
+                    if (bIn && cfg.max_budget_idr !== undefined) bIn.value = cfg.max_budget_idr;
+                    if (lIn && cfg.max_leverage !== undefined) lIn.value = cfg.max_leverage;
                     if (mSel && cfg.margin_type) mSel.value = cfg.margin_type;
                     if (oSel && cfg.order_type) oSel.value = cfg.order_type;
                     if (tpSel && cfg.tp_sl_mode) tpSel.value = cfg.tp_sl_mode;
@@ -3634,14 +3635,17 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
         }, 5000);
 
         async function saveDynamicTradingConfig() {
-            const bVal = parseFloat(document.getElementById('cfgMaxBudgetInput')?.value || 50000);
-            const lVal = parseInt(document.getElementById('cfgMaxLevInput')?.value || 5);
+            const bRaw = document.getElementById('cfgMaxBudgetInput')?.value;
+            const bVal = (bRaw !== undefined && bRaw !== '' && !isNaN(bRaw)) ? parseFloat(bRaw) : 0;
+            const lRaw = document.getElementById('cfgMaxLevInput')?.value;
+            const lVal = (lRaw !== undefined && lRaw !== '' && !isNaN(lRaw)) ? parseInt(lRaw) : 25;
             const mVal = document.getElementById('cfgMarginTypeSelect')?.value || 'ISOLATED';
             const oVal = document.getElementById('cfgOrderTypeSelect')?.value || 'MARKET';
-            const tpVal = document.getElementById('cfgTpSlModeSelect')?.value || 'DUAL_TP';
+            const tpVal = document.getElementById('cfgTpSlModeSelect')?.value || 'SINGLE_TP';
             const aVal = document.getElementById('cfgAutoExecuteSelect')?.value === 'true';
 
-            showPopup(`SAVING FUTURES CONFIG: RP ${bVal.toLocaleString('id-ID')} | ${lVal}x | ${mVal} | ${oVal}...`);
+            const budgetLabel = bVal === 0 ? 'DYNAMIC KELLY SIZING' : `RP ${bVal.toLocaleString('id-ID')}`;
+            showPopup(`SAVING FUTURES CONFIG: ${budgetLabel} | ${lVal}x | ${mVal} | ${oVal}...`);
             try {
                 const res = await fetch('/api/crypto-futures/settings', {
                     method: 'POST',
@@ -4089,8 +4093,9 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                         <td>$${Number(p.entry_price || 0).toLocaleString()}</td>
                         <td>$${Number(p.current_price || p.entry_price || 0).toLocaleString()}</td>
                         <td style="font-weight:bold;">Rp ${Number(p.position_size_idr || p.amount_idr || 50000).toLocaleString('id-ID')}</td>
-                        <td class="bbg-green">$${Number(p.take_profit_1 || 0).toLocaleString()}</td>
+                        <td class="bbg-green">$${Number(p.take_profit_1 || p.take_profit || 0).toLocaleString()}</td>
                         <td class="bbg-red">$${Number(p.stop_loss || 0).toLocaleString()}</td>
+                        <td class="bbg-yellow" style="font-size:10px; font-weight:bold;">${p.estimated_time_horizon || 'N/A'}</td>
                         <td style="font-weight:bold; color:${pnlColor};">${pnlText}</td>
                         <td><span class="bbg-green">● ${p.binance_synced ? 'BINANCE LIVE' : (p.pluang_synced ? 'PLUANG LIVE' : 'OPEN')}</span></td>
                         <td style="text-align:center;">

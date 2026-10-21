@@ -229,7 +229,7 @@ def record_position(signal: dict):
     """Record position locally AND execute on Pluang if connected"""
     global pluang_client
     cfg = _get_config()
-    max_budget = cfg.get("max_budget_idr", 500000)
+    max_budget = cfg.get("max_budget_idr", 0)   # 0 = no cap, dynamic wallet-based
     max_lev = cfg.get("max_leverage", 25)
     margin_type = signal.get("margin_type") or cfg.get("margin_type", "ISOLATED")
     
@@ -237,13 +237,42 @@ def record_position(signal: dict):
     order_type = (signal.get("order_type") or cfg.get("order_type", "MARKET")).upper()
     limit_price = float(signal.get("limit_price") or signal.get("entry_price", 0))
 
-    # 2. AI GOVERNS MODAL (POSITION SIZE)
-    pos_size = float(signal.get("position_size_idr") or cfg.get("max_budget_idr", 50000))
+    # 2. AI GOVERNS MODAL (POSITION SIZE) — dynamic wallet-based Kelly sizing
+    pos_size = float(signal.get("position_size_idr") or 0)
+    # If pos_size is 0 or too small: dynamically size from live Binance wallet
+    if pos_size < 5000:
+        try:
+            _bn = get_binance_client()
+            if _bn:
+                _bal = _bn.get_balance()
+                avail_usdt = float(_bal.get("available_balance", 0))
+                _fx = get_fx_info()
+                avail_idr = avail_usdt * _fx["usd_idr"]
+                # Kelly fraction ~30-60% of available balance depending on confidence
+                conf = float(signal.get("confidence_score", 65))
+                kelly_frac = max(0.15, min(0.60, conf / 100.0 * 0.8))
+                pos_size = max(10000, int(avail_idr * kelly_frac))
+            else:
+                pos_size = 50000   # offline fallback
+        except Exception:
+            pos_size = 50000
+    # If config max_budget_idr > 0, cap to it; 0 means no cap
     if max_budget > 0:
         pos_size = min(pos_size, max_budget)
 
-    # 3. AI GOVERNS LEVERAGE
-    leverage = int(signal.get("leverage") or 5)
+    # 3. AI GOVERNS LEVERAGE — dynamic 2x-25x based on ATR/volatility tier
+    leverage = int(signal.get("leverage") or 0)
+    if leverage < 2:
+        # Infer from symbol tier if not set
+        sym_upper = str(signal.get("symbol", "")).upper().replace("-USD", "").replace("USDT", "")
+        if sym_upper in {"BTC", "ETH"}:
+            leverage = 15
+        elif sym_upper in {"BNB", "SOL", "XRP", "ADA", "AVAX", "LINK"}:
+            leverage = 10
+        elif sym_upper in {"DOGE", "PEPE", "SHIB", "FLOKI", "BONK", "WIF"}:
+            leverage = 5
+        else:
+            leverage = 8
     if max_lev > 0:
         leverage = min(leverage, max_lev)
 
@@ -292,6 +321,7 @@ def record_position(signal: dict):
         "risk_reward_ratio": signal.get("risk_reward_ratio", "1:2.0"),
         "confidence_score": signal.get("confidence_score", 0),
         "setup_name": signal.get("setup_name", "N/A"),
+        "estimated_time_horizon": signal.get("estimated_time_horizon", "N/A"),
         "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "status": "OPEN",
         "pnl_idr": 0,
@@ -617,14 +647,15 @@ def run_full_scan_cycle():
     """
     load_state()
     cfg = _get_config()
-    max_budget = cfg.get("max_budget_idr", 50000)
+    max_budget = cfg.get("max_budget_idr", 0)   # 0 = dynamic wallet-based
     
     print(f"\n{'='*70}", flush=True)
     print(f"[FULL SCAN] {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}", flush=True)
-    print(f"[FULL SCAN] MODE: FULL UNIVERSE | MAX BUDGET: Rp {max_budget:,}", flush=True)
+    sizing_mode = f"Dynamic Wallet-Based" if max_budget == 0 else f"Capped Rp {max_budget:,}"
+    print(f"[FULL SCAN] MODE: FULL UNIVERSE | SIZING: {sizing_mode}", flush=True)
     print(f"{'='*70}", flush=True)
     
-    # Build scan list: Top 5 actionable coins by opportunity score
+    # Build scan list: Top 10 actionable coins by opportunity score from all 524 pairs
     ranked = rank_universe_by_opportunity()
     
     scan_list = [
@@ -632,8 +663,9 @@ def run_full_scan_cycle():
         {"symbol": "ETH-USD", "pair": "ETHUSDT", "name": "Ethereum", "tier": "T1_MEGA"},
         {"symbol": "SOL-USD", "pair": "SOLUSDT", "name": "Solana", "tier": "T2_LARGE"},
     ]
+    anchor_pairs = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
     for coin in ranked:
-        if coin.get("pair") not in ("BTCUSDT", "ETHUSDT", "SOLUSDT") and len(scan_list) < 5:
+        if coin.get("pair") not in anchor_pairs and len(scan_list) < 10:
             scan_list.append(coin)
     
     state["coins_scanned_this_cycle"] = len(scan_list)
@@ -737,7 +769,12 @@ def run_full_scan_cycle():
                     "take_profit": trade_params.get("tp2_price") or fc.get("take_profit"),
                     "stop_loss": trade_params.get("sl_price") or fc.get("stop_loss"),
                     "margin_type": "ISOLATED",
-                    "order_type": "MARKET"
+                    "order_type": "MARKET",
+                    "estimated_time_horizon": (
+                        trade_params.get("estimated_time_horizon")
+                        or (com_res.get("estimated_time_horizon") if com_res else None)
+                        or fc.get("estimated_time_horizon", "N/A")
+                    )
                 }
 
                 print(f"🔥 KONSENSUS MULTI-AGENT APPROVED! {sym} ({final_dir}) Keyakinan: {exec_plan['confidence_score']}%", flush=True)
@@ -773,6 +810,8 @@ def run_full_scan_cycle():
                     f"   📍 Entry: ${exec_plan.get('entry_price', 0):,.4f}\n"
                     f"   🎯 Take Profit: ${tp_val:,.4f}\n"
                     f"   🛑 Stop Loss: ${sl_val:,.4f}\n"
+                    f"────────────────────────\n"
+                    f"⏱️ <b>Est. Waktu Tercapai TP:</b> <b>{exec_plan.get('estimated_time_horizon', 'N/A')}</b>\n"
                     f"────────────────────────\n"
                     f"🏛️ <b>Kolaborasi Sidang Multi-Agent:</b>\n"
                     f"   🟢 <i>Bull Case:</i> {bull_note}\n"
@@ -811,11 +850,12 @@ def run_full_scan_cycle():
     # Summary Telegram
     summary_msg = (
         f"📊 <b>PYROFUEL SCAN CYCLE #{state['total_scans_done']} COMPLETE</b>\n\n"
-        f"🌐 Universe: {len(ranked)} pairs total\n"
-        f"🔍 Scanned: {len(scan_list)} top actionable coins\n"
+        f"🌐 Universe: {len(ranked)} pairs total (Binance Futures)\n"
+        f"🔍 Scanned: {len(scan_list)} top actionable coins (Full AI Pipeline + 9-Agent)\n"
         f"✅ Approved: {len(approved_signals)}\n"
         f"❌ Rejected: {len(scan_list) - len(approved_signals)}\n"
-        f"💰 Budget: Rp {max_budget:,}\n"
+        f"💰 Sizing: {'Dynamic Wallet-Based (Kelly)' if max_budget == 0 else f'Capped Rp {max_budget:,}'}\n"
+        f"⚡ Leverage: Dynamic 2x-25x (ATR-based)\n"
         f"⏱️ Next cycle: ~5 min"
     )
     if not approved_signals:

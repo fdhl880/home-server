@@ -215,11 +215,11 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
         raw_sym = raw_sym + "-USD"
     
     cfg = get_trading_config()
-    max_budget = cfg.get("max_budget_idr", 50000)
-    max_lev = cfg.get("max_leverage", 5)
+    max_budget = cfg.get("max_budget_idr", 0)
+    max_lev = cfg.get("max_leverage", 25)
     margin_type = cfg.get("margin_type", "ISOLATED")
     order_type = cfg.get("order_type", "MARKET")
-    budget_usd = convert_idr_to_usd(max_budget)
+    budget_usd = convert_idr_to_usd(max_budget) if max_budget > 0 else None
 
     # 0. Check duplicate active position
     positions = []
@@ -287,14 +287,48 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
     order_type = (signal.get("order_type") or cfg.get("order_type", "MARKET")).upper()
     limit_price = float(signal.get("limit_price") or entry_price)
 
-    # AI governs modal/position size
-    pos_idr = float(signal.get("position_size_idr") or max_budget)
-    pos_usd = round(pos_idr / 16500.0, 2)
+    # AI governs modal/position size — dynamic wallet-based Kelly
+    pos_idr_raw = float(signal.get("position_size_idr") or 0)
+    if pos_idr_raw < 5000 and budget_usd is None:
+        # Dynamic sizing from live wallet
+        try:
+            _bn_tmp = get_binance_client()
+            if _bn_tmp:
+                _bal_tmp = _bn_tmp.get_balance()
+                _avail = float(_bal_tmp.get("available_balance", 0))
+                _fx_tmp = get_fx_info()
+                _avail_idr = _avail * _fx_tmp.get("usd_idr", 16500)
+                _conf = float(signal.get("confidence_score", 65))
+                _kf = max(0.15, min(0.60, _conf / 100.0 * 0.8))
+                pos_idr_raw = max(10000, int(_avail_idr * _kf))
+            else:
+                pos_idr_raw = 50000
+        except Exception:
+            pos_idr_raw = 50000
+    elif pos_idr_raw < 5000:
+        pos_idr_raw = max_budget or 50000
+    if max_budget > 0:
+        pos_idr_raw = min(pos_idr_raw, max_budget)
+    pos_idr = int(pos_idr_raw)
+    pos_usd = round(pos_idr / get_fx_info().get("usd_idr", 16500), 2)
 
-    # AI governs leverage
-    leverage = int(signal.get("leverage") or 5)
+    # AI governs leverage — dynamic 2x-25x
+    leverage = int(signal.get("leverage") or 0)
+    if leverage < 2:
+        _sym_u = raw_sym.replace("-USD", "")
+        if _sym_u in {"BTC", "ETH"}:
+            leverage = 15
+        elif _sym_u in {"BNB", "SOL", "XRP", "ADA", "AVAX", "LINK"}:
+            leverage = 10
+        elif _sym_u in {"DOGE", "PEPE", "SHIB", "FLOKI", "BONK", "WIF"}:
+            leverage = 5
+        else:
+            leverage = 8
     if max_lev > 0:
         leverage = min(leverage, max_lev)
+
+    # Estimated time horizon from signal / pipeline
+    time_horizon = signal.get("estimated_time_horizon", "N/A")
 
     # Pluang only supports Single Take Profit (NO dual TP)
     tp = float(signal.get("take_profit") or signal.get("take_profit_2") or signal.get("take_profit_1", 0))
@@ -394,6 +428,7 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
                 f"📍 <b>Entry:</b> ${entry_price:,.4f}\n"
                 f"🎯 <b>Take Profit:</b> ${tp:,.4f}\n"
                 f"🛑 <b>Stop Loss:</b> ${sl:,.4f}\n"
+                f"⏱️ <b>Est. Waktu TP:</b> <b>{time_horizon}</b>\n"
                 f"🆔 <b>Order ID ({target_name}):</b> <code>{order_id}</code>\n"
                 f"⏰ <b>Waktu:</b> {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}\n\n"
                 f"<i>Posisi aktif kini terpantau real-time oleh AI Sentinel.</i>"
@@ -1192,10 +1227,14 @@ def start_bot_listener():
                             f"🟡 <b>Binance Futures:</b> {bn_txt}\n"
                             f"🏦 <b>Pluang Status:</b> {pluang_txt}\n"
                             f"🌐 <b>Universe:</b> {len(universe)} crypto futures pairs (100% Full Binance)\n"
-                            f"🔒 <b>Limit Modal:</b> Rp {cfg.get('max_budget_idr', 50000):,}\n"
-                            f"⚡ <b>Max Leverage:</b> {cfg.get('max_leverage', 5)}x\n\n"
-                            "Sistem dirancang dengan <b>5-Layer AI Pipeline</b>:\n"
-                            "• Scanner ➔ Setup Hunter ➔ Plan ➔ Risk Audit ➔ Supreme Judge\n\n"
+                            f"💰 <b>Modal Sizing:</b> {'Dynamic Wallet-Based (Kelly Criterion)' if cfg.get('max_budget_idr', 0) == 0 else f"Rp {cfg.get('max_budget_idr'):,} max"}\n"
+                            f"⚡ <b>Leverage:</b> Dynamic 2x-25x (AI pilih berdasarkan ATR & volatilitas)\n\n"
+                            "Sistem dirancang dengan <b>5-Layer AI Pipeline + 9-Agent Committee:</b>\n"
+                            "• Scanner ➔ Setup Hunter ➔ Plan ➔ Risk Audit ➔ Supreme Judge\n"
+                            "• 4 Analyst → Bull/Bear Debate → Trader → Risk Officer → Portfolio Mgr\n\n"
+                            "<b>📍 Info Link di Bot Ini:</b>\n"
+                            "• 🔑 <i>Link Login Pluang</i> = OAuth resmi <code>mcp.pluang.com</code> — muncul hanya saat Anda ketik /login\n"
+                            "• Ini <b>BUKAN HACK</b>, ini autentikasi resmi dari server Pluang.\n\n"
                             "<b>📋 Perintah Utama:</b>\n"
                             "• <code>/audit</code> - 🔍 Audit menyeluruh sistem, data, analisa & full universe\n"
                             "• <code>/wallet</code> - Cek saldo Binance Futures ($) & Pluang (Live)\n"
@@ -1209,8 +1248,6 @@ def start_bot_listener():
                             "• <code>/pnl</code> - Win Rate % & Total P&L Real-time\n"
                             "• <code>/news</code> - AI Crypto News & Macro Sentiment\n"
                             "• <code>/auto</code> - Status auto-trading background\n"
-                            "• <code>/limit [n]</code> - Ubah batas modal\n"
-                            "• <code>/leverage [n]</code> - Ubah batas leverage\n"
                             "• <code>/login</code> - Hubungkan akun Pluang Anda via OAuth"
                         )
                         send_telegram_message(chat_id, welcome)
