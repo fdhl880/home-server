@@ -208,9 +208,26 @@ class BinanceFuturesClient:
             return float(int(round(price)))
         return round(price, prec)
 
+    def _sync_server_time(self):
+        """Synchronize local timestamp offset with Binance server time to eliminate -1021 recvWindow errors"""
+        for ep in self.endpoints:
+            try:
+                r = self.session.get(f"{ep}/fapi/v1/time", timeout=5)
+                st = r.json().get("serverTime")
+                if st:
+                    self.time_offset = int(st - (time.time() * 1000))
+                    return self.time_offset
+            except Exception:
+                continue
+        self.time_offset = 0
+        return 0
+
     def _sign(self, params: dict) -> dict:
-        """Add timestamp and HMAC-SHA256 signature to query parameters"""
-        params["timestamp"] = int(time.time() * 1000)
+        """Add timestamp, recvWindow, and HMAC-SHA256 signature to query parameters with auto time synchronization"""
+        if not hasattr(self, "time_offset"):
+            self._sync_server_time()
+        params["recvWindow"] = 60000
+        params["timestamp"] = int(time.time() * 1000 + getattr(self, "time_offset", 0))
         query_string = urlencode(params)
         signature = hmac.new(
             self.api_secret.encode("utf-8"),
@@ -220,14 +237,14 @@ class BinanceFuturesClient:
         params["signature"] = signature
         return params
 
-    def _request(self, method: str, endpoint: str, params: dict = None, signed: bool = False):
-        """Execute HTTP request against Binance Futures REST API with multi-endpoint failover"""
+    def _request(self, method: str, endpoint: str, params: dict = None, signed: bool = False, retry_time: bool = True):
+        """Execute HTTP request against Binance Futures REST API with multi-endpoint failover and clock skew retry"""
         params = params or {}
         
         if signed:
             if not self.api_key or not self.api_secret:
                 raise ValueError("Binance API Key and Secret are required for private endpoints!")
-            params = self._sign(params)
+            params = self._sign(params.copy())
 
         last_error = None
         for base in self.endpoints:
@@ -246,6 +263,10 @@ class BinanceFuturesClient:
                 if resp.status_code >= 400:
                     err_msg = data.get("msg") or data.get("message") or resp.text
                     err_code = data.get("code", resp.status_code)
+                    if err_code == -1021 and retry_time:
+                        print("[BinanceFutures] 🔄 -1021 Timestamp error detected. Resyncing server clock and retrying...", flush=True)
+                        self._sync_server_time()
+                        return self._request(method, endpoint, params, signed=signed, retry_time=False)
                     print(f"[BinanceFutures] [ERROR {err_code}]: {err_msg}", flush=True)
                     return {"isError": True, "error": err_msg, "code": err_code}
                     
@@ -478,9 +499,20 @@ class BinanceFuturesClient:
             "type": "MARKET",
             "reduceOnly": "true"
         }
-        if quantity is not None:
-            fmt_qty = self.format_quantity(sym, quantity)
-            params["quantity"] = fmt_qty if self.get_symbol_filters(sym)["quantityPrecision"] > 0 else int(fmt_qty)
+        if quantity is None:
+            try:
+                positions = self.get_positions()
+                if isinstance(positions, list):
+                    for p in positions:
+                        if p.get("symbol") == sym:
+                            quantity = abs(float(p.get("position_amount", 0)))
+                            break
+            except Exception:
+                pass
+        if quantity is None or quantity <= 0:
+            return {"isError": True, "error": f"No active position found on Binance to close for {sym}"}
+        fmt_qty = self.format_quantity(sym, quantity)
+        params["quantity"] = fmt_qty if self.get_symbol_filters(sym)["quantityPrecision"] > 0 else int(fmt_qty)
         return self._request("POST", "/fapi/v1/order", params=params, signed=True)
 
     def cancel_all_orders(self, symbol: str):
@@ -627,7 +659,10 @@ class BinanceFuturesClient:
             if order_res.get("isError"):
                 raise Exception(order_res.get("error", "Unknown Binance error"))
                 
-            execution_log["order_id"] = order_res.get("orderId")
+            order_id = order_res.get("orderId")
+            if not order_id:
+                raise Exception(f"Binance order rejected or failed to return orderId: {order_res}")
+            execution_log["order_id"] = order_id
 
             # 2. Set TP Order
             if tp > 0:

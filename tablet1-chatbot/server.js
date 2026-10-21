@@ -2258,20 +2258,20 @@ function getLocalPositions() {
         if (fs.existsSync(positionsPath)) {
             const list = JSON.parse(fs.readFileSync(positionsPath, 'utf8'));
             if (Array.isArray(list)) {
-                // Tampilkan posisi yang LIVE di Binance Futures atau Pluang
-                return list.filter(p => p && (p.binance_synced === true || p.pluang_synced === true || p.exchange === 'BINANCE_FUTURES' || p.status === 'OPEN'));
+                // Tampilkan HANYA posisi yang benar-benar SUKSES sinkron live di Binance Futures / Pluang (ada order_id valid)
+                return list.filter(p => p && p.status === 'OPEN' && (p.binance_synced === true || p.pluang_synced === true) && p.order_id && p.order_id !== 'None');
             }
         }
     } catch (e) {}
     return [];
 }
 
-// Bersihkan file posisi lama saat server start jika ada posisi yang tidak valid
+// Bersihkan file posisi lama saat server start jika ada posisi yang gagal atau tidak valid
 try {
     if (fs.existsSync(positionsPath)) {
         const raw = JSON.parse(fs.readFileSync(positionsPath, 'utf8'));
         if (Array.isArray(raw)) {
-            const validOnly = raw.filter(p => p && (p.binance_synced === true || p.pluang_synced === true || p.exchange === 'BINANCE_FUTURES' || p.status === 'OPEN'));
+            const validOnly = raw.filter(p => p && p.status === 'OPEN' && (p.binance_synced === true || p.pluang_synced === true) && p.order_id && p.order_id !== 'None');
             fs.writeFileSync(positionsPath, JSON.stringify(validOnly, null, 2));
         }
     }
@@ -2559,6 +2559,9 @@ app.get('/api/crypto-futures/status', (req, res) => {
         telegram_bot: "@idrisginting_bot",
         active_positions_count: positions.filter(p => p.status === 'OPEN').length,
         autonomous_running: state.is_running !== false,
+        all_in_monitoring_mode: Boolean(state.all_in_monitoring_mode),
+        all_in_focus_positions: state.all_in_focus_positions || [],
+        all_in_reason: state.all_in_reason || '',
         total_scans_done: state.total_scans_done || 0,
         last_scan_time: state.last_scan_time || (quickScreen && quickScreen.timestamp) || "Real-Time Active"
     });
@@ -2675,18 +2678,33 @@ print(json.dumps(res))
             if (match) execRes = JSON.parse(match[0]);
         } catch (e) {}
 
+        const isExecuted = !err && execRes && (execRes.status === 'EXECUTED' || execRes.binance_synced === true) && (execRes.order_id || (execRes.steps && execRes.steps.open_position && execRes.steps.open_position.orderId));
+        
+        if (!isExecuted) {
+            const errorMsg = (execRes && (execRes.error || execRes.status)) || (err && err.message) || "Order ditolak atau gagal masuk ke Binance Futures";
+            console.error(`[Binance Futures Execute Rejected]: ${errorMsg}`);
+            return res.status(400).json({
+                status: "FAILED",
+                success: false,
+                error: errorMsg,
+                binance_result: execRes,
+                message: `❌ Order gagal masuk ke Binance Futures: ${errorMsg}. Posisi TIDAK dicatat di port 4000.`
+            });
+        }
+
+        const confirmedOrderId = execRes.order_id || (execRes.steps && execRes.steps.open_position && execRes.steps.open_position.orderId);
         const pos = {
             id: `POS_${symbol.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}`,
             symbol: symbol,
             binance_pair: signal.binance_pair || symbol.replace('-USD', 'USDT'),
             direction: signal.direction || "LONG",
-            entry_price: signal.entry_price || 0,
+            entry_price: execRes.entry_price || signal.entry_price || 0,
             take_profit_1: signal.take_profit_1 || signal.take_profit || 0,
             take_profit_2: signal.take_profit_2 || signal.take_profit || 0,
             stop_loss: signal.stop_loss || 0,
-            leverage: signal.leverage || 10,
-            position_size_idr: signal.position_size_idr || 0,
-            position_size_usd: signal.position_size_usd || (signal.position_size_idr ? (signal.position_size_idr / 16500).toFixed(2) : "0.00"),
+            leverage: execRes.leverage || signal.leverage || 10,
+            position_size_idr: signal.position_size_idr || (execRes.position_size_usdt ? Math.round(execRes.position_size_usdt * 16500) : 0),
+            position_size_usd: execRes.position_size_usdt || signal.position_size_usd || (signal.position_size_idr ? (signal.position_size_idr / 16500).toFixed(2) : "0.00"),
             risk_reward_ratio: signal.risk_reward_ratio || "1:2.0",
             confidence_score: signal.confidence_score || 85,
             setup_name: signal.setup_name || "MANUAL_EXECUTION",
@@ -2697,7 +2715,8 @@ print(json.dumps(res))
             pnl_usd: 0,
             pnl_pct: 0.0,
             pluang_synced: false,
-            binance_synced: execRes ? (execRes.binance_synced || execRes.status === 'EXECUTED') : true,
+            binance_synced: true,
+            order_id: confirmedOrderId,
             binance_execution: execRes,
             exchange: "BINANCE_FUTURES"
         };
@@ -2708,7 +2727,7 @@ print(json.dumps(res))
             success: true,
             position: pos,
             binance_result: execRes,
-            message: execRes && execRes.status === 'EXECUTED' ? "Order berhasil tereksekusi langsung di Binance Futures!" : "Order diproses oleh Binance Futures Engine."
+            message: `Order berhasil tereksekusi langsung di Binance Futures! (Order #${confirmedOrderId})`
         });
     });
 });

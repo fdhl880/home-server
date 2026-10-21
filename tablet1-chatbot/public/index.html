@@ -3583,8 +3583,25 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                         plBadge.className = 'bbg-green';
                     }
                     const mktLabel = document.getElementById('bbgMarketUniverseLabel');
-                    if (mktLabel && st.universe_size) {
-                        mktLabel.textContent = `BINANCE FUTURES FULL UNIVERSE (${st.universe_size} PERP PAIRS)`;
+                    const sentinelBadge = document.getElementById('bbgSentinelBadge');
+                    if (st.all_in_monitoring_mode) {
+                        if (sentinelBadge) {
+                            sentinelBadge.innerHTML = '🛡️ ALL-IN POSITION MONITOR ACTIVE';
+                            sentinelBadge.style.background = 'rgba(243,159,65,0.2)';
+                            sentinelBadge.style.color = '#F39F41';
+                        }
+                        if (mktLabel) {
+                            mktLabel.textContent = `BINANCE FUTURES FULL UNIVERSE (${st.universe_size || 524} PAIRS) [SCAN PAUSED // ALL-IN POSITION MONITOR]`;
+                        }
+                    } else {
+                        if (sentinelBadge) {
+                            sentinelBadge.innerHTML = '● AI SENTINEL ACTIVE';
+                            sentinelBadge.style.background = 'rgba(0,255,102,0.15)';
+                            sentinelBadge.style.color = '#00FF66';
+                        }
+                        if (mktLabel && st.universe_size) {
+                            mktLabel.textContent = `BINANCE FUTURES FULL UNIVERSE (${st.universe_size} PERP PAIRS)`;
+                        }
                     }
                 }
             } catch (e) {}

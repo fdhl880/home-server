@@ -663,6 +663,24 @@ def exchange_oauth_code(code_str: str, chat_id: int = None):
 def run_radar_scan(chat_id):
     """Fast Parallel Quant Radar Scan (Top 3 Candidates in Parallel - <10s)"""
     try:
+        from auto_trader import check_wallet_and_position_guard
+        guard = check_wallet_and_position_guard()
+        if guard.get("pause_scanning"):
+            syms = ", ".join([f"<code>{p.get('symbol')}</code>" for p in guard["open_positions"]])
+            send_telegram_message(
+                chat_id,
+                f"🛡️ <b>MODE ALL-IN MONITOR POSITION SEDANG AKTIF!</b>\n\n"
+                f"💰 <b>Status Saldo:</b> Saldo telah dialokasikan penuh ke posisi aktif (Sisa available: ${guard['available_usdt']:.2f} USDT).\n"
+                f"💎 <b>Posisi Dikawal:</b> {syms}\n\n"
+                f"⏸️ <b>Scanner 524 Koin & 9 Agent Sidang:</b> <b>DIJEDA SEMENTARA</b>\n"
+                f"🎯 <i>Semua sumber daya AI fokus 100% menjaga posisi terbuka sampai Take Profit / Stop Loss tercapai.</i>\n\n"
+                f"Ketik <code>/status</code> untuk memantau floating PnL posisi Anda saat ini."
+            )
+            return
+    except Exception:
+        pass
+
+    try:
         ranked = rank_universe_by_opportunity()
     except Exception:
         ranked = []
@@ -830,6 +848,20 @@ def get_system_status():
 
     ai_desc = "Google Gemini 3.8 Flash (Flagship AI)" if GEMINI_API_KEY else f"Groq ({GROQ_MODEL})"
 
+    guard = {}
+    try:
+        from auto_trader import check_wallet_and_position_guard
+        guard = check_wallet_and_position_guard()
+    except Exception:
+        pass
+
+    if guard.get("pause_scanning"):
+        mode_badge = "🛡️ <b>ALL-IN POSITION MONITOR (100% Fokus Mengawal Posisi)</b>"
+    else:
+        mode_badge = "🔍 <b>ACTIVE UNIVERSE SCANNER (524 pairs)</b>"
+
+    modal_txt = "Dynamic Wallet-Based (Kelly Criterion)" if cfg.get('max_budget_idr', 0) == 0 else f"Rp {cfg.get('max_budget_idr'):,} max"
+
     text = (
         f"📊 <b>STATUS SISTEM TRADING AI CRYPTO FUTURES</b>\n"
         f"────────────────────────\n"
@@ -838,9 +870,9 @@ def get_system_status():
         f"🤖 <b>AI Utama:</b> {ai_desc} (6+ AI Cascade)\n"
         f"📈 <b>Quant Matrix:</b> 500+ Factors (Simons, Wyckoff, Minervini, DeMark)\n"
         f"🌐 <b>Universe:</b> {len(universe)} crypto futures pairs\n"
-        f"🔒 <b>Limit Modal:</b> Rp {cfg.get('max_budget_idr', 50000):,} per trade\n"
-        f"   <i>(= ${convert_idr_to_usd(cfg.get('max_budget_idr', 50000)):.2f} USD)</i>\n"
-        f"⚡ <b>Leverage Max:</b> {cfg.get('max_leverage', 5)}x ({cfg.get('margin_type', 'ISOLATED')})\n"
+        f"🎯 <b>Mode Engine:</b> {mode_badge}\n"
+        f"💰 <b>Modal Sizing:</b> {modal_txt}\n"
+        f"⚡ <b>Leverage:</b> Dynamic 2x-25x (AI ATR-Based)\n"
         f"💱 <b>Kurs USD/IDR:</b> Rp {fx['usd_idr']:,.0f}\n"
         f"💼 <b>Posisi Aktif:</b> {len(open_pos)} posisi\n"
         f"────────────────────────\n"

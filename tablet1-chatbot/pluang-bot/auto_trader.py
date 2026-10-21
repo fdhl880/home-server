@@ -437,39 +437,87 @@ def monitor_and_update_positions():
         return []
 
     tickers = get_binance_24h_tickers()
-    if not tickers:
-        return positions
-
-    ticker_map = {t["symbol"]: float(t.get("lastPrice", 0)) for t in tickers if "symbol" in t}
+    ticker_map = {t["symbol"]: float(t.get("lastPrice", 0)) for t in tickers if "symbol" in t} if tickers else {}
     fx_rate = get_fx_info()["usd_idr"]
+
+    # 1. Live synchronization with Binance Futures active positions
+    bn_client = get_binance_client()
+    bn_live_map = None
+    if bn_client:
+        try:
+            live_list = bn_client.get_positions()
+            if isinstance(live_list, list):
+                bn_live_map = {p["symbol"]: p for p in live_list}
+        except Exception as e:
+            print(f"[MONITOR] Binance sync warning: {e}", flush=True)
 
     updated = False
     for pos in open_pos:
         pair = pos.get("binance_pair") or pos.get("symbol", "").replace("-USD", "USDT")
-        current_price = ticker_map.get(pair)
-        if not current_price or current_price <= 0:
-            continue
-
         direction = pos.get("direction", "LONG").upper()
         entry_price = float(pos.get("entry_price", 0))
         leverage = float(pos.get("leverage", 1))
         pos_idr = float(pos.get("position_size_idr", 50000))
         pos_usd = float(pos.get("position_size_usd", pos_idr / fx_rate))
-        # Single Take Profit on Pluang (NO dual TP)
         tp = float(pos.get("take_profit") or pos.get("take_profit_2") or pos.get("take_profit_1", 0))
         sl = float(pos.get("stop_loss", 0))
 
-        if entry_price <= 0:
-            continue
+        # Check if position was executed on Binance Futures
+        is_binance_pos = pos.get("exchange") == "BINANCE_FUTURES" or pos.get("binance_synced")
 
-        # Calculate PnL
-        if direction == "LONG":
-            pnl_pct = ((current_price - entry_price) / entry_price) * leverage * 100.0
+        # If it was open on Binance, check if Binance still has it
+        if is_binance_pos and bn_live_map is not None:
+            if pair not in bn_live_map:
+                # The position was closed on Binance (via native TP/SL or manual close)
+                curr_px = ticker_map.get(pair, entry_price)
+                if direction == "LONG":
+                    final_pnl_pct = ((curr_px - entry_price) / entry_price) * leverage * 100.0 if entry_price > 0 else 0
+                else:
+                    final_pnl_pct = ((entry_price - curr_px) / entry_price) * leverage * 100.0 if entry_price > 0 else 0
+                
+                final_pnl_idr = (final_pnl_pct / 100.0) * pos_idr
+                final_pnl_usd = (final_pnl_pct / 100.0) * pos_usd
+                
+                pos["status"] = "CLOSED_TP" if final_pnl_pct >= 0 else "CLOSED_SL"
+                pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                pos["close_price"] = curr_px
+                pos["pnl_pct"] = round(final_pnl_pct, 2)
+                pos["pnl_idr"] = round(final_pnl_idr, 2)
+                pos["pnl_usd"] = round(final_pnl_usd, 4)
+                
+                event_type = "TAKE PROFIT" if final_pnl_pct >= 0 else "STOP LOSS"
+                send_telegram(
+                    f"⚡ <b>[BINANCE LIVE] POSISI {pos.get('symbol')} TELAH DITUTUP!</b>\n\n"
+                    f"🎯 <b>Status:</b> <b>{event_type} TEREKSEKUSI DI EXCHANGE</b>\n"
+                    f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction} {leverage}x)\n"
+                    f"💰 <b>Hasil PnL:</b> {final_pnl_pct:+.2f}% ({final_pnl_idr:+,.0f} IDR / ${final_pnl_usd:+.2f} USDT)\n"
+                    f"📍 <b>Entry:</b> ${entry_price:,.4f} ➔ <b>Exit:</b> ${curr_px:,.4f}\n\n"
+                    f"<i>Margin posisi kini telah kembali utuh ke saldo wallet.</i>"
+                )
+                updated = True
+                continue
+            else:
+                # Still open on Binance — sync official mark price and unrealized PnL
+                live_item = bn_live_map[pair]
+                current_price = float(live_item.get("mark_price", 0)) or ticker_map.get(pair, entry_price)
+                live_upnl = float(live_item.get("unrealized_pnl", 0))
+                pnl_usd = live_upnl
+                pnl_idr = live_upnl * fx_rate
+                pnl_pct = (live_upnl / pos_usd * 100.0) if pos_usd > 0 else 0.0
         else:
-            pnl_pct = ((entry_price - current_price) / entry_price) * leverage * 100.0
+            current_price = ticker_map.get(pair, entry_price)
+            if entry_price > 0:
+                if direction == "LONG":
+                    pnl_pct = ((current_price - entry_price) / entry_price) * leverage * 100.0
+                else:
+                    pnl_pct = ((entry_price - current_price) / entry_price) * leverage * 100.0
+                pnl_idr = (pnl_pct / 100.0) * pos_idr
+                pnl_usd = (pnl_pct / 100.0) * pos_usd
+            else:
+                pnl_pct = pnl_idr = pnl_usd = 0.0
 
-        pnl_idr = (pnl_pct / 100.0) * pos_idr
-        pnl_usd = (pnl_pct / 100.0) * pos_usd
+        if not current_price or current_price <= 0:
+            continue
 
         pos["current_price"] = current_price
         pos["current_price_idr"] = round(current_price * fx_rate, 2)
@@ -477,7 +525,7 @@ def monitor_and_update_positions():
         pos["pnl_idr"] = round(pnl_idr, 2)
         pos["pnl_usd"] = round(pnl_usd, 4)
         pos["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        
+
         # AI Position Sentinel & News Surveillance
         try:
             from news_sentinel import get_news_sentiment_summary
@@ -502,19 +550,25 @@ def monitor_and_update_positions():
 
         updated = True
 
-        # Check Single Take Profit (Pluang only supports Single TP)
+        # Check Take Profit
         tp_hit = (direction == "LONG" and current_price >= tp > 0) or (direction == "SHORT" and current_price <= tp > 0)
         if tp_hit:
             pos["status"] = "CLOSED_TP"
             pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             pos["close_price"] = current_price
+            if is_binance_pos and bn_client:
+                try:
+                    bn_client.close_position(pair, direction)
+                    bn_client.cancel_all_orders(pair)
+                except Exception as e:
+                    print(f"[BINANCE CLOSE TP ERROR] {e}")
             send_telegram(
                 f"🎉 <b>PYROFUEL // TAKE PROFIT TERCAPAI!</b>\n\n"
                 f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction})\n"
                 f"💰 <b>Profit:</b> +{pnl_pct:.2f}% (+Rp {pnl_idr:,.0f} / +${pnl_usd:.2f})\n"
                 f"📍 <b>Entry:</b> ${entry_price:,.4f} ➔ <b>Exit:</b> ${current_price:,.4f}\n"
                 f"🎯 <b>Target TP:</b> ${tp:,.4f}\n"
-                f"⚡ Posisi Take Profit berhasil ditutup penuh di Pluang!"
+                f"⚡ Posisi Take Profit berhasil ditutup penuh di Binance Futures!"
             )
             continue
 
@@ -524,6 +578,12 @@ def monitor_and_update_positions():
             pos["status"] = "CLOSED_SL"
             pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             pos["close_price"] = current_price
+            if is_binance_pos and bn_client:
+                try:
+                    bn_client.close_position(pair, direction)
+                    bn_client.cancel_all_orders(pair)
+                except Exception as e:
+                    print(f"[BINANCE CLOSE SL ERROR] {e}")
             send_telegram(
                 f"🛑 <b>PYROFUEL // STOP LOSS DITRIGGER</b>\n\n"
                 f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction})\n"
@@ -542,6 +602,64 @@ def monitor_and_update_positions():
             pass
 
     return positions
+
+
+def check_wallet_and_position_guard():
+    """
+    Evaluates whether the trading system should pause all universe scanning and 9-agent analysis
+    to dedicate 100% of compute and surveillance to active open position(s).
+    """
+    positions = []
+    if os.path.exists(POSITIONS_FILE):
+        try:
+            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+                positions = json.load(f)
+        except Exception:
+            positions = []
+
+    open_pos = [p for p in positions if p.get("status") == "OPEN"]
+    
+    bn_client = get_binance_client()
+    avail_usdt = 100.0
+    total_usdt = 100.0
+    
+    if bn_client:
+        try:
+            bal = bn_client.get_balance()
+            if isinstance(bal, dict):
+                avail_usdt = float(bal.get("available_balance", 0))
+                total_usdt = float(bal.get("total_wallet_balance", 0))
+        except Exception as e:
+            print(f"[GUARD] Balance check notice: {e}", flush=True)
+
+    should_pause = False
+    reason = ""
+
+    # Criteria for pausing scan & going ALL-IN on monitoring:
+    # 1. At least 1 active open position exists
+    # 2. Available balance is exhausted or depleted (available < 2.5 USDT or <= 35% of total balance, meaning capital is deployed)
+    # OR max concurrent positions reached
+    if len(open_pos) > 0:
+        if avail_usdt < 2.5 or (total_usdt > 0 and (avail_usdt / total_usdt) < 0.35):
+            should_pause = True
+            sym_list = ", ".join([p.get("symbol", "") for p in open_pos])
+            reason = (
+                f"Saldo wallet terpakai penuh untuk {len(open_pos)} posisi aktif ({sym_list}). "
+                f"Sisa saldo tersedia: ${avail_usdt:.2f} USDT (Total: ${total_usdt:.2f} USDT). "
+                f"Scanner & 9-Agent beristirahat, memusatkan 100% monitor pada posisi terbuka."
+            )
+        elif len(open_pos) >= _get_config().get("max_concurrent_positions", 5):
+            should_pause = True
+            reason = f"Maksimal posisi aktif tercapai ({len(open_pos)} posisi). Fokus monitoring posisi aktif."
+
+    return {
+        "pause_scanning": should_pause,
+        "mode": "ALL_IN_MONITOR" if should_pause else "UNIVERSE_SCANNER",
+        "reason": reason,
+        "open_positions": open_pos,
+        "available_usdt": avail_usdt,
+        "total_usdt": total_usdt
+    }
 
 
 # ===================================================================
@@ -646,6 +764,13 @@ def run_full_scan_cycle():
     Total: up to ~50 coins per cycle
     """
     load_state()
+    guard = check_wallet_and_position_guard()
+    if guard.get("pause_scanning"):
+        print(f"\n{'='*70}", flush=True)
+        print(f"[FULL SCAN] 🛡️ SCANNER DILEWATI: {guard['reason']}", flush=True)
+        print(f"{'='*70}", flush=True)
+        return []
+
     cfg = _get_config()
     max_budget = cfg.get("max_budget_idr", 0)   # 0 = dynamic wallet-based
     
@@ -907,6 +1032,7 @@ def start_loop():
     last_full_scan = 0
     last_quick_scan = 0
     last_pluang_check = 0
+    was_in_all_in_mode = False
     
     while True:
         try:
@@ -916,6 +1042,7 @@ def start_loop():
                 continue
             
             now = time.time()
+            guard = check_wallet_and_position_guard()
             
             # Autonomous real-time position monitor (TP/SL/Trailing stop)
             try:
@@ -923,40 +1050,82 @@ def start_loop():
             except Exception as e:
                 print(f"[-] Position monitor error: {e}", flush=True)
 
-            # Re-check Pluang connection every 5 minutes
-            if now - last_pluang_check >= 300:
-                old_client = pluang_client
-                pluang_client = get_pluang_client()
-                if pluang_client and not old_client:
-                    print("[PLUANG] 🔄 Reconnected to Pluang MCP!", flush=True)
-                    send_telegram("🟢 <b>PLUANG RECONNECTED!</b>\nToken berhasil di-refresh. Auto-trading kembali aktif.")
-                elif not pluang_client and old_client:
-                    print("[PLUANG] ⚠️ Lost connection to Pluang MCP", flush=True)
+            if guard["pause_scanning"]:
+                # === ALL-IN POSITION MONITORING ACTIVE ===
+                state["all_in_monitoring_mode"] = True
+                state["all_in_focus_positions"] = [p.get("symbol") for p in guard["open_positions"]]
+                state["all_in_reason"] = guard["reason"]
+                save_state()
+                
+                if not was_in_all_in_mode:
+                    was_in_all_in_mode = True
+                    syms = ", ".join([f"<code>{p.get('symbol')}</code>" for p in guard["open_positions"]])
                     send_telegram(
-                        "🔴 <b>PLUANG TOKEN EXPIRED</b>\n\n"
-                        "Token Pluang kadaluarsa dan refresh gagal.\n"
-                        "Auto-trading dihentikan sementara.\n\n"
-                        "👉 Ketik <code>/login</code> di Telegram untuk re-login."
+                        f"🛡️ <b>[AI SENTINEL] MODE ALL-IN MONITOR POSITION AKTIF!</b>\n\n"
+                        f"💰 <b>Saldo Terpakai:</b> Saldo telah dialokasikan penuh ke posisi aktif (Sisa: ${guard['available_usdt']:.2f} USDT).\n"
+                        f"💎 <b>Posisi Dikawal:</b> {syms}\n\n"
+                        f"⏸️ <b>Scanner 524 Koin & 9 Agent Committee:</b> <b>DIHENTIKAN SEMENTARA</b>\n"
+                        f"🎯 <i>Semua sumber daya AI kini 100% all-in mengawal posisi aktif secara real-time hingga Take Profit / Stop Loss tercapai!</i>"
                     )
-                last_pluang_check = now
+                    print(f"\n[SENTINEL ALL-IN] 🛡️ {guard['reason']}", flush=True)
+                
+                # In all-in mode, skip scanning! Focus 100% on the open position.
+                time.sleep(8)
+                continue
 
-            # Quick screen every 60 seconds (or configured interval)
-            if now - last_quick_scan >= state.get("quick_screen_interval_sec", 60):
-                try:
-                    run_quick_screen()
-                except Exception as e:
-                    print(f"[-] Quick screen error: {e}", flush=True)
-                last_quick_scan = now
-            
-            # Full AI scan every 5 minutes
-            if now - last_full_scan >= state.get("scan_interval_sec", 300):
-                try:
-                    run_full_scan_cycle()
-                except Exception as e:
-                    print(f"[-] Full scan error: {e}", flush=True)
-                last_full_scan = now
-            
-            time.sleep(10)  # Check every 10 seconds
+            else:
+                # === NORMAL SCANNING ACTIVE ===
+                if was_in_all_in_mode:
+                    was_in_all_in_mode = False
+                    state["all_in_monitoring_mode"] = False
+                    state["all_in_focus_positions"] = []
+                    save_state()
+                    send_telegram(
+                        f"🚀 <b>POSISI SELESAI & SALDO TELAH PULIH!</b>\n\n"
+                        f"✅ Posisi sebelumnya telah selesai (Take Profit / Stop Loss tereksekusi).\n"
+                        f"💰 <b>Saldo Tersedia:</b> ${guard['available_usdt']:.2f} USDT (Modal kembali cair ke wallet).\n\n"
+                        f"🔄 <b>Scanner 524 Koin & 9 Agent Committee:</b> <b>KEMBALI AKTIF!</b>\n"
+                        f"<i>Memulai pemindaian radar penuh untuk mencari setup peluang terbaik berikutnya...</i>"
+                    )
+                    print(f"\n[SENTINEL RESUME] 🚀 Posisi selesai. Melanjutkan full scan 524 pairs...", flush=True)
+                    # Trigger scan immediately!
+                    last_full_scan = 0
+                    last_quick_scan = 0
+
+                # Re-check Pluang connection every 5 minutes
+                if now - last_pluang_check >= 300:
+                    old_client = pluang_client
+                    pluang_client = get_pluang_client()
+                    if pluang_client and not old_client:
+                        print("[PLUANG] 🔄 Reconnected to Pluang MCP!", flush=True)
+                        send_telegram("🟢 <b>PLUANG RECONNECTED!</b>\nToken berhasil di-refresh. Auto-trading kembali aktif.")
+                    elif not pluang_client and old_client:
+                        print("[PLUANG] ⚠️ Lost connection to Pluang MCP", flush=True)
+                        send_telegram(
+                            "🔴 <b>PLUANG TOKEN EXPIRED</b>\n\n"
+                            "Token Pluang kadaluarsa dan refresh gagal.\n"
+                            "Auto-trading dihentikan sementara.\n\n"
+                            "👉 Ketik <code>/login</code> di Telegram untuk re-login."
+                        )
+                    last_pluang_check = now
+
+                # Quick screen every 60 seconds (or configured interval)
+                if now - last_quick_scan >= state.get("quick_screen_interval_sec", 60):
+                    try:
+                        run_quick_screen()
+                    except Exception as e:
+                        print(f"[-] Quick screen error: {e}", flush=True)
+                    last_quick_scan = now
+                
+                # Full AI scan every 5 minutes
+                if now - last_full_scan >= state.get("scan_interval_sec", 300):
+                    try:
+                        run_full_scan_cycle()
+                    except Exception as e:
+                        print(f"[-] Full scan error: {e}", flush=True)
+                    last_full_scan = now
+                
+                time.sleep(10)  # Check every 10 seconds
             
         except KeyboardInterrupt:
             print("[*] Autonomous trader stopped by user.", flush=True)
