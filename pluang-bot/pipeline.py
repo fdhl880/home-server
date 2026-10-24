@@ -41,15 +41,37 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # ===== ENVIRONMENT LOADING =====
 def load_env():
-    env_path = os.path.join(BASE_DIR, ".env")
     env = {}
+    # 1. System environment variables
+    for k, v in os.environ.items():
+        if v:
+            env[k] = v.strip()
+
+    # 2. Parent directory .env (e.g. tablet1-chatbot/.env)
+    parent_env = os.path.join(BASE_DIR, "..", ".env")
+    if os.path.exists(parent_env):
+        try:
+            with open(parent_env, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        env[k.strip()] = v.strip()
+        except Exception:
+            pass
+
+    # 3. Local pluang-bot/.env (highest precedence)
+    env_path = os.path.join(BASE_DIR, ".env")
     if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    env[k.strip()] = v.strip()
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        env[k.strip()] = v.strip()
+        except Exception:
+            pass
     return env
 
 ENV = load_env()
@@ -58,12 +80,12 @@ ENV = load_env()
 AI_PROVIDER = ENV.get("AI_PROVIDER", "ollama")  # "ollama" (local) is PRIMARY
 OLLAMA_BASE_URL = ENV.get("OLLAMA_BASE_URL", "http://localhost:11434")  # Local Ollama endpoint
 OLLAMA_MODEL = ENV.get("OLLAMA_MODEL", "llama3.1")  # Model to use from local Ollama
-GROQ_API_KEY = ENV.get("GROQ_API_KEY", "")
+GROQ_API_KEY = ENV.get("GROQ_API_KEY", "").strip()
 GROQ_MODEL = ENV.get("GROQ_MODEL", "openai/gpt-oss-120b")
-OPENROUTER_API_KEY = ENV.get("OPENROUTER_API_KEY", "")
+OPENROUTER_API_KEY = ENV.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_MODEL = ENV.get("OPENROUTER_MODEL", "minimax/minimax-m3.1-flash:free")
-GEMINI_API_KEY = ENV.get("GEMINI_API_KEY", "")
-CEREBRAS_API_KEY = ENV.get("CEREBRAS_API_KEY", "")
+GEMINI_API_KEY = ENV.get("GEMINI_API_KEY", "").strip()
+CEREBRAS_API_KEY = ENV.get("CEREBRAS_API_KEY", "").strip()
 
 # Free backup models on OpenRouter — verified active free models
 OPENROUTER_FREE_MODELS = [
