@@ -260,21 +260,10 @@ def record_position(signal: dict):
     if max_budget > 0:
         pos_size = min(pos_size, max_budget)
 
-    # 3. AI GOVERNS LEVERAGE — dynamic 2x-25x based on ATR/volatility tier
-    leverage = int(signal.get("leverage") or 0)
-    if leverage < 2:
-        # Infer from symbol tier if not set
-        sym_upper = str(signal.get("symbol", "")).upper().replace("-USD", "").replace("USDT", "")
-        if sym_upper in {"BTC", "ETH"}:
-            leverage = 15
-        elif sym_upper in {"BNB", "SOL", "XRP", "ADA", "AVAX", "LINK"}:
-            leverage = 10
-        elif sym_upper in {"DOGE", "PEPE", "SHIB", "FLOKI", "BONK", "WIF"}:
-            leverage = 5
-        else:
-            leverage = 8
-    if max_lev > 0:
-        leverage = min(leverage, max_lev)
+    # FIXED LEVERAGE: Always 20x (user mandate)
+    leverage = 20
+    max_lev = cfg.get("max_leverage", 20)
+    leverage = min(leverage, max_lev)  # already 20, but enforce config cap
 
     # 4. PLUANG ONLY SUPPORTS SINGLE TAKE PROFIT (NO DUAL TP)
     tp = float(signal.get("take_profit") or signal.get("take_profit_2") or signal.get("take_profit_1", 0))
@@ -526,13 +515,34 @@ def monitor_and_update_positions():
         pos["pnl_usd"] = round(pnl_usd, 4)
         pos["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-        # AI Position Sentinel & News Surveillance
+        # AI Position Sentinel & Live Evaluation
         try:
             from news_sentinel import get_news_sentiment_summary
             news_sum = get_news_sentiment_summary()
             pos["news_sentiment"] = news_sum.get("market_sentiment", "NEUTRAL")
             pos["ai_sentinel_status"] = "ACTIVE_AI_MONITORED"
             pos["last_ai_check"] = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+
+            # Periodic AI commentary on open position (every ~5 mins)
+            now_ts = time.time()
+            if now_ts - pos.get("last_ai_eval_ts", 0) >= 300:
+                pos["last_ai_eval_ts"] = now_ts
+                try:
+                    ai_review = call_ai(
+                        prompt=(
+                            f"Posisi futures {pair} ({direction} 20x) sedang aktif. "
+                            f"Entry: ${entry_price:,.4f}, Harga Sekarang: ${current_price:,.4f}, "
+                            f"Floating PnL: {pnl_pct:+.2f}%. Target TP: ${tp:,.4f}, SL: ${sl:,.4f}. "
+                            f"Beri evaluasi taktis singkat 1-2 kalimat (HOLD / AMBIL SEBAGIAN / TRAILING SL) dalam Bahasa Indonesia."
+                        ),
+                        system_prompt="You are a 24/7 AI Risk Sentinel monitoring live crypto positions.",
+                        max_tokens=100,
+                        is_json=False
+                    )
+                    pos["ai_evaluation"] = ai_review
+                    print(f"[AI MONITOR] {pair} ({direction} 20x): PnL {pnl_pct:+.2f}% -> {ai_review}", flush=True)
+                except Exception:
+                    pos["ai_evaluation"] = f"AI Sentinel aktif memantau: PnL {pnl_pct:+.2f}%, menjaga Stop Loss."
 
             b_alert = news_sum.get("breaking_alert")
             sym_raw = pos.get("symbol", "").split("-")[0].lower()
@@ -806,120 +816,118 @@ def run_full_scan_cycle():
         name = item.get("name", item.get("base_asset", sym))
         tier = item.get("tier", "EXTENDED")
         try:
-            # 1. Jalankan 5-Layer Institutional AI Pipeline
+            # 1. Jalankan 5-Layer Institutional AI Pipeline (SEQUENTIAL — one coin at a time)
+            print(f"[SCAN] ▶ Layer 1-5 Pipeline: {sym}...", flush=True)
             res = run_5_layer_pipeline(sym)
 
-            # 2. Sidang 9-Agent Multi-Committee (TradingAgents + ai-hedge-fund + Vibe + LangAlpha + hummingbot)
-            positions = []
+            # 2. Sidang 9-Agent Multi-Committee (setelah pipeline selesai, SEQUENTIAL)
+            positions_now = []
             if os.path.exists(POSITIONS_FILE):
                 try:
                     with open(POSITIONS_FILE, "r", encoding="utf-8") as pf:
-                        positions = json.load(pf)
+                        positions_now = json.load(pf)
                 except Exception:
                     pass
-            com_res = run_multi_agent_committee(sym, positions)
+            print(f"[SCAN] ▶ 9-Agent Committee: {sym}...", flush=True)
+            com_res = run_multi_agent_committee(sym, positions_now)
             return item, sym, pair, name, tier, res, com_res
         except Exception as e:
             print(f"[ERROR] {sym}: {e}", flush=True)
             return item, sym, pair, name, tier, None, None
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [executor.submit(_scan_one, it) for it in scan_list]
-        for f in as_completed(futures):
-            item, sym, pair, name, tier, res, com_res = f.result()
-            if not res or "error" in res:
-                continue
+    # SEQUENTIAL SCAN — one coin at a time (Layer 1 → 2 → 3 → 4 → 5 → Committee)
+    # This ensures each coin fully completes its pipeline before the next starts.
+    for item in scan_list:
+        item, sym, pair, name, tier, res, com_res = _scan_one(item)
+        if not res or "error" in res:
+            continue
 
-            fc = res.get("layer5_final_call", {})
-            status = fc.get("status", "REJECTED")
-            conf = fc.get("confidence_score", 0)
-            setup = res.get("layer2_setup", {}).get("setup_name", "N/A")
+        fc = res.get("layer5_final_call", {})
+        status = fc.get("status", "REJECTED")
+        conf = fc.get("confidence_score", 0)
+        setup = res.get("layer2_setup", {}).get("setup_name", "N/A")
 
-            # Evaluasi konsensus kolaboratif 9-Agent Committee
-            com_approved = bool(com_res and com_res.get("approved"))
-            com_dir = com_res.get("direction", "SKIP") if com_res else "SKIP"
-            com_conf = com_res.get("confidence_pct", 0) if com_res else 0
+        # Evaluasi konsensus kolaboratif 9-Agent Committee
+        com_approved = bool(com_res and com_res.get("approved"))
+        com_dir = com_res.get("direction", "SKIP") if com_res else "SKIP"
+        com_conf = com_res.get("confidence_pct", 0) if com_res else 0
 
-            # Cek veto komite: jika komite menolak (misal Risk Officer atau Bear veto), batalkan demi keamanan modal
-            is_trade_approved = False
-            if com_approved and com_dir in ("LONG", "SHORT") and com_conf >= 60:
-                is_trade_approved = True
-                status = "APPROVED_BY_COMMITTEE"
-            elif status == "APPROVED" and (not com_res or com_approved):
-                is_trade_approved = True
-            elif status == "APPROVED" and com_res and not com_approved:
-                pm_dec = com_res.get("portfolio_manager", {}).get("decision", "Risk veto")
-                print(f"[COMMITTEE VETO] {sym}: Pipeline lolos tapi 9-Agent Committee mem-veto: {pm_dec}", flush=True)
-                status = "REJECTED_BY_COMMITTEE"
+        # Cek veto komite: jika komite menolak (misal Risk Officer atau Bear veto), batalkan demi keamanan modal
+        is_trade_approved = False
+        if com_approved and com_dir in ("LONG", "SHORT") and com_conf >= 60:
+            is_trade_approved = True
+            status = "APPROVED_BY_COMMITTEE"
+        elif status == "APPROVED" and (not com_res or com_approved):
+            is_trade_approved = True
+        elif status == "APPROVED" and com_res and not com_approved:
+            pm_dec = com_res.get("portfolio_manager", {}).get("decision", "Risk veto")
+            print(f"[COMMITTEE VETO] {sym}: Pipeline lolos tapi 9-Agent Committee mem-veto: {pm_dec}", flush=True)
+            status = "REJECTED_BY_COMMITTEE"
 
-            sig_entry = {
+        sig_entry = {
+            "symbol": sym,
+            "binance_pair": pair,
+            "name": name,
+            "tier": tier,
+            "status": "APPROVED" if is_trade_approved else status,
+            "confidence": max(conf, com_conf),
+            "direction": com_dir if com_dir in ("LONG", "SHORT") else fc.get("direction", "NONE"),
+            "setup": setup,
+            "committee_approved": com_approved,
+            "time": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
+            "opportunity_score": item.get("opportunity_score", 0)
+        }
+
+        state["recent_signals"] = [sig_entry] + state["recent_signals"][:49]
+
+        if is_trade_approved:
+            state["signals_approved_count"] += 1
+            final_dir = com_dir if com_dir in ("LONG", "SHORT") else fc.get("direction", "LONG")
+            trade_params = (com_res.get("trade_params") or {}) if com_res else {}
+            
+            # Gunakan Kelly sizing dan leverage dari Risk Officer komite
+            budget_allocated = trade_params.get("budget_idr") or fc.get("position_size_idr", max_budget)
+            if max_budget > 0:
+                budget_allocated = min(budget_allocated, max_budget)
+            leverage_allocated = 20  # Always 20x (user mandate)
+
+            exec_plan = {
                 "symbol": sym,
                 "binance_pair": pair,
-                "name": name,
-                "tier": tier,
-                "status": "APPROVED" if is_trade_approved else status,
-                "confidence": max(conf, com_conf),
-                "direction": com_dir if com_dir in ("LONG", "SHORT") else fc.get("direction", "NONE"),
-                "setup": setup,
-                "committee_approved": com_approved,
-                "time": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
-                "opportunity_score": item.get("opportunity_score", 0)
+                "direction": final_dir,
+                "action": final_dir,
+                "confidence_score": max(conf, com_conf),
+                "setup_name": setup,
+                "entry_price": trade_params.get("entry_price") or fc.get("entry_price"),
+                "position_size_idr": budget_allocated,
+                "leverage": leverage_allocated,
+                "take_profit_1": trade_params.get("tp1_price") or fc.get("take_profit_1"),
+                "take_profit_2": trade_params.get("tp2_price") or fc.get("take_profit_2"),
+                "take_profit": trade_params.get("tp2_price") or fc.get("take_profit"),
+                "stop_loss": trade_params.get("sl_price") or fc.get("stop_loss"),
+                "margin_type": "ISOLATED",
+                "order_type": "MARKET",
+                "estimated_time_horizon": (
+                    trade_params.get("estimated_time_horizon")
+                    or (com_res.get("estimated_time_horizon") if com_res else None)
+                    or fc.get("estimated_time_horizon", "N/A")
+                )
             }
 
-            state["recent_signals"] = [sig_entry] + state["recent_signals"][:49]
+            print(f"🔥 KONSENSUS MULTI-AGENT APPROVED! {sym} ({final_dir}) Keyakinan: {exec_plan['confidence_score']}%", flush=True)
+            pos = record_position(exec_plan)
 
-            if is_trade_approved:
-                state["signals_approved_count"] += 1
-                final_dir = com_dir if com_dir in ("LONG", "SHORT") else fc.get("direction", "LONG")
-                trade_params = (com_res.get("trade_params") or {}) if com_res else {}
-                
-                # Gunakan Kelly sizing dan leverage dari Risk Officer komite
-                budget_allocated = trade_params.get("budget_idr") or fc.get("position_size_idr", max_budget)
-                if max_budget > 0:
-                    budget_allocated = min(budget_allocated, max_budget)
-                leverage_allocated = trade_params.get("leverage") or fc.get("leverage", 5)
-
-                exec_plan = {
-                    "symbol": sym,
-                    "binance_pair": pair,
-                    "direction": final_dir,
-                    "action": final_dir,
-                    "confidence_score": max(conf, com_conf),
-                    "setup_name": setup,
-                    "entry_price": trade_params.get("entry_price") or fc.get("entry_price"),
-                    "position_size_idr": budget_allocated,
-                    "leverage": leverage_allocated,
-                    "take_profit_1": trade_params.get("tp1_price") or fc.get("take_profit_1"),
-                    "take_profit_2": trade_params.get("tp2_price") or fc.get("take_profit_2"),
-                    "take_profit": trade_params.get("tp2_price") or fc.get("take_profit"),
-                    "stop_loss": trade_params.get("sl_price") or fc.get("stop_loss"),
-                    "margin_type": "ISOLATED",
-                    "order_type": "MARKET",
-                    "estimated_time_horizon": (
-                        trade_params.get("estimated_time_horizon")
-                        or (com_res.get("estimated_time_horizon") if com_res else None)
-                        or fc.get("estimated_time_horizon", "N/A")
-                    )
-                }
-
-                print(f"🔥 KONSENSUS MULTI-AGENT APPROVED! {sym} ({final_dir}) Keyakinan: {exec_plan['confidence_score']}%", flush=True)
-                pos = record_position(exec_plan)
+            # ONLY broadcast "TRADE EXECUTED" when Binance has verified order execution
+            if pos and pos.get("binance_synced"):
                 approved_signals.append({"symbol": sym, "pos": pos, "fc": exec_plan, "name": name})
+                order_id_str = f" (Order #{pos.get('order_id')})" if pos.get('order_id') else ""
+                exchange_status = f"✅ EXECUTED ON BINANCE FUTURES{order_id_str}"
 
-                # Telegram Rich Notification with multi-agent collaborative debate
-                if pos and pos.get("binance_synced"):
-                    order_id_str = f" (Order #{pos.get('order_id')})" if pos.get('order_id') else ""
-                    exchange_status = f"✅ EXECUTED ON BINANCE FUTURES{order_id_str}"
-                elif pos and pos.get("pluang_synced"):
-                    exchange_status = "✅ EXECUTED ON PLUANG"
-                else:
-                    exchange_status = "📝 Recorded Locally"
-
-                pos_idr = pos['position_size_idr'] if pos else budget_allocated
-                pos_usd = pos.get('position_size_usd', round(pos_idr / 16500.0, 2)) if pos else round(pos_idr / 16500.0, 2)
+                pos_idr = pos.get('position_size_idr', budget_allocated)
+                pos_usd = pos.get('position_size_usd', round(pos_idr / 16500.0, 2))
                 tp_val = exec_plan.get("take_profit_2") or exec_plan.get("take_profit_1", 0)
                 sl_val = exec_plan.get("stop_loss", 0)
-                lev_val = exec_plan.get("leverage", 5)
+                lev_val = 20
 
                 bull_note = com_res.get("bull_researcher", {}).get("argument", "")[:120] if com_res else ""
                 bear_note = com_res.get("bear_researcher", {}).get("argument", "")[:120] if com_res else ""
@@ -930,7 +938,7 @@ def run_full_scan_cycle():
                     f"🎯 <b>Arah:</b> <b>{final_dir}</b> (Keyakinan: <b>{exec_plan['confidence_score']}%</b>)\n"
                     f"────────────────────────\n"
                     f"⚙️ <b>Parameters (Kelly Criterion + VaR):</b>\n"
-                    f"   📊 Leverage: <b>{lev_val}x ISOLATED</b>\n"
+                    f"   📊 Leverage: <b>{lev_val}x ISOLATED (Fixed)</b>\n"
                     f"   💰 Modal: <b>${pos_usd:.2f} USDT</b> (~Rp {pos_idr:,})\n"
                     f"   📍 Entry: ${exec_plan.get('entry_price', 0):,.4f}\n"
                     f"   🎯 Take Profit: ${tp_val:,.4f}\n"
@@ -944,13 +952,23 @@ def run_full_scan_cycle():
                     f"   👑 <i>Konsensus:</i> {com_res.get('portfolio_manager',{}).get('decision','') if com_res else 'Approved'}\n"
                     f"────────────────────────\n"
                     f"🏦 <b>Status Bursa:</b> {exchange_status}\n"
-                    f"⚡ <b>100% OTOMATIS: Posisi terpasang langsung di pasar futures tanpa intervensi manual!</b>"
+                    f"⚡ <b>100% TERKONFIRMASI: Order #{pos.get('order_id')} terpasang di Binance Futures!</b>"
                 )
                 send_telegram(msg)
             else:
-                reason_short = (com_res.get("portfolio_manager", {}).get("decision") if com_res else fc.get("final_reason", ""))[:70]
-                print(f"REJECTED {sym}: {reason_short}...", flush=True)
+                # Setup passed 5 layers and committee, but could not be filled on Binance (e.g. margin/notional cap)
+                print(f"[EXEC NOT FILLED] {sym}: Konsensus lolos tapi order tidak masuk Binance Futures. Tidak tercatat di portofolio.", flush=True)
                 state["signals_rejected_count"] += 1
+                send_telegram(
+                    f"⚠️ <b>KONSENSUS APPROVED TAPI TIDAK DAPAT MASUK BINANCE</b>\n\n"
+                    f"💎 <b>Aset:</b> <code>{pair}</code> ({final_dir} 20x)\n"
+                    f"🛡️ <b>Keterangan:</b> Saldo margin tidak mencukupi atau bursa menolak order.\n"
+                    f"ℹ️ <b>Status:</b> Posisi <b>TIDAK DIBUKA</b> dan <b>TIDAK TERCATAT</b> di portofolio. Modal 100% aman dalam cash USDT."
+                )
+        else:
+            reason_short = (com_res.get("portfolio_manager", {}).get("decision") if com_res else fc.get("final_reason", ""))[:70]
+            print(f"REJECTED {sym}: {reason_short}...", flush=True)
+            state["signals_rejected_count"] += 1
 
     state["total_scans_done"] += 1
     state["last_scan_time"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -976,11 +994,11 @@ def run_full_scan_cycle():
     summary_msg = (
         f"📊 <b>PYROFUEL SCAN CYCLE #{state['total_scans_done']} COMPLETE</b>\n\n"
         f"🌐 Universe: {len(ranked)} pairs total (Binance Futures)\n"
-        f"🔍 Scanned: {len(scan_list)} top actionable coins (Full AI Pipeline + 9-Agent)\n"
+        f"🔍 Scanned: {len(scan_list)} top actionable coins (Sequential 5-Layer AI Pipeline + 9-Agent)\n"
         f"✅ Approved: {len(approved_signals)}\n"
         f"❌ Rejected: {len(scan_list) - len(approved_signals)}\n"
         f"💰 Sizing: {'Dynamic Wallet-Based (Kelly)' if max_budget == 0 else f'Capped Rp {max_budget:,}'}\n"
-        f"⚡ Leverage: Dynamic 2x-25x (ATR-based)\n"
+        f"⚡ Leverage: FIXED 20x (user mandate)\n"
         f"⏱️ Next cycle: ~5 min"
     )
     if not approved_signals:

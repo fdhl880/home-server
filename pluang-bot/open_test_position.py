@@ -20,7 +20,8 @@ pos = {
     "direction": "LONG",
     "entry_price": btc_price,
     "entry_price_idr": round(btc_price * fx_rate, 2),
-    "take_profit_1": round(btc_price * 1.018, 2),
+    "take_profit": round(btc_price * 1.036, 2),
+    "take_profit_1": round(btc_price * 1.036, 2),
     "take_profit_2": round(btc_price * 1.036, 2),
     "stop_loss": round(btc_price * 0.988, 2),
     "leverage": 5,
@@ -51,7 +52,7 @@ with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
     json.dump(positions, f, indent=2, ensure_ascii=False)
 
 print(f"Position successfully registered: {pos['id']}")
-print(f"Entry: ${btc_price:,.2f} | TP1: ${pos['take_profit_1']:,.2f} | TP2: ${pos['take_profit_2']:,.2f} | SL: ${pos['stop_loss']:,.2f}")
+print(f"Entry: ${btc_price:,.2f} | TP: ${pos['take_profit']:,.2f} | SL: ${pos['stop_loss']:,.2f}")
 
 # 2. Send Telegram broadcast
 msg = (
@@ -63,12 +64,11 @@ msg = (
     "⚖️ <b>Risk-Reward:</b> <b>1:3.0</b>\n"
     "────────────────────────\n"
     f"📍 <b>Entry Price:</b> ${pos['entry_price']:,.2f} (Rp {pos['entry_price_idr']:,.0f})\n"
-    f"🎯 <b>Take Profit 1:</b> ${pos['take_profit_1']:,.2f} (+9.0% PnL)\n"
-    f"🎯 <b>Take Profit 2:</b> ${pos['take_profit_2']:,.2f} (+18.0% PnL)\n"
+    f"🎯 <b>Take Profit (Single TP):</b> ${pos['take_profit']:,.2f} (+18.0% PnL)\n"
     f"🛑 <b>Stop Loss:</b> ${pos['stop_loss']:,.2f} (-6.0% Max Risk)\n"
     f"🔒 <b>Alokasi Modal:</b> Rp 50.000 (${pos['position_size_usd']:.2f} USD)\n"
     "────────────────────────\n"
-    "⚡ <i>Status: OPEN. Real-time monitor memantau floating PnL tiap 10 detik. Jika TP1 tersentuh, SL otomatis dipindah ke Breakeven (Risk-Free).</i>"
+    "⚡ <i>Status: OPEN. Real-time monitor memantau floating PnL tiap 10 detik di Pluang.</i>"
 )
 
 try:

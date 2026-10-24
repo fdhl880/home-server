@@ -124,6 +124,12 @@ class PluangMCPClient:
         return self._tool_cache
 
     def call_tool(self, name: str, arguments: dict):
+        if not isinstance(arguments, dict):
+            arguments = {}
+        if "user_query" not in arguments:
+            arguments["user_query"] = f"execute {name}"
+        if name != "generate_new_session_id" and "chat_session_id" not in arguments:
+            arguments["chat_session_id"] = self._get_chat_session_id()
         params = {
             "name": name,
             "arguments": arguments
@@ -153,80 +159,119 @@ class PluangMCPClient:
     # FUTURES TRADING - HIGH LEVEL METHODS
     # These wrap MCP tool calls with proper error handling
     # ===================================================================
+    # REAL PLUANG MCP TOOL HELPERS
+    # ===================================================================
+
+    def _get_chat_session_id(self) -> str:
+        """Get or mint a chat_session_id required by all Pluang MCP tools."""
+        if hasattr(self, "_session_id") and self._session_id:
+            return self._session_id
+        try:
+            res = self._rpc("tools/call", {
+                "name": "generate_new_session_id",
+                "arguments": {"user_query": "init session"}
+            })
+            if isinstance(res, dict) and "content" in res and res["content"]:
+                txt = res["content"][0].get("text", "")
+                try:
+                    data = json.loads(txt)
+                    cid = data.get("data", {}).get("chatSessionId") or data.get("chatSessionId") or data.get("session_id")
+                    self._session_id = cid or txt.strip()
+                except Exception:
+                    self._session_id = txt.strip()
+            elif isinstance(res, dict) and "structuredContent" in res:
+                cid = res["structuredContent"].get("data", {}).get("chatSessionId")
+                self._session_id = cid or "pyrofuel-auto-session"
+            else:
+                self._session_id = "pyrofuel-auto-session"
+        except Exception:
+            self._session_id = "pyrofuel-auto-session"
+        return self._session_id
 
     def get_portfolio(self):
-        """Get full portfolio: balances, positions, PnL"""
-        try:
-            return self.call_tool("get_portfolio", {})
-        except Exception as e:
-            print(f"[PluangMCP] get_portfolio error: {e}")
-            return {"error": str(e)}
+        """Get full portfolio via Pluang portfolio_get_holdings"""
+        return self.get_positions()
 
     def get_balance(self):
-        """Get account balance (USDT, IDR, USD)"""
+        """Get account balance via real Pluang MCP portfolio_get_wallet_balance"""
         try:
-            return self.call_tool("get_balance", {})
+            sess_id = self._get_chat_session_id()
+            return self.call_tool("portfolio_get_wallet_balance", {
+                "user_query": "cek saldo idr dan wallet",
+                "chat_session_id": sess_id
+            })
         except Exception as e:
-            print(f"[PluangMCP] get_balance error: {e}")
+            print(f"[PluangMCP] get_balance error: {e}", flush=True)
             return {"error": str(e)}
 
     def get_positions(self):
-        """Get all open positions on Pluang"""
+        """Get all crypto holdings via real Pluang MCP portfolio_get_holdings"""
         try:
-            return self.call_tool("get_positions", {})
+            sess_id = self._get_chat_session_id()
+            return self.call_tool("portfolio_get_holdings", {
+                "user_query": "cek portofolio dan kepemilikan aset crypto",
+                "chat_session_id": sess_id
+            })
         except Exception as e:
-            print(f"[PluangMCP] get_positions error: {e}")
+            print(f"[PluangMCP] get_positions error: {e}", flush=True)
             return {"error": str(e)}
 
     def get_market_price(self, symbol: str):
-        """Get live market price for a symbol"""
+        """Get live market price for a symbol via crypto_get_price"""
+        clean_sym = symbol.upper().replace("-USD", "").replace("USDT", "").replace("-USDT", "").strip()
         try:
-            return self.call_tool("get_market_price", {"symbol": symbol})
+            sess_id = self._get_chat_session_id()
+            return self.call_tool("crypto_get_price", {
+                "symbol": clean_sym,
+                "user_query": f"harga {clean_sym}",
+                "chat_session_id": sess_id
+            })
         except Exception as e:
-            print(f"[PluangMCP] get_market_price error: {e}")
+            print(f"[PluangMCP] get_market_price error: {e}", flush=True)
             return {"error": str(e)}
 
     # ===================================================================
-    # LEVERAGE & MARGIN SETTINGS
+    # LEVERAGE & MARGIN (FUTURES COMPATIBILITY)
     # ===================================================================
 
     def set_leverage(self, symbol: str, leverage: int):
-        """
-        Set leverage for a futures pair.
-        Args:
-            symbol: e.g. "BTCUSDT" or "BTC-USD"
-            leverage: 1-125 (depends on pair)
-        """
+        """Set leverage for futures trading via Pluang MCP"""
+        clean_sym = symbol.upper().replace("-USD", "").replace("USDT", "").replace("-USDT", "").strip()
         try:
-            return self.call_tool("set_leverage", {
-                "symbol": symbol,
-                "leverage": leverage
+            sess_id = self._get_chat_session_id()
+            result = self.call_tool("crypto_set_leverage", {
+                "symbol": clean_sym,
+                "leverage": leverage,
+                "user_query": f"set leverage {clean_sym} {leverage}x",
+                "chat_session_id": sess_id
             })
+            print(f"[PluangMCP] Leverage set: {clean_sym} → {leverage}x", flush=True)
+            return result
         except Exception as e:
-            print(f"[PluangMCP] set_leverage error: {e}")
-            return {"error": str(e)}
+            print(f"[PluangMCP] set_leverage error (fallback): {e}", flush=True)
+            # Fallback: leverage will be sent with order params
+            return {"status": "configured_fallback", "symbol": clean_sym, "leverage": leverage}
 
     def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED"):
-        """
-        Set margin type for a futures pair.
-        Args:
-            symbol: e.g. "BTCUSDT"
-            margin_type: "CROSS" or "ISOLATED"
-        """
-        margin_type = margin_type.upper()
-        if margin_type not in ("CROSS", "ISOLATED"):
-            return {"error": f"Invalid margin type: {margin_type}. Must be CROSS or ISOLATED."}
+        """Set margin type (ISOLATED/CROSS) for futures trading via Pluang MCP"""
+        clean_sym = symbol.upper().replace("-USD", "").replace("USDT", "").replace("-USDT", "").strip()
         try:
-            return self.call_tool("set_margin_type", {
-                "symbol": symbol,
-                "margin_type": margin_type
+            sess_id = self._get_chat_session_id()
+            result = self.call_tool("crypto_set_margin_type", {
+                "symbol": clean_sym,
+                "margin_type": margin_type.upper(),
+                "user_query": f"set margin type {clean_sym} {margin_type}",
+                "chat_session_id": sess_id
             })
+            print(f"[PluangMCP] Margin type set: {clean_sym} → {margin_type}", flush=True)
+            return result
         except Exception as e:
-            print(f"[PluangMCP] set_margin_type error: {e}")
-            return {"error": str(e)}
+            print(f"[PluangMCP] set_margin_type error (fallback): {e}", flush=True)
+            # Fallback: margin_type will be sent with order params
+            return {"status": "configured_fallback", "symbol": clean_sym, "margin_type": margin_type}
 
     # ===================================================================
-    # ORDER PLACEMENT
+    # REAL PLUANG ORDER EXECUTION
     # ===================================================================
 
     def open_position(self, symbol: str, direction: str, amount: float,
@@ -234,65 +279,95 @@ class PluangMCPClient:
                       limit_price: float = None,
                       margin_type: str = "ISOLATED"):
         """
-        Open a new futures position on Pluang.
-        Args:
-            symbol: "BTCUSDT" or "BTC-USD"
-            direction: "LONG" or "SHORT"
-            amount: position size in USDT
-            leverage: 1-125
-            order_type: "MARKET", "LIMIT"
-            limit_price: required if order_type is LIMIT
-            margin_type: "CROSS" or "ISOLATED"
+        Open a FUTURES position on Pluang (LONG or SHORT).
+        - LONG  → crypto_place_buy_order  with leverage & margin
+        - SHORT → crypto_place_sell_order  with leverage & margin
+        ALL orders go through Futures, never Spot.
         """
-        # Pre-configure leverage & margin
-        self.set_margin_type(symbol, margin_type)
-        self.set_leverage(symbol, leverage)
-
-        # Build order params
+        clean_sym = symbol.upper().replace("-USD", "").replace("USDT", "").replace("-USDT", "").strip()
         side = "BUY" if direction.upper() == "LONG" else "SELL"
+        sess_id = self._get_chat_session_id()
+
+        # Pluang accepts amount in IDR (must be whole number) or quantity
+        if amount < 1000:
+            # Likely USD, convert to IDR
+            amount_idr = int(amount * 16500)
+        else:
+            amount_idr = int(amount)
+
+        clean_order_type = order_type.upper() if order_type else "MARKET"
+
+        # ── Build order params for FUTURES ──
         order_params = {
-            "symbol": symbol,
-            "side": side,
-            "type": order_type.upper(),
-            "quantity": amount,
+            "symbol": clean_sym,
+            "order_type": clean_order_type,
+            "amount": amount_idr,
             "leverage": leverage,
+            "margin_type": margin_type.upper(),
+            "chat_session_id": sess_id
         }
-        if order_type.upper() == "LIMIT" and limit_price:
-            order_params["price"] = limit_price
-            order_params["timeInForce"] = "GTC"
+
+        if side == "BUY":
+            tool_name = "crypto_place_buy_order"
+            action_verb = "beli"
+        else:
+            tool_name = "crypto_place_sell_order"
+            action_verb = "jual short"
+
+        if clean_order_type == "LIMIT" and limit_price and float(limit_price) > 0:
+            lp = float(limit_price)
+            if lp < 500000:
+                limit_price_idr = int(lp * 16500)
+            else:
+                limit_price_idr = int(lp)
+            order_params["limit_price"] = limit_price_idr
+            order_params["time_in_force"] = "GOOD_TILL_CANCELLED"
+            user_q = f"{action_verb} limit futures {clean_sym} {amount_idr} leverage {leverage}x di harga {limit_price_idr}"
+        else:
+            user_q = f"{action_verb} futures {clean_sym} {amount_idr} leverage {leverage}x margin {margin_type}"
+
+        order_params["user_query"] = user_q
 
         try:
-            result = self.call_tool("place_order", order_params)
-            print(f"[PluangMCP] Position opened: {direction} {symbol} ${amount} {leverage}x ({order_type})")
+            result = self.call_tool(tool_name, order_params)
+            print(f"[PluangMCP] ✅ FUTURES order dispatched: {side} {clean_sym} IDR {amount_idr:,} ({clean_order_type}) Leverage: {leverage}x Margin: {margin_type}", flush=True)
             return result
         except Exception as e:
-            print(f"[PluangMCP] open_position error: {e}")
+            print(f"[PluangMCP] open_position error: {e}", flush=True)
             return {"error": str(e)}
 
     def close_position(self, symbol: str, direction: str = None, quantity: float = None):
         """
-        Close an open position (fully or partially).
-        Args:
-            symbol: "BTCUSDT"
-            direction: current position direction ("LONG" or "SHORT") 
-            quantity: amount to close (None = close all)
+        Close a FUTURES position by placing opposite order.
+        - Close LONG  → crypto_place_sell_order
+        - Close SHORT → crypto_place_buy_order
         """
-        # To close LONG, we SELL. To close SHORT, we BUY.
-        close_side = "SELL" if direction and direction.upper() == "LONG" else "BUY"
+        clean_sym = symbol.upper().replace("-USD", "").replace("USDT", "").replace("-USDT", "").strip()
+        sess_id = self._get_chat_session_id()
+
+        # Determine close tool based on position direction
+        if direction and direction.upper() == "SHORT":
+            tool_name = "crypto_place_buy_order"
+            user_q = f"tutup posisi short futures {clean_sym}"
+        else:
+            tool_name = "crypto_place_sell_order"
+            user_q = f"tutup posisi long futures {clean_sym}"
+
         order_params = {
-            "symbol": symbol,
-            "side": close_side,
-            "type": "MARKET",
-            "reduceOnly": True
+            "symbol": clean_sym,
+            "order_type": "MARKET",
+            "reduce_only": True,
+            "user_query": user_q,
+            "chat_session_id": sess_id
         }
         if quantity:
             order_params["quantity"] = quantity
         try:
-            result = self.call_tool("place_order", order_params)
-            print(f"[PluangMCP] Position closed: {symbol}")
+            result = self.call_tool(tool_name, order_params)
+            print(f"[PluangMCP] ✅ FUTURES position closed: {clean_sym} (was {direction or 'LONG'})", flush=True)
             return result
         except Exception as e:
-            print(f"[PluangMCP] close_position error: {e}")
+            print(f"[PluangMCP] close_position error: {e}", flush=True)
             return {"error": str(e)}
 
     # ===================================================================
@@ -358,26 +433,20 @@ class PluangMCPClient:
             return {"error": str(e)}
 
     def set_tp_sl(self, symbol: str, direction: str,
-                  tp1_price: float = None, tp2_price: float = None,
-                  sl_price: float = None, tp1_qty: float = None):
+                  tp_price: float = None, sl_price: float = None,
+                  tp1_price: float = None, tp2_price: float = None):
         """
         Set both TP and SL for a position in one call.
-        Supports dual TP (TP1 partial + TP2 full).
+        Pluang supports Single Take Profit and Single Stop Loss.
         """
         results = {}
 
         if sl_price:
             results["stop_loss"] = self.set_stop_loss(symbol, direction, sl_price)
 
-        if tp1_price and tp1_qty:
-            results["take_profit_1"] = self.set_take_profit(
-                symbol, direction, tp1_price, quantity=tp1_qty
-            )
-
-        if tp2_price:
-            results["take_profit_2"] = self.set_take_profit(
-                symbol, direction, tp2_price
-            )
+        final_tp = tp_price or tp2_price or tp1_price
+        if final_tp:
+            results["take_profit"] = self.set_take_profit(symbol, direction, final_tp)
 
         return results
 
@@ -419,29 +488,37 @@ class PluangMCPClient:
         """
         Execute a complete trade from an AI signal:
         1. Set margin type (ISOLATED by default for risk control)
-        2. Set leverage
-        3. Open position (MARKET order)
-        4. Set TP1 (partial close + move SL to breakeven)
-        5. Set TP2 (full close)
-        6. Set SL (protect capital)
+        2. Set leverage (AI decided)
+        3. Open position (MARKET or LIMIT order, AI decided)
+        4. Set Single Take Profit (Pluang only supports Single TP)
+        5. Set Stop Loss (protect capital)
 
         Args:
             signal: AI pipeline output with keys:
                 - symbol, direction, entry_price, leverage,
-                - take_profit_1, take_profit_2, stop_loss,
-                - position_size_usdt
+                - order_type, limit_price, take_profit, stop_loss,
+                - position_size_idr, position_size_usdt
             config: trading_config.json values
         Returns:
             dict with execution results
         """
         symbol = signal.get("binance_pair") or signal.get("symbol", "").replace("-USD", "USDT")
         direction = signal.get("direction", "LONG")
-        leverage = min(signal.get("leverage", 5), config.get("max_leverage", 5))
-        margin_type = config.get("margin_type", "ISOLATED")
-        order_type = config.get("order_type", "MARKET")
-        position_size = signal.get("position_size_usdt", 2.5)
-        tp1 = signal.get("take_profit_1", 0)
-        tp2 = signal.get("take_profit_2", 0)
+        
+        # AI governs leverage, order_type, limit_price, and position size
+        leverage = int(signal.get("leverage") or config.get("max_leverage", 5))
+        margin_type = signal.get("margin_type") or config.get("margin_type", "ISOLATED")
+        order_type = (signal.get("order_type") or config.get("order_type", "MARKET")).upper()
+        limit_price = signal.get("limit_price") or signal.get("entry_price")
+        
+        # AI governs modal/position size
+        position_size_usd = signal.get("position_size_usdt") or signal.get("position_size_usd")
+        if not position_size_usd or position_size_usd <= 0:
+            pos_idr = signal.get("position_size_idr") or config.get("max_budget_idr", 50000)
+            position_size_usd = round(pos_idr / 16500.0, 4)
+        
+        # Single Take Profit (Pluang only supports Single TP, no Dual TP)
+        tp = signal.get("take_profit") or signal.get("take_profit_2") or signal.get("take_profit_1", 0)
         sl = signal.get("stop_loss", 0)
 
         execution_log = {
@@ -450,10 +527,10 @@ class PluangMCPClient:
             "leverage": leverage,
             "margin_type": margin_type,
             "order_type": order_type,
-            "position_size_usdt": position_size,
-            "tp1": tp1,
-            "tp2": tp2,
-            "sl": sl,
+            "limit_price": limit_price,
+            "position_size_usdt": position_size_usd,
+            "take_profit": tp,
+            "stop_loss": sl,
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
             "steps": {}
         }
@@ -462,34 +539,47 @@ class PluangMCPClient:
             # Step 1: Set margin type
             execution_log["steps"]["margin_type"] = self.set_margin_type(symbol, margin_type)
 
-            # Step 2: Set leverage
+            # Step 2: Set leverage (AI decided)
             execution_log["steps"]["leverage"] = self.set_leverage(symbol, leverage)
 
-            # Step 3: Open position
-            execution_log["steps"]["open_position"] = self.open_position(
+            # Step 3: Open position (AI decided order_type: MARKET or LIMIT)
+            open_res = self.open_position(
                 symbol=symbol,
                 direction=direction,
-                amount=position_size,
+                amount=position_size_usd,
                 leverage=leverage,
                 order_type=order_type,
+                limit_price=limit_price if order_type == "LIMIT" else None,
                 margin_type=margin_type
             )
+            execution_log["steps"]["open_position"] = open_res
+            if not open_res or not isinstance(open_res, dict):
+                raise Exception("Empty response from Pluang MCP")
+            if open_res.get("isError") or "error" in open_res:
+                err_msg = open_res.get("error")
+                if not err_msg and open_res.get("content"):
+                    err_msg = open_res["content"][0].get("text", "")
+                raise Exception(f"Pluang API Error: {err_msg}")
+            if open_res.get("content"):
+                txt = open_res["content"][0].get("text", "")
+                if '"success":false' in txt.replace(" ", "") or '"success": false' in txt:
+                    msg = txt
+                    try:
+                        d = json.loads(txt)
+                        msg = d.get("message") or d.get("error") or txt
+                    except Exception:
+                        pass
+                    raise Exception(f"Pluang Ditolak: {msg}")
 
-            # Step 4: Set TP/SL
-            if tp1 or tp2 or sl:
-                tp1_qty = position_size * 0.5 if tp1 and tp2 else None  # 50% at TP1
-                execution_log["steps"]["tp_sl"] = self.set_tp_sl(
-                    symbol=symbol,
-                    direction=direction,
-                    tp1_price=tp1 if tp1 else None,
-                    tp2_price=tp2 if tp2 else None,
-                    sl_price=sl if sl else None,
-                    tp1_qty=tp1_qty
-                )
+            # Step 4: Set Single TP and SL (Pluang only supports Single TP)
+            if tp:
+                execution_log["steps"]["take_profit"] = self.set_take_profit(symbol, direction, tp)
+            if sl:
+                execution_log["steps"]["stop_loss"] = self.set_stop_loss(symbol, direction, sl)
 
             execution_log["status"] = "EXECUTED"
             execution_log["pluang_synced"] = True
-            print(f"[PluangMCP] ✅ Full trade executed: {direction} {symbol} ${position_size} {leverage}x")
+            print(f"[PluangMCP] ✅ Full trade executed on Pluang: {direction} {symbol} ${position_size_usd} {leverage}x ({order_type}) TP: ${tp} SL: ${sl}", flush=True)
 
         except Exception as e:
             execution_log["status"] = "FAILED"

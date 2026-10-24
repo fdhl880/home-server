@@ -48,6 +48,7 @@ if hasattr(sys.stderr, 'reconfigure'):
         pass
 
 from pipeline import run_5_layer_pipeline, load_env, RESULTS_DIR, get_trading_config, save_trading_config
+from multi_agent_committee import run_multi_agent_committee, get_active_thesis
 from market_data import (
     CRYPTO_FUTURES_WATCHLIST,
     get_full_universe,
@@ -61,6 +62,7 @@ from market_data import (
     get_binance_24h_tickers,
 )
 from pluang_mcp import PluangMCPClient
+from binance_futures import BinanceFuturesClient
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(RESULTS_DIR, "autotrader_state.json")
@@ -74,19 +76,62 @@ ENV = load_env()
 TELEGRAM_TOKEN = ENV.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELE_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
+# === BINANCE FUTURES CLIENT ===
+binance_client = None
+
+def get_binance_client():
+    """Initialize Binance Futures client if API keys are configured"""
+    global binance_client
+    if binance_client is not None:
+        return binance_client
+    current_env = load_env()
+    ak = current_env.get("BINANCE_API_KEY", "").strip()
+    sk = current_env.get("BINANCE_API_SECRET", "").strip()
+    if ak and sk:
+        binance_client = BinanceFuturesClient(api_key=ak, api_secret=sk)
+        print(f"[BINANCE] ✅ Binance Futures Engine initialized ({ak[:8]}...)", flush=True)
+        return binance_client
+    return None
+
 # === PLUANG MCP CLIENT ===
 def get_pluang_client():
-    """Initialize Pluang MCP client if tokens exist"""
+    """Initialize Pluang MCP client with auto-refresh if token expired"""
     if os.path.exists(TOKEN_FILE):
         try:
             with open(TOKEN_FILE, "r") as f:
                 data = json.load(f)
             token = data.get("access_token")
-            if token:
-                client = PluangMCPClient(token)
-                client.initialize()
-                print(f"[PLUANG] ✅ MCP Client connected", flush=True)
-                return client
+            refresh = data.get("refresh_token")
+            if not token:
+                return None
+
+            # Check if token is likely expired (>55 min old)
+            acquired = data.get("acquired_at", 0)
+            expires_in = data.get("expires_in", 3600)
+            if time.time() - acquired > (expires_in - 300):
+                if refresh:
+                    print(f"[PLUANG] Token likely expired, attempting refresh...", flush=True)
+                    client = PluangMCPClient(token)
+                    if client._refresh_token():
+                        try:
+                            client.initialize()
+                            if not (client._last_error and "401" in str(client._last_error)):
+                                print(f"[PLUANG] ✅ Token refreshed and verified!", flush=True)
+                                return client
+                        except Exception:
+                            pass
+                print(f"[PLUANG] ⚠️ Token expired and refresh failed. Need re-login.", flush=True)
+                return None
+
+            client = PluangMCPClient(token)
+            client.initialize()
+            if client._last_error and "401" in str(client._last_error):
+                if refresh and client._refresh_token():
+                    print(f"[PLUANG] ✅ Token refreshed on 401", flush=True)
+                    return client
+                return None
+            print(f"[PLUANG] ✅ MCP Client connected", flush=True)
+            return client
         except Exception as e:
             print(f"[PLUANG] ⚠️ MCP connection failed: {e}", flush=True)
     return None
@@ -137,38 +182,98 @@ def save_state():
 def send_telegram(text, reply_markup=None):
     if not TELEGRAM_TOKEN:
         return
-    try:
-        r = requests.get(f"{TELE_API}/getUpdates?limit=5", timeout=10)
-        if r.status_code == 200:
-            updates = r.json().get("result", [])
-            chat_ids = set()
-            for u in updates:
-                msg = u.get("message") or u.get("callback_query", {}).get("message")
-                if msg and "chat" in msg:
-                    chat_ids.add(msg["chat"]["id"])
+    chat_ids = set()
+    cid_file = os.path.join(BASE_DIR, "last_chat_id.txt")
+    if os.path.exists(cid_file):
+        try:
+            with open(cid_file, "r", encoding="utf-8") as f:
+                cid = f.read().strip()
+                if cid:
+                    chat_ids.add(int(cid))
+        except Exception:
+            pass
+    env_cid = ENV.get("TELEGRAM_CHAT_ID", "").strip()
+    if env_cid:
+        try:
+            chat_ids.add(int(env_cid))
+        except Exception:
+            pass
 
-            for cid in chat_ids:
-                payload = {
-                    "chat_id": cid,
-                    "text": text,
-                    "parse_mode": "HTML"
-                }
-                if reply_markup:
-                    payload["reply_markup"] = reply_markup
-                requests.post(f"{TELE_API}/sendMessage", json=payload, timeout=10)
-    except Exception as e:
-        print(f"[TELEGRAM ERROR] {e}")
+    if not chat_ids:
+        # Fallback to getUpdates only if no chat_id has ever been recorded
+        try:
+            r = requests.get(f"{TELE_API}/getUpdates?limit=5", timeout=10)
+            if r.status_code == 200:
+                updates = r.json().get("result", [])
+                for u in updates:
+                    msg = u.get("message") or u.get("callback_query", {}).get("message")
+                    if msg and "chat" in msg:
+                        chat_ids.add(msg["chat"]["id"])
+        except Exception:
+            pass
+
+    for cid in chat_ids:
+        payload = {
+            "chat_id": cid,
+            "text": text,
+            "parse_mode": "HTML"
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        try:
+            requests.post(f"{TELE_API}/sendMessage", json=payload, timeout=10)
+        except Exception as e:
+            print(f"[TELEGRAM ERROR] {e}")
 
 def record_position(signal: dict):
     """Record position locally AND execute on Pluang if connected"""
     global pluang_client
     cfg = _get_config()
-    max_budget = cfg.get("max_budget_idr", 50000)
-    max_lev = cfg.get("max_leverage", 5)
-    margin_type = cfg.get("margin_type", "ISOLATED")
-    order_type = cfg.get("order_type", "MARKET")
+    max_budget = cfg.get("max_budget_idr", 0)   # 0 = no cap, dynamic wallet-based
+    max_lev = cfg.get("max_leverage", 25)
+    margin_type = signal.get("margin_type") or cfg.get("margin_type", "ISOLATED")
+    
+    # 1. AI GOVERNS ORDER TYPE & LIMIT PRICE
+    order_type = (signal.get("order_type") or cfg.get("order_type", "MARKET")).upper()
+    limit_price = float(signal.get("limit_price") or signal.get("entry_price", 0))
+
+    # 2. AI GOVERNS MODAL (POSITION SIZE) — dynamic wallet-based Kelly sizing
+    pos_size = float(signal.get("position_size_idr") or 0)
+    # If pos_size is 0 or too small: dynamically size from live Binance wallet
+    if pos_size < 5000:
+        try:
+            _bn = get_binance_client()
+            if _bn:
+                _bal = _bn.get_balance()
+                avail_usdt = float(_bal.get("available_balance", 0))
+                _fx = get_fx_info()
+                avail_idr = avail_usdt * _fx["usd_idr"]
+                # Kelly fraction ~30-60% of available balance depending on confidence
+                conf = float(signal.get("confidence_score", 65))
+                kelly_frac = max(0.15, min(0.60, conf / 100.0 * 0.8))
+                pos_size = max(10000, int(avail_idr * kelly_frac))
+            else:
+                pos_size = 50000   # offline fallback
+        except Exception:
+            pos_size = 50000
+    # If config max_budget_idr > 0, cap to it; 0 means no cap
+    if max_budget > 0:
+        pos_size = min(pos_size, max_budget)
+
+    # FIXED LEVERAGE: Always 20x (user mandate)
+    leverage = 20
+    max_lev = cfg.get("max_leverage", 20)
+    leverage = min(leverage, max_lev)  # already 20, but enforce config cap
+
+    # 4. PLUANG ONLY SUPPORTS SINGLE TAKE PROFIT (NO DUAL TP)
+    tp = float(signal.get("take_profit") or signal.get("take_profit_2") or signal.get("take_profit_1", 0))
+    sl = float(signal.get("stop_loss", 0))
+
+    fx = get_fx_info()
+    pos_size_usd = round(pos_size / fx["usd_idr"], 4)
+
     auto_execute = cfg.get("auto_execute_on_pluang", True)
-    max_concurrent = cfg.get("max_concurrent_positions", 3)
+    max_concurrent = cfg.get("max_concurrent_positions", 5)
     
     # Check concurrent position limit
     positions = []
@@ -183,11 +288,6 @@ def record_position(signal: dict):
     if open_count >= max_concurrent:
         print(f"[POSITION] ⚠️ Max concurrent positions ({max_concurrent}) reached. Skipping.", flush=True)
         return None
-
-    pos_size = min(signal.get("position_size_idr", max_budget), max_budget)
-    leverage = min(signal.get("leverage", 1), max_lev)
-    fx = get_fx_info()
-    pos_size_usd = round(pos_size / fx["usd_idr"], 4)
     
     pos = {
         "id": f"POS_{signal.get('symbol', 'UNK')}_{int(time.time())}",
@@ -196,18 +296,21 @@ def record_position(signal: dict):
         "direction": signal.get("direction", "LONG"),
         "entry_price": signal.get("entry_price", 0),
         "entry_price_idr": convert_usd_to_idr(signal.get("entry_price", 0)),
-        "take_profit_1": signal.get("take_profit_1", 0),
-        "take_profit_2": signal.get("take_profit_2", 0),
-        "stop_loss": signal.get("stop_loss", 0),
+        "take_profit": tp,
+        "take_profit_1": tp,  # alias for backward compat
+        "take_profit_2": tp,  # alias for backward compat
+        "stop_loss": sl,
         "leverage": leverage,
         "margin_type": margin_type,
         "order_type": order_type,
+        "limit_price": limit_price,
         "position_size_idr": pos_size,
         "position_size_usd": pos_size_usd,
         "position_size_usdt": pos_size_usd,  # USDT ≈ USD for execution
         "risk_reward_ratio": signal.get("risk_reward_ratio", "1:2.0"),
         "confidence_score": signal.get("confidence_score", 0),
         "setup_name": signal.get("setup_name", "N/A"),
+        "estimated_time_horizon": signal.get("estimated_time_horizon", "N/A"),
         "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "status": "OPEN",
         "pnl_idr": 0,
@@ -217,40 +320,78 @@ def record_position(signal: dict):
         "pluang_execution": None
     }
     
-    # === EXECUTE ON PLUANG ===
+    # === EXECUTE REAL TRADE (BINANCE FUTURES PRIMARY) ===
     if auto_execute:
-        if pluang_client is None:
-            pluang_client = get_pluang_client()
-        
-        if pluang_client:
+        bn_client = get_binance_client()
+        if bn_client:
             try:
-                execution_result = pluang_client.execute_full_trade(signal={
+                execution_result = bn_client.execute_full_trade(signal={
                     "binance_pair": pos["binance_pair"],
                     "symbol": pos["symbol"],
                     "direction": pos["direction"],
                     "leverage": pos["leverage"],
+                    "margin_type": pos["margin_type"],
+                    "order_type": pos["order_type"],
+                    "limit_price": pos["limit_price"],
                     "entry_price": pos["entry_price"],
-                    "take_profit_1": pos["take_profit_1"],
-                    "take_profit_2": pos["take_profit_2"],
+                    "take_profit": pos["take_profit"],
                     "stop_loss": pos["stop_loss"],
                     "position_size_usdt": pos["position_size_usdt"]
                 }, config=cfg)
                 
-                pos["pluang_synced"] = execution_result.get("pluang_synced", False)
-                pos["pluang_execution"] = execution_result
+                pos["binance_synced"] = execution_result.get("binance_synced", False)
+                pos["binance_execution"] = execution_result
+                pos["exchange"] = "BINANCE_FUTURES"
+                pos["order_id"] = execution_result.get("order_id")
                 
-                if pos["pluang_synced"]:
-                    print(f"[PLUANG] ✅ Trade executed on Pluang: {pos['direction']} {pos['symbol']} "
-                          f"${pos_size_usd} {leverage}x {margin_type} {order_type}", flush=True)
+                if pos["binance_synced"]:
+                    limit_str = f" @ ${limit_price:,.4f}" if order_type == "LIMIT" else ""
+                    print(f"[BINANCE] ✅ Real trade executed on Binance Futures: {pos['direction']} {pos['binance_pair']} "
+                          f"${pos_size_usd} {leverage}x {margin_type} {order_type}{limit_str} TP: ${tp} SL: ${sl} (Order #{pos['order_id']})", flush=True)
                 else:
-                    print(f"[PLUANG] ⚠️ Trade recorded locally but Pluang execution failed", flush=True)
+                    print(f"[BINANCE] ⚠️ Binance execution rejected: {execution_result.get('error')}", flush=True)
+                    return None
             except Exception as e:
-                print(f"[PLUANG] ❌ Execution error: {e}", flush=True)
-                pos["pluang_synced"] = False
-                pos["pluang_execution"] = {"error": str(e)}
+                print(f"[BINANCE] ❌ Execution exception: {e}", flush=True)
+                return None
         else:
-            print(f"[PLUANG] ⚠️ No MCP client - recording locally only", flush=True)
-    
+            # Fallback to Pluang
+            if pluang_client is None:
+                pluang_client = get_pluang_client()
+            
+            if pluang_client:
+                try:
+                    execution_result = pluang_client.execute_full_trade(signal={
+                        "binance_pair": pos["binance_pair"],
+                        "symbol": pos["symbol"],
+                        "direction": pos["direction"],
+                        "leverage": pos["leverage"],
+                        "margin_type": pos["margin_type"],
+                        "order_type": pos["order_type"],
+                        "limit_price": pos["limit_price"],
+                        "entry_price": pos["entry_price"],
+                        "take_profit": pos["take_profit"],
+                        "take_profit_1": pos["take_profit"],
+                        "take_profit_2": pos["take_profit"],
+                        "stop_loss": pos["stop_loss"],
+                        "position_size_idr": pos["position_size_idr"],
+                        "position_size_usdt": pos["position_size_usdt"]
+                    }, config=cfg)
+                    
+                    pos["pluang_synced"] = execution_result.get("pluang_synced", False)
+                    pos["pluang_execution"] = execution_result
+                    pos["exchange"] = "PLUANG"
+                except Exception as e:
+                    print(f"[PLUANG] ❌ Execution error: {e}", flush=True)
+                    pos["pluang_synced"] = False
+            else:
+                print(f"[EXECUTION] ⚠️ No active exchange client configured", flush=True)
+                return None
+
+    if not pos.get("binance_synced") and not pos.get("pluang_synced"):
+        print(f"[EXECUTION] ⚠️ Order not executed on exchange - skipping recording to prevent fake reports", flush=True)
+        return None
+
     positions.append(pos)
     try:
         with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
@@ -285,39 +426,87 @@ def monitor_and_update_positions():
         return []
 
     tickers = get_binance_24h_tickers()
-    if not tickers:
-        return positions
-
-    ticker_map = {t["symbol"]: float(t.get("lastPrice", 0)) for t in tickers if "symbol" in t}
+    ticker_map = {t["symbol"]: float(t.get("lastPrice", 0)) for t in tickers if "symbol" in t} if tickers else {}
     fx_rate = get_fx_info()["usd_idr"]
+
+    # 1. Live synchronization with Binance Futures active positions
+    bn_client = get_binance_client()
+    bn_live_map = None
+    if bn_client:
+        try:
+            live_list = bn_client.get_positions()
+            if isinstance(live_list, list):
+                bn_live_map = {p["symbol"]: p for p in live_list}
+        except Exception as e:
+            print(f"[MONITOR] Binance sync warning: {e}", flush=True)
 
     updated = False
     for pos in open_pos:
         pair = pos.get("binance_pair") or pos.get("symbol", "").replace("-USD", "USDT")
-        current_price = ticker_map.get(pair)
-        if not current_price or current_price <= 0:
-            continue
-
         direction = pos.get("direction", "LONG").upper()
         entry_price = float(pos.get("entry_price", 0))
         leverage = float(pos.get("leverage", 1))
         pos_idr = float(pos.get("position_size_idr", 50000))
         pos_usd = float(pos.get("position_size_usd", pos_idr / fx_rate))
-        tp1 = float(pos.get("take_profit_1", 0))
-        tp2 = float(pos.get("take_profit_2", 0))
+        tp = float(pos.get("take_profit") or pos.get("take_profit_2") or pos.get("take_profit_1", 0))
         sl = float(pos.get("stop_loss", 0))
 
-        if entry_price <= 0:
-            continue
+        # Check if position was executed on Binance Futures
+        is_binance_pos = pos.get("exchange") == "BINANCE_FUTURES" or pos.get("binance_synced")
 
-        # Calculate PnL
-        if direction == "LONG":
-            pnl_pct = ((current_price - entry_price) / entry_price) * leverage * 100.0
+        # If it was open on Binance, check if Binance still has it
+        if is_binance_pos and bn_live_map is not None:
+            if pair not in bn_live_map:
+                # The position was closed on Binance (via native TP/SL or manual close)
+                curr_px = ticker_map.get(pair, entry_price)
+                if direction == "LONG":
+                    final_pnl_pct = ((curr_px - entry_price) / entry_price) * leverage * 100.0 if entry_price > 0 else 0
+                else:
+                    final_pnl_pct = ((entry_price - curr_px) / entry_price) * leverage * 100.0 if entry_price > 0 else 0
+                
+                final_pnl_idr = (final_pnl_pct / 100.0) * pos_idr
+                final_pnl_usd = (final_pnl_pct / 100.0) * pos_usd
+                
+                pos["status"] = "CLOSED_TP" if final_pnl_pct >= 0 else "CLOSED_SL"
+                pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                pos["close_price"] = curr_px
+                pos["pnl_pct"] = round(final_pnl_pct, 2)
+                pos["pnl_idr"] = round(final_pnl_idr, 2)
+                pos["pnl_usd"] = round(final_pnl_usd, 4)
+                
+                event_type = "TAKE PROFIT" if final_pnl_pct >= 0 else "STOP LOSS"
+                send_telegram(
+                    f"⚡ <b>[BINANCE LIVE] POSISI {pos.get('symbol')} TELAH DITUTUP!</b>\n\n"
+                    f"🎯 <b>Status:</b> <b>{event_type} TEREKSEKUSI DI EXCHANGE</b>\n"
+                    f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction} {leverage}x)\n"
+                    f"💰 <b>Hasil PnL:</b> {final_pnl_pct:+.2f}% ({final_pnl_idr:+,.0f} IDR / ${final_pnl_usd:+.2f} USDT)\n"
+                    f"📍 <b>Entry:</b> ${entry_price:,.4f} ➔ <b>Exit:</b> ${curr_px:,.4f}\n\n"
+                    f"<i>Margin posisi kini telah kembali utuh ke saldo wallet.</i>"
+                )
+                updated = True
+                continue
+            else:
+                # Still open on Binance — sync official mark price and unrealized PnL
+                live_item = bn_live_map[pair]
+                current_price = float(live_item.get("mark_price", 0)) or ticker_map.get(pair, entry_price)
+                live_upnl = float(live_item.get("unrealized_pnl", 0))
+                pnl_usd = live_upnl
+                pnl_idr = live_upnl * fx_rate
+                pnl_pct = (live_upnl / pos_usd * 100.0) if pos_usd > 0 else 0.0
         else:
-            pnl_pct = ((entry_price - current_price) / entry_price) * leverage * 100.0
+            current_price = ticker_map.get(pair, entry_price)
+            if entry_price > 0:
+                if direction == "LONG":
+                    pnl_pct = ((current_price - entry_price) / entry_price) * leverage * 100.0
+                else:
+                    pnl_pct = ((entry_price - current_price) / entry_price) * leverage * 100.0
+                pnl_idr = (pnl_pct / 100.0) * pos_idr
+                pnl_usd = (pnl_pct / 100.0) * pos_usd
+            else:
+                pnl_pct = pnl_idr = pnl_usd = 0.0
 
-        pnl_idr = (pnl_pct / 100.0) * pos_idr
-        pnl_usd = (pnl_pct / 100.0) * pos_usd
+        if not current_price or current_price <= 0:
+            continue
 
         pos["current_price"] = current_price
         pos["current_price_idr"] = round(current_price * fx_rate, 2)
@@ -325,35 +514,73 @@ def monitor_and_update_positions():
         pos["pnl_idr"] = round(pnl_idr, 2)
         pos["pnl_usd"] = round(pnl_usd, 4)
         pos["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        # AI Position Sentinel & Live Evaluation
+        try:
+            from news_sentinel import get_news_sentiment_summary
+            news_sum = get_news_sentiment_summary()
+            pos["news_sentiment"] = news_sum.get("market_sentiment", "NEUTRAL")
+            pos["ai_sentinel_status"] = "ACTIVE_AI_MONITORED"
+            pos["last_ai_check"] = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+
+            # Periodic AI commentary on open position (every ~5 mins)
+            now_ts = time.time()
+            if now_ts - pos.get("last_ai_eval_ts", 0) >= 300:
+                pos["last_ai_eval_ts"] = now_ts
+                try:
+                    ai_review = call_ai(
+                        prompt=(
+                            f"Posisi futures {pair} ({direction} 20x) sedang aktif. "
+                            f"Entry: ${entry_price:,.4f}, Harga Sekarang: ${current_price:,.4f}, "
+                            f"Floating PnL: {pnl_pct:+.2f}%. Target TP: ${tp:,.4f}, SL: ${sl:,.4f}. "
+                            f"Beri evaluasi taktis singkat 1-2 kalimat (HOLD / AMBIL SEBAGIAN / TRAILING SL) dalam Bahasa Indonesia."
+                        ),
+                        system_prompt="You are a 24/7 AI Risk Sentinel monitoring live crypto positions.",
+                        max_tokens=100,
+                        is_json=False
+                    )
+                    pos["ai_evaluation"] = ai_review
+                    print(f"[AI MONITOR] {pair} ({direction} 20x): PnL {pnl_pct:+.2f}% -> {ai_review}", flush=True)
+                except Exception:
+                    pos["ai_evaluation"] = f"AI Sentinel aktif memantau: PnL {pnl_pct:+.2f}%, menjaga Stop Loss."
+
+            b_alert = news_sum.get("breaking_alert")
+            sym_raw = pos.get("symbol", "").split("-")[0].lower()
+            if b_alert and sym_raw in b_alert.lower() and not pos.get("sentinel_alerted"):
+                pos["sentinel_alerted"] = True
+                send_telegram(
+                    f"⚠️ <b>[AI SENTINEL] PERINGATAN BERITA KRITIS!</b>\n\n"
+                    f"💎 <b>Aset Terbuka:</b> <code>{pos.get('symbol')}</code> ({direction})\n"
+                    f"🚨 <b>Breaking News:</b> <i>{b_alert}</i>\n"
+                    f"📊 <b>Floating PnL Saat Ini:</b> {pnl_pct:.2f}% (Rp {pnl_idr:,.0f})\n"
+                    f"🛡️ <i>AI Sentinel memonitor ketat batas Stop Loss (${sl:,.4f}) untuk proteksi modal.</i>"
+                )
+        except Exception:
+            pass
+
         updated = True
 
-        # Check TP2 (Max Take Profit)
-        tp2_hit = (direction == "LONG" and current_price >= tp2 > 0) or (direction == "SHORT" and current_price <= tp2 > 0)
-        if tp2_hit:
-            pos["status"] = "CLOSED_TP2"
+        # Check Take Profit
+        tp_hit = (direction == "LONG" and current_price >= tp > 0) or (direction == "SHORT" and current_price <= tp > 0)
+        if tp_hit:
+            pos["status"] = "CLOSED_TP"
             pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             pos["close_price"] = current_price
+            if is_binance_pos and bn_client:
+                try:
+                    bn_client.close_position(pair, direction)
+                    bn_client.cancel_all_orders(pair)
+                except Exception as e:
+                    print(f"[BINANCE CLOSE TP ERROR] {e}")
             send_telegram(
-                f"🎉 <b>PYROFUEL // TAKE PROFIT 2 TERCAPAI!</b>\n\n"
+                f"🎉 <b>PYROFUEL // TAKE PROFIT TERCAPAI!</b>\n\n"
                 f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction})\n"
                 f"💰 <b>Profit:</b> +{pnl_pct:.2f}% (+Rp {pnl_idr:,.0f} / +${pnl_usd:.2f})\n"
                 f"📍 <b>Entry:</b> ${entry_price:,.4f} ➔ <b>Exit:</b> ${current_price:,.4f}\n"
-                f"⚡ Posisi otomatis ditutup dengan keuntungan maksimal!"
+                f"🎯 <b>Target TP:</b> ${tp:,.4f}\n"
+                f"⚡ Posisi Take Profit berhasil ditutup penuh di Binance Futures!"
             )
             continue
-
-        # Check TP1 (Partial Profit / Move to Breakeven)
-        tp1_hit = (direction == "LONG" and current_price >= tp1 > 0) or (direction == "SHORT" and current_price <= tp1 > 0)
-        if tp1_hit and not pos.get("tp1_secured"):
-            pos["tp1_secured"] = True
-            pos["stop_loss"] = entry_price  # Trailing stop to breakeven!
-            send_telegram(
-                f"🎯 <b>PYROFUEL // TAKE PROFIT 1 HIT!</b>\n\n"
-                f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction})\n"
-                f"📈 <b>Floating Profit:</b> +{pnl_pct:.2f}% (+Rp {pnl_idr:,.0f})\n"
-                f"🛡️ <b>Tindakan:</b> Stop Loss dipindahkan ke Entry (${entry_price:,.4f})!\n"
-                f"<i>Modal Anda kini 100% terlindungi dari kerugian (Risk-Free Trade). Menuju TP2...</i>"
-            )
 
         # Check Stop Loss
         sl_hit = (direction == "LONG" and current_price <= sl > 0) or (direction == "SHORT" and current_price >= sl > 0)
@@ -361,13 +588,21 @@ def monitor_and_update_positions():
             pos["status"] = "CLOSED_SL"
             pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             pos["close_price"] = current_price
+            if is_binance_pos and bn_client:
+                try:
+                    bn_client.close_position(pair, direction)
+                    bn_client.cancel_all_orders(pair)
+                except Exception as e:
+                    print(f"[BINANCE CLOSE SL ERROR] {e}")
             send_telegram(
                 f"🛑 <b>PYROFUEL // STOP LOSS DITRIGGER</b>\n\n"
                 f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction})\n"
                 f"📍 <b>Entry:</b> ${entry_price:,.4f} ➔ <b>Exit:</b> ${current_price:,.4f}\n"
+                f"🛑 <b>Level SL:</b> ${sl:,.4f}\n"
                 f"📉 <b>PnL:</b> {pnl_pct:.2f}% (Rp {pnl_idr:,.0f} / ${pnl_usd:.2f})\n"
                 f"🛡️ Posisi otomatis di-cut untuk melindungi modal utama."
             )
+            continue
 
     if updated:
         try:
@@ -377,6 +612,64 @@ def monitor_and_update_positions():
             pass
 
     return positions
+
+
+def check_wallet_and_position_guard():
+    """
+    Evaluates whether the trading system should pause all universe scanning and 9-agent analysis
+    to dedicate 100% of compute and surveillance to active open position(s).
+    """
+    positions = []
+    if os.path.exists(POSITIONS_FILE):
+        try:
+            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+                positions = json.load(f)
+        except Exception:
+            positions = []
+
+    open_pos = [p for p in positions if p.get("status") == "OPEN"]
+    
+    bn_client = get_binance_client()
+    avail_usdt = 100.0
+    total_usdt = 100.0
+    
+    if bn_client:
+        try:
+            bal = bn_client.get_balance()
+            if isinstance(bal, dict):
+                avail_usdt = float(bal.get("available_balance", 0))
+                total_usdt = float(bal.get("total_wallet_balance", 0))
+        except Exception as e:
+            print(f"[GUARD] Balance check notice: {e}", flush=True)
+
+    should_pause = False
+    reason = ""
+
+    # Criteria for pausing scan & going ALL-IN on monitoring:
+    # 1. At least 1 active open position exists
+    # 2. Available balance is exhausted or depleted (available < 2.5 USDT or <= 35% of total balance, meaning capital is deployed)
+    # OR max concurrent positions reached
+    if len(open_pos) > 0:
+        if avail_usdt < 2.5 or (total_usdt > 0 and (avail_usdt / total_usdt) < 0.35):
+            should_pause = True
+            sym_list = ", ".join([p.get("symbol", "") for p in open_pos])
+            reason = (
+                f"Saldo wallet terpakai penuh untuk {len(open_pos)} posisi aktif ({sym_list}). "
+                f"Sisa saldo tersedia: ${avail_usdt:.2f} USDT (Total: ${total_usdt:.2f} USDT). "
+                f"Scanner & 9-Agent beristirahat, memusatkan 100% monitor pada posisi terbuka."
+            )
+        elif len(open_pos) >= _get_config().get("max_concurrent_positions", 5):
+            should_pause = True
+            reason = f"Maksimal posisi aktif tercapai ({len(open_pos)} posisi). Fokus monitoring posisi aktif."
+
+    return {
+        "pause_scanning": should_pause,
+        "mode": "ALL_IN_MONITOR" if should_pause else "UNIVERSE_SCANNER",
+        "reason": reason,
+        "open_positions": open_pos,
+        "available_usdt": avail_usdt,
+        "total_usdt": total_usdt
+    }
 
 
 # ===================================================================
@@ -463,14 +756,8 @@ def run_quick_screen():
     except Exception:
         pass
     
-    # Send Telegram alert for extreme moves
-    if alerts:
-        alert_text = "⚡ <b>PYROFUEL QUICK SCREEN ALERTS</b>\n\n"
-        for a in alerts[:5]:
-            emoji = "🔴" if "DUMP" in a.get("type", "") else "🟢" if "PUMP" in a.get("type", "") else "📊"
-            alert_text += f"{emoji} <code>{a['pair']}</code>: <b>{a['type']}</b> - {a['detail']}\n"
-        alert_text += f"\n🌐 Universe: {len(ranked)} pairs scanned"
-        send_telegram(alert_text)
+    # Quick screen alerts saved to file only — NOT sent to Telegram (too noisy)
+    # Data is still available in quick_screen.json for the Bloomberg dashboard
     
     print(f"[QUICK SCREEN] Done: {len(ranked)} pairs, {len(alerts)} alerts", flush=True)
     return alerts
@@ -487,121 +774,201 @@ def run_full_scan_cycle():
     Total: up to ~50 coins per cycle
     """
     load_state()
+    guard = check_wallet_and_position_guard()
+    if guard.get("pause_scanning"):
+        print(f"\n{'='*70}", flush=True)
+        print(f"[FULL SCAN] 🛡️ SCANNER DILEWATI: {guard['reason']}", flush=True)
+        print(f"{'='*70}", flush=True)
+        return []
+
     cfg = _get_config()
-    max_budget = cfg.get("max_budget_idr", 50000)
+    max_budget = cfg.get("max_budget_idr", 0)   # 0 = dynamic wallet-based
     
     print(f"\n{'='*70}", flush=True)
     print(f"[FULL SCAN] {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}", flush=True)
-    print(f"[FULL SCAN] MODE: FULL UNIVERSE | MAX BUDGET: Rp {max_budget:,}", flush=True)
+    sizing_mode = f"Dynamic Wallet-Based" if max_budget == 0 else f"Capped Rp {max_budget:,}"
+    print(f"[FULL SCAN] MODE: FULL UNIVERSE | SIZING: {sizing_mode}", flush=True)
     print(f"{'='*70}", flush=True)
     
-    # Build scan list: CORE + TOP MOVERS
-    core_pairs = {item["pair"] for item in CRYPTO_FUTURES_WATCHLIST}
+    # Build scan list: Top 10 actionable coins by opportunity score from all 524 pairs
     ranked = rank_universe_by_opportunity()
     
-    # Always scan core coins
-    scan_list = list(CRYPTO_FUTURES_WATCHLIST)
-    
-    # Add top 40 non-core movers
-    movers_added = 0
+    scan_list = [
+        {"symbol": "BTC-USD", "pair": "BTCUSDT", "name": "Bitcoin", "tier": "T1_MEGA"},
+        {"symbol": "ETH-USD", "pair": "ETHUSDT", "name": "Ethereum", "tier": "T1_MEGA"},
+        {"symbol": "SOL-USD", "pair": "SOLUSDT", "name": "Solana", "tier": "T2_LARGE"},
+    ]
+    anchor_pairs = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
     for coin in ranked:
-        if coin["pair"] not in core_pairs and movers_added < 40:
+        if coin.get("pair") not in anchor_pairs and len(scan_list) < 10:
             scan_list.append(coin)
-            movers_added += 1
     
     state["coins_scanned_this_cycle"] = len(scan_list)
     state["universe_size"] = len(ranked)
     
-    print(f"[FULL SCAN] Scanning {len(scan_list)} coins (10 core + {movers_added} top movers from {len(ranked)} total)", flush=True)
+    print(f"[FULL SCAN] Scanning Top {len(scan_list)} actionable coins (from {len(ranked)} total)", flush=True)
     
     approved_signals = []
-    
-    for idx, item in enumerate(scan_list):
+
+    def _scan_one(item):
         sym = item.get("symbol", item.get("pair", "").replace("USDT", "-USD"))
         pair = item.get("pair", sym.replace("-USD", "USDT"))
         name = item.get("name", item.get("base_asset", sym))
         tier = item.get("tier", "EXTENDED")
-        
-        print(f"[{idx+1}/{len(scan_list)}] {sym} ({name}) [{tier}]...", flush=True, end=" ")
-        
         try:
+            # 1. Jalankan 5-Layer Institutional AI Pipeline (SEQUENTIAL — one coin at a time)
+            print(f"[SCAN] ▶ Layer 1-5 Pipeline: {sym}...", flush=True)
             res = run_5_layer_pipeline(sym)
-            fc = res.get("layer5_final_call", {})
-            status = fc.get("status", "REJECTED")
-            conf = fc.get("confidence_score", 0)
-            setup = res.get("layer2_setup", {}).get("setup_name", "N/A")
 
-            sig_entry = {
+            # 2. Sidang 9-Agent Multi-Committee (setelah pipeline selesai, SEQUENTIAL)
+            positions_now = []
+            if os.path.exists(POSITIONS_FILE):
+                try:
+                    with open(POSITIONS_FILE, "r", encoding="utf-8") as pf:
+                        positions_now = json.load(pf)
+                except Exception:
+                    pass
+            print(f"[SCAN] ▶ 9-Agent Committee: {sym}...", flush=True)
+            com_res = run_multi_agent_committee(sym, positions_now)
+            return item, sym, pair, name, tier, res, com_res
+        except Exception as e:
+            print(f"[ERROR] {sym}: {e}", flush=True)
+            return item, sym, pair, name, tier, None, None
+
+    # SEQUENTIAL SCAN — one coin at a time (Layer 1 → 2 → 3 → 4 → 5 → Committee)
+    # This ensures each coin fully completes its pipeline before the next starts.
+    for item in scan_list:
+        item, sym, pair, name, tier, res, com_res = _scan_one(item)
+        if not res or "error" in res:
+            continue
+
+        fc = res.get("layer5_final_call", {})
+        status = fc.get("status", "REJECTED")
+        conf = fc.get("confidence_score", 0)
+        setup = res.get("layer2_setup", {}).get("setup_name", "N/A")
+
+        # Evaluasi konsensus kolaboratif 9-Agent Committee
+        com_approved = bool(com_res and com_res.get("approved"))
+        com_dir = com_res.get("direction", "SKIP") if com_res else "SKIP"
+        com_conf = com_res.get("confidence_pct", 0) if com_res else 0
+
+        # Cek veto komite: jika komite menolak (misal Risk Officer atau Bear veto), batalkan demi keamanan modal
+        is_trade_approved = False
+        if com_approved and com_dir in ("LONG", "SHORT") and com_conf >= 60:
+            is_trade_approved = True
+            status = "APPROVED_BY_COMMITTEE"
+        elif status == "APPROVED" and (not com_res or com_approved):
+            is_trade_approved = True
+        elif status == "APPROVED" and com_res and not com_approved:
+            pm_dec = com_res.get("portfolio_manager", {}).get("decision", "Risk veto")
+            print(f"[COMMITTEE VETO] {sym}: Pipeline lolos tapi 9-Agent Committee mem-veto: {pm_dec}", flush=True)
+            status = "REJECTED_BY_COMMITTEE"
+
+        sig_entry = {
+            "symbol": sym,
+            "binance_pair": pair,
+            "name": name,
+            "tier": tier,
+            "status": "APPROVED" if is_trade_approved else status,
+            "confidence": max(conf, com_conf),
+            "direction": com_dir if com_dir in ("LONG", "SHORT") else fc.get("direction", "NONE"),
+            "setup": setup,
+            "committee_approved": com_approved,
+            "time": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
+            "opportunity_score": item.get("opportunity_score", 0)
+        }
+
+        state["recent_signals"] = [sig_entry] + state["recent_signals"][:49]
+
+        if is_trade_approved:
+            state["signals_approved_count"] += 1
+            final_dir = com_dir if com_dir in ("LONG", "SHORT") else fc.get("direction", "LONG")
+            trade_params = (com_res.get("trade_params") or {}) if com_res else {}
+            
+            # Gunakan Kelly sizing dan leverage dari Risk Officer komite
+            budget_allocated = trade_params.get("budget_idr") or fc.get("position_size_idr", max_budget)
+            if max_budget > 0:
+                budget_allocated = min(budget_allocated, max_budget)
+            leverage_allocated = 20  # Always 20x (user mandate)
+
+            exec_plan = {
                 "symbol": sym,
                 "binance_pair": pair,
-                "name": name,
-                "tier": tier,
-                "status": status,
-                "confidence": conf,
-                "direction": fc.get("direction", "NONE"),
-                "setup": setup,
-                "time": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
-                "opportunity_score": item.get("opportunity_score", 0)
+                "direction": final_dir,
+                "action": final_dir,
+                "confidence_score": max(conf, com_conf),
+                "setup_name": setup,
+                "entry_price": trade_params.get("entry_price") or fc.get("entry_price"),
+                "position_size_idr": budget_allocated,
+                "leverage": leverage_allocated,
+                "take_profit_1": trade_params.get("tp1_price") or fc.get("take_profit_1"),
+                "take_profit_2": trade_params.get("tp2_price") or fc.get("take_profit_2"),
+                "take_profit": trade_params.get("tp2_price") or fc.get("take_profit"),
+                "stop_loss": trade_params.get("sl_price") or fc.get("stop_loss"),
+                "margin_type": "ISOLATED",
+                "order_type": "MARKET",
+                "estimated_time_horizon": (
+                    trade_params.get("estimated_time_horizon")
+                    or (com_res.get("estimated_time_horizon") if com_res else None)
+                    or fc.get("estimated_time_horizon", "N/A")
+                )
             }
 
-            state["recent_signals"] = [sig_entry] + state["recent_signals"][:49]
+            print(f"🔥 KONSENSUS MULTI-AGENT APPROVED! {sym} ({final_dir}) Keyakinan: {exec_plan['confidence_score']}%", flush=True)
+            pos = record_position(exec_plan)
 
-            if status == "APPROVED":
-                state["signals_approved_count"] += 1
-                print(f"🔥 APPROVED! Score: {conf}%", flush=True)
-                
-                fc["symbol"] = sym
-                fc["binance_pair"] = pair
-                pos = record_position(fc)
-                approved_signals.append({"symbol": sym, "pos": pos, "fc": fc, "name": name})
+            # ONLY broadcast "TRADE EXECUTED" when Binance has verified order execution
+            if pos and pos.get("binance_synced"):
+                approved_signals.append({"symbol": sym, "pos": pos, "fc": exec_plan, "name": name})
+                order_id_str = f" (Order #{pos.get('order_id')})" if pos.get('order_id') else ""
+                exchange_status = f"✅ EXECUTED ON BINANCE FUTURES{order_id_str}"
 
-                # Telegram Rich Notification with Pluang execution status
-                pluang_status = "✅ EXECUTED ON PLUANG" if pos and pos.get("pluang_synced") else "📝 Recorded Locally"
-                margin_t = cfg.get("margin_type", "ISOLATED")
-                order_t = cfg.get("order_type", "MARKET")
+                pos_idr = pos.get('position_size_idr', budget_allocated)
+                pos_usd = pos.get('position_size_usd', round(pos_idr / 16500.0, 2))
+                tp_val = exec_plan.get("take_profit_2") or exec_plan.get("take_profit_1", 0)
+                sl_val = exec_plan.get("stop_loss", 0)
+                lev_val = 20
+
+                bull_note = com_res.get("bull_researcher", {}).get("argument", "")[:120] if com_res else ""
+                bear_note = com_res.get("bear_researcher", {}).get("argument", "")[:120] if com_res else ""
+
                 msg = (
-                    f"🚨 <b>PYROFUEL AI // TRADE SIGNAL APPROVED!</b>\n\n"
-                    f"💎 <b>Aset:</b> <code>{sym}</code> ({name})\n"
-                    f"📊 <b>Tier:</b> {tier} | <b>Opp Score:</b> {item.get('opportunity_score', 0):.2f}\n"
-                    f"🎯 <b>Arah:</b> <b>{fc.get('direction', 'LONG')}</b>\n"
+                    f"🚨 <b>PYROFUEL // 9-AGENT COMMITTEE TRADE EXECUTED!</b>\n\n"
+                    f"💎 <b>Aset:</b> <code>{pair}</code> ({name})\n"
+                    f"🎯 <b>Arah:</b> <b>{final_dir}</b> (Keyakinan: <b>{exec_plan['confidence_score']}%</b>)\n"
                     f"────────────────────────\n"
-                    f"⚙️ <b>Futures Settings:</b>\n"
-                    f"   📊 Leverage: <b>{fc.get('leverage', 3)}x</b>\n"
-                    f"   🔒 Margin: <b>{margin_t}</b>\n"
-                    f"   📋 Order: <b>{order_t}</b>\n"
+                    f"⚙️ <b>Parameters (Kelly Criterion + VaR):</b>\n"
+                    f"   📊 Leverage: <b>{lev_val}x ISOLATED (Fixed)</b>\n"
+                    f"   💰 Modal: <b>${pos_usd:.2f} USDT</b> (~Rp {pos_idr:,})\n"
+                    f"   📍 Entry: ${exec_plan.get('entry_price', 0):,.4f}\n"
+                    f"   🎯 Take Profit: ${tp_val:,.4f}\n"
+                    f"   🛑 Stop Loss: ${sl_val:,.4f}\n"
                     f"────────────────────────\n"
-                    f"📊 <b>Setup:</b> <code>{fc.get('setup_name')}</code>\n"
-                    f"⭐ <b>Keyakinan:</b> <b>{conf}%</b> (Min 65%)\n"
-                    f"⚖️ <b>RRR:</b> {fc.get('risk_reward_ratio')}\n"
+                    f"⏱️ <b>Est. Waktu Tercapai TP:</b> <b>{exec_plan.get('estimated_time_horizon', 'N/A')}</b>\n"
                     f"────────────────────────\n"
-                    f"📍 <b>Entry:</b> ${fc.get('entry_price', 0):,.4f}\n"
-                    f"🎯 <b>TP1:</b> ${fc.get('take_profit_1', 0):,.4f} (50% close)\n"
-                    f"🎯 <b>TP2:</b> ${fc.get('take_profit_2', 0):,.4f} (full close)\n"
-                    f"🛑 <b>SL:</b> ${fc.get('stop_loss', 0):,.4f}\n"
-                    f"🔒 <b>Modal:</b> Rp {pos['position_size_idr']:,} (${pos.get('position_size_usd', 0):.2f})\n"
+                    f"🏛️ <b>Kolaborasi Sidang Multi-Agent:</b>\n"
+                    f"   🟢 <i>Bull Case:</i> {bull_note}\n"
+                    f"   🔴 <i>Bear Risk:</i> {bear_note}\n"
+                    f"   👑 <i>Konsensus:</i> {com_res.get('portfolio_manager',{}).get('decision','') if com_res else 'Approved'}\n"
                     f"────────────────────────\n"
-                    f"🏦 <b>Pluang:</b> {pluang_status}\n"
-                    f"📝 <b>Alasan:</b>\n<i>{fc.get('final_reason', '-')[:300]}</i>\n\n"
-                    f"⚡ <i>Posisi otomatis didaftarkan.</i>"
+                    f"🏦 <b>Status Bursa:</b> {exchange_status}\n"
+                    f"⚡ <b>100% TERKONFIRMASI: Order #{pos.get('order_id')} terpasang di Binance Futures!</b>"
                 )
-                markup = {
-                    "inline_keyboard": [
-                        [
-                            {"text": f"✅ Konfirmasi ({sym})", "callback_data": f"confirm_{sym}"},
-                            {"text": "❌ Batalkan", "callback_data": f"cancel_{sym}"}
-                        ]
-                    ]
-                }
-                send_telegram(msg, markup)
+                send_telegram(msg)
             else:
-                reason_short = fc.get("final_reason", "")[:60]
-                print(f"REJECTED: {reason_short}...", flush=True)
+                # Setup passed 5 layers and committee, but could not be filled on Binance (e.g. margin/notional cap)
+                print(f"[EXEC NOT FILLED] {sym}: Konsensus lolos tapi order tidak masuk Binance Futures. Tidak tercatat di portofolio.", flush=True)
                 state["signals_rejected_count"] += 1
-
-        except Exception as e:
-            print(f"ERROR: {e}", flush=True)
-
-        time.sleep(1.0)  # Rate limit respect
+                send_telegram(
+                    f"⚠️ <b>KONSENSUS APPROVED TAPI TIDAK DAPAT MASUK BINANCE</b>\n\n"
+                    f"💎 <b>Aset:</b> <code>{pair}</code> ({final_dir} 20x)\n"
+                    f"🛡️ <b>Keterangan:</b> Saldo margin tidak mencukupi atau bursa menolak order.\n"
+                    f"ℹ️ <b>Status:</b> Posisi <b>TIDAK DIBUKA</b> dan <b>TIDAK TERCATAT</b> di portofolio. Modal 100% aman dalam cash USDT."
+                )
+        else:
+            reason_short = (com_res.get("portfolio_manager", {}).get("decision") if com_res else fc.get("final_reason", ""))[:70]
+            print(f"REJECTED {sym}: {reason_short}...", flush=True)
+            state["signals_rejected_count"] += 1
 
     state["total_scans_done"] += 1
     state["last_scan_time"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -626,11 +993,12 @@ def run_full_scan_cycle():
     # Summary Telegram
     summary_msg = (
         f"📊 <b>PYROFUEL SCAN CYCLE #{state['total_scans_done']} COMPLETE</b>\n\n"
-        f"🌐 Universe: {len(ranked)} pairs total\n"
-        f"🔍 Scanned: {len(scan_list)} coins (10 core + {movers_added} movers)\n"
+        f"🌐 Universe: {len(ranked)} pairs total (Binance Futures)\n"
+        f"🔍 Scanned: {len(scan_list)} top actionable coins (Sequential 5-Layer AI Pipeline + 9-Agent)\n"
         f"✅ Approved: {len(approved_signals)}\n"
         f"❌ Rejected: {len(scan_list) - len(approved_signals)}\n"
-        f"💰 Budget: Rp {max_budget:,}\n"
+        f"💰 Sizing: {'Dynamic Wallet-Based (Kelly)' if max_budget == 0 else f'Capped Rp {max_budget:,}'}\n"
+        f"⚡ Leverage: FIXED 20x (user mandate)\n"
         f"⏱️ Next cycle: ~5 min"
     )
     if not approved_signals:
@@ -653,23 +1021,36 @@ def start_loop():
     
     print(f"{'='*70}", flush=True)
     print(f"[*] PYROFUEL AUTONOMOUS CRYPTO FUTURES TRADER v3.0", flush=True)
-    print(f"[*] MODE: FULL UNIVERSE + PLUANG EXECUTION", flush=True)
+    print(f"[*] PRIMARY EXECUTION ENGINE: BINANCE FUTURES", flush=True)
     print(f"[*] Margin: {cfg.get('margin_type', 'ISOLATED')} | Order: {cfg.get('order_type', 'MARKET')}", flush=True)
     print(f"[*] Max Leverage: {cfg.get('max_leverage', 5)}x | Max Budget: Rp {cfg.get('max_budget_idr', 50000):,}", flush=True)
-    print(f"[*] Auto Execute on Pluang: {cfg.get('auto_execute_on_pluang', True)}", flush=True)
+    print(f"[*] Auto Execute: {cfg.get('auto_execute_on_pluang', True)}", flush=True)
     print(f"[*] Quick Screen: Every 60 sec | Full AI: Every 5 min", flush=True)
     print(f"{'='*70}", flush=True)
     
-    # Initialize Pluang MCP
+    bn_client = get_binance_client()
+    if bn_client:
+        try:
+            bal = bn_client.get_balance()
+            usdt_bal = bal.get("total_wallet_balance", 0) if isinstance(bal, dict) else 0
+            print(f"[*] ✅ Binance Futures Engine LIVE! Wallet balance: ${usdt_bal:.2f} USDT", flush=True)
+        except Exception as e:
+            print(f"[*] ⚠️ Binance Futures check warning: {e}", flush=True)
+    else:
+        print(f"[*] ⚠️ Binance Futures not configured in .env", flush=True)
+
+    # Initialize Pluang MCP as fallback
     pluang_client = get_pluang_client()
     if pluang_client:
-        print(f"[*] ✅ Pluang MCP connected - trades will be auto-executed", flush=True)
+        print(f"[*] ✅ Pluang MCP connected (Secondary)", flush=True)
     else:
-        print(f"[*] ⚠️ Pluang MCP not connected - recording locally only", flush=True)
+        print(f"[*] ⚪ Pluang MCP not active (Binance is Primary)", flush=True)
     
     load_state()
     last_full_scan = 0
     last_quick_scan = 0
+    last_pluang_check = 0
+    was_in_all_in_mode = False
     
     while True:
         try:
@@ -679,6 +1060,7 @@ def start_loop():
                 continue
             
             now = time.time()
+            guard = check_wallet_and_position_guard()
             
             # Autonomous real-time position monitor (TP/SL/Trailing stop)
             try:
@@ -686,23 +1068,82 @@ def start_loop():
             except Exception as e:
                 print(f"[-] Position monitor error: {e}", flush=True)
 
-            # Quick screen every 60 seconds (or configured interval)
-            if now - last_quick_scan >= state.get("quick_screen_interval_sec", 60):
-                try:
-                    run_quick_screen()
-                except Exception as e:
-                    print(f"[-] Quick screen error: {e}", flush=True)
-                last_quick_scan = now
-            
-            # Full AI scan every 5 minutes
-            if now - last_full_scan >= state.get("scan_interval_sec", 300):
-                try:
-                    run_full_scan_cycle()
-                except Exception as e:
-                    print(f"[-] Full scan error: {e}", flush=True)
-                last_full_scan = now
-            
-            time.sleep(10)  # Check every 10 seconds
+            if guard["pause_scanning"]:
+                # === ALL-IN POSITION MONITORING ACTIVE ===
+                state["all_in_monitoring_mode"] = True
+                state["all_in_focus_positions"] = [p.get("symbol") for p in guard["open_positions"]]
+                state["all_in_reason"] = guard["reason"]
+                save_state()
+                
+                if not was_in_all_in_mode:
+                    was_in_all_in_mode = True
+                    syms = ", ".join([f"<code>{p.get('symbol')}</code>" for p in guard["open_positions"]])
+                    send_telegram(
+                        f"🛡️ <b>[AI SENTINEL] MODE ALL-IN MONITOR POSITION AKTIF!</b>\n\n"
+                        f"💰 <b>Saldo Terpakai:</b> Saldo telah dialokasikan penuh ke posisi aktif (Sisa: ${guard['available_usdt']:.2f} USDT).\n"
+                        f"💎 <b>Posisi Dikawal:</b> {syms}\n\n"
+                        f"⏸️ <b>Scanner 524 Koin & 9 Agent Committee:</b> <b>DIHENTIKAN SEMENTARA</b>\n"
+                        f"🎯 <i>Semua sumber daya AI kini 100% all-in mengawal posisi aktif secara real-time hingga Take Profit / Stop Loss tercapai!</i>"
+                    )
+                    print(f"\n[SENTINEL ALL-IN] 🛡️ {guard['reason']}", flush=True)
+                
+                # In all-in mode, skip scanning! Focus 100% on the open position.
+                time.sleep(8)
+                continue
+
+            else:
+                # === NORMAL SCANNING ACTIVE ===
+                if was_in_all_in_mode:
+                    was_in_all_in_mode = False
+                    state["all_in_monitoring_mode"] = False
+                    state["all_in_focus_positions"] = []
+                    save_state()
+                    send_telegram(
+                        f"🚀 <b>POSISI SELESAI & SALDO TELAH PULIH!</b>\n\n"
+                        f"✅ Posisi sebelumnya telah selesai (Take Profit / Stop Loss tereksekusi).\n"
+                        f"💰 <b>Saldo Tersedia:</b> ${guard['available_usdt']:.2f} USDT (Modal kembali cair ke wallet).\n\n"
+                        f"🔄 <b>Scanner 524 Koin & 9 Agent Committee:</b> <b>KEMBALI AKTIF!</b>\n"
+                        f"<i>Memulai pemindaian radar penuh untuk mencari setup peluang terbaik berikutnya...</i>"
+                    )
+                    print(f"\n[SENTINEL RESUME] 🚀 Posisi selesai. Melanjutkan full scan 524 pairs...", flush=True)
+                    # Trigger scan immediately!
+                    last_full_scan = 0
+                    last_quick_scan = 0
+
+                # Re-check Pluang connection every 5 minutes
+                if now - last_pluang_check >= 300:
+                    old_client = pluang_client
+                    pluang_client = get_pluang_client()
+                    if pluang_client and not old_client:
+                        print("[PLUANG] 🔄 Reconnected to Pluang MCP!", flush=True)
+                        send_telegram("🟢 <b>PLUANG RECONNECTED!</b>\nToken berhasil di-refresh. Auto-trading kembali aktif.")
+                    elif not pluang_client and old_client:
+                        print("[PLUANG] ⚠️ Lost connection to Pluang MCP", flush=True)
+                        send_telegram(
+                            "🔴 <b>PLUANG TOKEN EXPIRED</b>\n\n"
+                            "Token Pluang kadaluarsa dan refresh gagal.\n"
+                            "Auto-trading dihentikan sementara.\n\n"
+                            "👉 Ketik <code>/login</code> di Telegram untuk re-login."
+                        )
+                    last_pluang_check = now
+
+                # Quick screen every 60 seconds (or configured interval)
+                if now - last_quick_scan >= state.get("quick_screen_interval_sec", 60):
+                    try:
+                        run_quick_screen()
+                    except Exception as e:
+                        print(f"[-] Quick screen error: {e}", flush=True)
+                    last_quick_scan = now
+                
+                # Full AI scan every 5 minutes
+                if now - last_full_scan >= state.get("scan_interval_sec", 300):
+                    try:
+                        run_full_scan_cycle()
+                    except Exception as e:
+                        print(f"[-] Full scan error: {e}", flush=True)
+                    last_full_scan = now
+                
+                time.sleep(10)  # Check every 10 seconds
             
         except KeyboardInterrupt:
             print("[*] Autonomous trader stopped by user.", flush=True)

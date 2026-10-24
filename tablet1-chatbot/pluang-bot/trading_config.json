@@ -1,22 +1,23 @@
 {
   "max_budget_idr": 0,
-  "max_leverage": 25,
+  "max_leverage": 20,
   "min_confidence_score": 45,
   "min_risk_reward_ratio": 1.5,
   "max_drawdown_pct": 5.0,
   "margin_type": "ISOLATED",
   "ai_manages_execution": true,
-  "ai_manages_leverage": true,
+  "ai_manages_leverage": false,
   "ai_manages_order_type": true,
   "ai_manages_modal": true,
   "dynamic_wallet_sizing": true,
-  "dynamic_leverage": true,
+  "dynamic_leverage": false,
+  "fixed_leverage": 20,
   "tp_sl_mode": "SINGLE_TP",
   "max_concurrent_positions": 5,
   "max_daily_trades": 10,
   "currency": "USDT",
   "auto_execute_on_pluang": true,
   "trading_mode": "AI_QUANT_AUTONOMOUS",
-  "updated_at": "2026-10-21 12:45:00 UTC",
-  "note": "max_budget_idr=0 means AI uses dynamic Kelly sizing from live Binance wallet (no cap). Leverage 2x-25x selected dynamically by Risk Officer based on ATR, volatility tier, and confidence score."
+  "updated_at": "2026-10-24 00:00:00 UTC",
+  "note": "max_budget_idr=0 means AI uses dynamic Kelly sizing from live Binance wallet (no cap). Leverage FIXED at 20x per user mandate — AI scans but does NOT change leverage."
 }

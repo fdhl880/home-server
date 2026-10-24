@@ -40,6 +40,17 @@ from market_data import (
 )
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pluang_mcp import PluangMCPClient
+try:
+    from multi_agent_committee import (
+        run_multi_agent_committee, run_quick_committee,
+        get_active_thesis, COMMITTEE_LOG_FILE, THESIS_FILE
+    )
+    COMMITTEE_AVAILABLE = True
+except ImportError as _e:
+    COMMITTEE_AVAILABLE = False
+    COMMITTEE_LOG_FILE = os.path.join("results", "committee_log.json")
+    THESIS_FILE = os.path.join("results", "active_thesis.json")
+    print(f"[Server] Multi-agent committee not available: {_e}")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -108,6 +119,20 @@ def get_status():
         except Exception:
             pass
 
+    # Read Binance Futures Balance
+    bn_connected = False
+    bn_balance_usdt = 0.0
+    try:
+        from binance_futures import BinanceFuturesClient
+        bn_client = BinanceFuturesClient()
+        if bn_client.api_key and bn_client.api_secret:
+            bal = bn_client.get_balance()
+            if isinstance(bal, dict) and "total_wallet_balance" in bal:
+                bn_connected = True
+                bn_balance_usdt = float(bal["total_wallet_balance"])
+    except Exception:
+        pass
+
     cfg = get_trading_config()
     universe = get_full_universe()
     fx = get_fx_info()
@@ -115,25 +140,24 @@ def get_status():
     return jsonify({
         "status": "online",
         "version": "3.0",
-        "market": "CRYPTO_FUTURES_PLUANG_ONLY",
+        "market": "CRYPTO_FUTURES_BINANCE_FULL_UNIVERSE",
         "universe_size": len(universe),
         "core_assets_count": len(CRYPTO_FUTURES_WATCHLIST),
+        "binance_connected": bn_connected,
+        "binance_balance_usdt": bn_balance_usdt,
         "pluang_connected": pluang_connected,
         "max_budget_idr": cfg.get("max_budget_idr", 50000),
         "max_budget_usd": convert_idr_to_usd(cfg.get("max_budget_idr", 50000)),
         "max_leverage": cfg.get("max_leverage", 5),
-        "min_confidence_score": cfg.get("min_confidence_score", 65),
-        "min_risk_reward_ratio": cfg.get("min_risk_reward_ratio", 1.8),
+        "min_confidence_score": cfg.get("min_confidence_score", 45),
+        "min_risk_reward_ratio": cfg.get("min_risk_reward_ratio", 1.5),
         "margin_type": cfg.get("margin_type", "ISOLATED"),
         "order_type": cfg.get("order_type", "MARKET"),
-        "tp_sl_mode": cfg.get("tp_sl_mode", "DUAL_TP"),
-        "tp1_close_pct": cfg.get("tp1_close_pct", 50),
-        "tp1_move_sl_to_breakeven": cfg.get("tp1_move_sl_to_breakeven", True),
-        "max_concurrent_positions": cfg.get("max_concurrent_positions", 3),
-        "max_daily_trades": cfg.get("max_daily_trades", 10),
-        "auto_execute_on_pluang": cfg.get("auto_execute_on_pluang", True),
+        "tp_sl_mode": cfg.get("tp_sl_mode", "SINGLE_TP"),
+        "max_concurrent_positions": cfg.get("max_concurrent_positions", 5),
+        "max_daily_trades": cfg.get("max_daily_trades", 15),
+        "auto_execute_on_binance": True,
         "ai_provider": env.get("AI_PROVIDER", "groq"),
-        "model": env.get("GROQ_MODEL", "openai/gpt-oss-120b"),
         "telegram_bot": "@idrisginting_bot",
         "active_positions_count": len([p for p in positions if p.get("status") == "OPEN"]),
         "autonomous_running": state.get("is_running", True),
@@ -280,6 +304,57 @@ def get_positions():
             positions = []
     return jsonify(positions)
 
+@app.route("/api/performance")
+def get_performance():
+    """Consolidated performance metrics: Win Rate, Realized PnL, Floating PnL, Total Trades"""
+    positions = []
+    if os.path.exists(POSITIONS_FILE):
+        try:
+            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+                positions = json.load(f)
+        except Exception:
+            positions = []
+
+    closed_pos = [p for p in positions if str(p.get("status", "")).startswith("CLOSED")]
+    open_pos = [p for p in positions if p.get("status") == "OPEN"]
+
+    winning = [p for p in closed_pos if p.get("pnl_idr", 0) > 0 or p.get("pnl_pct", 0) > 0]
+    losing = [p for p in closed_pos if p.get("pnl_idr", 0) <= 0 and p.get("pnl_pct", 0) <= 0]
+
+    closed_count = len(closed_pos)
+    win_rate = round((len(winning) / closed_count * 100), 1) if closed_count > 0 else 0.0
+
+    realized_idr = sum(p.get("pnl_idr", 0) for p in closed_pos)
+    realized_usd = sum(p.get("pnl_usd", 0) for p in closed_pos)
+
+    unrealized_idr = sum(p.get("pnl_idr", 0) for p in open_pos)
+    unrealized_usd = sum(p.get("pnl_usd", 0) for p in open_pos)
+
+    total_pnl_idr = realized_idr + unrealized_idr
+    total_pnl_usd = realized_usd + unrealized_usd
+
+    return jsonify({
+        "win_rate_pct": win_rate,
+        "total_trades": len(positions),
+        "open_trades": len(open_pos),
+        "closed_trades": closed_count,
+        "winning_trades": len(winning),
+        "losing_trades": len(losing),
+        "realized_pnl_idr": round(realized_idr, 2),
+        "realized_pnl_usd": round(realized_usd, 4),
+        "unrealized_pnl_idr": round(unrealized_idr, 2),
+        "unrealized_pnl_usd": round(unrealized_usd, 4),
+        "net_total_pnl_idr": round(total_pnl_idr, 2),
+        "net_total_pnl_usd": round(total_pnl_usd, 4),
+        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    })
+
+@app.route("/api/news")
+def get_news():
+    """Return live breaking crypto news with sentiment analysis."""
+    from news_sentinel import get_news_sentiment_summary
+    return jsonify(get_news_sentiment_summary())
+
 @app.route("/api/quick-screen")
 def get_quick_screen():
     """Return latest quick screen results"""
@@ -300,13 +375,12 @@ def execute_order():
     leverage = int(data.get("leverage", 1))
     margin_type = data.get("margin_type", "ISOLATED").upper()
     order_type = data.get("order_type", "MARKET").upper()
-    tp1_price = float(data.get("tp1_price", 0))
-    tp2_price = float(data.get("tp2_price", 0))
-    sl_price = float(data.get("sl_price", 0))
+    tp_price = float(data.get("tp_price") or data.get("take_profit") or data.get("tp1_price") or data.get("tp2_price", 0))
+    sl_price = float(data.get("sl_price") or data.get("stop_loss", 0))
 
     cfg = get_trading_config()
-    MAX_BUDGET_IDR = cfg.get("max_budget_idr", 50000)
-    MAX_LEVERAGE = cfg.get("max_leverage", 5)
+    MAX_BUDGET_IDR = cfg.get("max_budget_idr", 500000)
+    MAX_LEVERAGE = cfg.get("max_leverage", 25)
 
     # HARD PYTHON SECURITY GATES (ANTI-TAMPERING)
     if amount_idr > MAX_BUDGET_IDR:
@@ -341,9 +415,12 @@ def execute_order():
                     "symbol": symbol,
                     "direction": direction,
                     "leverage": leverage,
-                    "take_profit_1": tp1_price,
-                    "take_profit_2": tp2_price,
+                    "order_type": order_type,
+                    "take_profit": tp_price,
+                    "take_profit_1": tp_price,
+                    "take_profit_2": tp_price,
                     "stop_loss": sl_price,
+                    "position_size_idr": amount_idr,
                     "position_size_usdt": pos_usd
                 },
                 config={
@@ -373,8 +450,11 @@ def execute_order():
         "order_type": order_type,
         "amount_idr": amount_idr,
         "amount_usd": convert_idr_to_usd(amount_idr),
-        "take_profit_1": tp1_price,
-        "take_profit_2": tp2_price,
+        "position_size_idr": amount_idr,
+        "position_size_usd": convert_idr_to_usd(amount_idr),
+        "take_profit": tp_price,
+        "take_profit_1": tp_price,
+        "take_profit_2": tp_price,
         "stop_loss": sl_price,
         "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "status": "OPEN",
@@ -549,10 +629,123 @@ def close_pluang_position():
     result = client.close_position(symbol, direction)
     return jsonify(result)
 
+# ============================================================
+# MULTI-AGENT COMMITTEE API ENDPOINTS
+# ============================================================
+
+@app.route("/api/committee/run", methods=["POST"])
+def run_committee():
+    """Jalankan full 7-agent committee untuk satu simbol."""
+    if not COMMITTEE_AVAILABLE:
+        return jsonify({"error": "Multi-agent committee module tidak tersedia"}), 503
+    data = request.get_json() or {}
+    symbol = data.get("symbol", "BTC-USD")
+    positions = []
+    if os.path.exists(POSITIONS_FILE):
+        try:
+            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+                positions = json.load(f)
+        except Exception:
+            pass
+    try:
+        result = run_multi_agent_committee(symbol, positions)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/committee/thesis")
+def get_thesis():
+    """Ambil thesis aktif untuk semua simbol (LangAlpha-inspired workspace)."""
+    symbol = request.args.get("symbol")
+    if not os.path.exists(THESIS_FILE):
+        return jsonify({} if symbol else {})
+    try:
+        with open(THESIS_FILE, "r", encoding="utf-8") as f:
+            thesis = json.load(f)
+        if symbol:
+            return jsonify(thesis.get(symbol, {"message": "No thesis for this symbol"}))
+        return jsonify(thesis)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/committee/log")
+def get_committee_log():
+    """Ambil log committee decisions (ringkasan semua run)."""
+    limit = request.args.get("limit", 50, type=int)
+    if not os.path.exists(COMMITTEE_LOG_FILE):
+        return jsonify({"count": 0, "logs": []})
+    try:
+        with open(COMMITTEE_LOG_FILE, "r", encoding="utf-8") as f:
+            logs = json.load(f)
+        return jsonify({"count": len(logs[:limit]), "logs": logs[:limit]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/committee/quick-screen")
+def committee_quick_screen():
+    """Quick committee screening untuk top N pairs."""
+    if not COMMITTEE_AVAILABLE:
+        return jsonify({"error": "Committee tidak tersedia"}), 503
+    limit = request.args.get("limit", 20, type=int)
+    try:
+        from market_data import rank_universe_by_opportunity
+        ranked = rank_universe_by_opportunity()[:limit]
+        results = []
+        for coin in ranked:
+            sym = coin.get("symbol", coin.get("pair", "").replace("USDT", "-USD"))
+            quick = run_quick_committee(sym, coin)
+            if quick.get("direction") != "SKIP":
+                results.append(quick)
+        results.sort(key=lambda x: x.get("confidence_pct", 0), reverse=True)
+        return jsonify({"count": len(results), "alerts": results})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/committee/status")
+def committee_status():
+    """Status modul committee — termasuk source repo credits."""
+    return jsonify({
+        "available": COMMITTEE_AVAILABLE,
+        "version": "2.0",
+        "agents": [
+            {"name": "TechnicalAnalyst", "source": "TradingAgents (Tauric Research)"},
+            {"name": "SentimentAnalyst", "source": "TradingAgents + Vibe-Trading (HKUDS)"},
+            {"name": "FundamentalsAgent", "source": "ai-hedge-fund (virattt)"},
+            {"name": "MacroAnalyst", "source": "Vibe-Trading (HKUDS)"},
+            {"name": "BullResearcher", "source": "TradingAgents (Tauric Research)"},
+            {"name": "BearResearcher", "source": "TradingAgents (Tauric Research)"},
+            {"name": "TraderAgent", "source": "TradingAgents + LangAlpha (ginlix)"},
+            {"name": "RiskOfficer", "source": "Vibe-Trading + hummingbot (Kelly sizing)"},
+            {"name": "PortfolioManager", "source": "TradingAgents + LangAlpha"},
+        ],
+        "features": [
+            "Parallel analyst team (4 agents)",
+            "Bull vs Bear researcher debate",
+            "Kelly Criterion position sizing",
+            "VaR(95%) calculation",
+            "hummingbot-inspired spread calculator",
+            "LangAlpha-inspired thesis workspace",
+        ],
+        "source_repos": [
+            "https://github.com/TauricResearch/TradingAgents",
+            "https://github.com/virattt/ai-hedge-fund",
+            "https://github.com/HKUDS/Vibe-Trading",
+            "https://github.com/ginlix-ai/LangAlpha",
+            "https://github.com/hummingbot/hummingbot",
+        ]
+    })
+
+
 if __name__ == "__main__":
     os.makedirs(STATIC_DIR, exist_ok=True)
     port = int(os.environ.get("PORT", 5000))
-    print(f"[*] PYROFUEL v3.0 Dashboard Server: http://localhost:{port}", flush=True)
-    print(f"[*] Mode: FULL UNIVERSE + PLUANG EXECUTION", flush=True)
+    print(f"[*] PYROFUEL v4.0 Dashboard Server: http://localhost:{port}", flush=True)
+    print(f"[*] Mode: FULL UNIVERSE + MULTI-AGENT COMMITTEE + PLUANG EXECUTION", flush=True)
     print(f"[*] Futures Settings API: /api/futures/settings", flush=True)
+    print(f"[*] Committee API: /api/committee/run | /api/committee/status", flush=True)
+    print(f"[*] Inspired by: TradingAgents, ai-hedge-fund, Vibe-Trading, LangAlpha, hummingbot", flush=True)
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

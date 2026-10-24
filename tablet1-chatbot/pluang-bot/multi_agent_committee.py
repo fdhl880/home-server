@@ -84,8 +84,9 @@ def run_technical_analyst(symbol, market_data):
                  f"EMA alignment={'bullish' if ema20>ema50 else 'bearish'}, Change={change_24h:.1f}%, " \
                  f"BB Width={bb_width:.1f}%. Sinyal: {', '.join(signals[:3])}. " \
                  f"Analisis teknikal 2-3 kalimat, rekomendasi LONG/SHORT/WAIT. Bahasa Indonesia."
-        analysis = call_ai(prompt, max_tokens=200)
-    except:
+        analysis = call_ai(prompt, system_prompt="You are a professional crypto technical analyst. Answer concisely in Indonesian.", max_tokens=200, is_json=False)
+    except Exception as e:
+        print(f"[Committee] TechnicalAnalyst AI error: {e}", flush=True)
         analysis = f"Trend {verdict}. RSI {rsi:.0f}, EMA {'bullish' if ema20 > ema50 else 'bearish'}."
 
     return {"agent": "TechnicalAnalyst", "verdict": verdict, "trend_score": trend_score,
@@ -107,8 +108,9 @@ def run_sentiment_analyst(symbol, market_data):
         prompt = f"Sentiment Analyst crypto. {symbol}: Change 24h={change_24h:.1f}%, " \
                  f"Vol=${volume/1e6:.0f}M. Sentiment proxy: {sentiment}, F&G ~{fg}. " \
                  f"Analisis sentimen 2-3 kalimat (mood market, justified/overreaction, dampak LONG/SHORT). Bahasa Indonesia."
-        analysis = call_ai(prompt, max_tokens=180)
-    except:
+        analysis = call_ai(prompt, system_prompt="You are a professional crypto sentiment analyst. Answer concisely in Indonesian.", max_tokens=180, is_json=False)
+    except Exception as e:
+        print(f"[Committee] SentimentAnalyst AI error: {e}", flush=True)
         analysis = f"Sentimen {sentiment.replace('_',' ').title()}, Fear&Greed estimasi {fg}/100."
 
     return {"agent": "SentimentAnalyst", "sentiment": sentiment, "fear_greed": fg,
@@ -133,8 +135,9 @@ def run_fundamentals_agent(symbol, market_data):
         prompt = f"On-Chain Analyst crypto futures. {symbol}: Vol=${volume/1e6:.0f}M, " \
                  f"OI=${oi/1e6:.0f}M, OI/Vol={oi_vol:.2f}, Funding={funding:.4f}% ({fsig}). " \
                  f"Analisis fundamental 2-3 kalimat. Bahasa Indonesia."
-        analysis = call_ai(prompt, max_tokens=180)
-    except:
+        analysis = call_ai(prompt, system_prompt="You are a professional on-chain and derivatives analyst. Answer concisely in Indonesian.", max_tokens=180, is_json=False)
+    except Exception as e:
+        print(f"[Committee] FundamentalsAgent AI error: {e}", flush=True)
         analysis = f"Funding {funding:.4f}%  -  {fsig}. Bias: {bias}."
 
     return {"agent": "FundamentalsAgent", "fundamental_bias": bias, "funding_rate": funding,
@@ -170,8 +173,9 @@ def run_bull_researcher(symbol, analyst_reports):
         prompt = f"Bull Researcher: argumentasikan LONG {symbol}. " \
                  f"Sinyal positif: {bullish}. Kontra: {len(bearish)} sinyal negatif. " \
                  f"Konteks: {ctx[:200]}. Argumen BULL 2-3 kalimat. Bahasa Indonesia."
-        argument = call_ai(prompt, max_tokens=200)
-    except:
+        argument = call_ai(prompt, system_prompt="You are an aggressive Bull Researcher advocating for a LONG thesis. Answer concisely in Indonesian.", max_tokens=200, is_json=False)
+    except Exception as e:
+        print(f"[Committee] BullResearcher AI error: {e}", flush=True)
         argument = f"{len(bullish)} sinyal bullish mendukung LONG dengan strength {bull_strength:.0%}."
     return {"agent": "BullResearcher", "bull_strength": round(bull_strength, 2),
             "bullish_signals": bullish, "argument": argument}
@@ -191,8 +195,9 @@ def run_bear_researcher(symbol, analyst_reports, bull_report=None):
         prompt = f"Bear Researcher (Adversarial Debater): Serang langsung tesis Bull Researcher ini: '{bull_arg}'. " \
                  f"Gunakan risiko nyata pada {symbol}: {risks}. Analis: {ctx[:160]}. " \
                  f"Beri serangan kontra tajam 2-3 kalimat kenapa trade ini berisiko jebakan/rugi. Bahasa Indonesia."
-        argument = call_ai(prompt, max_tokens=200)
-    except:
+        argument = call_ai(prompt, system_prompt="You are a rigorous Bear Researcher stress-testing risks. Answer concisely in Indonesian.", max_tokens=200, is_json=False)
+    except Exception as e:
+        print(f"[Committee] BearResearcher AI error: {e}", flush=True)
         argument = f"Risiko pembalikan arah terdeteksi: {'; '.join(risks[:3])}. Tesis bull rentan fakeout."
     bear_strength = round(min(len(risks) / 3.5, 1.0), 2)
     return {
@@ -213,8 +218,9 @@ def run_bull_rebuttal(symbol, bull_report, bear_report):
         prompt = f"Bull Researcher Rebuttal: Bear menyatakan '{bear_arg}'. " \
                  f"Tangkis serangan Bear tersebut dengan mitigasi risiko (invalidation stop-loss ketat, absorpsi likuiditas). " \
                  f"Jawab singkat 1-2 kalimat. Bahasa Indonesia."
-        rebuttal = call_ai(prompt, max_tokens=150)
-    except:
+        rebuttal = call_ai(prompt, system_prompt="You are a Bull Researcher rebutting bear arguments with strict risk mitigation. Answer concisely in Indonesian.", max_tokens=150, is_json=False)
+    except Exception as e:
+        print(f"[Committee] BullRebuttal AI error: {e}", flush=True)
         rebuttal = "Risiko Bear dapat dimitigasi dengan Stop Loss ketat di bawah level support dinamis."
     return rebuttal
 
@@ -243,8 +249,9 @@ def run_trader_agent(symbol, price, bull_report, bear_report, rebuttal, analyst_
                  f"- Bull Rebuttal: {rebuttal[:100]}\n" \
                  f"- Keputusan Anda: {direction} (Confidence: {confidence:.0f}%).\n" \
                  f"Buat sintesis taktis 2 kalimat dalam Bahasa Indonesia."
-        decision = call_ai(prompt, max_tokens=150)
-    except:
+        decision = call_ai(prompt, system_prompt="You are the Chief Trader Agent mediating bull vs bear debate. Answer concisely in Indonesian.", max_tokens=150, is_json=False)
+    except Exception as e:
+        print(f"[Committee] TraderAgent AI error: {e}", flush=True)
         decision = f"Kompromi komite: Memilih {direction} dengan keyakinan {confidence:.0f}% setelah menguji tesis Bull & Bear."
 
     return {
@@ -293,27 +300,9 @@ def run_risk_officer(symbol, price, direction, confidence, market_data, config):
     bb_width   = market_data.get("bb_width_pct", 5)
     volatility = (change_24h + bb_width) / 2
 
-    # ── 3. Dynamic leverage (ATR/volatility tier, cap to config max) ──
-    sym_base = symbol.upper().replace("-USD", "").replace("USDT", "")
-    mega_majors = {"BTC", "ETH"}
-    large_caps  = {"BNB", "SOL", "XRP", "ADA", "AVAX", "LINK", "LTC", "DOT", "MATIC", "UNI"}
-    memecoins   = {"DOGE", "PEPE", "SHIB", "FLOKI", "BONK", "WIF", "BOME", "NOT", "MEW", "BRETT"}
-
-    if volatility > 12:
-        lev_range = (2, 5)          # extreme volatility
-    elif sym_base in mega_majors:
-        lev_range = (10, 20)        # BTC/ETH: moderate-high leverage safe
-    elif sym_base in large_caps:
-        lev_range = (5, 15)         # large caps
-    elif sym_base in memecoins or volatility > 8:
-        lev_range = (3, 10)         # memecoins / high vol
-    else:
-        lev_range = (5, 15)         # general mid-cap
-
-    # Confidence modulation: higher confidence → higher leverage (within tier)
-    conf_factor = confidence / 100.0
-    raw_lev = int(lev_range[0] + conf_factor * (lev_range[1] - lev_range[0]))
-    leverage = max(2, min(raw_lev, max_leverage))
+    # ── 3. Leverage: FIXED AT 20x (USER MANDATE) ──────────────────────
+    leverage = 20  # Always 20x per user mandate
+    lev_range = (20, 20)
 
     # ── 4. Wallet-based Kelly budget ──────────────────────────────────
     win_rate = confidence / 100

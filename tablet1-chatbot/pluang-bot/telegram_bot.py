@@ -73,10 +73,42 @@ TELEGRAM_TOKEN = ENV.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELE_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 def _max_budget():
-    return get_trading_config().get("max_budget_idr", 50000)
+    return get_trading_config().get("max_budget_idr", 0)
 
 def _max_leverage():
-    return get_trading_config().get("max_leverage", 5)
+    return 20  # Always 20x fixed user mandate
+
+WHITELIST_FILE = os.path.join(BASE_DIR, "last_chat_id.txt")
+def get_allowed_chat_ids():
+    allowed = {6794056929, "6794056929"}  # Default user ID
+    env_id = ENV.get("ALLOWED_TELEGRAM_CHAT_ID")
+    if env_id:
+        try:
+            allowed.add(int(env_id))
+            allowed.add(str(env_id).strip())
+        except Exception:
+            pass
+    if os.path.exists(WHITELIST_FILE):
+        try:
+            with open(WHITELIST_FILE, "r") as f:
+                val = f.read().strip()
+                if val:
+                    allowed.add(int(val))
+                    allowed.add(str(val).strip())
+        except Exception:
+            pass
+    return allowed
+
+def is_chat_allowed(chat_id):
+    if not chat_id:
+        return False
+    whitelist = get_allowed_chat_ids()
+    try:
+        if int(chat_id) in whitelist:
+            return True
+    except Exception:
+        pass
+    return str(chat_id).strip() in whitelist
 
 def get_pluang_client():
     """Load client and verify access token live against Pluang MCP.
@@ -1210,25 +1242,32 @@ def start_bot_listener():
                 # Handle text messages
                 if "message" in update and "text" in update["message"]:
                     chat_id = update["message"]["chat"]["id"]
+                    msg_text = update["message"]["text"].strip()
+                    msg_lower = msg_text.lower()
+
+                    # SECURITY FIREWALL: Check Telegram Whitelist
+                    if not is_chat_allowed(chat_id):
+                        print(f"[SECURITY ALERT] Unauthorized chat_id {chat_id} blocked!", flush=True)
+                        send_telegram_message(
+                            chat_id,
+                            f"⛔ <b>AKSES DITOLAK (403 FORBIDDEN)</b>\n\n"
+                            f"Akun Telegram Anda (ID: <code>{chat_id}</code>) tidak memiliki izin otorisasi pada bot Pyrofuel ini.\n\n"
+                            f"🔒 <i>Bot ini privat dan dilindungi firewall whitelist pemilik resmi.</i>"
+                        )
+                        continue
+
                     try:
                         with open(os.path.join(BASE_DIR, "last_chat_id.txt"), "w") as cf:
                             cf.write(str(chat_id))
                     except Exception:
                         pass
-                    msg_text = update["message"]["text"].strip()
-                    msg_lower = msg_text.lower()
 
                     # Intercept OAuth code / redirect URL pasted by user
-                    # Catches: http://localhost:8080/callback?code=XXX, raw code strings, /code XXX
+                    # Only triggered if explicitly containing OAuth URL or /code
                     is_oauth = False
-                    if "code=" in msg_text:
+                    if "code=" in msg_text and ("pluang" in msg_text.lower() or "localhost" in msg_text.lower()):
                         is_oauth = True
-                    elif msg_lower.startswith("/code"):
-                        is_oauth = True
-                    elif "callback" in msg_lower and "localhost" in msg_lower:
-                        is_oauth = True
-                    elif len(msg_text) > 35 and " " not in msg_text and not msg_text.startswith("/"):
-                        # Likely a raw OAuth code pasted directly
+                    elif msg_lower.startswith("/code "):
                         is_oauth = True
 
                     if is_oauth:
@@ -1254,19 +1293,21 @@ def start_bot_listener():
                             bn_txt = "⚪ Belum disetel"
                         client = get_pluang_client()
                         pluang_txt = "🟢 Terhubung" if client else "🔴 Perlu /login"
+                        modal_str = "Dynamic Wallet-Based (Kelly Criterion)" if cfg.get("max_budget_idr", 0) == 0 else f"Rp {cfg.get('max_budget_idr', 0):,} max"
                         welcome = (
                             "👋 <b>Halo! Saya Pyrofuel AI Crypto Futures Trading v3.0</b>\n\n"
                             f"🟡 <b>Binance Futures:</b> {bn_txt}\n"
                             f"🏦 <b>Pluang Status:</b> {pluang_txt}\n"
                             f"🌐 <b>Universe:</b> {len(universe)} crypto futures pairs (100% Full Binance)\n"
-                            f"💰 <b>Modal Sizing:</b> {'Dynamic Wallet-Based (Kelly Criterion)' if cfg.get('max_budget_idr', 0) == 0 else f"Rp {cfg.get('max_budget_idr'):,} max"}\n"
-                            f"⚡ <b>Leverage:</b> Dynamic 2x-25x (AI pilih berdasarkan ATR & volatilitas)\n\n"
+                            f"💰 <b>Modal Sizing:</b> {modal_str}\n"
+                            f"⚡ <b>Leverage:</b> FIXED 20x (Mandat User — Eksekusi Disiplin)\n\n"
                             "Sistem dirancang dengan <b>5-Layer AI Pipeline + 9-Agent Committee:</b>\n"
                             "• Scanner ➔ Setup Hunter ➔ Plan ➔ Risk Audit ➔ Supreme Judge\n"
                             "• 4 Analyst → Bull/Bear Debate → Trader → Risk Officer → Portfolio Mgr\n\n"
-                            "<b>📍 Info Link di Bot Ini:</b>\n"
-                            "• 🔑 <i>Link Login Pluang</i> = OAuth resmi <code>mcp.pluang.com</code> — muncul hanya saat Anda ketik /login\n"
-                            "• Ini <b>BUKAN HACK</b>, ini autentikasi resmi dari server Pluang.\n\n"
+                            "<b>🛡️ Keamanan & Proteksi Whitelist:</b>\n"
+                            f"• Akun Anda (ID: <code>{chat_id}</code>) <b>TEROTORISASI RESMI</b> pada bot ini.\n"
+                            "• Tidak ada orang luar yang bisa mengakses bot Anda.\n"
+                            "• Link login Pluang hanya muncul saat Anda ketik /login dan berasal dari OAuth resmi Pluang (mcp.pluang.com). Bukan hack.\n\n"
                             "<b>📋 Perintah Utama:</b>\n"
                             "• <code>/audit</code> - 🔍 Audit menyeluruh sistem, data, analisa & full universe\n"
                             "• <code>/wallet</code> - Cek saldo Binance Futures ($) & Pluang (Live)\n"
@@ -1393,29 +1434,12 @@ def start_bot_listener():
                             )
 
                     elif msg_lower.startswith("/leverage"):
-                        parts = msg_text.split()
-                        if len(parts) >= 2:
-                            try:
-                                new_lev = int(parts[1])
-                                if 1 <= new_lev <= 20:
-                                    save_trading_config({"max_leverage": new_lev, "updated_by": "user"})
-                                    send_telegram_message(
-                                        chat_id,
-                                        f"⚡ <b>BATAS LEVERAGE DIPERBARUI!</b>\n"
-                                        f"Leverage maksimal: <b>{new_lev}x</b>\n"
-                                        f"<i>Perubahan langsung aktif.</i>"
-                                    )
-                                else:
-                                    send_telegram_message(chat_id, "❌ Leverage harus antara 1-20x.")
-                            except ValueError:
-                                send_telegram_message(chat_id, "❌ Format salah. Contoh: <code>/leverage 3</code>")
-                        else:
-                            cfg = get_trading_config()
-                            send_telegram_message(
-                                chat_id,
-                                f"ℹ️ <b>LEVERAGE MAKS:</b> {cfg.get('max_leverage', 5)}x\n"
-                                f"Untuk ubah: <code>/leverage [angka]</code>"
-                            )
+                        send_telegram_message(
+                            chat_id,
+                            f"⚡ <b>LEVERAGE: FIXED 20x</b>\n\n"
+                            f"Berdasarkan mandat user, leverage dikunci tetap pada <b>20x</b> untuk semua pair demi konsistensi sizing dan disiplin VaR.\n"
+                            f"AI menghitung position size secara dinamis berdasarkan Kelly Criterion dari modal dompet Anda."
+                        )
                     
                     elif msg_lower in ["/fx", "fx", "kurs", "/kurs"]:
                         handle_fx_command(chat_id)
@@ -1481,6 +1505,11 @@ def start_bot_listener():
 
                     if not chat_id:
                         answer_callback(cb_id, "Error: chat_id not found")
+                        continue
+
+                    # SECURITY FIREWALL: Check Telegram Whitelist on Callbacks
+                    if not is_chat_allowed(chat_id):
+                        answer_callback(cb_id, "⛔ Akses Ditolak: Tidak terotorisasi.")
                         continue
 
                     if cb_data.startswith("buy_") or cb_data.startswith("confirm_"):

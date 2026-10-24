@@ -55,7 +55,9 @@ def load_env():
 ENV = load_env()
 
 # ===== AI PROVIDER CONFIGURATION =====
-AI_PROVIDER = ENV.get("AI_PROVIDER", "groq")  # "groq" or "openrouter"
+AI_PROVIDER = ENV.get("AI_PROVIDER", "ollama")  # "ollama" (local) is PRIMARY
+OLLAMA_BASE_URL = ENV.get("OLLAMA_BASE_URL", "http://localhost:11434")  # Local Ollama endpoint
+OLLAMA_MODEL = ENV.get("OLLAMA_MODEL", "llama3.1")  # Model to use from local Ollama
 GROQ_API_KEY = ENV.get("GROQ_API_KEY", "")
 GROQ_MODEL = ENV.get("GROQ_MODEL", "openai/gpt-oss-120b")
 OPENROUTER_API_KEY = ENV.get("OPENROUTER_API_KEY", "")
@@ -73,12 +75,16 @@ OPENROUTER_FREE_MODELS = [
     "liquid/lfm-2.5-2.6b:free",
 ]
 
+# ===== LEVERAGE CONFIG — FIXED AT 20x (USER MANDATE) =====
+FIXED_LEVERAGE = 20  # Immutable — AI cannot override this
+
 CONFIG_FILE = os.path.join(BASE_DIR, "trading_config.json")
 
 def get_trading_config():
     cfg = {
         "max_budget_idr": 0,           # 0 = AI uses dynamic wallet-based Kelly sizing
-        "max_leverage": 25,             # AI selects 2x-25x dynamically based on ATR & confidence
+        "max_leverage": FIXED_LEVERAGE,  # LOCKED AT 20x — user mandate, AI cannot override
+        "fixed_leverage": FIXED_LEVERAGE,
         "min_confidence_score": 45,
         "min_risk_reward_ratio": 1.5,
         "max_drawdown_pct": 5.0
@@ -90,11 +96,17 @@ def get_trading_config():
                 cfg.update(saved)
         except Exception:
             pass
+    # Always enforce 20x fixed — never allow config file to override
+    cfg["max_leverage"] = FIXED_LEVERAGE
+    cfg["fixed_leverage"] = FIXED_LEVERAGE
     return cfg
 
 def save_trading_config(new_config: dict):
     cfg = get_trading_config()
     cfg.update(new_config)
+    # Enforce fixed leverage — never save AI-overridden values
+    cfg["max_leverage"] = FIXED_LEVERAGE
+    cfg["fixed_leverage"] = FIXED_LEVERAGE
     cfg["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -142,7 +154,7 @@ def _call_single_provider(url, headers, data, timeout=60):
     return content
 
 
-def _call_gemini_provider(api_key, model, messages, max_tokens=1500, temperature=0.1, timeout=60):
+def _call_gemini_provider(api_key, model, messages, max_tokens=1500, temperature=0.1, timeout=60, is_json=True):
     """Call Google Gemini API directly (different format from OpenAI-compatible)."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     
@@ -157,13 +169,16 @@ def _call_gemini_provider(api_key, model, messages, max_tokens=1500, temperature
         elif msg["role"] == "assistant":
             gemini_contents.append({"role": "model", "parts": [{"text": msg["content"]}]})
     
+    gen_config = {
+        "temperature": temperature,
+        "maxOutputTokens": max_tokens
+    }
+    if is_json:
+        gen_config["responseMimeType"] = "application/json"
+    
     payload = {
         "contents": gemini_contents,
-        "generationConfig": {
-            "temperature": temperature,
-            "maxOutputTokens": max_tokens,
-            "responseMimeType": "application/json"
-        }
+        "generationConfig": gen_config
     }
     if system_instruction:
         payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
@@ -195,19 +210,42 @@ class DailyLimitExhausted(Exception):
     pass
 
 
+def _call_ollama_provider(base_url, model, messages, max_tokens=1500, temperature=0.1, timeout=120):
+    """Call local Ollama API (primary — no rate limits, no API key, no quota)."""
+    url = f"{base_url}/api/chat"
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "options": {
+            "temperature": temperature,
+            "num_predict": max_tokens,
+        }
+    }
+    resp = requests.post(url, json=payload, timeout=timeout)
+    if resp.status_code != 200:
+        raise Exception(f"Ollama HTTP {resp.status_code}: {resp.text[:200]}")
+    result = resp.json()
+    content = result.get("message", {}).get("content", "")
+    if not content:
+        raise Exception("Empty response from Ollama")
+    return content
+
+
 def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature: float = 0.1, is_json: bool = True):
     """
-    ULTIMATE AI caller — 6-deep provider cascade, NEVER falls back to rule-based math.
+    ULTIMATE AI caller — LOCAL OLLAMA FIRST, then cloud cascade.
+    NEVER falls back to rule-based math. Always AI.
     
-    CASCADE ORDER (configurable via AI_PROVIDER):
-    1. Primary provider (OpenRouter or Groq based on AI_PROVIDER setting)
-    2. Secondary provider (the other one)
-    3. OpenRouter FREE model rotation (gemma-4, nemotron, cohere, auto-router)
-    4. Google Gemini Flash (free, different infrastructure entirely)
-    5. Cerebras (free, ultra-fast inference)
+    CASCADE ORDER:
+    1. LOCAL Ollama (primary — unlimited, local, private, no API key needed)
+    2. Google Gemini Flash (smartest cloud model)
+    3. Groq (120B reasoning model)
+    4. OpenRouter primary model
+    5. OpenRouter FREE model rotation
+    6. Cerebras (ultra-fast inference)
     
-    If ALL 6+ providers fail → raises Exception (pipeline handles gracefully).
-    NEVER returns rule-based/manual calculations. Always AI.
+    If ALL providers fail → raises Exception. Pipeline MUST use AI.
     """
     global _GROQ_DAILY_EXHAUSTED
 
@@ -223,76 +261,78 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
     if is_json:
         base_data["response_format"] = {"type": "json_object"}
 
-    # ===== BUILD PROVIDER CHAIN — SORTED BY INTELLIGENCE (SMARTEST FIRST) =====
+    # ===== BUILD PROVIDER CHAIN — LOCAL OLLAMA FIRST, THEN CLOUD CASCADE =====
     providers = []
-    
-    # --- Tier 1: Google Gemini 3.8 Flash (proprietary Google reasoning model — SMARTEST) ---
-    gemini_prov = None
+
+    # --- Tier 0: LOCAL OLLAMA (PRIMARY — unlimited, private, local) ---
+    providers.append({
+        "name": "Ollama-Local",
+        "type": "ollama",
+        "base_url": OLLAMA_BASE_URL,
+        "model": OLLAMA_MODEL,
+        "max_retries": 1,
+        "timeout": 2.5,  # Fast connect timeout so absence doesn't block pipeline
+    })
+
+    # --- Tier 1: Groq (120B reasoning model — verified ultra-fast & high accuracy) ---
+    if GROQ_API_KEY:
+        # 120B primary reasoning model
+        providers.append({
+            "name": "Groq-120B",
+            "type": "openai_compat",
+            "url": "https://api.groq.com/openai/v1/chat/completions",
+            "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+            "model": "openai/gpt-oss-120b",
+            "max_retries": 1,
+        })
+        # 27B secondary fast model
+        providers.append({
+            "name": "Groq-Qwen27B",
+            "type": "openai_compat",
+            "url": "https://api.groq.com/openai/v1/chat/completions",
+            "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+            "model": "qwen/qwen3.8-27b",
+            "max_retries": 1,
+        })
+        # 20B tertiary high-headroom backup model
+        providers.append({
+            "name": "Groq-20B",
+            "type": "openai_compat",
+            "url": "https://api.groq.com/openai/v1/chat/completions",
+            "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+            "model": "openai/gpt-oss-20b",
+            "max_retries": 1,
+        })
+
+    # --- Tier 2: Google Gemma 26B (verified working on user Gemini key) ---
     if GEMINI_API_KEY:
-        gemini_prov = {
+        providers.append({
+            "name": "Google-Gemma26B",
+            "type": "gemini",
+            "api_key": GEMINI_API_KEY,
+            "model": "gemma-4-26b-a4b-it",
+            "max_retries": 1,
+        })
+        providers.append({
             "name": "Gemini-Flash",
             "type": "gemini",
             "api_key": GEMINI_API_KEY,
             "model": "gemini-3.8-flash",
             "max_retries": 1,
-        }
+        })
 
-    # --- Tier 2: Groq (GPT-OSS-120B — 120B reasoning model) ---
-    groq_prov = {
-        "name": "Groq",
-        "type": "openai_compat",
-        "url": "https://api.groq.com/openai/v1/chat/completions",
-        "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-        "model": GROQ_MODEL,
-        "max_retries": 1,
-    }
-
-    # --- Tier 3: Primary OpenRouter ---
-    openrouter_prov = {
-        "name": "OpenRouter",
-        "type": "openai_compat",
-        "url": "https://openrouter.ai/api/v1/chat/completions",
-        "headers": {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
-        "model": OPENROUTER_MODEL,
-        "max_retries": 2,
-    }
-
-    # Build order based on AI_PROVIDER preference (default: Gemini first if available, else Groq, else OpenRouter)
-    if AI_PROVIDER.lower() == "gemini" and gemini_prov:
-        providers.append(gemini_prov)
-        if GROQ_API_KEY and not _GROQ_DAILY_EXHAUSTED["exhausted"]:
-            providers.append(groq_prov)
-        if OPENROUTER_API_KEY:
-            providers.append(openrouter_prov)
-    elif AI_PROVIDER.lower() == "openrouter":
-        if gemini_prov:
-            providers.append(gemini_prov)  # Smartest first
-        if OPENROUTER_API_KEY:
-            providers.append(openrouter_prov)
-        if GROQ_API_KEY and not _GROQ_DAILY_EXHAUSTED["exhausted"]:
-            providers.append(groq_prov)
-    else:  # groq or default
-        if gemini_prov:
-            providers.append(gemini_prov)  # Smartest first
-        if GROQ_API_KEY and not _GROQ_DAILY_EXHAUSTED["exhausted"]:
-            providers.append(groq_prov)
-        if OPENROUTER_API_KEY:
-            providers.append(openrouter_prov)
-
-    # --- Tier 4: OpenRouter FREE model rotation (backup, sorted by intelligence) ---
+    # --- Tier 3: OpenRouter ---
     if OPENROUTER_API_KEY:
-        for free_model in OPENROUTER_FREE_MODELS:
-            if free_model != OPENROUTER_MODEL:  # Don't duplicate primary
-                providers.append({
-                    "name": f"OR-{free_model.split('/')[0]}",
-                    "type": "openai_compat",
-                    "url": "https://openrouter.ai/api/v1/chat/completions",
-                    "headers": {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
-                    "model": free_model,
-                    "max_retries": 1,
-                })
+        providers.append({
+            "name": "OpenRouter",
+            "type": "openai_compat",
+            "url": "https://openrouter.ai/api/v1/chat/completions",
+            "headers": {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
+            "model": OPENROUTER_MODEL,
+            "max_retries": 1,
+        })
 
-    # --- Tier 5: Cerebras (free, ultra-fast) ---
+    # --- Tier 4: Cerebras (ultra-fast inference) ---
     if CEREBRAS_API_KEY:
         providers.append({
             "name": "Cerebras",
@@ -300,7 +340,7 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             "url": "https://api.cerebras.ai/v1/chat/completions",
             "headers": {"Authorization": f"Bearer {CEREBRAS_API_KEY}", "Content-Type": "application/json"},
             "model": "qwen-3.8-27b",
-            "max_retries": 2,
+            "max_retries": 1,
         })
 
     if not providers:
@@ -317,11 +357,17 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
         
         for attempt in range(prov["max_retries"]):
             try:
-                if prov["type"] == "gemini":
+                if prov["type"] == "ollama":
+                    # Local Ollama (primary provider — no API key, no rate limits)
+                    content = _call_ollama_provider(
+                        prov["base_url"], prov["model"], messages,
+                        max_tokens=max_tokens, temperature=temperature, timeout=prov.get("timeout", 10)
+                    )
+                elif prov["type"] == "gemini":
                     # Gemini has its own API format
                     content = _call_gemini_provider(
                         prov["api_key"], prov["model"], messages,
-                        max_tokens=max_tokens, temperature=temperature, timeout=35
+                        max_tokens=max_tokens, temperature=temperature, timeout=35, is_json=is_json
                     )
                 else:
                     # OpenAI-compatible endpoint (Groq, OpenRouter, Cerebras)
@@ -345,7 +391,7 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
                     print(f"[AI RETRY] {last_error} — retrying in {wait}s...", flush=True)
                     time.sleep(wait)
                 else:
-                    print(f"[AI SKIP] {prov_name} exhausted after {prov['max_retries']} attempts", flush=True)
+                    print(f"[AI SKIP] {prov_name} exhausted: {last_error}", flush=True)
 
     raise Exception(
         f"⛔ ALL {len(providers_tried)} AI providers failed! "
@@ -356,14 +402,20 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
 
 
 # ===================================================================
-# RULE-BASED TECHNICAL FALLBACK (when ALL AI providers are down)
+# RULE-BASED TECHNICAL FALLBACK — DISABLED (user mandate: AI ONLY)
+# All fallbacks now RAISE exceptions to force the pipeline to fail
+# loudly rather than proceed with math-based heuristics.
 # ===================================================================
 def _rule_based_setup(scan_data: dict):
     """
-    Pure-technical consensus engine — NO AI needed.
-    Returns setup dict mimicking Layer 2 output.
-    Used when Groq + OpenRouter both fail.
+    DISABLED: User requires AI-only analysis. Rule-based algorithms removed.
+    Raises exception so the pipeline stops rather than faking AI output.
     """
+    raise Exception(
+        "⛔ AI REQUIRED: Semua provider AI gagal. Pipeline dihentikan. "
+        "Fallback algoritma matematis DILARANG per mandat user. "
+        "Pastikan Ollama berjalan (http://localhost:11434) atau API key cloud aktif."
+    )
     rsi = scan_data.get("rsi_14_1h", 50)
     ema_trend = scan_data.get("ema_trend_1h", "NEUTRAL")
     macd = scan_data.get("macd_1h", {})
@@ -509,7 +561,15 @@ def _rule_based_setup(scan_data: dict):
 
 
 def _rule_based_plan(scan_data: dict, setup: dict, market_data: dict):
-    """Rule-based trading plan when AI is down."""
+    """DISABLED — AI only. Raises exception."""
+    raise Exception(
+        "⛔ AI REQUIRED: Trading plan harus dari AI. "
+        "Ollama (localhost:11434) atau cloud API harus aktif."
+    )
+
+
+def _rule_based_plan_DISABLED(scan_data: dict, setup: dict, market_data: dict):
+    """Rule-based trading plan when AI is down (DISABLED per user mandate)."""
     price = market_data.get("current_price", scan_data.get("price", 0))
     atr = market_data.get("atr_14", 0)
     atr_pct = market_data.get("atr_pct", 0) or (atr / price * 100 if price else 0)
@@ -556,7 +616,15 @@ def _rule_based_plan(scan_data: dict, setup: dict, market_data: dict):
 
 
 def _rule_based_risk(scan_data: dict, setup: dict, plan: dict, market_data: dict):
-    """Rule-based risk audit when AI is down."""
+    """DISABLED — AI only. Raises exception."""
+    raise Exception(
+        "⛔ AI REQUIRED: Risk audit harus dari AI. "
+        "Ollama (localhost:11434) atau cloud API harus aktif."
+    )
+
+
+def _rule_based_risk_DISABLED(scan_data: dict, setup: dict, plan: dict, market_data: dict):
+    """Rule-based risk audit when AI is down (DISABLED per user mandate)."""
     checks = []
     total = 0
 
@@ -867,9 +935,8 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
     elif result["order_type"].upper() != "LIMIT":
         result["limit_price"] = result.get("entry_price", current_price)
 
-    # Cap leverage to exchange maximum safety (25x); AI free range 2-25x
-    lev = int(result.get("leverage") or 10)
-    result["leverage"] = max(2, min(lev, 25))
+    # FIXED LEVERAGE: Always 20x per user mandate — AI cannot override this
+    result["leverage"] = FIXED_LEVERAGE
 
     # Fallback position size: 0 means auto_trader resolves dynamically from wallet balance
     if result.get("position_size_idr") is None or result.get("position_size_idr") < 0:
@@ -1047,8 +1114,8 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
     AI governs leverage, limit/market order type, modal, and single Take Profit.
     """
     cfg = get_trading_config()
-    current_max_budget = cfg.get("max_budget_idr", 500000)
-    current_max_leverage = cfg.get("max_leverage", 25)
+    current_max_budget = cfg.get("max_budget_idr", 0)
+    current_max_leverage = FIXED_LEVERAGE  # Always 20x — immutable
     current_min_confidence = cfg.get("min_confidence_score", 45)
     current_min_rrr = cfg.get("min_risk_reward_ratio", 1.5)
 
@@ -1059,6 +1126,8 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
     result["take_profit_2"] = tp_val
     result["order_type"] = result.get("order_type") or plan_result.get("order_type", "MARKET")
     result["limit_price"] = result.get("limit_price") or plan_result.get("limit_price", result.get("entry_price", 0))
+    # ENFORCE FIXED 20x LEVERAGE — always, no exceptions
+    result["leverage"] = FIXED_LEVERAGE
 
     reasons = []
 
@@ -1074,11 +1143,8 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
     elif result.get("position_size_idr", 0) < 0:
         result["position_size_idr"] = 0   # 0 triggers dynamic wallet sizing in auto_trader
 
-    # Gate 3: Bounded by max leverage setting (AI manages leverage)
-    if result.get("leverage", 1) > current_max_leverage:
-        result["leverage"] = current_max_leverage
-    elif result.get("leverage", 1) < 1:
-        result["leverage"] = 1
+    # Gate 3: Leverage LOCKED at 20x (user mandate)
+    result["leverage"] = FIXED_LEVERAGE
 
     # Gate 4: NO_CLEAR_SETUP or Direction NONE = REJECT
     if result.get("direction", "NONE") == "NONE" or setup_result.get("setup_name") == "NO_CLEAR_SETUP":
