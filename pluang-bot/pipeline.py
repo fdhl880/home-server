@@ -249,9 +249,14 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
     """
     global _GROQ_DAILY_EXHAUSTED
 
+    effective_system = system_prompt or ""
+    effective_prompt = prompt or ""
+    if is_json and "json" not in (effective_system.lower() + effective_prompt.lower()):
+        effective_system = (effective_system + "\nYou must respond strictly in valid JSON format.").strip()
+
     messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": prompt}
+        {"role": "system", "content": effective_system},
+        {"role": "user", "content": effective_prompt}
     ]
     base_data = {
         "messages": messages,
