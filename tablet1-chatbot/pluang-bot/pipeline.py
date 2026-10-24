@@ -140,7 +140,7 @@ def save_trading_config(new_config: dict):
 # Initial config
 _cfg = get_trading_config()
 MAX_BUDGET_IDR = _cfg.get("max_budget_idr", 0)       # 0 = dynamic wallet-based
-MAX_LEVERAGE = _cfg.get("max_leverage", 25)            # dynamic 2x-25x
+MAX_LEVERAGE = 20                                     # FIXED 20x — user mandate
 MIN_CONFIDENCE_SCORE = _cfg.get("min_confidence_score", 45)
 MIN_RISK_REWARD_RATIO = _cfg.get("min_risk_reward_ratio", 1.5)
 MAX_DRAWDOWN_PCT = _cfg.get("max_drawdown_pct", 5.0)
@@ -254,20 +254,34 @@ def _call_ollama_provider(base_url, model, messages, max_tokens=1500, temperatur
     return content
 
 
+_OLLAMA_STATUS = {"available": False, "last_check": 0}
+
+def _is_ollama_online(base_url: str) -> bool:
+    global _OLLAMA_STATUS
+    now = time.time()
+    if now - _OLLAMA_STATUS["last_check"] < 30:
+        return _OLLAMA_STATUS["available"]
+    _OLLAMA_STATUS["last_check"] = now
+    try:
+        import socket
+        from urllib.parse import urlparse
+        p = urlparse(base_url)
+        host = p.hostname or "127.0.0.1"
+        port = p.port or 11434
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.2)
+        s.connect((host, port))
+        s.close()
+        _OLLAMA_STATUS["available"] = True
+    except Exception:
+        _OLLAMA_STATUS["available"] = False
+    return _OLLAMA_STATUS["available"]
+
+
 def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature: float = 0.1, is_json: bool = True):
     """
-    ULTIMATE AI caller — LOCAL OLLAMA FIRST, then cloud cascade.
+    ULTIMATE AI caller — LOCAL OLLAMA FIRST (if online), then cloud cascade.
     NEVER falls back to rule-based math. Always AI.
-    
-    CASCADE ORDER:
-    1. LOCAL Ollama (primary — unlimited, local, private, no API key needed)
-    2. Google Gemini Flash (smartest cloud model)
-    3. Groq (120B reasoning model)
-    4. OpenRouter primary model
-    5. OpenRouter FREE model rotation
-    6. Cerebras (ultra-fast inference)
-    
-    If ALL providers fail → raises Exception. Pipeline MUST use AI.
     """
     global _GROQ_DAILY_EXHAUSTED
 
@@ -288,18 +302,19 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
     if is_json:
         base_data["response_format"] = {"type": "json_object"}
 
-    # ===== BUILD PROVIDER CHAIN — LOCAL OLLAMA FIRST, THEN CLOUD CASCADE =====
+    # ===== BUILD PROVIDER CHAIN =====
     providers = []
 
-    # --- Tier 0: LOCAL OLLAMA (PRIMARY — unlimited, private, local) ---
-    providers.append({
-        "name": "Ollama-Local",
-        "type": "ollama",
-        "base_url": OLLAMA_BASE_URL,
-        "model": OLLAMA_MODEL,
-        "max_retries": 1,
-        "timeout": 2.5,  # Fast connect timeout so absence doesn't block pipeline
-    })
+    # --- Tier 0: LOCAL OLLAMA (only if daemon is actually running) ---
+    if _is_ollama_online(OLLAMA_BASE_URL):
+        providers.append({
+            "name": "Ollama-Local",
+            "type": "ollama",
+            "base_url": OLLAMA_BASE_URL,
+            "model": OLLAMA_MODEL,
+            "max_retries": 1,
+            "timeout": 20,
+        })
 
     # --- Tier 1: Groq (120B reasoning model — verified ultra-fast & high accuracy) ---
     if GROQ_API_KEY:
@@ -1369,7 +1384,7 @@ def run_5_layer_pipeline(symbol: str):
             "take_profit_2": plan_result.get("take_profit") or plan_result.get("take_profit_2", 0),
             "stop_loss": plan_result.get("stop_loss", 0),
             "risk_reward_ratio": plan_result.get("risk_reward_ratio", "0:0"),
-            "leverage": plan_result.get("leverage", 5),
+            "leverage": FIXED_LEVERAGE,
             "position_size_idr": plan_result.get("position_size_idr", 50000),
             "max_risk_idr": 1000,
             "risk_audit_pass_rate": risk_result.get("pass_rate_pct", 0),

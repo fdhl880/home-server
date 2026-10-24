@@ -344,20 +344,8 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
     pos_idr = int(pos_idr_raw)
     pos_usd = round(pos_idr / get_fx_info().get("usd_idr", 16500), 2)
 
-    # AI governs leverage — dynamic 2x-25x
-    leverage = int(signal.get("leverage") or 0)
-    if leverage < 2:
-        _sym_u = raw_sym.replace("-USD", "")
-        if _sym_u in {"BTC", "ETH"}:
-            leverage = 15
-        elif _sym_u in {"BNB", "SOL", "XRP", "ADA", "AVAX", "LINK"}:
-            leverage = 10
-        elif _sym_u in {"DOGE", "PEPE", "SHIB", "FLOKI", "BONK", "WIF"}:
-            leverage = 5
-        else:
-            leverage = 8
-    if max_lev > 0:
-        leverage = min(leverage, max_lev)
+    # FIXED LEVERAGE: Strictly locked at 20x (immutable user mandate)
+    leverage = 20
 
     # Estimated time horizon from signal / pipeline
     time_horizon = signal.get("estimated_time_horizon", "N/A")

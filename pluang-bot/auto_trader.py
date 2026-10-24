@@ -230,7 +230,7 @@ def record_position(signal: dict):
     global pluang_client
     cfg = _get_config()
     max_budget = cfg.get("max_budget_idr", 0)   # 0 = no cap, dynamic wallet-based
-    max_lev = cfg.get("max_leverage", 25)
+    max_lev = 20
     margin_type = signal.get("margin_type") or cfg.get("margin_type", "ISOLATED")
     
     # 1. AI GOVERNS ORDER TYPE & LIMIT PRICE
@@ -1023,7 +1023,7 @@ def start_loop():
     print(f"[*] PYROFUEL AUTONOMOUS CRYPTO FUTURES TRADER v3.0", flush=True)
     print(f"[*] PRIMARY EXECUTION ENGINE: BINANCE FUTURES", flush=True)
     print(f"[*] Margin: {cfg.get('margin_type', 'ISOLATED')} | Order: {cfg.get('order_type', 'MARKET')}", flush=True)
-    print(f"[*] Max Leverage: {cfg.get('max_leverage', 5)}x | Max Budget: Rp {cfg.get('max_budget_idr', 50000):,}", flush=True)
+    print(f"[*] Leverage: 20x ISOLATED (Fixed) | Max Budget: Rp {cfg.get('max_budget_idr', 50000):,}", flush=True)
     print(f"[*] Auto Execute: {cfg.get('auto_execute_on_pluang', True)}", flush=True)
     print(f"[*] Quick Screen: Every 60 sec | Full AI: Every 5 min", flush=True)
     print(f"{'='*70}", flush=True)

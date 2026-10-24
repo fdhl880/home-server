@@ -388,7 +388,7 @@ class BinanceFuturesClient:
     # ===================================================================
 
     def open_position(self, symbol: str, direction: str, quantity: float,
-                      leverage: int = 5, order_type: str = "MARKET",
+                      leverage: int = 20, order_type: str = "MARKET",
                       limit_price: float = None, margin_type: str = "ISOLATED"):
         """
         Open a real FUTURES position on Binance:
@@ -544,7 +544,7 @@ class BinanceFuturesClient:
         raw_sym = signal.get("binance_pair") or signal.get("symbol", "")
         symbol = self.normalize_symbol(raw_sym)
         direction = signal.get("direction", "LONG").upper()
-        leverage = int(signal.get("leverage") or config.get("max_leverage", 5))
+        leverage = 20  # Always 20x fixed user mandate
         margin_type = signal.get("margin_type") or config.get("margin_type", "ISOLATED")
         order_type = (signal.get("order_type") or config.get("order_type", "MARKET")).upper()
         limit_price = float(signal.get("limit_price") or signal.get("entry_price", 0))
