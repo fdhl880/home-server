@@ -830,6 +830,23 @@ def run_radar_scan(chat_id):
                         ]
                     }
                     send_telegram_message(chat_id, text, reply_markup)
+
+                    # Send 9-Agent Committee Debate Transcript
+                    com = res.get("committee") or {}
+                    transcripts = com.get("collaboration_transcript", [])
+                    if transcripts:
+                        lines = [f"🏛️ <b>TRANSKRIP PERDEBATAN SIDANG MAHKAMAH 9-AGENT // {sym} (7 RONDE)</b>\n────────────────────────"]
+                        for t in transcripts:
+                            r_num = t.get("round", "-")
+                            spk = t.get("speaker", "")
+                            role = t.get("role", "")
+                            cnt = t.get("content", "")
+                            spk_icon = "🟢" if "Bull" in spk else ("🔴" if "Bear" in spk else ("🟣" if "Trader" in spk else ("🟠" if "Risk" in spk else ("🔵" if "Portfolio" in spk else "⚪"))))
+                            lines.append(f"<b>[Ronde {r_num}] {spk_icon} {spk}</b> <i>({role})</i>:\n\"{cnt}\"\n")
+                        transcript_text = "\n".join(lines)
+                        if len(transcript_text) > 4000:
+                            transcript_text = transcript_text[:3990] + "...\n<i>(dipersingkat)</i>"
+                        send_telegram_message(chat_id, transcript_text)
             except Exception as e:
                 print(f"[-] Scan error {sym}: {e}", flush=True)
 
@@ -1158,17 +1175,19 @@ def handle_news_command(chat_id):
     send_telegram_message(chat_id, text)
 
 def handle_any_coin_scan(chat_id, coin_name):
-    """Scan ANY of the 524 coins on Binance Futures with 5-Layer AI Pipeline"""
+    """Scan ANY coin on Binance Futures with Unified 5-Layer AI Pipeline & 9-Agent Committee Sidang (Single Seamless Process)"""
     coin_name = coin_name.strip()
     pair = normalize_symbol_to_pair(coin_name)
     symbol = pair.replace("USDT", "-USD")
     
-    send_telegram_message(chat_id, f"⏳ <i>Menjalankan 5-Layer Institutional Pipeline untuk {pair}...</i>")
+    send_telegram_message(chat_id, f"⏳ <i>Menjalankan Institutional 5-Layer Pipeline & Sidang 9-Agent untuk {pair}...</i>")
     try:
         res = run_5_layer_pipeline(symbol)
         if "error" in res:
             send_telegram_message(chat_id, f"❌ Error: {res['error']}")
             return
+            
+        # 1. Message 1: 5-Layer Institutional Deep Dive + Live Binance Position Status + SMC Alpha + Supreme PM Verdict
         text, status = format_pipeline_report(res)
         markup = None
         if status == "APPROVED":
@@ -1177,57 +1196,12 @@ def handle_any_coin_scan(chat_id, coin_name):
                 {"text": "❌ Batalkan", "callback_data": f"cancel_{pair}"}
             ]]}
         send_telegram_message(chat_id, text, markup)
-    except Exception as e:
-        send_telegram_message(chat_id, f"❌ Error analisis {pair}: {e}")
 
-
-def handle_sidang_command(chat_id, coin_name):
-    """Run full 9-Agent Investment Committee Deliberation and format multi-round debate for Telegram"""
-    coin_name = coin_name.strip()
-    pair = normalize_symbol_to_pair(coin_name)
-    symbol = pair.replace("USDT", "-USD")
-    
-    send_telegram_message(
-        chat_id,
-        f"🏛️ <b>MEMULAI SIDANG 9-AGENT INVESTMENT COMMITTEE</b>\n\n"
-        f"Aset: <code>{pair}</code>\n"
-        f"⏳ <i>Mengumpulkan 4 Analis Spesialis, Bull vs Bear Researcher, Trader Agent, Risk Officer, dan Portfolio Manager (~15-20 detik)...</i>"
-    )
-    try:
-        from multi_agent_committee import run_multi_agent_committee
-        com = run_multi_agent_committee(symbol)
-        if not com:
-            send_telegram_message(chat_id, f"❌ Sidang gagal dieksekusi untuk {pair}.")
-            return
-            
-        consensus = com.get("consensus", {})
-        act = consensus.get("action", "HOLD")
-        conf = consensus.get("confidence_pct", 0)
-        dir_str = com.get("direction", "SKIP")
+        # 2. Message 2: Transkrip Lengkap Perdebatan Sidang Mahkamah 9-Agent (7 Ronde)
+        com = res.get("committee") or {}
         transcripts = com.get("collaboration_transcript", [])
-        agents = com.get("agents", {})
-        
-        status_icon = "🟢" if act in ["BUY", "LONG"] else ("🔴" if act in ["SELL", "SHORT"] else "⚪")
-        
-        # Message 1: Ringkasan Putusan & Consensus
-        risk = agents.get("risk_officer", {})
-        kelly_val = risk.get('kelly_suggested_idr', 50000)
-        msg1 = (
-            f"🏛️ <b>PUTUSAN SIDANG 9-AGENT COMMITTEE // {pair}</b>\n"
-            f"════════════════════════\n"
-            f"🎯 <b>Status Konsensus:</b> {status_icon} <b>{act} ({conf}% Conviction)</b>\n"
-            f"🧭 <b>Arah Disetujui:</b> <b>{dir_str}</b>\n"
-            f"⚡ <b>Leverage:</b> <b>20x ISOLATED</b>\n"
-            f"💰 <b>Alokasi Modal:</b> Rp {int(kelly_val):,} (Kelly Criterion)\n"
-            f"════════════════════════\n"
-            f"📌 <b>Executive Thesis:</b>\n"
-            f"<i>\"{consensus.get('executive_summary', consensus.get('summary', 'Sidang selesai.'))}\"</i>\n"
-        )
-        send_telegram_message(chat_id, msg1)
-        
-        # Message 2: Transkrip Debat Multi-Ronde (R1 - R7)
         if transcripts:
-            lines = ["📜 <b>TRANSKRIP PERDEBATAN SIDANG (7 RONDE):</b>\n────────────────────────"]
+            lines = [f"🏛️ <b>TRANSKRIP PERDEBATAN SIDANG MAHKAMAH 9-AGENT // {pair} (7 RONDE)</b>\n────────────────────────"]
             for t in transcripts:
                 r_num = t.get("round", "-")
                 spk = t.get("speaker", "")
@@ -1241,9 +1215,14 @@ def handle_sidang_command(chat_id, coin_name):
             if len(transcript_text) > 4000:
                 transcript_text = transcript_text[:3990] + "...\n<i>(dipersingkat)</i>"
             send_telegram_message(chat_id, transcript_text)
-            
+
     except Exception as e:
-        send_telegram_message(chat_id, f"❌ Error dalam sidang: {e}")
+        send_telegram_message(chat_id, f"❌ Error analisis {pair}: {e}")
+
+
+def handle_sidang_command(chat_id, coin_name):
+    """Direct alias to Unified 5-Layer Pipeline & 9-Agent Committee Deliberation (Single Seamless Process)"""
+    handle_any_coin_scan(chat_id, coin_name)
 
 
 def handle_audit_command(chat_id):

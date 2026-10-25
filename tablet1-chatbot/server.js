@@ -3036,23 +3036,36 @@ function runCommitteePy(symbol, positions, callback) {
     );
 }
 
-// POST /api/committee/run — jalankan full 9-agent committee
+// POST /api/committee/run — jalankan unified 5-layer pipeline + 9-agent committee (Single Seamless Process)
 app.post('/api/committee/run', (req, res) => {
     const symbol = (req.body || {}).symbol || 'BTC-USD';
-    const positions = getLocalPositions();
-    runCommitteePy(symbol, positions, (err, result) => {
-        if (err) {
-            // Fallback: baca hasil terbaru dari thesis file jika ada
-            if (fs.existsSync(thesisPath)) {
+    const cleanSym = symbol.replace(/[^a-zA-Z0-9]/g, '_');
+    const resultFile = path.join(resultsDir, `${cleanSym}_latest.json`);
+    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const pipelineScript = path.join(pluangDir, 'pipeline.py');
+
+    if (fs.existsSync(pipelineScript)) {
+        execFile(pyCmd, [pipelineScript, symbol], { cwd: pluangDir, timeout: 60000 }, (error, stdout) => {
+            if (fs.existsSync(resultFile)) {
                 try {
-                    const thesis = JSON.parse(fs.readFileSync(thesisPath, 'utf8'));
-                    if (thesis[symbol]) return res.json({ ...thesis[symbol], from_cache: true });
-                } catch (e2) {}
+                    const fresh = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+                    if (fresh.committee) return res.json(fresh.committee);
+                    return res.json(fresh);
+                } catch (e) {}
             }
-            return res.status(500).json({ error: err.message });
-        }
-        res.json(result);
-    });
+            const positions = getLocalPositions();
+            runCommitteePy(symbol, positions, (err, result) => {
+                if (err) return res.status(500).json({ error: err.message });
+                res.json(result);
+            });
+        });
+    } else {
+        const positions = getLocalPositions();
+        runCommitteePy(symbol, positions, (err, result) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json(result);
+        });
+    }
 });
 
 // GET /api/committee/thesis — persistent thesis workspace (LangAlpha-inspired)

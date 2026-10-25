@@ -587,7 +587,7 @@ def run_multi_agent_committee(symbol, existing_positions=None, active_positions=
         {"round": 3, "speaker": "Bear Researcher", "role": "Adversarial Counter", "content": bear.get("argument", "")},
         {"round": 4, "speaker": "Bull Rebuttal", "role": "Risk Defense", "content": rebuttal},
         {"round": 5, "speaker": "Trader Agent", "role": "Tactical Synthesis", "content": trader.get("decision", "")},
-        {"round": 6, "speaker": "Risk Officer", "role": "Kelly & VaR Gatekeeper", "content": f"Status: {risk.get('signal')}. Modal disetujui: Rp {risk.get('recommended_budget_idr',0):,} ({risk.get('recommended_leverage',1)}x). RRR: {risk.get('actual_rrr',0):.2f}"},
+        {"round": 6, "speaker": "Risk Officer", "role": "Kelly & VaR Gatekeeper", "content": f"Status: {risk.get('signal')}. Modal disetujui: Rp {risk.get('recommended_budget_idr',0):,} ({risk.get('recommended_leverage',20)}x ISOLATED). RRR: {risk.get('actual_rrr',0):.2f}"},
         {"round": 7, "speaker": "Portfolio Manager", "role": "Supreme Verdict", "content": pm.get("decision", "")}
     ]
 

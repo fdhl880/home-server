@@ -3916,6 +3916,20 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 if (s) { s.textContent = 'AUDITING...'; s.className = 'bbg-yellow'; }
             });
 
+            // Set 9-Agent Committee to deliberating (Single Unified Process)
+            const cBadge = document.getElementById('bbgCommitteeStatusBadge');
+            const cTitle = document.getElementById('bbgCommitteeTitle');
+            if (cTitle) cTitle.textContent = `-- 🏛️ MULTI-AGENT INVESTMENT COMMITTEE // ${sym} (DELIBERATING...) --`;
+            if (cBadge) {
+                cBadge.textContent = 'CONVENING 9 AGENTS & PIPELINE (~10-15s)...';
+                cBadge.className = 'bbg-amber';
+            }
+            const agentIds = ['bbgAgTech', 'bbgAgSent', 'bbgAgFund', 'bbgAgMacro', 'bbgAgBull', 'bbgAgBear', 'bbgAgTrader', 'bbgAgRisk', 'bbgAgPm'];
+            agentIds.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) { el.textContent = 'Deliberating...'; el.style.color = '#FFFF00'; }
+            });
+
             try {
                 const res = await fetch('/api/crypto-futures/scan', {
                     method: 'POST',
@@ -4346,44 +4360,8 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
 
         async function runBbgCommittee() {
             const sym = document.getElementById('manualOrderSymbol')?.value || 'BTC-USD';
-            showPopup(`CONVENING 9-AGENT COMMITTEE FOR ${sym}...`);
-
-            const statusBadge = document.getElementById('bbgCommitteeStatusBadge');
-            const titleEl = document.getElementById('bbgCommitteeTitle');
-            if (titleEl) titleEl.textContent = `-- 🏛️ MULTI-AGENT INVESTMENT COMMITTEE // ${sym} (DELIBERATING...) --`;
-            if (statusBadge) {
-                statusBadge.textContent = 'CONVENING 9 AGENTS (~15-20s)...';
-                statusBadge.className = 'bbg-amber';
-            }
-
-            const agentIds = ['bbgAgTech', 'bbgAgSent', 'bbgAgFund', 'bbgAgMacro', 'bbgAgBull', 'bbgAgBear', 'bbgAgTrader', 'bbgAgRisk', 'bbgAgPm'];
-            agentIds.forEach(id => {
-                const el = document.getElementById(id);
-                if (el) { el.textContent = 'Deliberating...'; el.style.color = '#FFFF00'; }
-            });
-
-            try {
-                const res = await fetch('/api/committee/run', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ symbol: sym })
-                });
-
-                if (!res.ok) {
-                    const err = await res.json().catch(() => ({}));
-                    throw new Error(err.error || `HTTP ${res.status}`);
-                }
-
-                const data = await res.json();
-                renderBbgCommittee(data);
-                showPopup(`COMMITTEE DELIBERATION COMPLETE FOR ${sym}: ${data.consensus?.action || 'DONE'}`);
-            } catch (e) {
-                if (badgeEl = document.getElementById('bbgCommitteeStatusBadge')) {
-                    badgeEl.textContent = 'COMMITTEE ERROR: ' + e.message;
-                    badgeEl.className = 'bbg-red';
-                }
-                showPopup(`ERROR CONVENING COMMITTEE FOR ${sym}: ${e.message}`);
-            }
+            showPopup(`CONVENING UNIFIED PIPELINE & 9-AGENT COMMITTEE FOR ${sym}...`);
+            await scanCryptoFuturesSymbol(sym);
         }
 
         function renderBbgCommittee(d) {
@@ -4476,7 +4454,7 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 take_profit_1: plan.take_profit_1,
                 take_profit_2: plan.take_profit_2,
                 stop_loss: plan.stop_loss,
-                leverage: plan.leverage || 5,
+                leverage: 20,
                 position_size_idr: kelly
             };
         }
