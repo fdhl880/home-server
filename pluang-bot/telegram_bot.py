@@ -160,6 +160,12 @@ def get_pluang_client():
         print(f"[-] Pluang client error: {e}", flush=True)
         return None
 
+def _esc_html(s):
+    """Safely escape HTML special characters for Telegram HTML parse_mode"""
+    if not s:
+        return ""
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 def send_telegram_message(chat_id, text, reply_markup=None):
     url = f"{TELE_API}/sendMessage"
     if len(text) > 4000:
@@ -173,7 +179,19 @@ def send_telegram_message(chat_id, text, reply_markup=None):
         payload["reply_markup"] = reply_markup
     try:
         r = requests.post(url, json=payload, timeout=15)
-        return r.json()
+        res_json = r.json() if r.content else {}
+        if not res_json.get("ok"):
+            err_desc = res_json.get("description", "")
+            print(f"[-] Telegram API Warning ({res_json.get('error_code')}): {err_desc}")
+            if "can't parse entities" in err_desc or "Bad Request" in err_desc:
+                # Automatic Fallback: Strip HTML tags and send cleanly as plain text
+                import re
+                plain_text = re.sub(r'<[^>]*>', '', text)
+                payload["text"] = plain_text
+                payload.pop("parse_mode", None)
+                r_fallback = requests.post(url, json=payload, timeout=15)
+                return r_fallback.json() if r_fallback.content else None
+        return res_json
     except Exception as e:
         print(f"[-] Telegram error: {e}")
         return None
@@ -269,11 +287,11 @@ def format_pipeline_report(res: dict):
     com = res.get("committee") or {}
     if com:
         agents = com.get("agents", {})
-        bull_arg = agents.get("bull_researcher", {}).get("argument", "")[:160]
-        bear_arg = agents.get("bear_researcher", {}).get("argument", "")[:160]
-        trader_dec = agents.get("trader", {}).get("decision", "")[:140]
-        risk_note = agents.get("risk_officer", {}).get("risk_note", "") or "Lev 20x ISOLATED"
-        pm_dec = com.get("portfolio_manager", {}).get("decision", "") or com.get("consensus", {}).get("summary", "")
+        bull_arg = _esc_html(agents.get("bull_researcher", {}).get("argument", "")[:160])
+        bear_arg = _esc_html(agents.get("bear_researcher", {}).get("argument", "")[:160])
+        trader_dec = _esc_html(agents.get("trader", {}).get("decision", "")[:140])
+        risk_note = _esc_html(agents.get("risk_officer", {}).get("risk_note", "") or "Lev 20x ISOLATED")
+        pm_dec = _esc_html(com.get("portfolio_manager", {}).get("decision", "") or com.get("consensus", {}).get("summary", ""))
 
         com_text = (
             f"🏛️ <b>SIDANG 9-AGENT INVESTMENT COMMITTEE:</b>\n"
@@ -284,6 +302,9 @@ def format_pipeline_report(res: dict):
             f"• <b>Supreme PM Verdict:</b> <b>{pm_dec[:180]}</b>\n"
             f"────────────────────────\n"
         )
+
+    setup_exp = _esc_html(setup.get('explanation_id', ''))
+    final_reason_text = _esc_html(fc.get('final_reason', '-')[:350])
 
     text = (
         f"🛡️ <b>PYROFUEL INSTITUTIONAL 5-LAYER + SIDANG 9-AGENT</b>\n"
@@ -299,7 +320,7 @@ def format_pipeline_report(res: dict):
         f"• <b>Level Kunci:</b> Pivot ${levels.get('pivot', 0):,.2f} | R1 ${levels.get('resistance_1', 0):,.2f} | S1 ${levels.get('support_1', 0):,.2f}\n"
         f"────────────────────────\n"
         f"🎯 <b>1. Setup Hunter:</b> <code>{setup.get('setup_name', 'N/A')}</code> ({setup.get('direction', 'NONE')})\n"
-        f"<i>\"{setup.get('explanation_id', '')}\"</i>\n\n"
+        f"<i>\"{setup_exp}\"</i>\n\n"
         f"📐 <b>2. Trading Plan (AI Governed):</b> {plan.get('action', 'SKIP')}\n"
         f"• Order: {order_t}{limit_p_str} | Leverage: <b>20x ISOLATED</b>\n"
         f"• Entry: ${plan.get('entry_price', 0):,} | SL: ${sl_val:,} | TP: ${tp_val:,}\n"
@@ -308,7 +329,7 @@ def format_pipeline_report(res: dict):
         f"⚖️ <b>4. Supreme Judge Decision:</b> {badge}\n"
         f"• <b>Skor Keyakinan:</b> {fc.get('confidence_score', 0)}% (Min {min_conf}%)\n\n"
         f"{com_text}"
-        f"📌 <b>Pertimbangan Final:</b>\n{fc.get('final_reason', '-')[:350]}\n"
+        f"📌 <b>Pertimbangan Final:</b>\n{final_reason_text}\n"
     )
     return text, status
 
@@ -838,9 +859,9 @@ def run_radar_scan(chat_id):
                         lines = [f"🏛️ <b>TRANSKRIP PERDEBATAN SIDANG MAHKAMAH 9-AGENT // {sym} (7 RONDE)</b>\n────────────────────────"]
                         for t in transcripts:
                             r_num = t.get("round", "-")
-                            spk = t.get("speaker", "")
-                            role = t.get("role", "")
-                            cnt = t.get("content", "")
+                            spk = _esc_html(t.get("speaker", ""))
+                            role = _esc_html(t.get("role", ""))
+                            cnt = _esc_html(t.get("content", ""))
                             spk_icon = "🟢" if "Bull" in spk else ("🔴" if "Bear" in spk else ("🟣" if "Trader" in spk else ("🟠" if "Risk" in spk else ("🔵" if "Portfolio" in spk else "⚪"))))
                             lines.append(f"<b>[Ronde {r_num}] {spk_icon} {spk}</b> <i>({role})</i>:\n\"{cnt}\"\n")
                         transcript_text = "\n".join(lines)
@@ -1204,9 +1225,9 @@ def handle_any_coin_scan(chat_id, coin_name):
             lines = [f"🏛️ <b>TRANSKRIP PERDEBATAN SIDANG MAHKAMAH 9-AGENT // {pair} (7 RONDE)</b>\n────────────────────────"]
             for t in transcripts:
                 r_num = t.get("round", "-")
-                spk = t.get("speaker", "")
-                role = t.get("role", "")
-                cnt = t.get("content", "")
+                spk = _esc_html(t.get("speaker", ""))
+                role = _esc_html(t.get("role", ""))
+                cnt = _esc_html(t.get("content", ""))
                 
                 spk_icon = "🟢" if "Bull" in spk else ("🔴" if "Bear" in spk else ("🟣" if "Trader" in spk else ("🟠" if "Risk" in spk else ("🔵" if "Portfolio" in spk else "⚪"))))
                 lines.append(f"<b>[Ronde {r_num}] {spk_icon} {spk}</b> <i>({role})</i>:\n\"{cnt}\"\n")
