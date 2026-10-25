@@ -2230,7 +2230,7 @@ function getLocalTradingConfig() {
     } catch (e) {}
     return {
         max_budget_idr: 0,
-        max_leverage: 25,
+        max_leverage: 20,
         min_confidence_score: 45,
         min_risk_reward_ratio: 1.5,
         margin_type: "ISOLATED",
@@ -2549,7 +2549,7 @@ app.get('/api/crypto-futures/status', (req, res) => {
         binance_wallet_balance_usdt: binanceBalance,
         pluang_connected: false,
         max_budget_idr: cfg.max_budget_idr || 50000,
-        max_leverage: cfg.max_leverage || 25,
+        max_leverage: cfg.max_leverage || 20,
         margin_type: cfg.margin_type || "ISOLATED",
         order_type: cfg.order_type || "MARKET",
         auto_execute_on_pluang: false,
@@ -2667,7 +2667,7 @@ sys.path.append('${pluangDir.replace(/\\/g, '/')}')
 from binance_futures import BinanceFuturesClient
 client = BinanceFuturesClient()
 signal = ${JSON.stringify(signal)}
-config = {'max_leverage': signal.get('leverage', 5), 'margin_type': 'ISOLATED', 'order_type': signal.get('order_type', 'MARKET')}
+config = {'max_leverage': 20, 'margin_type': 'ISOLATED', 'order_type': signal.get('order_type', 'MARKET')}
 res = client.execute_full_trade(signal, config)
 print(json.dumps(res))
 `;
@@ -2702,7 +2702,7 @@ print(json.dumps(res))
             take_profit_1: signal.take_profit_1 || signal.take_profit || 0,
             take_profit_2: signal.take_profit_2 || signal.take_profit || 0,
             stop_loss: signal.stop_loss || 0,
-            leverage: execRes.leverage || signal.leverage || 10,
+            leverage: 20,
             position_size_idr: signal.position_size_idr || (execRes.position_size_usdt ? Math.round(execRes.position_size_usdt * 16500) : 0),
             position_size_usd: execRes.position_size_usdt || signal.position_size_usd || (signal.position_size_idr ? (signal.position_size_idr / 16500).toFixed(2) : "0.00"),
             risk_reward_ratio: signal.risk_reward_ratio || "1:2.0",
