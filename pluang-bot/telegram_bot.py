@@ -213,30 +213,102 @@ def format_pipeline_report(res: dict):
     sl_val = plan.get('stop_loss', 0)
     order_t = (plan.get('order_type') or 'MARKET').upper()
     limit_p_str = f" (@ ${plan.get('limit_price', 0):,})" if order_t == 'LIMIT' else ""
-    lev_val = plan.get('leverage') or fc.get('leverage', 1)
+    lev_val = plan.get('leverage') or fc.get('leverage', 20)
     modal_val = plan.get('position_size_idr') or fc.get('position_size_idr', max_budget)
 
+    # 1. LIVE BINANCE FUTURES POSITION STATUS (IF ACTIVE)
+    bn_pos_text = ""
+    try:
+        bn = get_binance_client()
+        if bn:
+            pos_list = bn.get_positions()
+            coin_clean = symbol.replace("-USD", "").replace("USDT", "")
+            match_pos = next((p for p in pos_list if coin_clean in p.get("symbol", "")), None) if isinstance(pos_list, list) else None
+            if match_pos and abs(float(match_pos.get("position_amount", 0))) > 0:
+                dir_str = match_pos.get("direction", "LONG")
+                amt_str = match_pos.get("position_amount")
+                entry_px = float(match_pos.get("entry_price", 0))
+                mark_px = float(match_pos.get("mark_price", 0))
+                upnl_val = float(match_pos.get("unrealized_pnl", 0))
+                pos_lev = match_pos.get("leverage", 20)
+                liq_px = float(match_pos.get("liquidation_price", 0))
+                iso_margin = float(match_pos.get("isolated_margin", 0))
+                roe_val = (upnl_val / iso_margin * 100.0) if iso_margin > 0 else 0.0
+                pnl_sign = "+" if upnl_val >= 0 else ""
+                dist_liq = abs(mark_px - liq_px)
+                dist_pct = (dist_liq / mark_px * 100.0) if mark_px > 0 else 0.0
+
+                bn_pos_text = (
+                    f"⚡ <b>STATUS POSISI LIVE ANDA DI BINANCE:</b>\n"
+                    f"• <b>Posisi:</b> <code>{match_pos.get('symbol')}</code> (<b>{dir_str} {pos_lev}x ISOLATED</b>)\n"
+                    f"• <b>Ukuran:</b> {amt_str} (~${iso_margin:.2f} USDT margin)\n"
+                    f"• <b>Entry:</b> ${entry_px:,.4f} ➔ <b>Mark:</b> ${mark_px:,.4f}\n"
+                    f"• <b>Floating PnL:</b> <b>{pnl_sign}${upnl_val:.4f} USDT ({pnl_sign}{roe_val:.2f}% ROE)</b>\n"
+                    f"• <b>Harga Likuidasi:</b> ${liq_px:,.4f} <i>(Jarak aman: ${dist_liq:,.2f} / {dist_pct:.2f}%)</i>\n"
+                    f"────────────────────────\n"
+                )
+    except Exception:
+        pass
+
+    # 2. SMC & DERIVATIVES METRICS
+    fr_data = layer1.get("funding_rate", {})
+    fr_val = fr_data.get("funding_rate", 0) if isinstance(fr_data, dict) else 0
+    ls_data = layer1.get("long_short_ratio", {})
+    ls_ratio = ls_data.get("long_short_ratio", "N/A") if isinstance(ls_data, dict) else "N/A"
+    long_pct = ls_data.get("long_pct", 50) if isinstance(ls_data, dict) else 50
+    crowd_sent = ls_data.get("crowd_sentiment", "NEUTRAL") if isinstance(ls_data, dict) else "NEUTRAL"
+    bb_data = layer1.get("bollinger", {})
+    bb_sqz = "🟡 SQUEEZE (Kompresi)" if bb_data.get("squeeze") else "NORMAL"
+    smc_data = qf.get("smc_summary", {})
+    b_fvg = smc_data.get("bullish_fvgs", 0)
+    be_fvg = smc_data.get("bearish_fvgs", 0)
+    levels = layer1.get("levels", {})
+
+    # 3. 9-AGENT SIDANG COMMITTEE SUMMARY (IF AVAILABLE)
+    com_text = ""
+    com = res.get("committee") or {}
+    if com:
+        agents = com.get("agents", {})
+        bull_arg = agents.get("bull_researcher", {}).get("argument", "")[:160]
+        bear_arg = agents.get("bear_researcher", {}).get("argument", "")[:160]
+        trader_dec = agents.get("trader", {}).get("decision", "")[:140]
+        risk_note = agents.get("risk_officer", {}).get("risk_note", "") or "Lev 20x ISOLATED"
+        pm_dec = com.get("portfolio_manager", {}).get("decision", "") or com.get("consensus", {}).get("summary", "")
+
+        com_text = (
+            f"🏛️ <b>SIDANG 9-AGENT INVESTMENT COMMITTEE:</b>\n"
+            f"• <b>Bull Thesis:</b> <i>{bull_arg or 'Akumulasi tren positif'}</i>\n"
+            f"• <b>Bear Risk:</b> <i>{bear_arg or 'Resistensi & likuiditas rapuh'}</i>\n"
+            f"• <b>Trader Conviction:</b> <i>{trader_dec or 'Tunggu konfirmasi volume'}</i>\n"
+            f"• <b>Risk Officer:</b> {risk_note}\n"
+            f"• <b>Supreme PM Verdict:</b> <b>{pm_dec[:180]}</b>\n"
+            f"────────────────────────\n"
+        )
+
     text = (
-        f"🛡️ <b>PYROFUEL 5-LAYER FUTURES AUDIT</b>\n"
-        f"<b>Aset:</b> <code>{symbol}</code> (${layer1.get('current_price', 0):,})\n"
+        f"🛡️ <b>PYROFUEL INSTITUTIONAL 5-LAYER + SIDANG 9-AGENT</b>\n"
+        f"<b>Aset:</b> <code>{symbol}</code> (${layer1.get('current_price', 0):,.4f})\n"
         f"<b>Harga IDR:</b> Rp {convert_usd_to_idr(layer1.get('current_price', 0)):,.0f}\n"
-        f"<b>RSI (14):</b> {layer1.get('rsi_14')} | <b>Tren EMA:</b> {layer1.get('ema_trend')}\n"
-        f"<b>MACD:</b> {layer1.get('macd', {}).get('trend')} | <b>Vol:</b> {layer1.get('volume_profile', {}).get('volume_trend')}\n"
-        f"📊 <b>Quant Factor Matrix:</b> <b>{c_score}/100</b> ({total_f}+ faktor | {regime})\n"
+        f"────────────────────────\n"
+        f"{bn_pos_text}"
+        f"📊 <b>KUANTITATIF & SMC ALPHA:</b>\n"
+        f"• <b>RSI (14):</b> {layer1.get('rsi_14')} | <b>Tren EMA:</b> {layer1.get('ema_trend')}\n"
+        f"• <b>Bollinger Bands:</b> {bb_sqz} (Width: {bb_data.get('width_pct', 0)}%)\n"
+        f"• <b>Funding Rate:</b> {fr_val:+.4f}% | <b>L/S Ratio:</b> {ls_ratio} ({long_pct}% Long)\n"
+        f"• <b>SMC Fair Value Gaps:</b> {b_fvg} Bullish / {be_fvg} Bearish FVG\n"
+        f"• <b>Level Kunci:</b> Pivot ${levels.get('pivot', 0):,.2f} | R1 ${levels.get('resistance_1', 0):,.2f} | S1 ${levels.get('support_1', 0):,.2f}\n"
         f"────────────────────────\n"
         f"🎯 <b>1. Setup Hunter:</b> <code>{setup.get('setup_name', 'N/A')}</code> ({setup.get('direction', 'NONE')})\n"
         f"<i>\"{setup.get('explanation_id', '')}\"</i>\n\n"
         f"📐 <b>2. Trading Plan (AI Governed):</b> {plan.get('action', 'SKIP')}\n"
-        f"• Order: {order_t}{limit_p_str} | Lev: {lev_val}x\n"
-        f"• Entry: ${plan.get('entry_price', 0):,} | SL: ${sl_val:,}\n"
-        f"• Take Profit: ${tp_val:,}\n"
-        f"• Modal: Rp {modal_val:,} | RRR: {plan.get('risk_reward_ratio', 'N/A')}\n\n"
-        f"🔍 <b>3. CRO Risk Audit:</b> {risk.get('risk_verdict', 'N/A')}\n"
-        f"• Score: {risk.get('total_score', 0)}/{risk.get('max_score', 10)} ({risk.get('pass_rate_pct', 0)}%)\n\n"
+        f"• Order: {order_t}{limit_p_str} | Leverage: <b>20x ISOLATED</b>\n"
+        f"• Entry: ${plan.get('entry_price', 0):,} | SL: ${sl_val:,} | TP: ${tp_val:,}\n"
+        f"• Modal Sizing: Rp {modal_val:,} | RRR: {plan.get('risk_reward_ratio', 'N/A')}\n\n"
+        f"🔍 <b>3. CRO Risk Audit:</b> {risk.get('risk_verdict', 'N/A')} ({risk.get('total_score', 0)}/{risk.get('max_score', 10)} pass)\n\n"
         f"⚖️ <b>4. Supreme Judge Decision:</b> {badge}\n"
-        f"• <b>Skor Keyakinan:</b> {fc.get('confidence_score', 0)}% (Min {min_conf}%)\n"
-        f"• <b>Modal AI:</b> Rp {modal_val:,}\n\n"
-        f"📌 <b>Pertimbangan Final:</b>\n{fc.get('final_reason', '-')[:450]}\n"
+        f"• <b>Skor Keyakinan:</b> {fc.get('confidence_score', 0)}% (Min {min_conf}%)\n\n"
+        f"{com_text}"
+        f"📌 <b>Pertimbangan Final:</b>\n{fc.get('final_reason', '-')[:350]}\n"
     )
     return text, status
 
@@ -1109,6 +1181,71 @@ def handle_any_coin_scan(chat_id, coin_name):
         send_telegram_message(chat_id, f"❌ Error analisis {pair}: {e}")
 
 
+def handle_sidang_command(chat_id, coin_name):
+    """Run full 9-Agent Investment Committee Deliberation and format multi-round debate for Telegram"""
+    coin_name = coin_name.strip()
+    pair = normalize_symbol_to_pair(coin_name)
+    symbol = pair.replace("USDT", "-USD")
+    
+    send_telegram_message(
+        chat_id,
+        f"🏛️ <b>MEMULAI SIDANG 9-AGENT INVESTMENT COMMITTEE</b>\n\n"
+        f"Aset: <code>{pair}</code>\n"
+        f"⏳ <i>Mengumpulkan 4 Analis Spesialis, Bull vs Bear Researcher, Trader Agent, Risk Officer, dan Portfolio Manager (~15-20 detik)...</i>"
+    )
+    try:
+        from multi_agent_committee import run_multi_agent_committee
+        com = run_multi_agent_committee(symbol)
+        if not com:
+            send_telegram_message(chat_id, f"❌ Sidang gagal dieksekusi untuk {pair}.")
+            return
+            
+        consensus = com.get("consensus", {})
+        act = consensus.get("action", "HOLD")
+        conf = consensus.get("confidence_pct", 0)
+        dir_str = com.get("direction", "SKIP")
+        transcripts = com.get("collaboration_transcript", [])
+        agents = com.get("agents", {})
+        
+        status_icon = "🟢" if act in ["BUY", "LONG"] else ("🔴" if act in ["SELL", "SHORT"] else "⚪")
+        
+        # Message 1: Ringkasan Putusan & Consensus
+        risk = agents.get("risk_officer", {})
+        kelly_val = risk.get('kelly_suggested_idr', 50000)
+        msg1 = (
+            f"🏛️ <b>PUTUSAN SIDANG 9-AGENT COMMITTEE // {pair}</b>\n"
+            f"════════════════════════\n"
+            f"🎯 <b>Status Konsensus:</b> {status_icon} <b>{act} ({conf}% Conviction)</b>\n"
+            f"🧭 <b>Arah Disetujui:</b> <b>{dir_str}</b>\n"
+            f"⚡ <b>Leverage:</b> <b>20x ISOLATED</b>\n"
+            f"💰 <b>Alokasi Modal:</b> Rp {int(kelly_val):,} (Kelly Criterion)\n"
+            f"════════════════════════\n"
+            f"📌 <b>Executive Thesis:</b>\n"
+            f"<i>\"{consensus.get('executive_summary', consensus.get('summary', 'Sidang selesai.'))}\"</i>\n"
+        )
+        send_telegram_message(chat_id, msg1)
+        
+        # Message 2: Transkrip Debat Multi-Ronde (R1 - R7)
+        if transcripts:
+            lines = ["📜 <b>TRANSKRIP PERDEBATAN SIDANG (7 RONDE):</b>\n────────────────────────"]
+            for t in transcripts:
+                r_num = t.get("round", "-")
+                spk = t.get("speaker", "")
+                role = t.get("role", "")
+                cnt = t.get("content", "")
+                
+                spk_icon = "🟢" if "Bull" in spk else ("🔴" if "Bear" in spk else ("🟣" if "Trader" in spk else ("🟠" if "Risk" in spk else ("🔵" if "Portfolio" in spk else "⚪"))))
+                lines.append(f"<b>[Ronde {r_num}] {spk_icon} {spk}</b> <i>({role})</i>:\n\"{cnt}\"\n")
+            
+            transcript_text = "\n".join(lines)
+            if len(transcript_text) > 4000:
+                transcript_text = transcript_text[:3990] + "...\n<i>(dipersingkat)</i>"
+            send_telegram_message(chat_id, transcript_text)
+            
+    except Exception as e:
+        send_telegram_message(chat_id, f"❌ Error dalam sidang: {e}")
+
+
 def handle_audit_command(chat_id):
     """Full comprehensive system, data, and universe audit"""
     send_telegram_message(chat_id, "🔍 <i>Sedang mengaudit seluruh sistem, data, analisa, dan universe Binance Futures...</i>")
@@ -1302,6 +1439,7 @@ def start_bot_listener():
                             "• <code>/konfirmasi [coin]</code> - Eksekusi riil ke Binance Futures\n"
                             "• <code>/scan</code> - Radar scan koin dengan peluang tertinggi (500+ pairs)\n"
                             "• <code>/scan [coin]</code> - Analisis spesifik (misal: /scan pepe, /scan zec)\n"
+                            "• <code>/sidang [coin]</code> - 🏛️ Sidang 9-Agent Committee (7 Ronde debat Bull vs Bear)\n"
                             "• <code>/universe</code> - Status full universe 500+ pairs\n"
                             "• <code>/top</code> - Top 20 movers saat ini\n"
                             "• <code>/btc</code> <code>/eth</code> <code>/sol</code> <code>/pepe</code> - Analisis cepat\n"
@@ -1356,6 +1494,11 @@ def start_bot_listener():
                         coin = msg_lower.replace("/scan ", "").strip()
                         if coin:
                             threading.Thread(target=handle_any_coin_scan, args=(chat_id, coin), daemon=True).start()
+
+                    elif msg_lower.startswith("/sidang") or msg_lower.startswith("/committee"):
+                        parts = msg_text.split()
+                        coin = parts[1].strip() if len(parts) >= 2 else "SOL"
+                        threading.Thread(target=handle_sidang_command, args=(chat_id, coin), daemon=True).start()
 
                     elif msg_lower in ["/universe", "universe"]:
                         handle_universe_command(chat_id)

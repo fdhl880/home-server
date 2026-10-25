@@ -4077,9 +4077,14 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                 take_profit_1: l3.take_profit_1,
                 take_profit_2: l3.take_profit_2,
                 stop_loss: l3.stop_loss,
-                leverage: l3.leverage || fc.leverage || 5,
+                leverage: 20,
                 position_size_idr: l3.position_size_idr || fc.position_size_idr || 50000
             };
+
+            // Auto-render 9-Agent Committee Deliberation from unified pipeline result
+            if (d.committee) {
+                renderBbgCommittee(d.committee);
+            }
         }
 
         function renderCryptoFuturesPositions() {
@@ -4113,7 +4118,7 @@ Tanyakan rekomendasi alokasi, analisis teknikal saham IHSG, Wall Street, kripto,
                         <td class="bbg-green">$${Number(p.take_profit_1 || p.take_profit || 0).toLocaleString()}</td>
                         <td class="bbg-red">$${Number(p.stop_loss || 0).toLocaleString()}</td>
                         <td class="bbg-yellow" style="font-size:10px; font-weight:bold;">${p.estimated_time_horizon || 'N/A'}</td>
-                        <td style="font-weight:bold; color:${pnlColor};">${pnlText}</td>
+                        <td style="font-weight:bold; color:${pnlColor};">${pnlText}${p.liquidation_price ? `<br><span style="color:#ff8888; font-size:9px;">Liq: $${Number(p.liquidation_price).toFixed(2)}</span>` : ''}</td>
                         <td><span class="bbg-green">● ${p.binance_synced ? 'BINANCE LIVE' : (p.pluang_synced ? 'PLUANG LIVE' : 'OPEN')}</span></td>
                         <td style="text-align:center;">
                             <button class="btn-act" style="background:#440000; color:#ff4444; border-color:#ff4444; padding:2px 8px; font-size:10px;" onclick="closeCryptoPosition('${posId}', '${sym}', '${dir}')">
