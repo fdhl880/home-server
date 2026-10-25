@@ -419,12 +419,7 @@ def monitor_and_update_positions():
     except Exception:
         return []
 
-    open_pos = [p for p in positions if p.get("status") == "OPEN"]
-    if not open_pos:
-        return []
-
-    tickers = get_binance_24h_tickers()
-    ticker_map = {t["symbol"]: float(t.get("lastPrice", 0)) for t in tickers if "symbol" in t} if tickers else {}
+    updated = False
     fx_rate = get_fx_info()["usd_idr"]
 
     # 1. Live synchronization with Binance Futures active positions
@@ -435,10 +430,64 @@ def monitor_and_update_positions():
             live_list = bn_client.get_positions()
             if isinstance(live_list, list):
                 bn_live_map = {p["symbol"]: p for p in live_list}
+                # Auto-import untracked live Binance positions so AI sentinel & trailing stop monitor them
+                for sym, lp in bn_live_map.items():
+                    already_tracked = any(
+                        p.get("status") == "OPEN" and (p.get("binance_pair") == sym or p.get("symbol", "").replace("-USD", "USDT") == sym)
+                        for p in positions
+                    )
+                    amt = float(lp.get("position_amount", 0))
+                    if not already_tracked and abs(amt) > 0:
+                        entry_px = float(lp.get("entry_price", 0))
+                        lev = int(lp.get("leverage", 20))
+                        dir_str = lp.get("direction", "LONG" if amt > 0 else "SHORT")
+                        tp_px = round(entry_px * (1.03 if dir_str == "LONG" else 0.97), 4)
+                        sl_px = round(entry_px * (0.985 if dir_str == "LONG" else 1.015), 4)
+                        iso_margin = abs(float(lp.get("isolated_margin", (amt * entry_px / lev) if lev else 0)))
+                        new_pos = {
+                            "id": f"POS_BINANCE_{sym}_{int(time.time())}",
+                            "symbol": sym.replace("USDT", "-USD"),
+                            "binance_pair": sym,
+                            "direction": dir_str,
+                            "entry_price": entry_px,
+                            "entry_price_idr": round(entry_px * fx_rate, 2),
+                            "take_profit": tp_px,
+                            "take_profit_1": tp_px,
+                            "take_profit_2": tp_px,
+                            "stop_loss": sl_px,
+                            "leverage": lev,
+                            "margin_type": lp.get("margin_type", "ISOLATED"),
+                            "order_type": "MARKET",
+                            "limit_price": entry_px,
+                            "position_size_usdt": iso_margin,
+                            "position_size_idr": round(iso_margin * fx_rate, 2),
+                            "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                            "status": "OPEN",
+                            "pnl_pct": 0.0,
+                            "pnl_usd": float(lp.get("unrealized_pnl", 0)),
+                            "pnl_idr": round(float(lp.get("unrealized_pnl", 0)) * fx_rate, 2),
+                            "exchange": "BINANCE_FUTURES",
+                            "binance_synced": True,
+                            "ai_sentinel_status": "ACTIVE_AI_MONITORED"
+                        }
+                        positions.append(new_pos)
+                        updated = True
+                        print(f"[MONITOR] 📥 Auto-imported active Binance position: {sym} ({dir_str} {lev}x)", flush=True)
         except Exception as e:
             print(f"[MONITOR] Binance sync warning: {e}", flush=True)
 
-    updated = False
+    open_pos = [p for p in positions if p.get("status") == "OPEN"]
+    if not open_pos:
+        if updated:
+            try:
+                with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
+                    json.dump(positions, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+        return []
+
+    tickers = get_binance_24h_tickers()
+    ticker_map = {t["symbol"]: float(t.get("lastPrice", 0)) for t in tickers if "symbol" in t} if tickers else {}
     for pos in open_pos:
         pair = pos.get("binance_pair") or pos.get("symbol", "").replace("-USD", "USDT")
         direction = pos.get("direction", "LONG").upper()
