@@ -132,7 +132,20 @@ STATIC_CORE_UNIVERSE = [
     {"symbol": "DOT-USD", "name": "Polkadot", "pair": "DOTUSDT", "base_asset": "DOT", "leverage_max": 10, "tier": "T2_LARGE"},
     {"symbol": "LTC-USD", "name": "Litecoin", "pair": "LTCUSDT", "base_asset": "LTC", "leverage_max": 10, "tier": "T2_LARGE"},
     {"symbol": "BCH-USD", "name": "Bitcoin Cash", "pair": "BCHUSDT", "base_asset": "BCH", "leverage_max": 10, "tier": "T2_LARGE"},
-    {"symbol": "TRX-USD", "name": "TRON", "pair": "TRXUSDT", "base_asset": "TRX", "leverage_max": 10, "tier": "T2_LARGE"},
+    {"symbol": "TRX-USD", "name": "TRON", "pair": "TRXUSDT", "base_asset": "TRX", "leverage_max": 20, "tier": "T2_LARGE"},
+    {"symbol": "RENDER-USD", "name": "Render", "pair": "RENDERUSDT", "base_asset": "RENDER", "leverage_max": 20, "tier": "T3_MID"},
+    {"symbol": "FET-USD", "name": "Artificial Superintelligence", "pair": "FETUSDT", "base_asset": "FET", "leverage_max": 20, "tier": "T3_MID"},
+    {"symbol": "TIA-USD", "name": "Celestia", "pair": "TIAUSDT", "base_asset": "TIA", "leverage_max": 20, "tier": "T3_MID"},
+    {"symbol": "SEI-USD", "name": "Sei Network", "pair": "SEIUSDT", "base_asset": "SEI", "leverage_max": 20, "tier": "T3_MID"},
+    {"symbol": "ATOM-USD", "name": "Cosmos", "pair": "ATOMUSDT", "base_asset": "ATOM", "leverage_max": 20, "tier": "T2_LARGE"},
+    {"symbol": "FTM-USD", "name": "Fantom", "pair": "FTMUSDT", "base_asset": "FTM", "leverage_max": 20, "tier": "T3_MID"},
+    {"symbol": "ALGO-USD", "name": "Algorand", "pair": "ALGOUSDT", "base_asset": "ALGO", "leverage_max": 20, "tier": "T3_MID"},
+    {"symbol": "ICP-USD", "name": "Internet Computer", "pair": "ICPUSDT", "base_asset": "ICP", "leverage_max": 20, "tier": "T2_LARGE"},
+    {"symbol": "POL-USD", "name": "Polygon Ecosystem", "pair": "POLUSDT", "base_asset": "POL", "leverage_max": 20, "tier": "T2_LARGE"},
+    {"symbol": "STX-USD", "name": "Stacks", "pair": "STXUSDT", "base_asset": "STX", "leverage_max": 20, "tier": "T3_MID"},
+    {"symbol": "CRV-USD", "name": "Curve DAO", "pair": "CRVUSDT", "base_asset": "CRV", "leverage_max": 20, "tier": "T3_MID"},
+    {"symbol": "JUP-USD", "name": "Jupiter", "pair": "JUPUSDT", "base_asset": "JUP", "leverage_max": 20, "tier": "T3_MID"},
+    {"symbol": "PYTH-USD", "name": "Pyth Network", "pair": "PYTHUSDT", "base_asset": "PYTH", "leverage_max": 20, "tier": "T3_MID"},
 ]
 
 # Backward compatibility alias

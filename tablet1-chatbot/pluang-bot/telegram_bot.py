@@ -1424,9 +1424,9 @@ def start_bot_listener():
                     elif msg_lower.startswith("/leverage"):
                         send_telegram_message(
                             chat_id,
-                            f"⚡ <b>LEVERAGE: FIXED 20x</b>\n\n"
-                            f"Berdasarkan mandat user, leverage dikunci tetap pada <b>20x</b> untuk semua pair demi konsistensi sizing dan disiplin VaR.\n"
-                            f"AI menghitung position size secara dinamis berdasarkan Kelly Criterion dari modal dompet Anda."
+                            f"⚡ <b>LEVERAGE: TERKUNCI MATI PADA 20x</b>\n\n"
+                            f"Berdasarkan mandat Anda, leverage dikunci tetap pada <b>20x ISOLATED</b> untuk seluruh koin crypto futures.\n"
+                            f"💰 <b>Modal Sizing:</b> ALL-IN 100% Saldo Margin yang tersedia di wallet Binance Futures (98% saldo margin aktif dengan 2% buffer fee)."
                         )
                     
                     elif msg_lower in ["/fx", "fx", "kurs", "/kurs"]:

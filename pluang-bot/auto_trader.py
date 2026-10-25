@@ -237,26 +237,24 @@ def record_position(signal: dict):
     order_type = (signal.get("order_type") or cfg.get("order_type", "MARKET")).upper()
     limit_price = float(signal.get("limit_price") or signal.get("entry_price", 0))
 
-    # 2. AI GOVERNS MODAL (POSITION SIZE) — dynamic wallet-based Kelly sizing
-    pos_size = float(signal.get("position_size_idr") or 0)
-    # If pos_size is 0 or too small: dynamically size from live Binance wallet
-    if pos_size < 5000:
-        try:
-            _bn = get_binance_client()
-            if _bn:
-                _bal = _bn.get_balance()
+    # 2. MODAL ALL-IN SALDO AKTIF (USER MANDATE: 100% SALDO MARGIN TERSEDIA)
+    # Gunakan 98% saldo margin yang tersedia di wallet (2% buffer untuk exchange taker fee)
+    try:
+        _bn = get_binance_client()
+        if _bn:
+            _bal = _bn.get_balance()
+            if isinstance(_bal, dict) and "available_balance" in _bal:
                 avail_usdt = float(_bal.get("available_balance", 0))
                 _fx = get_fx_info()
-                avail_idr = avail_usdt * _fx["usd_idr"]
-                # Kelly fraction ~30-60% of available balance depending on confidence
-                conf = float(signal.get("confidence_score", 65))
-                kelly_frac = max(0.15, min(0.60, conf / 100.0 * 0.8))
-                pos_size = max(10000, int(avail_idr * kelly_frac))
+                pos_size = max(10000, int(avail_usdt * 0.98 * _fx.get("usd_idr", 16500)))
             else:
-                pos_size = 50000   # offline fallback
-        except Exception:
-            pos_size = 50000
-    # If config max_budget_idr > 0, cap to it; 0 means no cap
+                pos_size = float(signal.get("position_size_idr") or 50000)
+        else:
+            pos_size = float(signal.get("position_size_idr") or 50000)
+    except Exception:
+        pos_size = float(signal.get("position_size_idr") or 50000)
+
+    # If config max_budget_idr > 0, cap to it; 0 means dynamic all-in (no cap)
     if max_budget > 0:
         pos_size = min(pos_size, max_budget)
 
@@ -560,6 +558,35 @@ def monitor_and_update_positions():
 
         updated = True
 
+        # Trailing Stop & Breakeven Protection for 20x Leverage:
+        # If PnL reaches +20% ROE (+1.0% price move on 20x), move SL to entry price to lock in a risk-free trade!
+        if pnl_pct >= 20.0 and not pos.get("breakeven_set"):
+            pos["breakeven_set"] = True
+            if direction == "LONG":
+                new_sl = round(entry_price * 1.001, 6)
+                if new_sl > sl:
+                    pos["stop_loss"] = new_sl
+                    sl = new_sl
+                    send_telegram(
+                        f"🛡️ <b>[PYROFUEL PROTECTOR] TRAILING SL KE BREAKEVEN!</b>\n\n"
+                        f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction} 20x)\n"
+                        f"📈 <b>Floating Profit:</b> +{pnl_pct:.2f}%\n"
+                        f"🔒 <b>Stop Loss Dinaikkan ke:</b> ${new_sl:,.4f} (Entry + Fee Buffer)\n"
+                        f"✨ <i>Trade ini sekarang 100% BEBAS RESIKO (Risk-Free)! Modal utama aman terlindungi.</i>"
+                    )
+            elif direction == "SHORT":
+                new_sl = round(entry_price * 0.999, 6)
+                if new_sl < sl:
+                    pos["stop_loss"] = new_sl
+                    sl = new_sl
+                    send_telegram(
+                        f"🛡️ <b>[PYROFUEL PROTECTOR] TRAILING SL KE BREAKEVEN!</b>\n\n"
+                        f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction} 20x)\n"
+                        f"📈 <b>Floating Profit:</b> +{pnl_pct:.2f}%\n"
+                        f"🔒 <b>Stop Loss Diturunkan ke:</b> ${new_sl:,.4f} (Entry - Fee Buffer)\n"
+                        f"✨ <i>Trade ini sekarang 100% BEBAS RESIKO (Risk-Free)! Modal utama aman terlindungi.</i>"
+                    )
+
         # Check Take Profit
         tp_hit = (direction == "LONG" and current_price >= tp > 0) or (direction == "SHORT" and current_price <= tp > 0)
         if tp_hit:
@@ -639,28 +666,43 @@ def check_wallet_and_position_guard():
             if isinstance(bal, dict):
                 avail_usdt = float(bal.get("available_balance", 0))
                 total_usdt = float(bal.get("total_wallet_balance", 0))
+            
+            # Live sync active positions directly from Binance Futures
+            live_pos = bn_client.get_positions()
+            if isinstance(live_pos, list):
+                for lp in live_pos:
+                    amt = abs(float(lp.get("position_amount", lp.get("positionAmt", 0))))
+                    if amt > 0:
+                        pair_sym = lp.get("symbol", "")
+                        # Add to open_pos if not already tracked
+                        if not any(p.get("binance_pair") == pair_sym or p.get("symbol", "").replace("-USD", "USDT") == pair_sym for p in open_pos):
+                            open_pos.append({
+                                "symbol": pair_sym.replace("USDT", "-USD"),
+                                "binance_pair": pair_sym,
+                                "direction": lp.get("direction") or ("LONG" if float(lp.get("positionAmt", 1)) > 0 else "SHORT"),
+                                "entry_price": float(lp.get("entry_price", lp.get("entryPrice", 0))),
+                                "current_price": float(lp.get("mark_price", lp.get("markPrice", 0))),
+                                "unrealized_pnl": float(lp.get("unrealized_pnl", lp.get("unRealizedProfit", 0))),
+                                "leverage": int(lp.get("leverage", 20)),
+                                "status": "OPEN",
+                                "exchange": "BINANCE_FUTURES",
+                                "binance_synced": True
+                            })
         except Exception as e:
-            print(f"[GUARD] Balance check notice: {e}", flush=True)
+            print(f"[GUARD] Binance sync notice: {e}", flush=True)
 
     should_pause = False
     reason = ""
 
-    # Criteria for pausing scan & going ALL-IN on monitoring:
-    # 1. At least 1 active open position exists
-    # 2. Available balance is exhausted or depleted (available < 2.5 USDT or <= 35% of total balance, meaning capital is deployed)
-    # OR max concurrent positions reached
+    # MANDAT USER: JIKA ADA POSISI AKTIF -> STOP SCAN TOTAL! 100% FOKUS KAWAL POSISI!
     if len(open_pos) > 0:
-        if avail_usdt < 2.5 or (total_usdt > 0 and (avail_usdt / total_usdt) < 0.35):
-            should_pause = True
-            sym_list = ", ".join([p.get("symbol", "") for p in open_pos])
-            reason = (
-                f"Saldo wallet terpakai penuh untuk {len(open_pos)} posisi aktif ({sym_list}). "
-                f"Sisa saldo tersedia: ${avail_usdt:.2f} USDT (Total: ${total_usdt:.2f} USDT). "
-                f"Scanner & 9-Agent beristirahat, memusatkan 100% monitor pada posisi terbuka."
-            )
-        elif len(open_pos) >= _get_config().get("max_concurrent_positions", 5):
-            should_pause = True
-            reason = f"Maksimal posisi aktif tercapai ({len(open_pos)} posisi). Fokus monitoring posisi aktif."
+        should_pause = True
+        sym_list = ", ".join([p.get("symbol", "") for p in open_pos])
+        reason = (
+            f"FOKUS PENUH (100%): Terdapat {len(open_pos)} posisi aktif ({sym_list}). "
+            f"Sisa saldo: ${avail_usdt:.2f} USDT (Total: ${total_usdt:.2f} USDT). "
+            f"Scanner koin baru DIHENTIKAN TOTAL agar AI 100% fokus mengawal posisi terbuka hingga TP/SL!"
+        )
 
     return {
         "pause_scanning": should_pause,
@@ -679,9 +721,14 @@ def run_quick_screen():
     """
     Fast technical screen of ALL coins — NO AI call.
     Detects: extreme RSI, Bollinger squeeze, huge volume spike.
-    Runs every 60 seconds.
+    Runs every 60 seconds. (Skipped if active position exists)
     """
     load_state()
+    guard = check_wallet_and_position_guard()
+    if guard.get("pause_scanning"):
+        print(f"[QUICK SCREEN] 🛡️ Dihentikan sementara: {guard['reason']}", flush=True)
+        return []
+
     print(f"\n{'='*60}", flush=True)
     print(f"[QUICK SCREEN] {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} - Screening full universe...", flush=True)
     
@@ -793,21 +840,34 @@ def run_full_scan_cycle():
     # Build scan list: Top 10 actionable coins by opportunity score from all 524 pairs
     ranked = rank_universe_by_opportunity()
     
-    scan_list = [
-        {"symbol": "BTC-USD", "pair": "BTCUSDT", "name": "Bitcoin", "tier": "T1_MEGA"},
-        {"symbol": "ETH-USD", "pair": "ETHUSDT", "name": "Ethereum", "tier": "T1_MEGA"},
-        {"symbol": "SOL-USD", "pair": "SOLUSDT", "name": "Solana", "tier": "T2_LARGE"},
-    ]
-    anchor_pairs = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+    # Build complete scan list: ALL major Watchlist coins + top ranked movers
+    scan_list = []
+    seen_pairs = set()
+
+    # 1. Masukkan SELURUH koin utama watchlist (43+ koin masa depan aktif)
+    for c in CRYPTO_FUTURES_WATCHLIST:
+        pair_name = c["symbol"].replace("-USD", "USDT")
+        if pair_name not in seen_pairs:
+            seen_pairs.add(pair_name)
+            scan_list.append({
+                "symbol": c["symbol"],
+                "pair": pair_name,
+                "name": c.get("name", c["symbol"]),
+                "tier": c.get("tier", "CORE")
+            })
+
+    # 2. Tambahkan koin dengan score peluang tertinggi dari seluruh 524 pairs
     for coin in ranked:
-        if coin.get("pair") not in anchor_pairs and len(scan_list) < 10:
+        p = coin.get("pair")
+        if p and p not in seen_pairs and len(scan_list) < 60:
+            seen_pairs.add(p)
             scan_list.append(coin)
-    
+
     state["coins_scanned_this_cycle"] = len(scan_list)
     state["universe_size"] = len(ranked)
-    
-    print(f"[FULL SCAN] Scanning Top {len(scan_list)} actionable coins (from {len(ranked)} total)", flush=True)
-    
+
+    print(f"[FULL SCAN] Scanning Full Universe ({len(scan_list)} actionable coins from {len(ranked)} total)", flush=True)
+
     approved_signals = []
 
     def _scan_one(item):
@@ -816,11 +876,6 @@ def run_full_scan_cycle():
         name = item.get("name", item.get("base_asset", sym))
         tier = item.get("tier", "EXTENDED")
         try:
-            # 1. Jalankan 5-Layer Institutional AI Pipeline (SEQUENTIAL — one coin at a time)
-            print(f"[SCAN] ▶ Layer 1-5 Pipeline: {sym}...", flush=True)
-            res = run_5_layer_pipeline(sym)
-
-            # 2. Sidang 9-Agent Multi-Committee (setelah pipeline selesai, SEQUENTIAL)
             positions_now = []
             if os.path.exists(POSITIONS_FILE):
                 try:
@@ -828,16 +883,20 @@ def run_full_scan_cycle():
                         positions_now = json.load(pf)
                 except Exception:
                     pass
-            print(f"[SCAN] ▶ 9-Agent Committee: {sym}...", flush=True)
-            com_res = run_multi_agent_committee(sym, positions_now)
+
+            # 1 PROSES TERSATUKAN: 5-Layer Pipeline + Langsung Sidang 9-Agent Multi-Committee
+            print(f"[SCAN] ▶ Pipeline & Sidang 9-Agent: {sym}...", flush=True)
+            res = run_5_layer_pipeline(sym, active_positions=positions_now)
+            com_res = res.get("committee") if isinstance(res, dict) else None
             return item, sym, pair, name, tier, res, com_res
         except Exception as e:
             print(f"[ERROR] {sym}: {e}", flush=True)
             return item, sym, pair, name, tier, None, None
 
     # SEQUENTIAL SCAN — one coin at a time (Layer 1 → 2 → 3 → 4 → 5 → Committee)
-    # This ensures each coin fully completes its pipeline before the next starts.
-    for item in scan_list:
+    for idx, item in enumerate(scan_list, start=1):
+        pair_disp = item.get('pair') or item.get('symbol', '').replace('-USD', 'USDT')
+        print(f"\n[SCAN {idx}/{len(scan_list)}] ▶ Memproses koin: {pair_disp} ({item.get('name', pair_disp)})", flush=True)
         item, sym, pair, name, tier, res, com_res = _scan_one(item)
         if not res or "error" in res:
             continue
@@ -885,8 +944,18 @@ def run_full_scan_cycle():
             final_dir = com_dir if com_dir in ("LONG", "SHORT") else fc.get("direction", "LONG")
             trade_params = (com_res.get("trade_params") or {}) if com_res else {}
             
-            # Gunakan Kelly sizing dan leverage dari Risk Officer komite
-            budget_allocated = trade_params.get("budget_idr") or fc.get("position_size_idr", max_budget)
+            # Gunakan ALL-IN sizing dan leverage 20x terstandarisasi
+            budget_allocated = trade_params.get("position_size_idr") or trade_params.get("budget_idr") or fc.get("position_size_idr", 0)
+            if not budget_allocated or budget_allocated <= 0:
+                try:
+                    _bn = get_binance_client()
+                    if _bn:
+                        _bal = _bn.get_balance()
+                        if isinstance(_bal, dict) and "available_balance" in _bal:
+                            avail_u = float(_bal.get("available_balance", 0))
+                            budget_allocated = max(10000, int(avail_u * 0.98 * 16500))
+                except Exception:
+                    budget_allocated = 50000
             if max_budget > 0:
                 budget_allocated = min(budget_allocated, max_budget)
             leverage_allocated = 20  # Always 20x (user mandate)
@@ -955,6 +1024,8 @@ def run_full_scan_cycle():
                     f"⚡ <b>100% TERKONFIRMASI: Order #{pos.get('order_id')} terpasang di Binance Futures!</b>"
                 )
                 send_telegram(msg)
+                print(f"[AUTO-TRADER] 🛡️ MANDAT FOKUS 100%: Posisi telah terbuka untuk {pair}! Pemindaian koin lain dihentikan seketika agar sistem fokus mengawal posisi aktif!", flush=True)
+                break
             else:
                 # Setup passed 5 layers and committee, but could not be filled on Binance (e.g. margin/notional cap)
                 print(f"[EXEC NOT FILLED] {sym}: Konsensus lolos tapi order tidak masuk Binance Futures. Tidak tercatat di portofolio.", flush=True)

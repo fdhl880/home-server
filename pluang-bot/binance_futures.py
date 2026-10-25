@@ -579,8 +579,8 @@ class BinanceFuturesClient:
                         "error": f"Available margin ${avail_usdt:.2f} is insufficient to open new positions safely (Min $1.00 USDT required)",
                         "binance_synced": False
                     }
-                # Keep safety buffer for fees and maintenance margin
-                max_safe_margin = max(1.0, round(avail_usdt * 0.90, 2))
+                # Keep safety buffer for fees and maintenance margin (98% all-in)
+                max_safe_margin = max(1.0, round(avail_usdt * 0.98, 2))
                 if pos_size_usd > max_safe_margin:
                     print(f"[BinanceFutures] ℹ️ Auto-sizing margin from ${pos_size_usd:.2f} to ${max_safe_margin:.2f} USDT (Avail: ${avail_usdt:.2f})", flush=True)
                     pos_size_usd = max_safe_margin

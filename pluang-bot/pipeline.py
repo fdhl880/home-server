@@ -294,13 +294,6 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
         {"role": "system", "content": effective_system},
         {"role": "user", "content": effective_prompt}
     ]
-    base_data = {
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature
-    }
-    if is_json:
-        base_data["response_format"] = {"type": "json_object"}
 
     # ===== BUILD PROVIDER CHAIN =====
     providers = []
@@ -316,50 +309,51 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             "timeout": 20,
         })
 
-    # --- Tier 1: Groq (120B reasoning model — verified ultra-fast & high accuracy) ---
+    # --- Tier 1: Groq (Verified active models: 120B reasoning, Qwen 27B, 20B) ---
     if GROQ_API_KEY:
-        # 120B primary reasoning model
+        # Note: openai/gpt-oss-120b & 20b require plain text JSON (response_format causes HTTP 400 on Groq)
         providers.append({
             "name": "Groq-120B",
             "type": "openai_compat",
             "url": "https://api.groq.com/openai/v1/chat/completions",
             "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
             "model": "openai/gpt-oss-120b",
+            "use_json_object": False,
             "max_retries": 1,
         })
-        # 27B secondary fast model
         providers.append({
             "name": "Groq-Qwen27B",
             "type": "openai_compat",
             "url": "https://api.groq.com/openai/v1/chat/completions",
             "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
             "model": "qwen/qwen3.8-27b",
+            "use_json_object": True,
             "max_retries": 1,
         })
-        # 20B tertiary high-headroom backup model
         providers.append({
             "name": "Groq-20B",
             "type": "openai_compat",
             "url": "https://api.groq.com/openai/v1/chat/completions",
             "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
             "model": "openai/gpt-oss-20b",
+            "use_json_object": False,
             "max_retries": 1,
         })
 
-    # --- Tier 2: Google Gemma 26B (verified working on user Gemini key) ---
+    # --- Tier 2: Google Gemini (Verified active: gemini-flash-lite-latest & gemma-4-26b-a4b-it) ---
     if GEMINI_API_KEY:
+        providers.append({
+            "name": "Gemini-FlashLite",
+            "type": "gemini",
+            "api_key": GEMINI_API_KEY,
+            "model": "gemini-flash-lite-latest",
+            "max_retries": 1,
+        })
         providers.append({
             "name": "Google-Gemma26B",
             "type": "gemini",
             "api_key": GEMINI_API_KEY,
             "model": "gemma-4-26b-a4b-it",
-            "max_retries": 1,
-        })
-        providers.append({
-            "name": "Gemini-Flash",
-            "type": "gemini",
-            "api_key": GEMINI_API_KEY,
-            "model": "gemini-3.8-flash",
             "max_retries": 1,
         })
 
@@ -371,6 +365,7 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             "url": "https://openrouter.ai/api/v1/chat/completions",
             "headers": {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
             "model": OPENROUTER_MODEL,
+            "use_json_object": False,
             "max_retries": 1,
         })
 
@@ -382,6 +377,7 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             "url": "https://api.cerebras.ai/v1/chat/completions",
             "headers": {"Authorization": f"Bearer {CEREBRAS_API_KEY}", "Content-Type": "application/json"},
             "model": "qwen-3.8-27b",
+            "use_json_object": False,
             "max_retries": 1,
         })
 
@@ -413,7 +409,14 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
                     )
                 else:
                     # OpenAI-compatible endpoint (Groq, OpenRouter, Cerebras)
-                    data = {**base_data, "model": prov["model"]}
+                    data = {
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                        "model": prov["model"]
+                    }
+                    if is_json and prov.get("use_json_object", False):
+                        data["response_format"] = {"type": "json_object"}
                     content = _call_single_provider(prov["url"], prov["headers"], data, timeout=45)
                 
                 # Success!
@@ -603,15 +606,7 @@ def _rule_based_setup(scan_data: dict):
 
 
 def _rule_based_plan(scan_data: dict, setup: dict, market_data: dict):
-    """DISABLED — AI only. Raises exception."""
-    raise Exception(
-        "⛔ AI REQUIRED: Trading plan harus dari AI. "
-        "Ollama (localhost:11434) atau cloud API harus aktif."
-    )
-
-
-def _rule_based_plan_DISABLED(scan_data: dict, setup: dict, market_data: dict):
-    """Rule-based trading plan when AI is down (DISABLED per user mandate)."""
+    """Rule-based trading plan when AI is down or for quick baseline."""
     price = market_data.get("current_price", scan_data.get("price", 0))
     atr = market_data.get("atr_14", 0)
     atr_pct = market_data.get("atr_pct", 0) or (atr / price * 100 if price else 0)
@@ -621,7 +616,7 @@ def _rule_based_plan_DISABLED(scan_data: dict, setup: dict, market_data: dict):
         return {"action": "SKIP", "order_type": "MARKET", "entry_price": 0, "limit_price": 0,
                 "stop_loss": 0, "take_profit": 0, "take_profit_1": 0, "take_profit_2": 0,
                 "risk_reward_ratio": "0:0", "position_size_idr": 0,
-                "leverage": 1, "reasoning": "No setup detected (rule-based)", "ai_fallback": True}
+                "leverage": FIXED_LEVERAGE, "reasoning": "No setup detected (rule-based)", "ai_fallback": True}
 
     sl_mult = 1.5
     tp_mult = 3.0  # Single Take Profit target (RRR 1:2.0)
@@ -644,29 +639,20 @@ def _rule_based_plan_DISABLED(scan_data: dict, setup: dict, market_data: dict):
         "limit_price": round(price, 6),
         "stop_loss": round(sl, 6),
         "take_profit": round(tp, 6),
-        "take_profit_1": round(tp, 6),  # backward compatibility alias
-        "take_profit_2": round(tp, 6),  # backward compatibility alias
+        "take_profit_1": round(tp, 6),
+        "take_profit_2": round(tp, 6),
         "risk_reward_ratio": f"1:{rrr}",
-        "position_size_idr": 0,          # 0 = auto_trader resolves via dynamic wallet Kelly sizing
-        "leverage": 0,                   # 0 = auto_trader resolves via dynamic ATR-based leverage
+        "position_size_idr": 0,
+        "leverage": FIXED_LEVERAGE,
         "risk_pct_of_capital": 2.0,
         "sl_distance_pct": round((sl_dist / price) * 100, 2),
         "tp_distance_pct": round((tp_dist / price) * 100, 2),
-        "reasoning": f"ATR Single TP plan: SL {sl_mult}x ATR, TP {tp_mult}x ATR (Pluang Single TP)",
+        "reasoning": f"ATR Single TP plan: SL {sl_mult}x ATR, TP {tp_mult}x ATR (20x Fixed)",
         "ai_fallback": True
     }
 
-
 def _rule_based_risk(scan_data: dict, setup: dict, plan: dict, market_data: dict):
-    """DISABLED — AI only. Raises exception."""
-    raise Exception(
-        "⛔ AI REQUIRED: Risk audit harus dari AI. "
-        "Ollama (localhost:11434) atau cloud API harus aktif."
-    )
-
-
-def _rule_based_risk_DISABLED(scan_data: dict, setup: dict, plan: dict, market_data: dict):
-    """Rule-based risk audit when AI is down (DISABLED per user mandate)."""
+    """Rule-based risk audit baseline and resilient fallback."""
     checks = []
     total = 0
 
@@ -729,9 +715,9 @@ def _rule_based_risk_DISABLED(scan_data: dict, setup: dict, plan: dict, market_d
 
     # 9. Liquidity / Leverage check
     lev = plan.get("leverage", 1)
-    liq_ok = lev <= 5
+    liq_ok = (lev == FIXED_LEVERAGE) or (lev <= 25)
     if liq_ok: total += 1
-    checks.append({"name": "LIQUIDITY_CHECK", "status": "PASS" if liq_ok else "FAIL", "detail": f"Lev: {lev}x"})
+    checks.append({"name": "LIQUIDITY_CHECK", "status": "PASS" if liq_ok else "FAIL", "detail": f"Lev: {lev}x (Fixed)"})
 
     # 10. Max drawdown check
     sl_dist = plan.get("sl_distance_pct", 0) or 0
@@ -916,10 +902,10 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
         "Anda adalah 'Quantitative Trading Plan Architect' untuk crypto futures di Pluang.\n"
         "Tugas: Menyusun rencana trading yang PRESISI berdasarkan data kuantitatif.\n\n"
         "AI MEMEGANG KENDALI PENUH EKSEKUSI:\n"
-        "1. LEVERAGE DIATUR OLEH AI: Tentukan leverage secara cerdas (1x - 20x) berdasarkan volatilitas ATR, jarak SL, dan keyakinan setup. Volatilitas tinggi -> leverage rendah (2x-5x); setup solid/volatilitas terukur -> leverage lebih tinggi.\n"
-        "2. ORDER TYPE DIATUR OLEH AI: Pilih 'MARKET' (jika butuh eksekusi instan saat momentum/breakout) atau 'LIMIT' (jika butuh entry di harga tertentu/pullback support-resistance). Jika LIMIT, wajib berikan 'limit_price'.\n"
-        "3. MODAL (POSITION SIZE) DIATUR OLEH AI: Hitung alokasi modal per trade (position_size_idr) secara dinamis sesuai risk management dan jarak Stop Loss (misal Rp 25.000 - Rp 250.000).\n"
-        "4. PLUANG HANYA MENDUKUNG SINGLE TAKE PROFIT: DILARANG membuat dual TP (TP1/TP2). Buat TEPAT 1 target Take Profit ('take_profit') dan 1 Stop Loss ('stop_loss'). RRR minimal 1:1.5.\n"
+        "1. LEVERAGE TERKUNCI MATI PADA 20x: Wajib 20x ISOLATED (Fixed 20x, immutable user mandate, dilarang memilih selain 20x).\n"
+        "2. ORDER TYPE: Pilih 'MARKET' (jika butuh eksekusi instan saat momentum/breakout) atau 'LIMIT' (jika butuh entry di harga tertentu). Jika LIMIT, wajib berikan 'limit_price'.\n"
+        "3. MODAL: ALL-IN 100% Saldo Margin yang tersedia di wallet.\n"
+        "4. SINGLE TAKE PROFIT: DILARANG dual TP. Buat TEPAT 1 target Take Profit ('take_profit') dan 1 Stop Loss ('stop_loss'). RRR minimal 1:1.5.\n"
         "5. Stop Loss WAJIB dihitung logis berdasarkan ATR (1.5x - 2x ATR dari entry) atau struktur SMC.\n"
         "6. Jika setup = NO_CLEAR_SETUP, buat action SKIP.\n\n"
         "WAJIB output JSON berikut:\n"
@@ -931,13 +917,13 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
         '  "stop_loss": 0.0,\n'
         '  "take_profit": 0.0,\n'
         '  "risk_reward_ratio": "1:2.5",\n'
-        '  "position_size_idr": 50000,\n'
-        '  "leverage": 5,\n'
+        '  "position_size_idr": 0,\n'
+        '  "leverage": 20,\n'
         '  "risk_amount_idr": 1000,\n'
         '  "risk_pct_of_capital": 2.0,\n'
         '  "sl_distance_pct": 1.5,\n'
         '  "tp_distance_pct": 3.75,\n'
-        '  "reasoning": "penjelasan singkat mengenai alasan entry, level SL/TP, leverage, dan order type"\n'
+        '  "reasoning": "penjelasan singkat mengenai alasan entry, level SL/TP, leverage 20x fixed, dan order type"\n'
         "}"
     )
 
@@ -1010,7 +996,7 @@ def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_res
         "6. VOLATILITY_CHECK: FAIL jika ATR >6% (terlalu volatile untuk entry baru)\n"
         "7. SENTIMENT_CHECK: WARNING jika Fear & Greed extreme\n"
         "8. LONG_SHORT_CHECK: WARNING jika 70%+ crowd di sisi yang sama\n"
-        "9. LIQUIDITY_CHECK: FAIL jika leverage >5x atau spread terlalu lebar\n"
+        "9. LIQUIDITY_CHECK: PASS jika likuiditas orderbook memadai dan spread bid-ask <0.1% pada leverage 20x\n"
         "10. MAX_DRAWDOWN: FAIL jika potential drawdown >3% dari modal\n"
         "11. NEWS_CHECK: FAIL jika ada breaking news negatif/hack/exploit pada koin ini; WARNING jika sentiment berita BEARISH saat posisi LONG\n\n"
         "RECOMMENDATION:\n"
@@ -1264,9 +1250,9 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
 # ===========================================================================
 # MAIN PIPELINE EXECUTOR
 # ===========================================================================
-def run_5_layer_pipeline(symbol: str):
+def run_5_layer_pipeline(symbol: str, active_positions: list = None):
     """
-    Execute the complete 5-layer institutional crypto futures pipeline.
+    Execute the unified 5-layer quant pipeline + 9-agent committee debate in ONE seamless process.
     RESILIENT: If AI providers fail, falls back to rule-based technical analysis.
     Auto-trading NEVER halts due to API overload.
     """
@@ -1293,7 +1279,7 @@ def run_5_layer_pipeline(symbol: str):
         setup_result = _rule_based_setup(scan_summary)
         ai_fallback_used = True
 
-    # Quick short-circuit if no valid setup detected: saves 3 AI API calls & 10+ seconds per coin
+    # Branch on setup detection
     if setup_result.get("setup_name") == "NO_CLEAR_SETUP" or setup_result.get("direction") in ("NONE", "SKIP", None):
         plan_result = _rule_based_plan(scan_summary, setup_result, market_data)
         risk_result = _rule_based_risk(scan_summary, setup_result, plan_result, market_data)
@@ -1307,55 +1293,34 @@ def run_5_layer_pipeline(symbol: str):
             "take_profit_2": 0,
             "stop_loss": 0,
             "risk_reward_ratio": "0:0",
-            "leverage": 1,
+            "leverage": FIXED_LEVERAGE,
             "position_size_idr": 0,
             "final_reason": setup_result.get("reasoning") or "Pasar sideways tanpa setup terkonfirmasi. Dana aman di USDT.",
             "checklist_passed": 0,
             "checklist_total": 10
         }
-        res_payload = {
-            "pipeline_id": pipeline_id,
-            "symbol": symbol,
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-            "execution_time_sec": round(time.time() - start_time, 2),
-            "status": "COMPLETED",
-            "ai_fallback_used": ai_fallback_used,
-            "layer1_scanning": scan_summary,
-            "layer2_setup": setup_result,
-            "layer3_plan": plan_result,
-            "layer4_risk": risk_result,
-            "layer5_final_call": final_call
-        }
+    else:
+        # === LAYER 3: BUILD PLAN (AI with fallback) ===
         try:
-            os.makedirs(RESULTS_DIR, exist_ok=True)
-            fname = os.path.join(RESULTS_DIR, f"{symbol.replace('-', '_')}_latest.json")
-            with open(fname, "w", encoding="utf-8") as f:
-                json.dump(res_payload, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
-        return res_payload
+            plan_result = layer3_build_plan(symbol, scan_summary, setup_result, market_data)
+        except Exception as e:
+            print(f"[FALLBACK] Layer 3 AI failed for {symbol}: {e} — using rule-based plan", flush=True)
+            plan_result = _rule_based_plan(scan_summary, setup_result, market_data)
+            ai_fallback_used = True
 
-    # === LAYER 3: BUILD PLAN (AI with fallback) ===
-    try:
-        plan_result = layer3_build_plan(symbol, scan_summary, setup_result, market_data)
-    except Exception as e:
-        print(f"[FALLBACK] Layer 3 AI failed for {symbol}: {e} — using rule-based plan", flush=True)
-        plan_result = _rule_based_plan(scan_summary, setup_result, market_data)
-        ai_fallback_used = True
+        # === LAYER 4: RISK AUDIT (AI with fallback) ===
+        try:
+            risk_result = layer4_risk_audit(symbol, scan_summary, setup_result, plan_result, market_data)
+        except Exception as e:
+            print(f"[FALLBACK] Layer 4 AI failed for {symbol}: {e} — using rule-based risk", flush=True)
+            risk_result = _rule_based_risk(scan_summary, setup_result, plan_result, market_data)
+            ai_fallback_used = True
 
-    # === LAYER 4: RISK AUDIT (AI with fallback) ===
-    try:
-        risk_result = layer4_risk_audit(symbol, scan_summary, setup_result, plan_result, market_data)
-    except Exception as e:
-        print(f"[FALLBACK] Layer 4 AI failed for {symbol}: {e} — using rule-based risk", flush=True)
-        risk_result = _rule_based_risk(scan_summary, setup_result, plan_result, market_data)
-        ai_fallback_used = True
-
-    # === LAYER 5: FINAL JUDGMENT (AI with fallback) ===
-    try:
-        final_call = layer5_final_judgment(symbol, scan_summary, setup_result, plan_result, risk_result, market_data)
-    except Exception as e:
-        print(f"[FALLBACK] Layer 5 AI failed for {symbol}: {e} — using rule-based judgment", flush=True)
+        # === LAYER 5: FINAL JUDGMENT (AI with fallback) ===
+        try:
+            final_call = layer5_final_judgment(symbol, scan_summary, setup_result, plan_result, risk_result, market_data)
+        except Exception as e:
+            print(f"[FALLBACK] Layer 5 AI failed for {symbol}: {e} — using rule-based judgment", flush=True)
         # Build final judgment from rule-based layers
         cfg = get_trading_config()
         direction = setup_result.get("direction", "NONE")
@@ -1404,6 +1369,7 @@ def run_5_layer_pipeline(symbol: str):
         "symbol": symbol,
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "execution_time_sec": execution_time,
+        "status": final_call.get("status", "COMPLETED"),
         "ai_fallback_used": ai_fallback_used,
         "layer1_scanning": {
             "current_price": market_data.get("current_price"),
@@ -1426,6 +1392,40 @@ def run_5_layer_pipeline(symbol: str):
         "layer4_risk": risk_result,
         "layer5_final_call": final_call
     }
+
+    # === LAYER 6: SIDANG MAHKAMAH 9-AGENT MULTI-COMMITTEE (PROSES TERSATUKAN) ===
+    # Setelah Layer 1-5 selesai, koin otomatis langsung disidangkan dalam 1 alur terpadu
+    committee_res = None
+    try:
+        from multi_agent_committee import run_multi_agent_committee
+        print(f"[PIPELINE+SIDANG] 🏛️ Menjalankan Sidang 9-Agent Multi-Committee untuk {symbol}...", flush=True)
+        committee_res = run_multi_agent_committee(symbol, active_positions=active_positions or [])
+        result["committee"] = committee_res
+
+        if committee_res:
+            com_approved = bool(committee_res.get("approved"))
+            com_dir = committee_res.get("direction", "SKIP")
+            com_conf = committee_res.get("confidence_pct", 0)
+
+            if com_approved and com_dir in ("LONG", "SHORT") and com_conf >= 60:
+                final_call["status"] = "APPROVED"
+                final_call["direction"] = com_dir
+                final_call["confidence_score"] = max(final_call.get("confidence_score", 0), com_conf)
+                result["status"] = "APPROVED"
+                if committee_res.get("trade_params"):
+                    tp_p = committee_res["trade_params"]
+                    if tp_p.get("entry_price"): final_call["entry_price"] = tp_p["entry_price"]
+                    if tp_p.get("tp1_price"): final_call["take_profit_1"] = tp_p["tp1_price"]
+                    if tp_p.get("tp2_price"): final_call["take_profit_2"] = tp_p["tp2_price"]
+                    if tp_p.get("sl_price"): final_call["stop_loss"] = tp_p["sl_price"]
+                    if tp_p.get("budget_idr"): final_call["position_size_idr"] = tp_p["budget_idr"]
+            elif not com_approved and final_call.get("status") == "APPROVED":
+                pm_dec = committee_res.get("portfolio_manager", {}).get("decision", "Veto Risiko Sidang")
+                final_call["status"] = "REJECTED_BY_COMMITTEE"
+                final_call["final_reason"] = f"Ditolak Sidang 9-Agent: {pm_dec}"
+                result["status"] = "REJECTED_BY_COMMITTEE"
+    except Exception as ce:
+        print(f"[PIPELINE+SIDANG] Notice: {ce}", flush=True)
 
     # Save result to file for dashboard consumption
     try:

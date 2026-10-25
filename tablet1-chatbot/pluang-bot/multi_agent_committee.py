@@ -304,20 +304,16 @@ def run_risk_officer(symbol, price, direction, confidence, market_data, config):
     leverage = 20  # Always 20x per user mandate
     lev_range = (20, 20)
 
-    # ── 4. Wallet-based Kelly budget ──────────────────────────────────
-    win_rate = confidence / 100
-    kelly = win_rate - (1 - win_rate) / min_rrr
-    kelly = max(0.08, min(0.40, kelly))
-
-    vol_adj = 0.5 if volatility > 10 else (0.75 if volatility > 5 else 1.0)
-
-    if wallet_idr > 1000:    # live wallet available
-        # Use Kelly fraction of live available USDT wallet
-        budget_idr = max(10000, int(wallet_idr * kelly * vol_adj))
+    # ── 4. ALL-IN WALLET BUDGET (USER MANDATE: 100% SALDO AKTIF) ──────────────────
+    # Modal ALL-IN: gunakan 98% saldo margin yang tersedia di wallet Binance Futures
+    # (buffer 2% untuk fee transaksi agar order terisi sempurna tanpa ditolak bursa)
+    if available_usdt > 0.5:
+        allocated_usdt = round(available_usdt * 0.98, 4)
+        budget_idr = int(allocated_usdt * fx_rate)
+    elif wallet_idr > 1000:
+        budget_idr = int(wallet_idr * 0.98)
     else:
-        # Wallet unavailable (offline/no key) — fall back to IDR config floor
-        budget_floor = config.get("max_budget_idr") or 50000
-        budget_idr = max(10000, int(budget_floor * kelly * vol_adj))
+        budget_idr = int(config.get("max_budget_idr") or 50000)
 
     # ── 5. SL / TP calculation ─────────────────────────────────────────
     atr_pct = volatility * 0.6
@@ -381,8 +377,8 @@ def run_risk_officer(symbol, price, direction, confidence, market_data, config):
         "recommended_leverage": leverage,
         "leverage": leverage,
         "leverage_tier": f"{lev_range[0]}x-{lev_range[1]}x (vol={volatility:.1f}%)",
-        "kelly_fraction": round(kelly, 3),
-        "vol_adjustment": vol_adj,
+        "kelly_fraction": 1.0,  # All-in wallet mode
+        "vol_adjustment": 1.0,
         "sl_price": round(sl, 6),
         "tp1_price": round(tp1, 6),
         "tp2_price": round(tp2, 6),
@@ -392,7 +388,7 @@ def run_risk_officer(symbol, price, direction, confidence, market_data, config):
         "volatility_pct": round(volatility, 2),
         "estimated_time_horizon": time_horizon,
         "hummingbot_spread_pct": round(max(0.1, min(1.2, volatility * 0.08)), 2),
-        "risk_note": f"VaR(95%)=${var95:.2f}, RRR={actual_rrr:.2f}, Vol={volatility:.1f}%, Kelly={kelly:.1%}, Lev={leverage}x, Wallet=${available_usdt:.2f}"
+        "risk_note": f"VaR(95%)=${var95:.2f}, RRR={actual_rrr:.2f}, Vol={volatility:.1f}%, Lev={leverage}x, Wallet All-In=${available_usdt:.2f}"
     }
 
 
@@ -491,12 +487,13 @@ def get_active_thesis(symbol):
 # MAIN COMMITTEE ORCHESTRATOR
 # ============================================================
 
-def run_multi_agent_committee(symbol, existing_positions=None):
+def run_multi_agent_committee(symbol, existing_positions=None, active_positions=None):
     """
     Jalankan seluruh committee 9-agent secara terstruktur & kolaboratif.
     Returns: dict lengkap dengan transcript kolaborasi dan keputusan final.
     """
-    if existing_positions is None: existing_positions = []
+    if existing_positions is None:
+        existing_positions = active_positions or []
     config = get_trading_config()
     t0 = time.time()
     print(f"\n[Committee] Memulai Sidang Multi-Agent Kolaboratif untuk {symbol}...")
