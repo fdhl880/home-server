@@ -121,7 +121,17 @@ def run_fundamentals_agent(symbol, market_data):
     price = market_data.get("price", market_data.get("current_price", 0))
     volume = market_data.get("volume_24h_usd", 0)
     oi = market_data.get("open_interest_usd", volume * 0.3)
-    funding = market_data.get("funding_rate", 0.0001)
+    raw_funding = market_data.get("funding_rate", 0.0001)
+    if isinstance(raw_funding, dict):
+        try:
+            funding = float(raw_funding.get("funding_rate_raw", raw_funding.get("funding_rate", 0.0001)))
+        except Exception:
+            funding = 0.0001
+    else:
+        try:
+            funding = float(raw_funding)
+        except Exception:
+            funding = 0.0001
 
     if funding > 0.001: bias, fsig = "BEARISH", "Longs dominan berlebihan (squeeze risk)"
     elif funding > 0.0003: bias, fsig = "NEUTRAL_BULLISH", "Bullish tapi terkendali"
