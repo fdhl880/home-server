@@ -79,11 +79,11 @@ ENV = load_env()
 # ===== AI PROVIDER CONFIGURATION =====
 AI_PROVIDER = ENV.get("AI_PROVIDER", "ollama")  # "ollama" (local) is PRIMARY
 OLLAMA_BASE_URL = ENV.get("OLLAMA_BASE_URL", "http://localhost:11434")  # Local Ollama endpoint
-OLLAMA_MODEL = ENV.get("OLLAMA_MODEL", "llama3.1")  # Model to use from local Ollama
+OLLAMA_MODEL = ENV.get("OLLAMA_MODEL", "llama3.2:1b")  # Model to use from local Ollama (1.2B fast CPU)
 GROQ_API_KEY = ENV.get("GROQ_API_KEY", "").strip()
-GROQ_MODEL = ENV.get("GROQ_MODEL", "openai/gpt-oss-120b")
+GROQ_MODEL = ENV.get("GROQ_MODEL", "openai/gpt-oss-20b")
 OPENROUTER_API_KEY = ENV.get("OPENROUTER_API_KEY", "").strip()
-OPENROUTER_MODEL = ENV.get("OPENROUTER_MODEL", "minimax/minimax-m3.1-flash:free")
+OPENROUTER_MODEL = ENV.get("OPENROUTER_MODEL", "liquid/lfm-2.5-2.6b:free")
 GEMINI_API_KEY = ENV.get("GEMINI_API_KEY", "").strip()
 CEREBRAS_API_KEY = ENV.get("CEREBRAS_API_KEY", "").strip()
 
@@ -232,16 +232,20 @@ class DailyLimitExhausted(Exception):
     pass
 
 
-def _call_ollama_provider(base_url, model, messages, max_tokens=1500, temperature=0.1, timeout=120):
+def _call_ollama_provider(base_url, model, messages, max_tokens=1500, temperature=0.1, timeout=180):
     """Call local Ollama API (primary — no rate limits, no API key, no quota)."""
     url = f"{base_url}/api/chat"
+    # num_ctx=512: keeps KV cache tiny so model fits in ~800MB free RAM on CPU-only machine.
+    # num_predict capped at 400 for JSON responses (sufficient for compact JSON output).
     payload = {
         "model": model,
         "messages": messages,
         "stream": False,
         "options": {
             "temperature": temperature,
-            "num_predict": max_tokens,
+            "num_predict": min(max_tokens, 400),
+            "num_ctx": 512,       # LOW: prevents OOM on low-RAM machines
+            "num_thread": 2,      # limit CPU threads to reduce memory pressure
         }
     }
     resp = requests.post(url, json=payload, timeout=timeout)
@@ -257,22 +261,15 @@ def _call_ollama_provider(base_url, model, messages, max_tokens=1500, temperatur
 _OLLAMA_STATUS = {"available": False, "last_check": 0}
 
 def _is_ollama_online(base_url: str) -> bool:
+    """Check if Ollama HTTP server is responding (not just TCP port open)."""
     global _OLLAMA_STATUS
     now = time.time()
-    if now - _OLLAMA_STATUS["last_check"] < 30:
+    if now - _OLLAMA_STATUS["last_check"] < 15:
         return _OLLAMA_STATUS["available"]
     _OLLAMA_STATUS["last_check"] = now
     try:
-        import socket
-        from urllib.parse import urlparse
-        p = urlparse(base_url)
-        host = p.hostname or "127.0.0.1"
-        port = p.port or 11434
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.2)
-        s.connect((host, port))
-        s.close()
-        _OLLAMA_STATUS["available"] = True
+        resp = requests.get(f"{base_url}/api/tags", timeout=3)
+        _OLLAMA_STATUS["available"] = resp.status_code == 200
     except Exception:
         _OLLAMA_STATUS["available"] = False
     return _OLLAMA_STATUS["available"]
@@ -298,28 +295,29 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
     # ===== BUILD PROVIDER CHAIN =====
     providers = []
 
-    # --- Tier 0: LOCAL OLLAMA (only if daemon is actually running) ---
+    # --- Tier 0: LOCAL OLLAMA (Local Primary — No Rate Limits, Zero Cloud Delay) ---
     if _is_ollama_online(OLLAMA_BASE_URL):
         providers.append({
             "name": "Ollama-Local",
             "type": "ollama",
             "base_url": OLLAMA_BASE_URL,
             "model": OLLAMA_MODEL,
-            "max_retries": 1,
-            "timeout": 20,
+            "max_retries": 2,
+            "timeout": 180,
         })
 
-    # --- Tier 1: Groq (Verified active models: 120B reasoning, Qwen 27B, 20B) ---
+    # --- Tier 1: Groq (Verified active models: 20B fast, Qwen 27B, 120B reasoning) ---
     if GROQ_API_KEY:
-        # Note: openai/gpt-oss-120b & 20b require plain text JSON (response_format causes HTTP 400 on Groq)
+        # Note: openai/gpt-oss-20b responds in <2s and is rock solid
         providers.append({
-            "name": "Groq-120B",
+            "name": "Groq-20B",
             "type": "openai_compat",
             "url": "https://api.groq.com/openai/v1/chat/completions",
             "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            "model": "openai/gpt-oss-120b",
+            "model": "openai/gpt-oss-20b",
             "use_json_object": False,
             "max_retries": 1,
+            "timeout": 20,
         })
         providers.append({
             "name": "Groq-Qwen27B",
@@ -329,15 +327,17 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             "model": "qwen/qwen3.8-27b",
             "use_json_object": True,
             "max_retries": 1,
+            "timeout": 25,
         })
         providers.append({
-            "name": "Groq-20B",
+            "name": "Groq-120B",
             "type": "openai_compat",
             "url": "https://api.groq.com/openai/v1/chat/completions",
             "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            "model": "openai/gpt-oss-20b",
+            "model": "openai/gpt-oss-120b",
             "use_json_object": False,
             "max_retries": 1,
+            "timeout": 25,
         })
 
     # --- Tier 2: Google Gemini (Verified active: gemini-flash-lite-latest & gemma-4-26b-a4b-it) ---
@@ -397,9 +397,10 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             try:
                 if prov["type"] == "ollama":
                     # Local Ollama (primary provider — no API key, no rate limits)
+                    tok_limit = min(max_tokens, 450) if is_json else min(max_tokens, 600)
                     content = _call_ollama_provider(
                         prov["base_url"], prov["model"], messages,
-                        max_tokens=max_tokens, temperature=temperature, timeout=prov.get("timeout", 10)
+                        max_tokens=tok_limit, temperature=temperature, timeout=prov.get("timeout", 180)
                     )
                 elif prov["type"] == "gemini":
                     # Gemini has its own API format
@@ -793,7 +794,20 @@ def layer1_scanning(symbol: str):
     if "error" in data_1h:
         return None, f"Data error: {data_1h['error']}"
 
-    # Generate scan summary for AI consumption
+    # Clean quant factors to keep core institutional composite metrics and remove bulky factor dumps
+    qf_raw = data_1h.get("quant_factors") or {}
+    qf_summary = {
+        "composite_quant_score": qf_raw.get("composite_quant_score", 50.0),
+        "signal": qf_raw.get("signal", "NEUTRAL"),
+        "action": qf_raw.get("action", "WAIT"),
+        "total_factors_evaluated": qf_raw.get("total_factors_evaluated", 500),
+        "pillars": qf_raw.get("pillars", {}),
+        "regime": qf_raw.get("regime", {}),
+        "smc_summary": qf_raw.get("smc_summary", {}),
+        "derivatives_summary": qf_raw.get("derivatives_summary", {})
+    }
+
+    # Generate scan summary for AI consumption (lean, high signal-to-noise ratio)
     scan_summary = {
         "symbol": symbol,
         "price": data_1h.get("current_price"),
@@ -813,16 +827,22 @@ def layer1_scanning(symbol: str):
         "fear_greed": data_1h.get("fear_greed_index"),
         "smc": data_1h.get("smart_money_concepts"),
         "derivatives_matrix": data_1h.get("derivatives_matrix"),
-        "quant_factors": data_1h.get("quant_factors"),
+        "quant_factors": qf_summary,
         "daily_rsi": data_1d.get("rsi_14") if isinstance(data_1d, dict) else None,
         "daily_trend": data_1d.get("trend") if isinstance(data_1d, dict) else None,
         "daily_macd": data_1d.get("macd") if isinstance(data_1d, dict) else None,
     }
 
-    # Macro Breaking News & Sentiment Sentinel
+    # Macro Breaking News & Sentiment Sentinel (summarized to prevent token bloat)
     try:
         from news_sentinel import get_news_sentiment_summary
-        scan_summary["news_macro"] = get_news_sentiment_summary()
+        ns = get_news_sentiment_summary()
+        scan_summary["news_macro"] = {
+            "market_sentiment": ns.get("market_sentiment", "NEUTRAL"),
+            "sentiment_score": ns.get("sentiment_score", 50),
+            "latest_headline": ns.get("latest_headline", ""),
+            "top_headlines": [a.get("title", "") for a in ns.get("top_articles", [])[:3] if isinstance(a, dict)]
+        }
     except Exception:
         scan_summary["news_macro"] = {"market_sentiment": "NEUTRAL", "sentiment_score": 50}
 
@@ -833,57 +853,59 @@ def layer1_scanning(symbol: str):
 # LAPISAN 2: SETUP HUNTER (Identifikasi Pola & Strategi)
 # ===========================================================================
 def layer2_setup_hunter(symbol: str, scan_data: dict):
-    """AI identifies specific trading setup - Wall Street quant approach"""
-    scan_json = json.dumps(scan_data, indent=2, ensure_ascii=False)
+    """AI identifies trading setup — compact prompt to preserve token budget"""
+    # Only pass essential fields to AI (compress input tokens from ~2500 to ~600)
+    compact = {
+        "sym": symbol,
+        "price": scan_data.get("price"),
+        "chg24h": scan_data.get("change_24h"),
+        "rsi14": scan_data.get("rsi_14_1h"),
+        "ema": scan_data.get("ema_trend_1h"),
+        "macd_hist": (scan_data.get("macd_1h") or {}).get("histogram"),
+        "macd_trend": (scan_data.get("macd_1h") or {}).get("trend"),
+        "bb_pct_b": (scan_data.get("bollinger_1h") or {}).get("percent_b"),
+        "bb_squeeze": (scan_data.get("bollinger_1h") or {}).get("squeeze"),
+        "atr_pct": scan_data.get("atr_pct"),
+        "vol_trend": (scan_data.get("volume") or {}).get("volume_trend"),
+        "vol_ratio": (scan_data.get("volume") or {}).get("volume_ratio"),
+        "fund_rate": (scan_data.get("funding_rate") or {}).get("rate"),
+        "fund_sent": (scan_data.get("funding_rate") or {}).get("sentiment"),
+        "support1": (scan_data.get("levels") or {}).get("support_1"),
+        "resist1": (scan_data.get("levels") or {}).get("resistance_1"),
+        "mss": (scan_data.get("smc") or {}).get("market_structure"),
+        "liq_sweep": (scan_data.get("smc") or {}).get("liquidity_sweep"),
+        "daily_rsi": scan_data.get("daily_rsi"),
+        "daily_trend": scan_data.get("daily_trend"),
+        "qscore": (scan_data.get("quant_factors") or {}).get("composite_quant_score"),
+        "news": (scan_data.get("news_macro") or {}).get("market_sentiment"),
+    }
+    compact_json = json.dumps(compact, ensure_ascii=False)
 
     system = (
-        "Anda adalah 'Senior Quantitative Setup Analyst' di Wall Street Institutional Hedge Fund "
-        "(gaya Renaissance Technologies / Jim Simons, Paul Tudor Jones, Mark Minervini, Richard Wyckoff).\n"
-        "Data scan mencakup 500+ faktor kuantitatif 5 pilar (Momentum, Mean Reversion, Volume & Order Flow, "
-        "Volatility Regime, Institutional Derivatives & Smart Money Concepts).\n\n"
-        "Gaya analisis: OBJEKTIF, SKEPTIS, dan BERBASIS DATA MURNI 500+ FAKTOR.\n\n"
-        "PRINSIP UTAMA (KETAT):\n"
-        "- JANGAN paksakan trade jika data teknikal 500+ faktor tidak mendukung\n"
-        "- Minimal 3 konfirmasi teknikal INDEPENDEN yang KUAT untuk setup valid\n"
-        "- RSI antara 35-65 = NETRAL, bukan sinyal\n"
-        "- MACD flat/sideways = bukan sinyal\n"
-        "- Volume rendah atau rata-rata = bukan konfirmasi\n"
-        "- Jika indikator saling bertentangan (RSI bearish tapi EMA bullish) = NO_CLEAR_SETUP\n"
-        "- Lebih baik MELEWATKAN trade daripada memaksakan entry tanpa edge\n"
-        "- NO_CLEAR_SETUP adalah keputusan VALID dan SERING terjadi di pasar sideways\n\n"
-        "DAFTAR SETUP VALID (pilih HANYA jika 3+ konfirmasi terpenuhi):\n"
-        "1. TREND_CONTINUATION - EMA bullish/bearish + MACD searah + volume di atas rata-rata\n"
-        "2. MEAN_REVERSION_BOUNCE - RSI <30 atau >70 + di level support/resistance kuat + divergence\n"
-        "3. BREAKOUT_MOMENTUM - Harga break level kunci + volume >1.5x rata-rata + candle besar\n"
-        "4. EMA_PULLBACK_ENTRY - Pullback ke EMA20/50 dalam tren kuat + RSI bounce\n"
-        "5. SMC_LIQUIDITY_SWEEP - Sweep liquidity + rejection candle + volume konfirmasi\n"
-        "6. BOLLINGER_SQUEEZE_BREAKOUT - BB squeeze + expansion + volume spike\n"
-        "7. RSI_DIVERGENCE_PLAY - Divergence RSI vs price + di level S/R + volume konfirmasi\n"
-        "8. MACD_CROSSOVER_MOMENTUM - MACD crossover + histogram expanding + trend searah\n"
-        "9. FUNDING_RATE_ARBITRAGE - Extreme funding (>0.03% atau <-0.03%) + crowd over-positioned\n"
-        "10. VOLATILITY_EXPANSION - ATR expanding >50% + directional candle + volume\n"
-        "11. NO_CLEAR_SETUP - Pasar sideways, sinyal campur, volume rendah, atau <3 konfirmasi\n\n"
-        "WAJIB output JSON berikut:\n"
-        '{"setup_name": "nama_setup", "direction": "LONG/SHORT/NONE", '
-        '"confluence_count": 3, "confluences": ["alasan1","alasan2","alasan3"], '
-        '"probability_pct": 65, "explanation_id": "penjelasan singkat bahasa Indonesia"}'
+        "Crypto futures setup analyst. Respond ONLY in JSON, no prose.\n"
+        "Rules:\n"
+        "- Need ≥3 INDEPENDENT confirmations for any LONG/SHORT setup.\n"
+        "- RSI 35-65 = NEUTRAL (not a signal). Volume must be above average.\n"
+        "- NO_CLEAR_SETUP if: <3 confirms, RSI neutral, sideways, conflicting signals.\n"
+        "- Valid setups: TREND_CONTINUATION, MEAN_REVERSION_BOUNCE, BREAKOUT_MOMENTUM, "
+        "EMA_PULLBACK_ENTRY, SMC_LIQUIDITY_SWEEP, BOLLINGER_SQUEEZE_BREAKOUT, "
+        "RSI_DIVERGENCE_PLAY, FUNDING_RATE_ARBITRAGE, NO_CLEAR_SETUP.\n"
+        "Output: {\"setup_name\":\"\",\"direction\":\"LONG/SHORT/NONE\","
+        "\"confluence_count\":0,\"confluences\":[],"
+        "\"probability_pct\":50,\"explanation_id\":\"\"}"
     )
 
     prompt = (
-        f"Analisis OBJEKTIF untuk {symbol}. Jangan paksakan trade jika data tidak mendukung.\n"
-        f"Jika <3 konfirmasi kuat, keluarkan NO_CLEAR_SETUP.\n\n"
-        f"{scan_json}\n\n"
-        f"Keluarkan HANYA JSON setup."
+        f"Analyze {symbol}. Data:\n{compact_json}\n"
+        f"Output ONLY JSON setup. Use NO_CLEAR_SETUP if <3 strong confirms."
     )
 
-    raw = call_ai(prompt, system, max_tokens=2000, temperature=0.15)
+    raw = call_ai(prompt, system, max_tokens=350, temperature=0.1)
     result = parse_json_from_text(raw)
 
     if not result:
-        # Fallback to rule-based instead of giving up
         return _rule_based_setup(scan_data)
 
-    # If AI returns low confluence but has direction, still allow it
     if result.get("confluence_count", 0) < 1 and result.get("setup_name") != "NO_CLEAR_SETUP":
         result["confluence_count"] = max(result.get("confluence_count", 0), 1)
 
@@ -891,71 +913,154 @@ def layer2_setup_hunter(symbol: str, scan_data: dict):
 
 
 # ===========================================================================
+# TP TIME PREDICTION ENGINE
+# Prediksi berapa JAM sampai TP tercapai, berbasis:
+#   1. ATR velocity   : berapa % price bergerak per jam rata-rata
+#   2. Momentum factor: semakin kuat momentum, semakin cepat
+#   3. Setup multiplier: setup tertentu lebih cepat dari yg lain
+#   4. Volume confirm : high vol = gerakan lebih resolute
+# ===========================================================================
+def predict_tp_time(current_price: float, take_profit: float,
+                    stop_loss: float, setup_name: str,
+                    scan_data: dict, market_data: dict) -> dict:
+    """
+    Prediksi waktu sampai TP tercapai berdasarkan model ATR velocity.
+    Returns dict dengan eta_label, eta_hours_realistic, dsb.
+    """
+    if not current_price or not take_profit or current_price <= 0:
+        return {"eta_label": "N/A", "model_note": "Data tidak cukup"}
+
+    tp_dist_pct = abs(take_profit - current_price) / current_price * 100
+    sl_dist_pct = abs(stop_loss - current_price) / current_price * 100 if stop_loss else 0
+
+    # 1. Baseline ATR velocity — gerakan bersih per jam ~35% dari ATR (bukan unidirectional)
+    atr_pct = scan_data.get("atr_pct") or market_data.get("atr_pct") or 2.0
+    atr_velocity = atr_pct * 0.35
+
+    # 2. Momentum multiplier
+    rsi = scan_data.get("rsi_14_1h") or market_data.get("rsi_14") or 50
+    macd_hist = abs((scan_data.get("macd_1h") or {}).get("histogram", 0) or 0)
+    vol_ratio = (scan_data.get("volume") or {}).get("volume_ratio", 1.0) or 1.0
+    change_4h = abs(scan_data.get("change_4h") or 0)
+
+    m = 1.0
+    if rsi > 65 or rsi < 35:  m += 0.3
+    elif rsi > 55 or rsi < 45: m += 0.1
+    if macd_hist and atr_pct > 0: m += min(macd_hist / (atr_pct * 0.1 + 0.001), 1.5) * 0.2
+    if vol_ratio > 1.5:  m += 0.25
+    elif vol_ratio > 1.2: m += 0.1
+    if change_4h > 2.0: m += 0.2
+    elif change_4h > 1.0: m += 0.1
+    m = min(m, 2.5)
+
+    # 3. Setup multiplier
+    setup_mults = {
+        "BREAKOUT_MOMENTUM": 1.5, "BOLLINGER_SQUEEZE_BREAKOUT": 1.4,
+        "FUNDING_RATE_ARBITRAGE": 1.4, "VOLATILITY_EXPANSION": 1.3,
+        "SMC_LIQUIDITY_SWEEP": 1.1, "TREND_CONTINUATION": 1.0,
+        "EMA_PULLBACK_ENTRY": 1.0, "MACD_CROSSOVER_MOMENTUM": 0.9,
+        "MEAN_REVERSION_BOUNCE": 0.85, "RSI_DIVERGENCE_PLAY": 0.8,
+    }
+    sm = setup_mults.get(setup_name, 1.0)
+
+    # 4. Effective velocity
+    velocity = max(atr_velocity * m * sm, 0.05)
+
+    # 5. ETA calculation
+    eta_r = min(round(tp_dist_pct / velocity, 1), 168)  # realistic
+    eta_o = min(round(eta_r / 1.8, 1), 168)              # optimistic (1.8x lebih cepat)
+    eta_p = min(round(eta_r * 2.5, 1), 168)              # pessimistic (2.5x lebih lambat)
+
+    def _fmt(h):
+        if h < 1:   return f"{int(h*60)} menit"
+        elif h < 24: return f"{h:.0f} jam"
+        else:        return f"{h/24:.1f} hari"
+
+    confidence = 50
+    if m > 1.5:       confidence += 10
+    if vol_ratio > 1.3: confidence += 8
+    if atr_pct < 5:   confidence += 7
+    if change_4h > 1: confidence += 5
+    confidence = min(confidence, 80)
+
+    return {
+        "tp_distance_pct": round(tp_dist_pct, 2),
+        "sl_distance_pct": round(sl_dist_pct, 2),
+        "atr_per_hour_pct": round(atr_velocity, 3),
+        "effective_velocity_pct_per_hour": round(velocity, 3),
+        "momentum_multiplier": round(m, 2),
+        "setup_multiplier": sm,
+        "eta_hours_optimistic": eta_o,
+        "eta_hours_realistic": eta_r,
+        "eta_hours_pessimistic": eta_p,
+        "eta_label": f"{_fmt(eta_o)} – {_fmt(eta_p)}",
+        "eta_detail": f"Realistis ~{_fmt(eta_r)}, best case {_fmt(eta_o)}, worst case {_fmt(eta_p)}",
+        "confidence_pct": confidence,
+        "model_note": (
+            f"ATR {atr_pct:.2f}%/candle × momentum {m:.2f}x × setup {sm}x "
+            f"= {velocity:.3f}%/jam. TP jarak {tp_dist_pct:.2f}%."
+        )
+    }
+
+
+# ===========================================================================
 # LAPISAN 3: TRADING PLAN ARCHITECT (Entry/TP/SL/Sizing)
 # ===========================================================================
 def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_data: dict):
-    """Build precise trading plan with strict money management"""
+    """Build precise trading plan — strict SL/TP to prevent margin calls"""
     current_price = market_data.get("current_price", 0)
     atr = market_data.get("atr_14", 0)
+    atr_pct = market_data.get("atr_pct", 0) or (atr / current_price * 100 if current_price else 1.5)
+    direction = setup_result.get("direction", "LONG")
+
+    # Pre-compute safe SL/TP bounds (hard constraint — AI cannot override)
+    if direction == "LONG":
+        sl_safe = round(current_price * (1 - max(atr_pct * 1.5, 0.8) / 100), 6)
+        tp_safe = round(current_price * (1 + max(atr_pct * 3.0, 1.5) / 100), 6)
+    else:
+        sl_safe = round(current_price * (1 + max(atr_pct * 1.5, 0.8) / 100), 6)
+        tp_safe = round(current_price * (1 - max(atr_pct * 3.0, 1.5) / 100), 6)
+    sl_dist_pct = abs(current_price - sl_safe) / current_price * 100
+    tp_dist_pct = abs(tp_safe - current_price) / current_price * 100
+
+    support1 = (scan_data.get("levels") or {}).get("support_1", sl_safe)
+    resist1  = (scan_data.get("levels") or {}).get("resistance_1", tp_safe)
 
     system = (
-        "Anda adalah 'Quantitative Trading Plan Architect' untuk crypto futures di Pluang.\n"
-        "Tugas: Menyusun rencana trading yang PRESISI berdasarkan data kuantitatif.\n\n"
-        "AI MEMEGANG KENDALI PENUH EKSEKUSI:\n"
-        "1. LEVERAGE TERKUNCI MATI PADA 20x: Wajib 20x ISOLATED (Fixed 20x, immutable user mandate, dilarang memilih selain 20x).\n"
-        "2. ORDER TYPE: Pilih 'MARKET' (jika butuh eksekusi instan saat momentum/breakout) atau 'LIMIT' (jika butuh entry di harga tertentu). Jika LIMIT, wajib berikan 'limit_price'.\n"
-        "3. MODAL: ALL-IN 100% Saldo Margin yang tersedia di wallet.\n"
-        "4. SINGLE TAKE PROFIT: DILARANG dual TP. Buat TEPAT 1 target Take Profit ('take_profit') dan 1 Stop Loss ('stop_loss'). RRR minimal 1:1.5.\n"
-        "5. Stop Loss WAJIB dihitung logis berdasarkan ATR (1.5x - 2x ATR dari entry) atau struktur SMC.\n"
-        "6. Jika setup = NO_CLEAR_SETUP, buat action SKIP.\n\n"
-        "WAJIB output JSON berikut:\n"
-        "{\n"
-        '  "action": "LONG/SHORT/SKIP",\n'
-        '  "order_type": "MARKET/LIMIT",\n'
-        '  "entry_price": 0.0,\n'
-        '  "limit_price": 0.0,\n'
-        '  "stop_loss": 0.0,\n'
-        '  "take_profit": 0.0,\n'
-        '  "risk_reward_ratio": "1:2.5",\n'
-        '  "position_size_idr": 0,\n'
-        '  "leverage": 20,\n'
-        '  "risk_amount_idr": 1000,\n'
-        '  "risk_pct_of_capital": 2.0,\n'
-        '  "sl_distance_pct": 1.5,\n'
-        '  "tp_distance_pct": 3.75,\n'
-        '  "reasoning": "penjelasan singkat mengenai alasan entry, level SL/TP, leverage 20x fixed, dan order type"\n'
-        "}"
+        "Crypto futures trading plan architect. Respond ONLY in JSON, no prose.\n"
+        "RULES (IMMUTABLE):\n"
+        f"1. LEVERAGE = 20x ISOLATED. NEVER change this.\n"
+        f"2. DIRECTION = {direction}\n"
+        f"3. SL MUST be between {sl_safe:.6f} and {current_price:.6f} (ATR-based, not wider than 3% from entry)\n"
+        f"4. TP must give RRR ≥ 1.5 vs the SL distance. Suggested TP near {tp_safe:.6f}\n"
+        f"5. Use key S/R: support={support1}, resistance={resist1}\n"
+        "6. order_type: LIMIT if price near S/R level, else MARKET\n"
+        "7. position_size_idr = 0 (auto from wallet)\n"
+        "Output: {\"action\":\"LONG/SHORT/SKIP\",\"order_type\":\"MARKET/LIMIT\","
+        "\"entry_price\":0,\"limit_price\":0,\"stop_loss\":0,\"take_profit\":0,"
+        "\"risk_reward_ratio\":\"1:2.5\",\"leverage\":20,\"position_size_idr\":0,"
+        "\"sl_distance_pct\":1.5,\"tp_distance_pct\":3.75,\"reasoning\":\"brief\"}"
     )
 
     prompt = (
-        f"Data Market {symbol}:\n"
-        f"- Harga saat ini: ${current_price}\n"
-        f"- ATR (14): ${atr} ({market_data.get('atr_pct')}%)\n"
-        f"- RSI: {market_data.get('rsi_14')}\n"
-        f"- EMA Trend: {market_data.get('ema_trend')}\n"
-        f"- Resistance 1: ${scan_data.get('levels', {}).get('resistance_1')}\n"
-        f"- Support 1: ${scan_data.get('levels', {}).get('support_1')}\n"
-        f"- Bollinger: {json.dumps(scan_data.get('bollinger_1h', {}))}\n"
-        f"- Volume: {json.dumps(scan_data.get('volume', {}))}\n\n"
-        f"Setup yang terdeteksi:\n{json.dumps(setup_result, indent=2, ensure_ascii=False)}\n\n"
-        f"Buat Trading Plan PRESISI. Tentukan leverage, order_type (MARKET/LIMIT), limit_price, modal IDR, dan SINGLE take_profit. Keluarkan HANYA JSON."
+        f"{symbol} @ ${current_price}, ATR {atr_pct:.2f}%, Setup: {setup_result.get('setup_name')}.\n"
+        f"SL safe zone: {sl_safe:.6f} | TP target: {tp_safe:.6f}\n"
+        f"Output ONLY JSON plan with SL ≤ {sl_dist_pct:.2f}% from entry."
     )
 
-    raw = call_ai(prompt, system, max_tokens=2000, temperature=0.1)
+    raw = call_ai(prompt, system, max_tokens=350, temperature=0.05)
     result = parse_json_from_text(raw)
 
     if not result:
-        # AI failed to parse — use rule-based plan instead of giving up
-        print(f"[FALLBACK] Layer 3 AI parse failed for {symbol} — using rule-based plan", flush=True)
+        print(f"[FALLBACK] Layer 3 parse failed for {symbol} — rule-based plan", flush=True)
         return _rule_based_plan(scan_data, setup_result, market_data)
 
-    # Standardize single take_profit and aliases
+    # Normalize TPs
     tp = result.get("take_profit") or result.get("take_profit_2") or result.get("take_profit_1") or 0
     result["take_profit"] = tp
     result["take_profit_1"] = tp
     result["take_profit_2"] = tp
 
-    # Default order_type & limit_price if omitted
     if not result.get("order_type"):
         result["order_type"] = "MARKET"
     if result["order_type"].upper() == "LIMIT" and not result.get("limit_price"):
@@ -963,68 +1068,109 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
     elif result["order_type"].upper() != "LIMIT":
         result["limit_price"] = result.get("entry_price", current_price)
 
-    # FIXED LEVERAGE: Always 20x per user mandate — AI cannot override this
+    # ENFORCE FIXED 20x — immutable
     result["leverage"] = FIXED_LEVERAGE
 
-    # Fallback position size: 0 means auto_trader resolves dynamically from wallet balance
+    # SAFETY: If AI returned a bad SL (wider than 4% = almost certain margin call on 20x)
+    # Force it back to safe computed value
+    ai_sl = result.get("stop_loss", 0)
+    if ai_sl and current_price > 0:
+        ai_sl_pct = abs(current_price - ai_sl) / current_price * 100
+        if ai_sl_pct > 4.0 or ai_sl_pct < 0.1:
+            print(f"[SL SAFETY] {symbol}: AI SL distance {ai_sl_pct:.2f}% unsafe → forcing to {sl_dist_pct:.2f}%", flush=True)
+            result["stop_loss"] = sl_safe
+            result["sl_distance_pct"] = sl_dist_pct
+
+    # SAFETY: If AI returned bad TP (RRR < 1.3)
+    ai_tp = result.get("take_profit", 0)
+    if ai_tp and current_price > 0 and ai_sl and ai_sl != current_price:
+        ai_rrr = abs(ai_tp - current_price) / abs(current_price - result["stop_loss"]) if abs(current_price - result["stop_loss"]) > 0 else 0
+        if ai_rrr < 1.3:
+            print(f"[TP SAFETY] {symbol}: AI RRR {ai_rrr:.2f} too low → forcing TP to {tp_safe:.6f}", flush=True)
+            result["take_profit"] = tp_safe
+            result["take_profit_1"] = tp_safe
+            result["take_profit_2"] = tp_safe
+
     if result.get("position_size_idr") is None or result.get("position_size_idr") < 0:
-        result["position_size_idr"] = 0   # resolved later from wallet
+        result["position_size_idr"] = 0
+
+    # === TP TIME PREDICTION — inject ke setiap plan ===
+    try:
+        final_tp  = result.get("take_profit", 0)
+        final_sl  = result.get("stop_loss", 0)
+        final_ent = result.get("entry_price", current_price)
+        if final_tp and final_ent:
+            tp_eta = predict_tp_time(
+                current_price=final_ent,
+                take_profit=final_tp,
+                stop_loss=final_sl,
+                setup_name=setup_result.get("setup_name", ""),
+                scan_data=scan_data,
+                market_data=market_data
+            )
+            result["tp_time_prediction"] = tp_eta
+    except Exception as _e:
+        result["tp_time_prediction"] = {"eta_label": "N/A", "model_note": str(_e)}
 
     return result
+
 
 
 # ===========================================================================
 # LAPISAN 4: CHIEF RISK OFFICER (Professional Risk Management)
 # ===========================================================================
 def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_result: dict, market_data: dict):
-    """Professional risk assessment - balanced like Goldman Sachs risk desk"""
+    """Risk check — compact prompt to save tokens"""
+    sl = plan_result.get("stop_loss", 0)
+    tp = plan_result.get("take_profit", 0)
+    entry = plan_result.get("entry_price", scan_data.get("price", 0))
+    direction = setup_result.get("direction", "NONE")
+    rsi = scan_data.get("rsi_14_1h", 50)
+    vol_trend = (scan_data.get("volume") or {}).get("volume_trend", "N/A")
+    ema = scan_data.get("ema_trend_1h", "NEUTRAL")
+    fr_rate = (scan_data.get("funding_rate") or {}).get("rate", 0)
+    atr_pct = scan_data.get("atr_pct", 0)
+    news_sent = (scan_data.get("news_macro") or {}).get("market_sentiment", "NEUTRAL")
+
+    # Pre-compute RRR
+    if entry and sl and tp and abs(entry - sl) > 0:
+        rrr_val = round(abs(tp - entry) / abs(entry - sl), 2)
+    else:
+        rrr_val = 0
+
+    sl_dist_pct = abs(entry - sl) / entry * 100 if entry else 0
+
     system = (
-        "Anda adalah 'Chief Risk Officer' profesional di trading desk institutional. "
-        "Filosofi: 'LINDUNGI MODAL TERLEBIH DAHULU. Profit hanya datang jika modal terjaga.'\n\n"
-        "PRINSIP RISK MANAGEMENT KETAT:\n"
-        "- Stop loss yang jelas dan ketat WAJIB ada\n"
-        "- Counter-trend trade = FAIL (jangan melawan tren dominan)\n"
-        "- Leverage >3x tanpa support/resistance kuat = WARNING\n"
-        "- Volume rendah = FAIL (tidak ada likuiditas untuk exit)\n"
-        "- RSI netral (35-65) dengan LONG/SHORT = WARNING (tidak ada edge)\n\n"
-        "AUDIT 11 POIN (berikan PASS/FAIL/WARNING per poin, JUJUR):\n"
-        "1. RRR_CHECK: RRR >= 1:2 = PASS. RRR < 1:1.5 = FAIL\n"
-        "2. RSI_CHECK: FAIL jika LONG saat RSI>70 atau SHORT saat RSI<30\n"
-        "3. VOLUME_CHECK: FAIL jika volume di bawah rata-rata 20 periode\n"
-        "4. TREND_ALIGNMENT: FAIL jika counter-trend pada timeframe 1h DAN 1d\n"
-        "5. FUNDING_CHECK: WARNING jika funding >0.01% searah posisi\n"
-        "6. VOLATILITY_CHECK: FAIL jika ATR >6% (terlalu volatile untuk entry baru)\n"
-        "7. SENTIMENT_CHECK: WARNING jika Fear & Greed extreme\n"
-        "8. LONG_SHORT_CHECK: WARNING jika 70%+ crowd di sisi yang sama\n"
-        "9. LIQUIDITY_CHECK: PASS jika likuiditas orderbook memadai dan spread bid-ask <0.1% pada leverage 20x\n"
-        "10. MAX_DRAWDOWN: FAIL jika potential drawdown >3% dari modal\n"
-        "11. NEWS_CHECK: FAIL jika ada breaking news negatif/hack/exploit pada koin ini; WARNING jika sentiment berita BEARISH saat posisi LONG\n\n"
-        "RECOMMENDATION:\n"
-        "- 9-11 PASS = PROCEED\n"
-        "- 7-8 PASS = PROCEED_WITH_CAUTION\n"
-        "- < 7 PASS = REJECT\n\n"
-        "KELUARKAN HANYA JSON:\n"
-        '{"total_score": 8, "max_score": 11, "pass_rate_pct": 73, '
-        '"checks": [{"name": "RRR_CHECK", "status": "PASS", "detail": "RRR 1:2.5"}], '
-        '"critical_failures": [], "max_drawdown_pct": 2.5, '
-        '"risk_verdict": "LOW_RISK", "recommendation": "PROCEED", '
-        '"reasoning": "penjelasan profesional"}'
+        "Risk officer. 8-point check. Respond ONLY in compact JSON.\n"
+        "PASS=1pt. FAIL=0pt. Need ≥6/8 for PROCEED.\n"
+        "Checks: RRR≥1.5, RSI not extreme against direction, Volume not LOW_INTEREST, "
+        "EMA aligned with direction, Funding rate <0.02%, ATR<6%, "
+        "SL distance <3%, News not BEARISH for LONG.\n"
+        "Output: {\"total_score\":7,\"max_score\":8,\"pass_rate_pct\":87,"
+        "\"critical_failures\":[],\"max_drawdown_pct\":2.5,"
+        "\"risk_verdict\":\"LOW_RISK\",\"recommendation\":\"PROCEED\","
+        "\"reasoning\":\"brief\"}"
     )
 
     prompt = (
-        f"Risk Assessment KETAT untuk trade {symbol}:\n\n"
-        f"Market Data:\n{json.dumps(scan_data, indent=2, ensure_ascii=False)}\n\n"
-        f"Setup: {json.dumps(setup_result, indent=2, ensure_ascii=False)}\n\n"
-        f"Trading Plan: {json.dumps(plan_result, indent=2, ensure_ascii=False)}\n\n"
-        f"Audit JUJUR. Jangan bias approve. Jika ada kelemahan, katakan FAIL. Keluarkan HANYA JSON."
+        f"{symbol} {direction} @ ${entry:.4f}. SL={sl:.4f}({sl_dist_pct:.2f}%), "
+        f"TP={tp:.4f}, RRR=1:{rrr_val}. RSI={rsi}, EMA={ema}, "
+        f"Vol={vol_trend}, Funding={fr_rate}%, ATR={atr_pct:.2f}%, News={news_sent}.\n"
+        f"Output ONLY risk JSON."
     )
 
-    raw = call_ai(prompt, system, max_tokens=2500, temperature=0.1)
+    raw = call_ai(prompt, system, max_tokens=250, temperature=0.05)
     result = parse_json_from_text(raw)
 
     if not result:
-        # Use rule-based risk instead of auto-rejecting
         return _rule_based_risk(scan_data, setup_result, plan_result, market_data)
+
+    if not result.get("checks"):
+        result["checks"] = [
+            {"name": "RISK_AUDIT_SUMMARY",
+             "status": "PASS" if result.get("total_score", 0) >= 6 else "WARN",
+             "detail": result.get("reasoning", "Audit complete")}
+        ]
 
     return result
 
@@ -1034,92 +1180,81 @@ def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_res
 # ===========================================================================
 def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
                           plan_result: dict, risk_result: dict, market_data: dict):
-    """Final decision maker - balanced like a professional prop trading desk"""
+    """Final gate — compact prompt, strict approve criteria"""
     cfg = get_trading_config()
-    min_conf = cfg.get("min_confidence_score", 45)
+    min_conf = cfg.get("min_confidence_score", 55)  # raised from 45 to 55
     min_rrr = cfg.get("min_risk_reward_ratio", 1.5)
+
+    entry = plan_result.get("entry_price", 0)
+    sl = plan_result.get("stop_loss", 0)
+    tp = plan_result.get("take_profit", 0)
+    direction = setup_result.get("direction", "NONE")
+    prob = setup_result.get("probability_pct", 0)
+    risk_score = risk_result.get("total_score", 0)
+    risk_max = risk_result.get("max_score", 8)
+    setup_name = setup_result.get("setup_name", "NO_CLEAR_SETUP")
+
+    # Pre-compute RRR for context
+    rrr_val = round(abs(tp - entry) / abs(entry - sl), 2) if entry and sl and abs(entry - sl) > 0 else 0
+    sl_pct = round(abs(entry - sl) / entry * 100, 2) if entry else 0
+
     system = (
-        "Anda adalah 'Head of Trading Desk' di prop firm institusional.\n"
-        "Filosofi: 'KUALITAS > KUANTITAS. Hanya ambil trade dengan edge statistik yang jelas.'\n\n"
-        "MINDSET PROFESIONAL:\n"
-        "- Warren Buffett: 'Rule 1: Never lose money. Rule 2: Never forget rule 1.'\n"
-        "- Jim Simons: Hanya trade dengan probabilitas matematis yang jelas\n"
-        "- Top-tier prop firms APPROVE hanya 10-20% setup (sangat selektif)\n"
-        "- Tidak trade = keputusan yang VALID dan sering lebih bijak\n\n"
-        "STANDAR KELOLOSAN (KETAT):\n"
-        "1. Setup memiliki arah jelas (LONG/SHORT) dengan >= 3 confluence INDEPENDEN\n"
-        "2. Risk audit pass >= 70% (7+ dari 10)\n"
-        "3. Entry, SL, dan TP yang LOGIS berdasarkan level teknikal nyata\n"
-        f"4. RRR >= 1:{min_rrr}\n"
-        f"5. Confidence >= {min_conf}%\n"
-        "6. Volume di atas rata-rata (konfirmasi partisipasi pasar)\n"
-        "7. SL distance < 3% dari entry\n"
-        "8. Tidak ada critical failure di risk audit\n\n"
-        "REJECT jika:\n"
-        "- Setup NO_CLEAR_SETUP atau <3 konfirmasi\n"
-        "- Risk audit gagal >=4 poin\n"
-        "- Indikator saling bertentangan tanpa resolusi\n"
-        "- Volume rendah (tidak ada likuiditas)\n\n"
-        "WAJIB KELUARKAN JSON LENGKAP:\n"
-        '{"status": "APPROVED", "confidence_score": 72, "direction": "LONG", '
-        '"order_type": "MARKET", "limit_price": 82500.00, '
-        '"setup_name": "TREND_CONTINUATION", "entry_price": 82500.00, '
-        '"take_profit": 86000.00, "stop_loss": 81200.00, '
-        '"risk_reward_ratio": "1:2.3", "leverage": 5, "position_size_idr": 50000, '
-        '"max_risk_idr": 1000, "risk_audit_pass_rate": 70, '
-        '"checklist_passed": 7, "checklist_total": 10, '
-        '"final_reason": "Penjelasan lengkap"}'
+        f"Final trading judge. Respond ONLY in JSON.\n"
+        f"APPROVE only if ALL: direction≠NONE, setup≠NO_CLEAR_SETUP, "
+        f"confluence≥3, risk_score≥6/{risk_max}, RRR≥{min_rrr}, "
+        f"confidence≥{min_conf}%, SL<3%.\n"
+        f"REJECT if SL>{sl_pct:.1f}% looks dangerous for 20x leverage.\n"
+        f"Output: {{\"status\":\"APPROVED/REJECTED\",\"confidence_score\":{prob},"
+        f"\"direction\":\"{direction}\",\"order_type\":\"MARKET/LIMIT\","
+        f"\"limit_price\":{entry},\"entry_price\":{entry},"
+        f"\"take_profit\":{tp},\"stop_loss\":{sl},"
+        f"\"risk_reward_ratio\":\"1:{rrr_val}\",\"leverage\":20,"
+        f"\"position_size_idr\":0,\"setup_name\":\"{setup_name}\","
+        f"\"risk_audit_pass_rate\":{risk_result.get('pass_rate_pct',0)},"
+        f"\"final_reason\":\"brief reason\"}}"
     )
 
     prompt = (
-        f"KEPUTUSAN FINAL untuk {symbol} — APPROVED atau REJECTED:\n\n"
-        f"=== DATA MARKET ===\n{json.dumps(scan_data, indent=2, ensure_ascii=False)}\n\n"
-        f"=== SETUP ===\n{json.dumps(setup_result, indent=2, ensure_ascii=False)}\n\n"
-        f"=== TRADING PLAN ===\n{json.dumps(plan_result, indent=2, ensure_ascii=False)}\n\n"
-        f"=== RISK AUDIT ===\n{json.dumps(risk_result, indent=2, ensure_ascii=False)}\n\n"
-        f"Analisis JUJUR. Keputusan eksekusi (leverage, order_type, modal IDR, dan SINGLE take_profit untuk Pluang) ditentukan secara presisi oleh AI. "
-        f"APPROVE hanya jika edge statistik JELAS. Keluarkan HANYA JSON."
+        f"{symbol}: {direction} @ ${entry:.4f}, SL=${sl:.4f}({sl_pct:.2f}%), "
+        f"TP=${tp:.4f}(RRR 1:{rrr_val}), Setup={setup_name}, "
+        f"Confidence={prob}%, Risk {risk_score}/{risk_max}.\n"
+        f"APPROVE or REJECT? Output ONLY JSON."
     )
 
-    raw = call_ai(prompt, system, max_tokens=2500, temperature=0.1)
+    raw = call_ai(prompt, system, max_tokens=300, temperature=0.05)
     result = parse_json_from_text(raw)
 
     if not result:
-        # If AI parse fails, use rule-based judgment instead of auto-reject
-        cfg2 = get_trading_config()
-        direction = setup_result.get("direction", "NONE")
-        prob = setup_result.get("probability_pct", 0)
-        risk_score = risk_result.get("total_score", 0)
-        setup_name = setup_result.get("setup_name", "NO_CLEAR_SETUP")
         approved = (
             direction != "NONE" and
             setup_name != "NO_CLEAR_SETUP" and
-            prob >= cfg2.get("min_confidence_score", 45) and
-            risk_score >= 5 and
-            plan_result.get("action") not in ("SKIP", None)
+            prob >= min_conf and
+            risk_score >= 6 and
+            plan_result.get("action") not in ("SKIP", None) and
+            sl_pct < 3.5
         )
-        tp_val = plan_result.get("take_profit") or plan_result.get("take_profit_2") or plan_result.get("take_profit_1", 0)
+        tp_val = plan_result.get("take_profit") or plan_result.get("take_profit_2", 0)
         result = {
             "status": "APPROVED" if approved else "REJECTED",
             "confidence_score": prob,
             "direction": direction,
             "setup_name": setup_name,
             "order_type": plan_result.get("order_type", "MARKET"),
-            "limit_price": plan_result.get("limit_price", plan_result.get("entry_price", 0)),
-            "entry_price": plan_result.get("entry_price", 0),
+            "limit_price": plan_result.get("limit_price", entry),
+            "entry_price": entry,
             "take_profit": tp_val,
             "take_profit_1": tp_val,
             "take_profit_2": tp_val,
-            "stop_loss": plan_result.get("stop_loss", 0),
-            "risk_reward_ratio": plan_result.get("risk_reward_ratio", "0:0"),
-            "leverage": plan_result.get("leverage") or 10,   # dynamic
-            "position_size_idr": plan_result.get("position_size_idr") or 0,  # 0=wallet-based
+            "stop_loss": sl,
+            "risk_reward_ratio": f"1:{rrr_val}",
+            "leverage": FIXED_LEVERAGE,
+            "position_size_idr": 0,
             "max_risk_idr": 1000,
-            "final_reason": f"Rule-based judgment: {', '.join(setup_result.get('confluences', [])[:3])}",
+            "final_reason": f"Rule-based: {'; '.join(setup_result.get('confluences', [])[:3])}",
             "ai_fallback": True
         }
     else:
-        tp_val = result.get("take_profit") or result.get("take_profit_2") or result.get("take_profit_1") or plan_result.get("take_profit") or plan_result.get("take_profit_2", 0)
+        tp_val = result.get("take_profit") or result.get("take_profit_2") or result.get("take_profit_1") or plan_result.get("take_profit") or 0
         result["take_profit"] = tp_val
         result["take_profit_1"] = tp_val
         result["take_profit_2"] = tp_val
@@ -1128,9 +1263,9 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
         if not result.get("limit_price"):
             result["limit_price"] = plan_result.get("limit_price", result.get("entry_price", 0))
         if not result.get("leverage"):
-            result["leverage"] = plan_result.get("leverage") or 10
+            result["leverage"] = FIXED_LEVERAGE
         if not result.get("position_size_idr"):
-            result["position_size_idr"] = plan_result.get("position_size_idr") or 0  # 0=wallet-based
+            result["position_size_idr"] = plan_result.get("position_size_idr") or 0
 
     return _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_data, market_data)
 
@@ -1393,39 +1528,46 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
         "layer5_final_call": final_call
     }
 
-    # === LAYER 6: SIDANG MAHKAMAH 9-AGENT MULTI-COMMITTEE (PROSES TERSATUKAN) ===
-    # Setelah Layer 1-5 selesai, koin otomatis langsung disidangkan dalam 1 alur terpadu
+    # === LAYER 6: SIDANG MAHKAMAH 9-AGENT MULTI-COMMITTEE ===
+    # ⚡ TOKEN GUARD: Committee HANYA dijalankan jika Layer 5 sudah APPROVED
+    # Ini mencegah pemborosan ~7000 token/koin untuk koin yang sudah REJECTED
+    # (dahulu committee jalan untuk SEMUA koin → pemborosan masif)
     committee_res = None
-    try:
-        from multi_agent_committee import run_multi_agent_committee
-        print(f"[PIPELINE+SIDANG] 🏛️ Menjalankan Sidang 9-Agent Multi-Committee untuk {symbol}...", flush=True)
-        committee_res = run_multi_agent_committee(symbol, active_positions=active_positions or [])
-        result["committee"] = committee_res
+    _layer5_approved = final_call.get("status") == "APPROVED"
+    if not _layer5_approved:
+        print(f"[PIPELINE] ⏭️ Committee DILEWATI untuk {symbol} (Layer 5: {final_call.get('status', 'REJECTED')}) — hemat ~7000 token", flush=True)
+    else:
+        try:
+            from multi_agent_committee import run_multi_agent_committee
+            print(f"[PIPELINE+SIDANG] 🏛️ Layer 5 APPROVED → Sidang 9-Agent untuk {symbol}...", flush=True)
+            committee_res = run_multi_agent_committee(symbol, active_positions=active_positions or [])
+            result["committee"] = committee_res
 
-        if committee_res:
-            com_approved = bool(committee_res.get("approved"))
-            com_dir = committee_res.get("direction", "SKIP")
-            com_conf = committee_res.get("confidence_pct", 0)
+            if committee_res:
+                com_approved = bool(committee_res.get("approved"))
+                com_dir = committee_res.get("direction", "SKIP")
+                com_conf = committee_res.get("confidence_pct", 0)
 
-            if com_approved and com_dir in ("LONG", "SHORT") and com_conf >= 60:
-                final_call["status"] = "APPROVED"
-                final_call["direction"] = com_dir
-                final_call["confidence_score"] = max(final_call.get("confidence_score", 0), com_conf)
-                result["status"] = "APPROVED"
-                if committee_res.get("trade_params"):
-                    tp_p = committee_res["trade_params"]
-                    if tp_p.get("entry_price"): final_call["entry_price"] = tp_p["entry_price"]
-                    if tp_p.get("tp1_price"): final_call["take_profit_1"] = tp_p["tp1_price"]
-                    if tp_p.get("tp2_price"): final_call["take_profit_2"] = tp_p["tp2_price"]
-                    if tp_p.get("sl_price"): final_call["stop_loss"] = tp_p["sl_price"]
-                    if tp_p.get("budget_idr"): final_call["position_size_idr"] = tp_p["budget_idr"]
-            elif not com_approved and final_call.get("status") == "APPROVED":
-                pm_dec = committee_res.get("portfolio_manager", {}).get("decision", "Veto Risiko Sidang")
-                final_call["status"] = "REJECTED_BY_COMMITTEE"
-                final_call["final_reason"] = f"Ditolak Sidang 9-Agent: {pm_dec}"
-                result["status"] = "REJECTED_BY_COMMITTEE"
-    except Exception as ce:
-        print(f"[PIPELINE+SIDANG] Notice: {ce}", flush=True)
+                if com_approved and com_dir in ("LONG", "SHORT") and com_conf >= 60:
+                    final_call["status"] = "APPROVED"
+                    final_call["direction"] = com_dir
+                    final_call["confidence_score"] = max(final_call.get("confidence_score", 0), com_conf)
+                    result["status"] = "APPROVED"
+                    if committee_res.get("trade_params"):
+                        tp_p = committee_res["trade_params"]
+                        if tp_p.get("entry_price"): final_call["entry_price"] = tp_p["entry_price"]
+                        if tp_p.get("tp1_price"): final_call["take_profit_1"] = tp_p["tp1_price"]
+                        if tp_p.get("tp2_price"): final_call["take_profit_2"] = tp_p["tp2_price"]
+                        if tp_p.get("sl_price"): final_call["stop_loss"] = tp_p["sl_price"]
+                        if tp_p.get("budget_idr"): final_call["position_size_idr"] = tp_p["budget_idr"]
+                elif not com_approved and final_call.get("status") == "APPROVED":
+                    pm_dec = committee_res.get("portfolio_manager", {}).get("decision", "Veto Risiko Sidang")
+                    final_call["status"] = "REJECTED_BY_COMMITTEE"
+                    final_call["final_reason"] = f"Ditolak Sidang 9-Agent: {pm_dec}"
+                    result["status"] = "REJECTED_BY_COMMITTEE"
+        except Exception as ce:
+            print(f"[PIPELINE+SIDANG] Notice: {ce}", flush=True)
+
 
     # Save result to file for dashboard consumption
     try:

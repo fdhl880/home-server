@@ -636,7 +636,152 @@ def monitor_and_update_positions():
                         f"✨ <i>Trade ini sekarang 100% BEBAS RESIKO (Risk-Free)! Modal utama aman terlindungi.</i>"
                     )
 
-        # Check Take Profit
+        # ══════════════════════════════════════════════════════════════
+        # SMART TRAILING STOP — BERTINGKAT (20x leverage protection)
+        # Level 1: ROE +20%  → SL ke breakeven (sudah ada di atas)
+        # Level 2: ROE +30%  → SL ke +0.8% profit lock
+        # Level 3: ROE +50%  → SL ke +1.5% profit lock
+        # Level 4: ROE +80%  → SL ke +2.5% profit lock (hampir setengah TP)
+        # ══════════════════════════════════════════════════════════════
+        trail_levels = [
+            (30.0, "trail_30_set", 0.008, "lock +0.8% profit"),
+            (50.0, "trail_50_set", 0.015, "lock +1.5% profit"),
+            (80.0, "trail_80_set", 0.025, "lock +2.5% profit"),
+        ]
+        for roe_threshold, flag_key, price_mult, label in trail_levels:
+            if pnl_pct >= roe_threshold and not pos.get(flag_key):
+                pos[flag_key] = True
+                if direction == "LONG":
+                    new_sl = round(entry_price * (1 + price_mult), 6)
+                    if new_sl > sl:
+                        pos["stop_loss"] = new_sl
+                        sl = new_sl
+                        send_telegram(
+                            f"📈 <b>[TRAILING] SL Dinaikkan → {label.upper()}</b>\n"
+                            f"💎 <code>{pos.get('symbol')}</code> {direction} | ROE: +{pnl_pct:.1f}%\n"
+                            f"🔒 SL baru: <b>${new_sl:,.4f}</b> (profit terkunci aman)"
+                        )
+                elif direction == "SHORT":
+                    new_sl = round(entry_price * (1 - price_mult), 6)
+                    if new_sl < sl:
+                        pos["stop_loss"] = new_sl
+                        sl = new_sl
+                        send_telegram(
+                            f"📉 <b>[TRAILING] SL Diturunkan → {label.upper()}</b>\n"
+                            f"💎 <code>{pos.get('symbol')}</code> {direction} | ROE: +{pnl_pct:.1f}%\n"
+                            f"🔒 SL baru: <b>${new_sl:,.4f}</b> (profit terkunci aman)"
+                        )
+
+        # ══════════════════════════════════════════════════════════════
+        # EMERGENCY FLASH CRASH EXIT
+        # Jika harga bergerak >6% melawan posisi dalam <60 menit sejak entry,
+        # tutup PAKSA tanpa menunggu SL (slippage pada 20x bisa fatal)
+        # ══════════════════════════════════════════════════════════════
+        try:
+            open_time_str = pos.get("opened_at") or pos.get("entry_time") or ""
+            if open_time_str:
+                from datetime import timezone as _tz
+                open_dt = datetime.fromisoformat(open_time_str.replace(" UTC", "+00:00").replace("Z", "+00:00"))
+                mins_open = (datetime.now(_tz.utc) - open_dt.astimezone(_tz.utc)).total_seconds() / 60
+                price_move_against = 0.0
+                if direction == "LONG" and entry_price > 0:
+                    price_move_against = (entry_price - current_price) / entry_price * 100
+                elif direction == "SHORT" and entry_price > 0:
+                    price_move_against = (current_price - entry_price) / entry_price * 100
+                # Trigger: >6% against us within 90 minutes = flash crash
+                if price_move_against > 6.0 and mins_open < 90:
+                    pos["status"] = "CLOSED_EMERGENCY"
+                    pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                    pos["close_price"] = current_price
+                    pos["close_reason"] = f"FLASH_CRASH_EXIT: -{price_move_against:.1f}% dalam {mins_open:.0f} menit"
+                    if is_binance_pos and bn_client:
+                        try:
+                            bn_client.close_position(pair, direction)
+                            bn_client.cancel_all_orders(pair)
+                        except Exception as _ece:
+                            print(f"[EMERGENCY CLOSE ERROR] {_ece}", flush=True)
+                    send_telegram(
+                        f"🚨 <b>[PYROFUEL EMERGENCY EXIT] FLASH CRASH TERDETEKSI!</b>\n\n"
+                        f"💎 <code>{pos.get('symbol')}</code> {direction} 20x\n"
+                        f"📉 Harga bergerak <b>-{price_move_against:.1f}%</b> melawan posisi\n"
+                        f"⏱️ Hanya {mins_open:.0f} menit sejak entry — potensi flash crash!\n"
+                        f"✂️ <b>Posisi ditutup DARURAT</b> untuk cegah likuidasi paksa.\n"
+                        f"💰 PnL: {pnl_pct:.2f}% | Exit: ${current_price:,.4f}"
+                    )
+                    continue
+        except Exception as _fe:
+            pass
+
+        # ══════════════════════════════════════════════════════════════
+        # TIME-BASED AUTO-CUT (Anti Nyangkut)
+        # Jika posisi terbuka >48 jam DAN masih rugi DAN progress ke TP < 10%
+        # → tutup posisi, pasar sudah berubah kondisi
+        # Jika posisi terbuka >72 jam dengan profit < +5% ROE → partial cut
+        # ══════════════════════════════════════════════════════════════
+        try:
+            _open_str = pos.get("opened_at") or pos.get("entry_time") or ""
+            if _open_str:
+                from datetime import timezone as _tz2
+                _open_dt  = datetime.fromisoformat(_open_str.replace(" UTC", "+00:00").replace("Z", "+00:00"))
+                _hrs_open = (datetime.now(_tz2.utc) - _open_dt.astimezone(_tz2.utc)).total_seconds() / 3600
+
+                # Progress ke TP (0% = masih di entry, 100% = sudah kena TP)
+                _tp_progress = 0.0
+                if tp > 0 and entry_price > 0 and abs(tp - entry_price) > 0:
+                    if direction == "LONG":
+                        _tp_progress = (current_price - entry_price) / (tp - entry_price) * 100
+                    else:
+                        _tp_progress = (entry_price - current_price) / (entry_price - tp) * 100
+                _tp_progress = max(_tp_progress, 0.0)
+
+                # Rule 1: >48 jam + rugi + progress <10% → cut
+                if _hrs_open > 48 and pnl_pct < -5 and _tp_progress < 10:
+                    pos["status"] = "CLOSED_TIMEOUT"
+                    pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                    pos["close_price"] = current_price
+                    pos["close_reason"] = f"TIMEOUT_48H: {_hrs_open:.0f}h open, {_tp_progress:.1f}% progress, PnL {pnl_pct:.1f}%"
+                    if is_binance_pos and bn_client:
+                        try:
+                            bn_client.close_position(pair, direction)
+                            bn_client.cancel_all_orders(pair)
+                        except Exception as _te:
+                            print(f"[TIMEOUT CLOSE ERROR] {_te}", flush=True)
+                    send_telegram(
+                        f"⏰ <b>[PYROFUEL TIMEOUT CUT] Posisi Nyangkut Ditutup!</b>\n\n"
+                        f"💎 <code>{pos.get('symbol')}</code> {direction} 20x\n"
+                        f"⏱️ Terbuka selama <b>{_hrs_open:.0f} jam</b>\n"
+                        f"📊 Progress ke TP: <b>{_tp_progress:.1f}%</b> (terlalu lambat)\n"
+                        f"💸 PnL: {pnl_pct:.2f}% → Ditutup untuk lindungi modal\n"
+                        f"🔄 <i>Bot akan cari setup baru yang lebih segar</i>"
+                    )
+                    continue
+
+                # Rule 2: >72 jam + profit tipis (<+10% ROE) → juga cut, ambil profit kecil
+                elif _hrs_open > 72 and 0 < pnl_pct < 10 and _tp_progress < 50:
+                    pos["status"] = "CLOSED_TIMEOUT_PROFIT"
+                    pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                    pos["close_price"] = current_price
+                    pos["close_reason"] = f"TIMEOUT_72H_PROFIT: {_hrs_open:.0f}h, profit {pnl_pct:.1f}%"
+                    if is_binance_pos and bn_client:
+                        try:
+                            bn_client.close_position(pair, direction)
+                            bn_client.cancel_all_orders(pair)
+                        except Exception:
+                            pass
+                    send_telegram(
+                        f"⌛ <b>[TIMEOUT PROFIT TAKE] Posisi 72h Ditutup Ambil Profit!</b>\n\n"
+                        f"💎 <code>{pos.get('symbol')}</code> {direction} 20x\n"
+                        f"⏱️ Terbuka <b>{_hrs_open:.0f} jam</b> — kondisi pasar sudah berubah\n"
+                        f"💰 Profit diambil: <b>+{pnl_pct:.2f}%</b> (+Rp {pnl_idr:,.0f})\n"
+                        f"🎯 TP masih {_tp_progress:.0f}% perjalanan — lebih baik ambil sekarang\n"
+                        f"🔄 <i>Modal bebas untuk cari setup baru</i>"
+                    )
+                    continue
+
+        except Exception as _tme:
+            pass
+
+
         tp_hit = (direction == "LONG" and current_price >= tp > 0) or (direction == "SHORT" and current_price <= tp > 0)
         if tp_hit:
             pos["status"] = "CLOSED_TP"
@@ -860,9 +1005,226 @@ def run_quick_screen():
 
 
 # ===================================================================
+# DETEKSI MARKET REGIME (Trending vs Sideways vs Volatile)
+# Digunakan untuk memilih strategi yang tepat secara otomatis
+# ===================================================================
+def detect_market_regime(ranked_coins: list) -> dict:
+    """
+    Deteksi kondisi pasar saat ini dari data universe:
+      TRENDING : BTC/ETH >3% change & volume spike → pakai momentum setup
+      SIDEWAYS : >60% koin change <1.5% 24h → pakai range/funding strategies
+      VOLATILE : ATR besar tapi arah campur → pakai mean-reversion cautious
+    """
+    if not ranked_coins:
+        return {"regime": "UNKNOWN", "trending_pct": 0, "sideways_pct": 0}
+
+    n = min(len(ranked_coins), 50)
+    sample = ranked_coins[:n]
+    changes = [abs(c.get("price_change_24h_pct", 0)) for c in sample]
+
+    trending_count = sum(1 for ch in changes if ch > 3.0)
+    sideways_count = sum(1 for ch in changes if ch < 1.5)
+    volatile_count = sum(1 for ch in changes if ch > 7.0)
+
+    trending_pct = trending_count / n * 100
+    sideways_pct = sideways_count / n * 100
+    volatile_pct = volatile_count / n * 100
+
+    if volatile_pct > 20:
+        regime = "VOLATILE"
+    elif trending_pct > 40:
+        regime = "TRENDING"
+    elif sideways_pct > 55:
+        regime = "SIDEWAYS"
+    else:
+        regime = "MIXED"
+
+    avg_change = sum(changes) / n if n > 0 else 0
+    return {
+        "regime": regime,
+        "trending_pct": round(trending_pct, 1),
+        "sideways_pct": round(sideways_pct, 1),
+        "volatile_pct": round(volatile_pct, 1),
+        "avg_abs_change_24h": round(avg_change, 2),
+        "n_sample": n
+    }
+
+
+def run_sideways_market_scanner(ranked_coins: list) -> list:
+    """
+    STRATEGI KHUSUS PASAR SIDEWAYS:
+    Dijalankan otomatis ketika regime = SIDEWAYS (>55% koin flat <1.5%).
+
+    Mencari dua setup terbaik di pasar flat:
+    1. FUNDING RATE ARBITRAGE: funding rate ekstrem (>0.03%) → SHORT bias
+       (orang bayar funding untuk hold LONG → smart money short squeeze)
+    2. BOLLINGER SQUEEZE: BB width sempit + akan breakout → entry awal
+
+    Max 5 koin dikembalikan untuk AI pipeline tambahan.
+    """
+    sideways_opps = []
+
+    for coin in ranked_coins[:100]:
+        pair = coin.get("pair", "")
+        change = abs(coin.get("price_change_24h_pct", 0))
+        vol    = coin.get("volume_24h_usd", 0)
+
+        # Fokus pada koin yang benar-benar sideways
+        if change > 3.0:
+            continue
+        if vol < 30_000_000:  # min $30M volume untuk likuiditas
+            continue
+
+        score = 0
+        setup_type = []
+
+        # Cek funding rate (dari ranked data jika ada)
+        funding = coin.get("funding_rate", 0) or 0
+        if abs(funding) > 0.025:
+            score += 3
+            direction = "SHORT" if funding > 0 else "LONG"
+            setup_type.append(f"FUNDING_ARB({direction}:{funding:+.3f}%)")
+
+        # Bollinger squeeze proxy: koin yg volume biasa tapi gerakan < 0.5% → squeeze
+        if change < 0.8 and vol > 50_000_000:
+            score += 2
+            setup_type.append("BB_SQUEEZE_CANDIDATE")
+
+        # High volume tapi flat = akumulasi diam-diam
+        if change < 1.5 and vol > 100_000_000:
+            score += 2
+            setup_type.append("ACCUMULATION_ZONE")
+
+        if score >= 3:
+            sideways_opps.append({
+                **coin,
+                "sideways_score": score,
+                "sideways_setups": setup_type,
+                "scan_mode": "SIDEWAYS_HUNTER"
+            })
+
+    sideways_opps.sort(key=lambda x: x["sideways_score"], reverse=True)
+    top = sideways_opps[:5]
+
+    if top:
+        print(f"[SIDEWAYS HUNTER] 📊 Regime SIDEWAYS — ditemukan {len(top)} setup:", flush=True)
+        for c in top:
+            print(f"  → {c['pair']}: {c['sideways_setups']} score={c['sideways_score']}", flush=True)
+    else:
+        print(f"[SIDEWAYS HUNTER] Tidak ada setup sideways yang memenuhi syarat.", flush=True)
+
+    return top
+
+
+
+# ===================================================================
+# TOKEN BUDGET TRACKER
+# ===================================================================
+# Groq free tier: ~6000 TPM, ~500K TPD
+# Gemini free: 15 RPM, 1500 RPD, ~1M TPM
+# OpenRouter free: varies per model
+#
+# Per coin AI pipeline token cost (SETELAH OPTIMASI):
+#   Layer 2 Setup Hunter :  input ~800  + output ~300  =  1100 tok
+#   Layer 3 Plan Architect:  input ~400  + output ~250  =   650 tok
+#   Layer 4 Risk Officer :   input ~300  + output ~200  =   500 tok
+#   Layer 5 Final Judge  :   input ~350  + output ~200  =   550 tok
+#   TOTAL per koin       :                             = ~2800 tok
+#
+# PRE-FILTER GATE (tanpa AI): hanya 5-8 koin lolos dari 60
+# 8 koin × 2800 = ~22,400 token per siklus 5 menit = AMAN
+# (dahulu: 60 koin × 7060 = 423,600 token — jauh melebihi limit)
+# ===================================================================
+
+_TOKEN_TRACKER = {
+    "session_tokens_used": 0,
+    "cycles_done": 0,
+    "last_reset": time.time(),
+}
+
+def _estimate_tokens_this_cycle(n_coins_ai):
+    """Estimasi token yang akan dipakai siklus ini."""
+    tokens_per_coin = 2800  # optimized (bukan 7060 lama)
+    return n_coins_ai * tokens_per_coin
+
+def _technical_pre_filter(ranked_coins, max_ai_coins=8):
+    """
+    GATE NOL: Filter ketat murni teknikal (TANPA AI) untuk memilih
+    hanya koin yang benar-benar punya edge setup sebelum memanggil AI.
+
+    Kriteria agar lolos (min 2 dari 4):
+    1. RSI ekstrem: < 32 (oversold, siap LONG) atau > 68 (overbought, siap SHORT)
+    2. Volume spike: volume 24h ratio > 1.5x rata-rata (konfirmasi partisipasi)
+    3. Momentum kuat: |perubahan 24h| > 3% (bukan sideways)
+    4. Volatilitas dalam range: 0.5% < ATR% < 5% (tidak terlalu flat atau terlalu liar)
+    5. MACD signal: histogram tidak mendekati nol
+
+    Core 10 coins (BTC, ETH, BNB, SOL, dll) SELALU masuk daftar prioritas.
+    """
+    from market_data import get_market_indicators_fast, CRYPTO_FUTURES_WATCHLIST
+
+    # Core 10 coin symbols — selalu disertakan tanpa filter
+    core_symbols = {c["symbol"].upper() for c in CRYPTO_FUTURES_WATCHLIST
+                    if c.get("tier") in ("CORE", "MAJOR") or
+                    c["symbol"].upper() in {"BTC-USD","ETH-USD","BNB-USD","SOL-USD",
+                                             "XRP-USD","DOGE-USD","ADA-USD","AVAX-USD",
+                                             "LINK-USD","DOT-USD","UNI-USD","MATIC-USD"}}
+
+    candidates = []
+    forced_core = []
+
+    for coin in ranked_coins[:80]:  # screen top 80
+        pair = coin.get("pair", "")
+        sym = coin.get("symbol", pair.replace("USDT", "-USD"))
+        change_24h = abs(coin.get("price_change_24h_pct", 0))
+        vol_usd = coin.get("volume_24h_usd", 0)
+        opp_score = coin.get("opportunity_score", 0)
+
+        # CORE coins: ambil tanpa syarat (max 4 dari core)
+        if sym.upper() in core_symbols and len(forced_core) < 4:
+            forced_core.append(coin)
+            continue
+
+        # Quick pre-checks dari ticker data (tanpa API tambahan):
+        score = 0
+
+        # Kriteria 1: Momentum (|24h change| > 3%)
+        if change_24h > 3.0:
+            score += 1
+
+        # Kriteria 2: Volume tinggi ($50M+)
+        if vol_usd > 50_000_000:
+            score += 1
+
+        # Kriteria 3: Opportunity score tinggi dari ranker
+        if opp_score > 60:
+            score += 1
+
+        # Kriteria 4: Momentum sangat kuat (|24h| > 6%)
+        if change_24h > 6.0:
+            score += 1
+
+        if score >= 2:
+            candidates.append((score, coin))
+
+    # Sort by score descending
+    candidates.sort(key=lambda x: x[0], reverse=True)
+
+    # Build final list: core first, then best candidates, up to max_ai_coins
+    slots_for_dynamic = max(0, max_ai_coins - len(forced_core))
+    final = forced_core + [c for _, c in candidates[:slots_for_dynamic]]
+
+    print(f"[PRE-FILTER] {len(ranked_coins[:80])} koin di-screen → "
+          f"{len(forced_core)} core + {len(final)-len(forced_core)} dynamic = "
+          f"{len(final)} lolos → AI pipeline", flush=True)
+    return final
+
+
+# ===================================================================
 # FULL AI PIPELINE SCAN CYCLE
 # ===================================================================
 def run_full_scan_cycle():
+
     """
     Full 5-Layer AI Pipeline scan on:
     - ALL 10 CORE coins (always)
@@ -879,43 +1241,85 @@ def run_full_scan_cycle():
 
     cfg = _get_config()
     max_budget = cfg.get("max_budget_idr", 0)   # 0 = dynamic wallet-based
-    
+
     print(f"\n{'='*70}", flush=True)
     print(f"[FULL SCAN] {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}", flush=True)
     sizing_mode = f"Dynamic Wallet-Based" if max_budget == 0 else f"Capped Rp {max_budget:,}"
     print(f"[FULL SCAN] MODE: FULL UNIVERSE | SIZING: {sizing_mode}", flush=True)
     print(f"{'='*70}", flush=True)
-    
-    # Build scan list: Top 10 actionable coins by opportunity score from all 524 pairs
-    ranked = rank_universe_by_opportunity()
-    
-    # Build complete scan list: ALL major Watchlist coins + top ranked movers
-    scan_list = []
-    seen_pairs = set()
 
-    # 1. Masukkan SELURUH koin utama watchlist (43+ koin masa depan aktif)
+    # ─────────────────────────────────────────────────────────────────
+    # GATE 0: DETEKSI REGIME + PRE-FILTER
+    # ─────────────────────────────────────────────────────────────────
+    ranked = rank_universe_by_opportunity()
+    state["universe_size"] = len(ranked)
+
+    # Deteksi regime pasar dari universe
+    regime_info = detect_market_regime(ranked)
+    regime = regime_info["regime"]
+    state["market_regime"] = regime_info
+
+    print(f"[MARKET REGIME] 🌡️ Kondisi: {regime} | "
+          f"Trending: {regime_info['trending_pct']:.0f}% | "
+          f"Sideways: {regime_info['sideways_pct']:.0f}% | "
+          f"Avg 24h: {regime_info['avg_abs_change_24h']:.2f}%", flush=True)
+
+    # Adjust agresivitas scan berdasarkan regime
+    if regime == "VOLATILE":
+        max_coins = 5     # hati-hati saat volatile
+    elif regime == "SIDEWAYS":
+        max_coins = 8     # tetap scan tapi pakai sideways hunter juga
+    else:
+        max_coins = 8     # normal / trending
+
+    # Gabungkan ranked + watchlist untuk pre-filter
+    seen_pairs_pf = set()
+    all_candidates = []
     for c in CRYPTO_FUTURES_WATCHLIST:
         pair_name = c["symbol"].replace("-USD", "USDT")
-        if pair_name not in seen_pairs:
-            seen_pairs.add(pair_name)
-            scan_list.append({
+        if pair_name not in seen_pairs_pf:
+            seen_pairs_pf.add(pair_name)
+            all_candidates.append({
                 "symbol": c["symbol"],
                 "pair": pair_name,
                 "name": c.get("name", c["symbol"]),
-                "tier": c.get("tier", "CORE")
+                "tier": c.get("tier", "CORE"),
+                "price_change_24h_pct": 0,
+                "volume_24h_usd": 0,
+                "opportunity_score": 80,
             })
-
-    # 2. Tambahkan koin dengan score peluang tertinggi dari seluruh 524 pairs
     for coin in ranked:
         p = coin.get("pair")
-        if p and p not in seen_pairs and len(scan_list) < 60:
-            seen_pairs.add(p)
-            scan_list.append(coin)
+        if p and p not in seen_pairs_pf:
+            seen_pairs_pf.add(p)
+            all_candidates.append(coin)
+
+    # Gate teknikal → max N koin untuk AI
+    scan_list = _technical_pre_filter(all_candidates, max_ai_coins=max_coins)
+
+    # SIDEWAYS BONUS: Jika pasar sideways, tambahkan koin khusus sideways strategy
+    if regime == "SIDEWAYS":
+        sideways_coins = run_sideways_market_scanner(ranked)
+        seen_in_scan = {c.get("pair") for c in scan_list}
+        added = 0
+        for sc in sideways_coins:
+            if sc.get("pair") not in seen_in_scan and added < 3:
+                scan_list.append(sc)
+                seen_in_scan.add(sc.get("pair"))
+                added += 1
+        if added:
+            print(f"[SIDEWAYS BONUS] +{added} koin sideways strategy ditambahkan ke scan list", flush=True)
+
+    estimated_tokens = _estimate_tokens_this_cycle(len(scan_list))
+    _TOKEN_TRACKER["cycles_done"] += 1
+    _TOKEN_TRACKER["session_tokens_used"] += estimated_tokens
 
     state["coins_scanned_this_cycle"] = len(scan_list)
-    state["universe_size"] = len(ranked)
+    print(f"[TOKEN BUDGET] Siklus #{_TOKEN_TRACKER['cycles_done']}: "
+          f"{len(scan_list)} koin | Regime: {regime} → estimasi {estimated_tokens:,} token. "
+          f"Total sesi: ~{_TOKEN_TRACKER['session_tokens_used']:,} token.", flush=True)
+    print(f"[FULL SCAN] AI Pipeline: {len(scan_list)} koin (dari {len(all_candidates)} universe)", flush=True)
 
-    print(f"[FULL SCAN] Scanning Full Universe ({len(scan_list)} actionable coins from {len(ranked)} total)", flush=True)
 
     approved_signals = []
 
@@ -1032,6 +1436,30 @@ def run_full_scan_cycle():
                 )
             }
 
+            # Inject TP time prediction from pipeline result
+            _tp_pred = None
+            if isinstance(res, dict):
+                _plan = res.get("layer3_plan") or {}
+                _tp_pred = _plan.get("tp_time_prediction")
+            if _tp_pred and _tp_pred.get("eta_label") not in (None, "N/A"):
+                exec_plan["tp_time_prediction"] = _tp_pred
+                exec_plan["estimated_time_horizon"] = _tp_pred.get("eta_label", "N/A")
+            else:
+                # Compute on-the-fly if not in plan
+                try:
+                    from pipeline import predict_tp_time
+                    _entry = exec_plan.get("entry_price") or 0
+                    _tp    = exec_plan.get("take_profit") or 0
+                    _sl    = exec_plan.get("stop_loss") or 0
+                    if _entry and _tp:
+                        _scan = res.get("layer1_scan") or {} if isinstance(res, dict) else {}
+                        _mkt  = res.get("market_data") or {} if isinstance(res, dict) else {}
+                        _tp_pred = predict_tp_time(_entry, _tp, _sl, setup, _scan, _mkt)
+                        exec_plan["tp_time_prediction"] = _tp_pred
+                        exec_plan["estimated_time_horizon"] = _tp_pred.get("eta_label", "N/A")
+                except Exception:
+                    pass
+
             print(f"🔥 KONSENSUS MULTI-AGENT APPROVED! {sym} ({final_dir}) Keyakinan: {exec_plan['confidence_score']}%", flush=True)
             pos = record_position(exec_plan)
 
@@ -1050,6 +1478,32 @@ def run_full_scan_cycle():
                 bull_note = com_res.get("bull_researcher", {}).get("argument", "")[:120] if com_res else ""
                 bear_note = com_res.get("bear_researcher", {}).get("argument", "")[:120] if com_res else ""
 
+                # Build ETA section
+                _tp_p = exec_plan.get("tp_time_prediction") or {}
+                _eta_label   = _tp_p.get("eta_label") or exec_plan.get("estimated_time_horizon", "N/A")
+                _eta_detail  = _tp_p.get("eta_detail", "")
+                _eta_conf    = _tp_p.get("confidence_pct", 0)
+                _eta_model   = _tp_p.get("model_note", "")
+                _tp_dist     = _tp_p.get("tp_distance_pct", 0)
+                _velocity    = _tp_p.get("effective_velocity_pct_per_hour", 0)
+                _eta_best    = _tp_p.get("eta_hours_optimistic", 0)
+                _eta_worst   = _tp_p.get("eta_hours_pessimistic", 0)
+
+                def _fmt_h(h):
+                    if not h: return "N/A"
+                    if h < 1:   return f"{int(h*60)} menit"
+                    elif h < 24: return f"{h:.0f} jam"
+                    else:        return f"{h/24:.1f} hari"
+
+                eta_section = (
+                    f"⏱️ <b>Prediksi Waktu TP:</b> <b>{_eta_label}</b>\n"
+                    f"   ├ Best case : {_fmt_h(_eta_best)}\n"
+                    f"   ├ Realistis : {_eta_detail.split(',')[0].replace('Realistis ~','') if _eta_detail else _eta_label}\n"
+                    f"   └ Worst case: {_fmt_h(_eta_worst)}\n"
+                    f"   📐 TP jarak {_tp_dist:.2f}% | Velocity ~{_velocity:.3f}%/jam\n"
+                    f"   🎯 Kepercayaan prediksi: {_eta_conf}%"
+                ) if _tp_p else f"⏱️ <b>Est. Waktu TP:</b> {_eta_label}"
+
                 msg = (
                     f"🚨 <b>PYROFUEL // 9-AGENT COMMITTEE TRADE EXECUTED!</b>\n\n"
                     f"💎 <b>Aset:</b> <code>{pair}</code> ({name})\n"
@@ -1062,7 +1516,7 @@ def run_full_scan_cycle():
                     f"   🎯 Take Profit: ${tp_val:,.4f}\n"
                     f"   🛑 Stop Loss: ${sl_val:,.4f}\n"
                     f"────────────────────────\n"
-                    f"⏱️ <b>Est. Waktu Tercapai TP:</b> <b>{exec_plan.get('estimated_time_horizon', 'N/A')}</b>\n"
+                    f"{eta_section}\n"
                     f"────────────────────────\n"
                     f"🏛️ <b>Kolaborasi Sidang Multi-Agent:</b>\n"
                     f"   🟢 <i>Bull Case:</i> {bull_note}\n"
