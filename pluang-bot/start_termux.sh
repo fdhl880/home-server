@@ -58,24 +58,23 @@ pip install -q flask flask-cors requests python-dotenv numpy urllib3
 echo "     [OK] Semua library Python terinstall."
 
 # ─────────────────────────────────────────────────────────────
-# STEP 3: Patch .env untuk Termux (Non-Ollama Mode)
+# STEP 3: Siapkan .env untuk Termux (Cloud AI Mode)
 # ─────────────────────────────────────────────────────────────
-# Di Termux Android, Ollama tidak bisa berjalan (binary x86 only).
-# Kita set AI_PROVIDER=groq agar langsung pakai cloud AI.
 echo ""
 echo "[3/5] Mengonfigurasi .env untuk mode Cloud AI (Termux)..."
 
 ENV_FILE="$BOT_DIR/.env"
 
-if [ ! -f "$ENV_FILE" ]; then
-    echo "     [ERROR] File .env tidak ditemukan di $BOT_DIR"
-    echo "             Salin .env.example ke .env dan isi API key-nya!"
-    exit 1
+# Jika .env belum ada atau masih berisi placeholder, buat otomatis via base64 decode
+if [ ! -f "$ENV_FILE" ] || grep -q "your_groq_api_key_here" "$ENV_FILE" 2>/dev/null || [ ! -s "$ENV_FILE" ]; then
+    echo "     [*] .env belum ada / belum disetup. Menginjeksi konfigurasi API aktif..."
+    B64_CRED="QUlfUFJPVklERVI9Z3JvcQpHUk9RX0FQSV9LRVk9Z3NrX2xhdVMzMERHWGFPeGU3S0hGeEtaV0dkeWIzRll0a2M3MFg4RmFVRzF5V3pLaEJaNVo0SmoKR1JPUV9NT0RFTD1vcGVuYWkvZ3B0LW9zcy0yMGIKR0VNSU5JX0FQSV9LRVk9QVEuQWI4Uk42SlF0bkhMU01GYlV0akpUZWw0NTlsTTltZmtyZDZRTlktLTNkbnN5MmZHQ2cKT1BFTlJPVVRFUl9BUElfS0VZPXNrLW9yLXYxLWM0OWIzNmI2MDlkYjVlOWFiMDM4MTRmM2Y5ZjgyNTIzNzc2NTZhMWFmMDA0ZDZmOTJjOTFmNzZmZWQxMDVhMmYKT1BFTlJPVVRFUl9NT0RFTD1udmlkaWEvbmVtb3Ryb24tMy41LWxpZ2h0bmluZzpmcmVlClRFTEVHUkFNX0JPVF9UT0tFTj04ODI5NTM1NDI5OkFBSEZITTU2UkROQWQ3LWF4NkRkLTNWM2c5T1pFbGVZaTVNCkFMTE9XRURfVEVMRUdSQU1fQ0hBVF9JRD02Nzk0Njg2OTI5CkJJTkFOQ0VfQVBJX0tFWT0weGNkS3EwaGZiVGM2V09LdTYyVVRkRUg5d292bnZSRVdibHQxRUppd0JyOXlzNzNKY05qVDNWMlR6ak1LVDJLCkJJTkFOQ0VfQVBJX1NFQ1JFVD05VXVHZlpNcjYxQ013WFJFZTBJY1hnQjVUanNWWUNUdEtUZ21XbzlGV21hY3lnWWk1YWppQlE5R2hEa1V4QUlV"
+    echo "$B64_CRED" | base64 -d > "$ENV_FILE" 2>/dev/null || echo "$B64_CRED" | openssl base64 -d > "$ENV_FILE"
+    echo "     [OK] .env otomatis disiapkan dengan kredensial aktif!"
 fi
 
-# Patch AI_PROVIDER ke groq (cloud) karena Ollama tidak bisa di Android
+# Pastikan AI_PROVIDER=groq (cloud) karena Ollama tidak bisa di Android
 if grep -q "^AI_PROVIDER=" "$ENV_FILE"; then
-    # Ganti nilai yang ada
     sed -i 's/^AI_PROVIDER=.*/AI_PROVIDER=groq/' "$ENV_FILE"
 else
     echo "AI_PROVIDER=groq" >> "$ENV_FILE"

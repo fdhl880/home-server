@@ -17,7 +17,59 @@ import json
 import re
 import time
 import requests
+import socket
+import urllib3
 from datetime import datetime, timezone
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ---------------------------------------------------------------------------
+# Universal Anti-Blocking & ISP DNS Poisoning Bypass via DNS-over-HTTPS (DoH)
+# Bypasses Telkomsel / Indosat / XL / IndiHome filtering for:
+# - Groq Cloud AI (api.groq.com)
+# - Google Gemini (generativelanguage.googleapis.com)
+# - OpenRouter (openrouter.ai)
+# - Telegram Bot (api.telegram.org)
+# - Binance Futures (fapi.binance.com)
+# ---------------------------------------------------------------------------
+_orig_getaddrinfo = socket.getaddrinfo
+_UNIVERSAL_DNS_CACHE = {
+    "fapi.binance.com": "65.8.76.49",
+    "fapi1.binance.com": "65.8.76.14",
+    "fapi2.binance.com": "65.8.76.6",
+    "fapi3.binance.com": "65.8.76.4",
+    "api.groq.com": "104.18.38.236",
+    "generativelanguage.googleapis.com": "172.217.114.4",
+    "openrouter.ai": "104.18.3.115",
+    "api.telegram.org": "149.154.166.110"
+}
+
+def _resolve_doh(domain: str):
+    if domain in _UNIVERSAL_DNS_CACHE:
+        return _UNIVERSAL_DNS_CACHE[domain]
+    for doh_url in [
+        f"https://1.1.1.1/dns-query?name={domain}&type=A",
+        f"https://dns.google/resolve?name={domain}&type=A"
+    ]:
+        try:
+            r = requests.get(doh_url, headers={"accept": "application/dns-json"}, timeout=3)
+            data = r.json()
+            ips = [ans["data"] for ans in data.get("Answer", []) if ans.get("type") == 1]
+            if ips:
+                _UNIVERSAL_DNS_CACHE[domain] = ips[0]
+                return ips[0]
+        except Exception:
+            continue
+    return None
+
+def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if isinstance(host, str) and any(kw in host.lower() for kw in ["binance", "groq", "googleapis", "openrouter", "telegram"]):
+        ip = _resolve_doh(host)
+        if ip:
+            return _orig_getaddrinfo(ip, port, family, type, proto, flags)
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+
+socket.getaddrinfo = _custom_getaddrinfo
 
 if hasattr(sys.stdout, 'reconfigure'):
     try:
@@ -340,15 +392,8 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             "timeout": 25,
         })
 
-    # --- Tier 2: Google Gemini (Verified active: gemini-flash-lite-latest & gemma-4-26b-a4b-it) ---
+    # --- Tier 2: Google Gemini (Verified active: gemma-4-26b-a4b-it) ---
     if GEMINI_API_KEY:
-        providers.append({
-            "name": "Gemini-FlashLite",
-            "type": "gemini",
-            "api_key": GEMINI_API_KEY,
-            "model": "gemini-flash-lite-latest",
-            "max_retries": 1,
-        })
         providers.append({
             "name": "Google-Gemma26B",
             "type": "gemini",
@@ -357,17 +402,29 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             "max_retries": 1,
         })
 
-    # --- Tier 3: OpenRouter ---
+    # --- Tier 3: OpenRouter (Active free models) ---
     if OPENROUTER_API_KEY:
         providers.append({
-            "name": "OpenRouter",
+            "name": "OpenRouter-Nemotron",
             "type": "openai_compat",
             "url": "https://openrouter.ai/api/v1/chat/completions",
             "headers": {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
-            "model": OPENROUTER_MODEL,
+            "model": "nvidia/nemotron-3.5-lightning:free",
             "use_json_object": False,
             "max_retries": 1,
+            "timeout": 20,
         })
+        if OPENROUTER_MODEL and OPENROUTER_MODEL not in ["liquid/lfm-40b:free", "minimax/minimax-m3.1-flash:free"]:
+            providers.append({
+                "name": "OpenRouter-Custom",
+                "type": "openai_compat",
+                "url": "https://openrouter.ai/api/v1/chat/completions",
+                "headers": {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
+                "model": OPENROUTER_MODEL,
+                "use_json_object": False,
+                "max_retries": 1,
+                "timeout": 20,
+            })
 
     # --- Tier 4: Cerebras (ultra-fast inference) ---
     if CEREBRAS_API_KEY:

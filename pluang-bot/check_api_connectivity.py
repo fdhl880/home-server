@@ -22,16 +22,20 @@ import json
 import socket
 import urllib3
 
-# ─────────────────────────────────────────────────────────────
-# DoH DNS Override (sama persis dengan binance_futures.py)
-# Ini yang membuat bot bisa bypass blokir ISP Indonesia.
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
+# Universal Anti-Blocking & ISP DNS Bypass via DNS-over-HTTPS (DoH)
+# Membuka blokir ISP Indonesia untuk Binance, Groq, Gemini, OpenRouter & Telegram
+# -------------------------------------------------------------
 _orig_getaddrinfo = socket.getaddrinfo
 _dns_cache = {
     "fapi.binance.com":  "65.8.76.49",
     "fapi1.binance.com": "65.8.76.14",
     "fapi2.binance.com": "65.8.76.6",
     "fapi3.binance.com": "65.8.76.4",
+    "api.groq.com": "104.18.38.236",
+    "generativelanguage.googleapis.com": "172.217.114.4",
+    "openrouter.ai": "104.18.3.115",
+    "api.telegram.org": "149.154.166.110"
 }
 
 def _resolve_doh(domain: str):
@@ -53,7 +57,7 @@ def _resolve_doh(domain: str):
     return None
 
 def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    if isinstance(host, str) and "binance" in host.lower():
+    if isinstance(host, str) and any(kw in host.lower() for kw in ["binance", "groq", "googleapis", "openrouter", "telegram"]):
         ip = _resolve_doh(host)
         if ip:
             return _orig_getaddrinfo(ip, port, family, type, proto, flags)
