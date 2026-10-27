@@ -245,9 +245,9 @@ def run_trader_agent(symbol, price, bull_report, bear_report, rebuttal, analyst_
     net_conviction = bs - br * 0.75
     confidence = max(35, min(95, 50 + net_conviction * 45))
 
-    if confidence >= 65 and bs > br:
+    if confidence >= 50 and bs >= br:
         direction = "LONG"
-    elif confidence >= 65 and br > bs + 0.25:
+    elif confidence >= 50 and br > bs:
         direction = "SHORT"
     else:
         direction = "SKIP"
@@ -345,7 +345,7 @@ def run_risk_officer(symbol, price, direction, confidence, market_data, config):
     pos_usd = convert_idr_to_usd(budget_idr) * leverage
     var95   = pos_usd * volatility / 100 * 1.65
 
-    risk_approved = actual_rrr >= min_rrr and confidence >= 60 and direction != "SKIP"
+    risk_approved = actual_rrr >= min_rrr and confidence >= 50 and direction != "SKIP"
 
     # ── 6. Estimated holding time to TP1 ──────────────────────────────
     # Formula: hours = (TP1 dist %) / (ATR% per hour * momentum factor)
@@ -419,8 +419,8 @@ def run_portfolio_manager(symbol, trader_report, risk_report, existing_positions
         rejections.append(f"Kapasitas portofolio penuh ({len(open_pos)}/{max_concurrent})")
     if symbol in [p.get("symbol") for p in open_pos]:
         rejections.append(f"{symbol} sudah memiliki posisi terbuka")
-    if trader_report.get("confidence_pct", 0) < 60:
-        rejections.append(f"Confidence {trader_report.get('confidence_pct')}% < 60%")
+    if trader_report.get("confidence_pct", 0) < 50:
+        rejections.append(f"Confidence {trader_report.get('confidence_pct')}% < 50%")
 
     approved = len(rejections) == 0
     decision = "APPROVED (Konsensus 9 Agen Tercapai)" if approved else f"REJECTED: {'; '.join(rejections[:2])}"

@@ -359,7 +359,8 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
         })
 
     # --- Tier 1: Groq (Verified active models: 20B fast, Qwen 27B, 120B reasoning) ---
-    if GROQ_API_KEY:
+    groq_cooldown = time.time() - _GROQ_DAILY_EXHAUSTED.get("detected_at", 0) > 1800
+    if GROQ_API_KEY and (not _GROQ_DAILY_EXHAUSTED["exhausted"] or groq_cooldown):
         # Note: openai/gpt-oss-20b responds in <2s and is rock solid
         providers.append({
             "name": "Groq-20B",
@@ -392,8 +393,15 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             "timeout": 25,
         })
 
-    # --- Tier 2: Google Gemini (Verified active: gemma-4-26b-a4b-it) ---
+    # --- Tier 2: Google Gemini (Verified active: gemini-3.1-flash-lite & gemma-4-26b-a4b-it) ---
     if GEMINI_API_KEY:
+        providers.append({
+            "name": "Gemini-FlashLite",
+            "type": "gemini",
+            "api_key": GEMINI_API_KEY,
+            "model": "gemini-3.1-flash-lite",
+            "max_retries": 1,
+        })
         providers.append({
             "name": "Google-Gemma26B",
             "type": "gemini",
@@ -836,6 +844,37 @@ def parse_json_from_text(text):
                     return json.loads(trimmed + s)
                 except Exception:
                     pass
+
+    # Try parsing bullet point / markdown key-values (e.g. from Gemma / thought models)
+    if ("setup_name" in text or "direction" in text or "status" in text) and ":" in text:
+        obj = {}
+        for line in text.splitlines():
+            clean = line.strip().lstrip("*-# ").strip()
+            if ":" in clean:
+                k, v = clean.split(":", 1)
+                k = k.strip().strip('"\'` ')
+                v = v.strip().strip('"\'` ')
+                if k in ("setup_name", "direction", "explanation_id", "status", "action", "order_type", "risk_reward_ratio", "reasoning", "recommendation", "risk_verdict", "final_reason"):
+                    obj[k] = v
+                elif k in ("confluence_count", "probability_pct", "confidence_score", "total_score", "max_score", "pass_rate_pct", "leverage"):
+                    try:
+                        digits = re.sub(r'[^0-9]', '', v)
+                        if digits:
+                            obj[k] = int(digits)
+                    except Exception:
+                        pass
+                elif k in ("entry_price", "stop_loss", "take_profit", "take_profit_1", "take_profit_2", "limit_price", "position_size_idr", "sl_distance_pct", "tp_distance_pct", "max_drawdown_pct"):
+                    try:
+                        floats = re.findall(r'[-+]?\d*\.?\d+', v)
+                        if floats:
+                            obj[k] = float(floats[0])
+                    except Exception:
+                        pass
+                elif k in ("confluences", "critical_failures"):
+                    obj[k] = [x.strip().strip('"\'') for x in v.strip('[]').split(',') if x.strip()]
+        if obj.get("setup_name") or obj.get("direction") or obj.get("status"):
+            return obj
+
     return None
 
 
@@ -939,14 +978,15 @@ def layer2_setup_hunter(symbol: str, scan_data: dict):
     compact_json = json.dumps(compact, ensure_ascii=False)
 
     system = (
-        "Crypto futures setup analyst. Respond ONLY in JSON, no prose.\n"
+        "Crypto futures setup analyst. Respond ONLY in valid JSON. DO NOT output internal reasoning.\n"
+        "Start your response directly with '{'.\n"
         "Rules:\n"
-        "- Need ≥3 INDEPENDENT confirmations for any LONG/SHORT setup.\n"
-        "- RSI 35-65 = NEUTRAL (not a signal). Volume must be above average.\n"
-        "- NO_CLEAR_SETUP if: <3 confirms, RSI neutral, sideways, conflicting signals.\n"
-        "- Valid setups: TREND_CONTINUATION, MEAN_REVERSION_BOUNCE, BREAKOUT_MOMENTUM, "
-        "EMA_PULLBACK_ENTRY, SMC_LIQUIDITY_SWEEP, BOLLINGER_SQUEEZE_BREAKOUT, "
-        "RSI_DIVERGENCE_PLAY, FUNDING_RATE_ARBITRAGE, NO_CLEAR_SETUP.\n"
+        "- Identify actionable setups with statistical edge: TREND_CONTINUATION, EMA_PULLBACK_ENTRY, "
+        "MEAN_REVERSION_BOUNCE, BREAKOUT_MOMENTUM, SMC_LIQUIDITY_SWEEP, BOLLINGER_SQUEEZE_BREAKOUT, "
+        "RSI_DIVERGENCE_PLAY, FUNDING_RATE_ARBITRAGE.\n"
+        "- Need ≥2 independent confirmations (e.g. Trend + Volume, or S/R bounce + RSI, or Squeeze + Structure).\n"
+        "- In sideways/range markets, look for MEAN_REVERSION_BOUNCE, BOLLINGER_SQUEEZE_BREAKOUT, or S/R levels.\n"
+        "- Use NO_CLEAR_SETUP only if the market is completely flat or signals are heavily conflicting.\n"
         "Output: {\"setup_name\":\"\",\"direction\":\"LONG/SHORT/NONE\","
         "\"confluence_count\":0,\"confluences\":[],"
         "\"probability_pct\":50,\"explanation_id\":\"\"}"
@@ -957,11 +997,19 @@ def layer2_setup_hunter(symbol: str, scan_data: dict):
         f"Output ONLY JSON setup. Use NO_CLEAR_SETUP if <3 strong confirms."
     )
 
-    raw = call_ai(prompt, system, max_tokens=350, temperature=0.1)
+    raw = call_ai(prompt, system, max_tokens=600, temperature=0.1)
     result = parse_json_from_text(raw)
 
     if not result:
-        return _rule_based_setup(scan_data)
+        print(f"[WARN] Layer 2 parse failed for {symbol} — default to NO_CLEAR_SETUP", flush=True)
+        return {
+            "setup_name": "NO_CLEAR_SETUP",
+            "direction": "NONE",
+            "confluence_count": 0,
+            "confluences": [],
+            "probability_pct": 50,
+            "explanation_id": "Unparseable AI setup"
+        }
 
     if result.get("confluence_count", 0) < 1 and result.get("setup_name") != "NO_CLEAR_SETUP":
         result["confluence_count"] = max(result.get("confluence_count", 0), 1)
@@ -1105,7 +1153,7 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
         f"Output ONLY JSON plan with SL ≤ {sl_dist_pct:.2f}% from entry."
     )
 
-    raw = call_ai(prompt, system, max_tokens=350, temperature=0.05)
+    raw = call_ai(prompt, system, max_tokens=600, temperature=0.05)
     result = parse_json_from_text(raw)
 
     if not result:
@@ -1257,10 +1305,11 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
 
     system = (
         f"Final trading judge. Respond ONLY in JSON.\n"
-        f"APPROVE only if ALL: direction≠NONE, setup≠NO_CLEAR_SETUP, "
-        f"confluence≥3, risk_score≥6/{risk_max}, RRR≥{min_rrr}, "
-        f"confidence≥{min_conf}%, SL<3%.\n"
-        f"REJECT if SL>{sl_pct:.1f}% looks dangerous for 20x leverage.\n"
+        f"APPROVE if ALL: direction≠NONE, setup≠NO_CLEAR_SETUP, "
+        f"confluence≥2, risk_score≥5/{risk_max}, RRR≥{min_rrr}, "
+        f"confidence≥{min_conf}%, SL distance < 3.0%.\n"
+        f"For 20x leverage: SL between 0.5% and 2.5% is EXCELLENT and SAFE (far from 5% liquidation).\n"
+        f"Only REJECT if SL > 3.5% (liquidation danger), RRR < {min_rrr}, or major signal conflict.\n"
         f"Output: {{\"status\":\"APPROVED/REJECTED\",\"confidence_score\":{prob},"
         f"\"direction\":\"{direction}\",\"order_type\":\"MARKET/LIMIT\","
         f"\"limit_price\":{entry},\"entry_price\":{entry},"
@@ -1513,46 +1562,46 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
             final_call = layer5_final_judgment(symbol, scan_summary, setup_result, plan_result, risk_result, market_data)
         except Exception as e:
             print(f"[FALLBACK] Layer 5 AI failed for {symbol}: {e} — using rule-based judgment", flush=True)
-        # Build final judgment from rule-based layers
-        cfg = get_trading_config()
-        direction = setup_result.get("direction", "NONE")
-        prob = setup_result.get("probability_pct", 0)
-        risk_rec = risk_result.get("recommendation", "REJECT")
-        risk_score = risk_result.get("total_score", 0)
-        setup_name = setup_result.get("setup_name", "NO_CLEAR_SETUP")
+            # Build final judgment from rule-based layers
+            cfg = get_trading_config()
+            direction = setup_result.get("direction", "NONE")
+            prob = setup_result.get("probability_pct", 0)
+            risk_rec = risk_result.get("recommendation", "REJECT")
+            risk_score = risk_result.get("total_score", 0)
+            setup_name = setup_result.get("setup_name", "NO_CLEAR_SETUP")
 
-        approved = (
-            direction != "NONE" and
-            setup_name != "NO_CLEAR_SETUP" and
-            prob >= cfg.get("min_confidence_score", 65) and
-            risk_score >= 6
-        )
+            approved = (
+                direction != "NONE" and
+                setup_name != "NO_CLEAR_SETUP" and
+                prob >= cfg.get("min_confidence_score", 65) and
+                risk_score >= 6
+            )
 
-        final_call = {
-            "status": "APPROVED" if approved else "REJECTED",
-            "confidence_score": prob,
-            "direction": direction,
-            "setup_name": setup_name,
-            "order_type": plan_result.get("order_type", "MARKET"),
-            "limit_price": plan_result.get("limit_price", plan_result.get("entry_price", 0)),
-            "entry_price": plan_result.get("entry_price", 0),
-            "take_profit": plan_result.get("take_profit") or plan_result.get("take_profit_2", 0),
-            "take_profit_1": plan_result.get("take_profit") or plan_result.get("take_profit_2", 0),
-            "take_profit_2": plan_result.get("take_profit") or plan_result.get("take_profit_2", 0),
-            "stop_loss": plan_result.get("stop_loss", 0),
-            "risk_reward_ratio": plan_result.get("risk_reward_ratio", "0:0"),
-            "leverage": FIXED_LEVERAGE,
-            "position_size_idr": plan_result.get("position_size_idr", 50000),
-            "max_risk_idr": 1000,
-            "risk_audit_pass_rate": risk_result.get("pass_rate_pct", 0),
-            "checklist_passed": risk_score,
-            "checklist_total": 10,
-            "final_reason": f"Rule-based judgment (AI unavailable): {', '.join(setup_result.get('confluences', [])[:3])}",
-            "ai_fallback": True
-        }
-        # Apply Python safety gates
-        final_call = _apply_safety_gates(final_call, setup_result, plan_result, risk_result, scan_summary, market_data)
-        ai_fallback_used = True
+            final_call = {
+                "status": "APPROVED" if approved else "REJECTED",
+                "confidence_score": prob,
+                "direction": direction,
+                "setup_name": setup_name,
+                "order_type": plan_result.get("order_type", "MARKET"),
+                "limit_price": plan_result.get("limit_price", plan_result.get("entry_price", 0)),
+                "entry_price": plan_result.get("entry_price", 0),
+                "take_profit": plan_result.get("take_profit") or plan_result.get("take_profit_2", 0),
+                "take_profit_1": plan_result.get("take_profit") or plan_result.get("take_profit_2", 0),
+                "take_profit_2": plan_result.get("take_profit") or plan_result.get("take_profit_2", 0),
+                "stop_loss": plan_result.get("stop_loss", 0),
+                "risk_reward_ratio": plan_result.get("risk_reward_ratio", "0:0"),
+                "leverage": FIXED_LEVERAGE,
+                "position_size_idr": plan_result.get("position_size_idr", 50000),
+                "max_risk_idr": 1000,
+                "risk_audit_pass_rate": risk_result.get("pass_rate_pct", 0),
+                "checklist_passed": risk_score,
+                "checklist_total": 10,
+                "final_reason": f"Rule-based judgment (AI unavailable): {', '.join(setup_result.get('confluences', [])[:3])}",
+                "ai_fallback": True
+            }
+            # Apply Python safety gates
+            final_call = _apply_safety_gates(final_call, setup_result, plan_result, risk_result, scan_summary, market_data)
+            ai_fallback_used = True
 
     execution_time = round(time.time() - start_time, 2)
 
