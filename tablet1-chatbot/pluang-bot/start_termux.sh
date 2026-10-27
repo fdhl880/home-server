@@ -99,6 +99,18 @@ if [ ! -f "$ENV_FILE" ]; then
     if [ -n "$input_tg" ]; then
         sed -i "s|TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=$input_tg|" "$ENV_FILE"
     fi
+    read -p "Masukkan OPENROUTER_API_KEY (tekan enter jika lewat): " input_or
+    if [ -n "$input_or" ]; then
+        sed -i "s|OPENROUTER_API_KEY=.*|OPENROUTER_API_KEY=$input_or|" "$ENV_FILE"
+    fi
+    read -p "Masukkan BINANCE_API_KEY (tekan enter jika lewat): " input_bk
+    if [ -n "$input_bk" ]; then
+        sed -i "s|BINANCE_API_KEY=.*|BINANCE_API_KEY=$input_bk|" "$ENV_FILE"
+    fi
+    read -p "Masukkan BINANCE_API_SECRET (tekan enter jika lewat): " input_bs
+    if [ -n "$input_bs" ]; then
+        sed -i "s|BINANCE_API_SECRET=.*|BINANCE_API_SECRET=$input_bs|" "$ENV_FILE"
+    fi
     echo "     [OK] .env disimpan dengan izin khusus (chmod 600)."
 else
     chmod 600 "$ENV_FILE" 2>/dev/null || true
