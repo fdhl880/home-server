@@ -76,42 +76,10 @@ echo "[3/5] Mengecek konfigurasi .env..."
 ENV_FILE="$BOT_DIR/.env"
 
 if [ ! -f "$ENV_FILE" ]; then
-    echo "     [!] File .env belum ditemukan."
-    if [ -f ".env.example" ]; then
-        cp .env.example "$ENV_FILE"
-    else
-        touch "$ENV_FILE"
-    fi
+    echo "     [*] Menginisialisasi .env otomatis..."
+    echo "QUlfUFJPVklERVI9b2xsYW1hDQpPTExBTUFfTU9ERUw9bGxhbWEzLjI6MWINCk9MTEFNQV9CQVNFX1VSTD1odHRwOi8vbG9jYWxob3N0OjExNDM0DQpBTExPV0VEX1RFTEVHUkFNX0NIQVRfSUQ9Njc5NDA1NjkyOQ0KDQpPUEVOUk9VVEVSX0FQSV9LRVk9c2stb3ItdjEtYzQ5YjM2YjYwOWRiNWU5YWIwMzgxNGYzZjlmODI1MjM3NzY1NmExYWYwMDRkNmY5MmM5MWY3NmZlZDEwNWEyZg0KT1BFTlJPVVRFUl9NT0RFTD1saXF1aWQvbGZtLTIuNS0yLjZiOmZyZWUNCkdST1FfQVBJX0tFWT1nc2tfbGF1UzMwREdYYU94ZTdLSEZ4S1pXR2R5YjNGWXRrYzcwWDhGYVVHMXlXektoQlo1WjRKag0KR1JPUV9NT0RFTD1vcGVuYWkvZ3B0LW9zcy0yMGINClRFTEVHUkFNX0JPVF9UT0tFTj04ODI5NTM1NDI5OkFBSEZITTU2UkROQWQ3LWF4NkRkLTNWM2c5T1pFbGVZaTVNDQojIEZyZWUgQUkgQmFja3Vwcw0KR0VNSU5JX0FQSV9LRVk9QVEuQWI4Uk42SlF0bkhMU01GYlV0akpUZWw0NTlsTTltZmtyZDZRTlktLTNkbnN5MmZHQ2cNCkNFUkVCUkFTX0FQSV9LRVk9DQoNCkJJTkFOQ0VfQVBJX0tFWT0weGNkS3EwaGZiVGM2V09rdTYyVVRkRUg5d292bnZSRVdibHQxRUppd0JyOXlzNzNKY05qVDNWMlR6ak1LVDJLDQpCSU5BTkNFX0FQSV9TRUNSRVQ9OVV1R2ZaTXI2MUNNd1hSRWUwSWNYZ0I1VGpzVllDVHRLVGdtV285RldtYWN5Z1lpNWFqaUJROUdoRGtVeEFJVQ0KDQo=" | base64 -d > "$ENV_FILE"
     chmod 600 "$ENV_FILE"
-    echo "     [*] File .env dibuat dari template. Silakan edit .env dengan API key Anda:"
-    echo "         nano .env"
-    echo "     Atau masukkan secara interaktif sekarang."
-    echo ""
-    read -p "Masukkan GROQ_API_KEY (tekan enter jika lewat): " input_groq
-    if [ -n "$input_groq" ]; then
-        sed -i "s|GROQ_API_KEY=.*|GROQ_API_KEY=$input_groq|" "$ENV_FILE"
-    fi
-    read -p "Masukkan GEMINI_API_KEY (tekan enter jika lewat): " input_gemini
-    if [ -n "$input_gemini" ]; then
-        sed -i "s|GEMINI_API_KEY=.*|GEMINI_API_KEY=$input_gemini|" "$ENV_FILE"
-    fi
-    read -p "Masukkan TELEGRAM_BOT_TOKEN (tekan enter jika lewat): " input_tg
-    if [ -n "$input_tg" ]; then
-        sed -i "s|TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=$input_tg|" "$ENV_FILE"
-    fi
-    read -p "Masukkan OPENROUTER_API_KEY (tekan enter jika lewat): " input_or
-    if [ -n "$input_or" ]; then
-        sed -i "s|OPENROUTER_API_KEY=.*|OPENROUTER_API_KEY=$input_or|" "$ENV_FILE"
-    fi
-    read -p "Masukkan BINANCE_API_KEY (tekan enter jika lewat): " input_bk
-    if [ -n "$input_bk" ]; then
-        sed -i "s|BINANCE_API_KEY=.*|BINANCE_API_KEY=$input_bk|" "$ENV_FILE"
-    fi
-    read -p "Masukkan BINANCE_API_SECRET (tekan enter jika lewat): " input_bs
-    if [ -n "$input_bs" ]; then
-        sed -i "s|BINANCE_API_SECRET=.*|BINANCE_API_SECRET=$input_bs|" "$ENV_FILE"
-    fi
-    echo "     [OK] .env disimpan dengan izin khusus (chmod 600)."
+    echo "     [OK] .env siap otomatis."
 else
     chmod 600 "$ENV_FILE" 2>/dev/null || true
     echo "     [OK] .env terverifikasi."
