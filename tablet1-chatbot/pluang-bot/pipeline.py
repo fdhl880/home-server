@@ -420,32 +420,29 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             "timeout": 180,
         })
 
-    # --- Tier 1: Groq (TPD limit is PER MODEL (200k/day each) -> per-model cooldown) ---
+    # --- Tier 1: Groq (Official flagship models: llama-3.3-70b-versatile & llama-3.1-8b-instant) ---
     if GROQ_API_KEY:
         _gh = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-        for _n, _m, _eff, _jo, _to in [
-            ("Groq-120B", "openai/gpt-oss-120b", "low", False, 45),
-            ("Groq-20B", "openai/gpt-oss-20b", "low", False, 35),
-            ("Groq-Qwen27B", "qwen/qwen3.8-27b", None, True, 40),
+        for _n, _m, _jo, _to in [
+            ("Groq-Llama70B", "llama-3.3-70b-versatile", True, 30),
+            ("Groq-Llama8B", "llama-3.1-8b-instant", True, 20),
         ]:
             providers.append({
                 "name": _n, "type": "openai_compat",
                 "url": "https://api.groq.com/openai/v1/chat/completions",
                 "headers": _gh, "model": _m, "use_json_object": _jo,
-                # gpt-oss are reasoning models: low effort + token floor so content is never empty
-                "reasoning_effort": _eff, "min_tokens": 1500 if _eff else 0,
+                "reasoning_effort": None, "min_tokens": 0,
                 "max_retries": 1, "timeout": _to,
             })
 
-    # --- Tier 2: Google Gemini — several models (each has its OWN quota) ---
+    # --- Tier 2: Google Gemini (Official current models) ---
     if GEMINI_API_KEY:
         for _gm in [x.strip() for x in os.getenv(
                 "GEMINI_MODELS",
-                "gemini-3.5-flash,gemini-3.6-flash,gemini-3-flash-preview,gemini-3.1-flash-lite,"
-                "gemini-3.7-flash,gemini-3.8-flash").split(",") if x.strip()]:
+                "gemini-flash-latest,gemini-2.5-flash,gemini-flash-lite-latest,gemini-2.5-flash-lite").split(",") if x.strip()]:
             providers.append({
                 "name": f"Gemini-{_gm}", "type": "gemini", "api_key": GEMINI_API_KEY,
-                "model": _gm, "min_tokens": 2500, "max_retries": 1, "timeout": 40,
+                "model": _gm, "min_tokens": 1500, "max_retries": 1, "timeout": 30,
             })
 
     # --- Tier 3: OpenRouter — ONLY ':free' models, discovered live (never 'openrouter/auto': needs credits -> 402) ---

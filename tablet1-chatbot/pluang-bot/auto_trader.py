@@ -2,30 +2,24 @@
 ===========================================================================
 PYROFUEL AUTONOMOUS CRYPTO FUTURES TRADER v3.0
 ===========================================================================
-FULL UNIVERSE SCANNER + PLUANG EXECUTION ENGINE
+FULL UNIVERSE SCANNER + 100% BINANCE FUTURES EXECUTION ENGINE
 
 Autonomous background agent that:
-1. Fetches FULL Binance Futures universe dynamically
+1. Fetches FULL Binance Futures universe dynamically (~200+ pairs)
 2. Smart-ranks all coins by opportunity score (vol, momentum, range)
-3. Scans TOP 50 movers through 5-Layer AI Pipeline every cycle
-4. CORE 10 coins ALWAYS scanned regardless of rank
-5. If APPROVED trade found → EXECUTES ON PLUANG + Records + Telegram alert
-6. Full futures control: Leverage, Margin Type, Order Type, TP/SL
+3. Scans top movers through 5-Layer AI Pipeline every cycle
+4. CORE major coins ALWAYS scanned regardless of rank
+5. If APPROVED trade found → EXECUTES ON BINANCE FUTURES (20x ISOLATED)
+6. Full futures control: Leverage (20x), Margin Type (ISOLATED), Order Type, TP/SL
 7. Updates shared JSON database for Bloomberg Dashboard
-8. Currency conversion: All USD amounts also shown in IDR
+8. Currency conversion: Real-time USD & IDR valuations
 
-PLUANG EXECUTION:
-- Auto set margin type (ISOLATED/CROSS) per config
-- Auto set leverage per config
+BINANCE EXECUTION:
+- Fixed 20x ISOLATED leverage (user mandate)
+- Risk-fractional sizing (2% probation, 5% standard)
 - Open position via MARKET/LIMIT order
-- Auto place TP1 (50% partial close) + TP2 (full close) + SL orders
-- TP1 hit → SL moves to breakeven (risk-free)
+- Auto place TP + SL hard-capped at 2.5%
 - All execution logged to results/execution_log.json
-
-CYCLE STRATEGY:
-- Every 60 seconds: Quick screen ALL coins (just technicals, no AI)
-- Every 5 minutes: Full 5-layer AI pipeline on TOP 50 + CORE 10
-- Prioritizes coins with highest opportunity score (volatility + volume)
 ==========================================================================
 """
 import os
@@ -61,7 +55,6 @@ from market_data import (
     rank_universe_by_opportunity,
     get_binance_24h_tickers,
 )
-from pluang_mcp import PluangMCPClient
 from binance_futures import BinanceFuturesClient
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -70,7 +63,6 @@ POSITIONS_FILE = os.path.join(RESULTS_DIR, "active_positions.json")
 QUICK_SCREEN_FILE = os.path.join(RESULTS_DIR, "quick_screen.json")
 UNIVERSE_FILE = os.path.join(RESULTS_DIR, "universe_state.json")
 EXECUTION_LOG_FILE = os.path.join(RESULTS_DIR, "execution_log.json")
-TOKEN_FILE = os.path.join(BASE_DIR, "tokens.json")
 
 ENV = load_env()
 TELEGRAM_TOKEN = ENV.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -92,51 +84,6 @@ def get_binance_client():
         print(f"[BINANCE] ✅ Binance Futures Engine initialized ({ak[:8]}...)", flush=True)
         return binance_client
     return None
-
-# === PLUANG MCP CLIENT ===
-def get_pluang_client():
-    """Initialize Pluang MCP client with auto-refresh if token expired"""
-    if os.path.exists(TOKEN_FILE):
-        try:
-            with open(TOKEN_FILE, "r") as f:
-                data = json.load(f)
-            token = data.get("access_token")
-            refresh = data.get("refresh_token")
-            if not token:
-                return None
-
-            # Check if token is likely expired (>55 min old)
-            acquired = data.get("acquired_at", 0)
-            expires_in = data.get("expires_in", 3600)
-            if time.time() - acquired > (expires_in - 300):
-                if refresh:
-                    print(f"[PLUANG] Token likely expired, attempting refresh...", flush=True)
-                    client = PluangMCPClient(token)
-                    if client._refresh_token():
-                        try:
-                            client.initialize()
-                            if not (client._last_error and "401" in str(client._last_error)):
-                                print(f"[PLUANG] ✅ Token refreshed and verified!", flush=True)
-                                return client
-                        except Exception:
-                            pass
-                print(f"[PLUANG] ⚠️ Token expired and refresh failed. Need re-login.", flush=True)
-                return None
-
-            client = PluangMCPClient(token)
-            client.initialize()
-            if client._last_error and "401" in str(client._last_error):
-                if refresh and client._refresh_token():
-                    print(f"[PLUANG] ✅ Token refreshed on 401", flush=True)
-                    return client
-                return None
-            print(f"[PLUANG] ✅ MCP Client connected", flush=True)
-            return client
-        except Exception as e:
-            print(f"[PLUANG] ⚠️ MCP connection failed: {e}", flush=True)
-    return None
-
-pluang_client = None  # Lazy initialized
 
 # === CONFIG (read from file, user can change via Telegram /limit) ===
 def _get_config():
@@ -226,8 +173,7 @@ def send_telegram(text, reply_markup=None):
             print(f"[TELEGRAM ERROR] {e}")
 
 def record_position(signal: dict):
-    """Record position locally AND execute on Pluang if connected"""
-    global pluang_client
+    """Record position locally AND execute on Binance Futures"""
     cfg = _get_config()
     max_budget = cfg.get("max_budget_idr", 0)   # 0 = no cap, dynamic wallet-based
     max_lev = cfg.get("max_leverage", 20)
@@ -304,7 +250,7 @@ def record_position(signal: dict):
     print(f"[SIZING] ⚖️ Mode RISK_FRACTIONAL [{prob_tag}]: Saldo=${avail_usdt:.2f}, SL={sl_pct*100:.2f}%, "
           f"Margin=${pos_size_usd:.2f} USDT (Rp {pos_size:,.0f}), Notional=${pos_size_usd*leverage:.2f}", flush=True)
 
-    auto_execute = cfg.get("auto_execute", cfg.get("auto_execute_on_binance", cfg.get("auto_execute_on_pluang", True)))
+    auto_execute = cfg.get("auto_execute", cfg.get("auto_execute_on_binance", True))
     max_concurrent = cfg.get("max_concurrent_positions", 5)
     
     # Check concurrent position limit
@@ -348,11 +294,10 @@ def record_position(signal: dict):
         "pnl_idr": 0,
         "pnl_usd": 0,
         "pnl_pct": 0.0,
-        "pluang_synced": False,
-        "pluang_execution": None
+        "exchange": "BINANCE_FUTURES"
     }
     
-    # === EXECUTE REAL TRADE (BINANCE FUTURES PRIMARY) ===
+    # === EXECUTE REAL TRADE (100% BINANCE FUTURES) ===
     if auto_execute:
         bn_client = get_binance_client()
         if bn_client:
@@ -373,7 +318,6 @@ def record_position(signal: dict):
                 
                 pos["binance_synced"] = execution_result.get("binance_synced", False)
                 pos["binance_execution"] = execution_result
-                pos["exchange"] = "BINANCE_FUTURES"
                 pos["order_id"] = execution_result.get("order_id")
                 
                 if pos["binance_synced"]:
@@ -387,41 +331,11 @@ def record_position(signal: dict):
                 print(f"[BINANCE] ❌ Execution exception: {e}", flush=True)
                 return None
         else:
-            # Fallback to Pluang
-            if pluang_client is None:
-                pluang_client = get_pluang_client()
-            
-            if pluang_client:
-                try:
-                    execution_result = pluang_client.execute_full_trade(signal={
-                        "binance_pair": pos["binance_pair"],
-                        "symbol": pos["symbol"],
-                        "direction": pos["direction"],
-                        "leverage": pos["leverage"],
-                        "margin_type": pos["margin_type"],
-                        "order_type": pos["order_type"],
-                        "limit_price": pos["limit_price"],
-                        "entry_price": pos["entry_price"],
-                        "take_profit": pos["take_profit"],
-                        "take_profit_1": pos["take_profit"],
-                        "take_profit_2": pos["take_profit"],
-                        "stop_loss": pos["stop_loss"],
-                        "position_size_idr": pos["position_size_idr"],
-                        "position_size_usdt": pos["position_size_usdt"]
-                    }, config=cfg)
-                    
-                    pos["pluang_synced"] = execution_result.get("pluang_synced", False)
-                    pos["pluang_execution"] = execution_result
-                    pos["exchange"] = "PLUANG"
-                except Exception as e:
-                    print(f"[PLUANG] ❌ Execution error: {e}", flush=True)
-                    pos["pluang_synced"] = False
-            else:
-                print(f"[EXECUTION] ⚠️ No active exchange client configured", flush=True)
-                return None
+            print("[BINANCE] ⚠️ Binance client not active! Check BINANCE_API_KEY / BINANCE_API_SECRET in .env", flush=True)
+            return None
 
-    if not pos.get("binance_synced") and not pos.get("pluang_synced"):
-        print(f"[EXECUTION] ⚠️ Order not executed on exchange - skipping recording to prevent fake reports", flush=True)
+    if not pos.get("binance_synced"):
+        print(f"[EXECUTION] ⚠️ Order not executed on Binance Futures - skipping recording to prevent fake reports", flush=True)
         return None
 
     positions.append(pos)
@@ -1354,13 +1268,13 @@ def run_full_scan_cycle():
           f"Sideways: {regime_info['sideways_pct']:.0f}% | "
           f"Avg 24h: {regime_info['avg_abs_change_24h']:.2f}%", flush=True)
 
-    # Adjust agresivitas scan berdasarkan regime
+    # Adjust agresivitas scan berdasarkan regime (fokus ke koin terbaik demi efisiensi kuota AI)
     if regime == "VOLATILE":
-        max_coins = 5     # hati-hati saat volatile
+        max_coins = 2     # hati-hati saat volatile
     elif regime == "SIDEWAYS":
-        max_coins = 8     # tetap scan tapi pakai sideways hunter juga
+        max_coins = 3     # fokus koin terkuat saat sideways
     else:
-        max_coins = 8     # normal / trending
+        max_coins = 3     # trending / normal (top 3 actionable coins)
 
     # Gabungkan ranked + watchlist untuk pre-filter
     seen_pairs_pf = set()
@@ -1393,7 +1307,7 @@ def run_full_scan_cycle():
         seen_in_scan = {c.get("pair") for c in scan_list}
         added = 0
         for sc in sideways_coins:
-            if sc.get("pair") not in seen_in_scan and added < 3:
+            if sc.get("pair") not in seen_in_scan and added < 1:
                 scan_list.append(sc)
                 seen_in_scan.add(sc.get("pair"))
                 added += 1
@@ -1688,17 +1602,17 @@ def start_loop():
     Main loop with two-tier scanning:
     1. Quick Screen every 60 seconds (technical only, no AI)
     2. Full AI Pipeline every 5 minutes (top 50 coins)
-    3. Pluang execution on APPROVED signals
+    3. Binance Futures execution on APPROVED signals
     """
-    global pluang_client
     cfg = _get_config()
+    auto_exec = cfg.get('auto_execute', cfg.get('auto_execute_on_binance', True))
     
     print(f"{'='*70}", flush=True)
     print(f"[*] PYROFUEL AUTONOMOUS CRYPTO FUTURES TRADER v3.0", flush=True)
-    print(f"[*] PRIMARY EXECUTION ENGINE: BINANCE FUTURES", flush=True)
+    print(f"[*] 100% BINANCE FUTURES EXECUTION ENGINE", flush=True)
     print(f"[*] Margin: {cfg.get('margin_type', 'ISOLATED')} | Order: {cfg.get('order_type', 'MARKET')}", flush=True)
     print(f"[*] Leverage: 20x ISOLATED (Fixed) | Max Budget: Rp {cfg.get('max_budget_idr', 50000):,}", flush=True)
-    print(f"[*] Auto Execute: {cfg.get('auto_execute_on_pluang', True)}", flush=True)
+    print(f"[*] Auto Execute: {auto_exec}", flush=True)
     print(f"[*] Quick Screen: Every 60 sec | Full AI: Every 5 min", flush=True)
     print(f"{'='*70}", flush=True)
     
@@ -1713,17 +1627,9 @@ def start_loop():
     else:
         print(f"[*] ⚠️ Binance Futures not configured in .env", flush=True)
 
-    # Initialize Pluang MCP as fallback
-    pluang_client = get_pluang_client()
-    if pluang_client:
-        print(f"[*] ✅ Pluang MCP connected (Secondary)", flush=True)
-    else:
-        print(f"[*] ⚪ Pluang MCP not active (Binance is Primary)", flush=True)
-    
     load_state()
     last_full_scan = 0
     last_quick_scan = 0
-    last_pluang_check = 0
     was_in_all_in_mode = False
     
     while True:
@@ -1783,23 +1689,6 @@ def start_loop():
                     # Trigger scan immediately!
                     last_full_scan = 0
                     last_quick_scan = 0
-
-                # Re-check Pluang connection every 5 minutes
-                if now - last_pluang_check >= 300:
-                    old_client = pluang_client
-                    pluang_client = get_pluang_client()
-                    if pluang_client and not old_client:
-                        print("[PLUANG] 🔄 Reconnected to Pluang MCP!", flush=True)
-                        send_telegram("🟢 <b>PLUANG RECONNECTED!</b>\nToken berhasil di-refresh. Auto-trading kembali aktif.")
-                    elif not pluang_client and old_client:
-                        print("[PLUANG] ⚠️ Lost connection to Pluang MCP", flush=True)
-                        send_telegram(
-                            "🔴 <b>PLUANG TOKEN EXPIRED</b>\n\n"
-                            "Token Pluang kadaluarsa dan refresh gagal.\n"
-                            "Auto-trading dihentikan sementara.\n\n"
-                            "👉 Ketik <code>/login</code> di Telegram untuk re-login."
-                        )
-                    last_pluang_check = now
 
                 # Quick screen every 60 seconds (or configured interval)
                 if now - last_quick_scan >= state.get("quick_screen_interval_sec", 60):

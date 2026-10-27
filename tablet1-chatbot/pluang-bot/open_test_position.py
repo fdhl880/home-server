@@ -68,7 +68,7 @@ msg = (
     f"🛑 <b>Stop Loss:</b> ${pos['stop_loss']:,.2f} (-6.0% Max Risk)\n"
     f"🔒 <b>Alokasi Modal:</b> Rp 50.000 (${pos['position_size_usd']:.2f} USD)\n"
     "────────────────────────\n"
-    "⚡ <i>Status: OPEN. Real-time monitor memantau floating PnL tiap 10 detik di Pluang.</i>"
+    "⚡ <i>Status: OPEN. Real-time monitor memantau floating PnL tiap 10 detik di Binance Futures.</i>"
 )
 
 try:

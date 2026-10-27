@@ -148,8 +148,8 @@ STATIC_CORE_UNIVERSE = [
     {"symbol": "PYTH-USD", "name": "Pyth Network", "pair": "PYTHUSDT", "base_asset": "PYTH", "leverage_max": 20, "tier": "T3_MID"},
 ]
 
-# Backward compatibility alias
-PLUANG_FUTURES_UNIVERSE = STATIC_CORE_UNIVERSE
+# Universe alias
+BINANCE_FUTURES_UNIVERSE = STATIC_CORE_UNIVERSE
 CRYPTO_FUTURES_WATCHLIST = STATIC_CORE_UNIVERSE
 
 # Cache for dynamic universe

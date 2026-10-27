@@ -4,23 +4,22 @@ PYROFUEL TELEGRAM BOT v3.0 - FULL UNIVERSE CRYPTO FUTURES AI
 ===========================================================================
 Token: 8829535429:AAHFHM56RDNAd7-ax6Dd-3V3g9OZEleYi5M (@idrisginting_bot)
 Koleksi Aset: ALL Binance USDT Perpetual Futures (~200+ coins)
-Fitur: 5-Layer AI Pipeline, Pluang MCP Execution, Live Token Validation
+Fitur: 5-Layer AI Pipeline, Binance Futures Execution (20x ISOLATED)
 
 DAFTAR PERINTAH:
 /start      - Welcome & daftar perintah
-/login      - Hubungkan akun Pluang Anda via OAuth resmi
-/scan       - Full scan CORE 10 + Top movers
+/binance    - Cek status koneksi Binance Futures API
+/scan       - Full scan CORE + Top movers
 /scan [coin]- Analisis koin spesifik (misal: /scan btc)
-/konfirmasi [coin] - Eksekusi order riil ke Pluang Futures
+/konfirmasi [coin] - Eksekusi order riil ke Binance Futures
 /universe   - Status seluruh universe (200+ pairs)
 /top        - Top 20 movers saat ini
 /btc, /eth, /sol - Analisis instan koin utama
-/status     - Status koneksi Pluang, portfolio & posisi aktif
+/status     - Status portfolio, margin & posisi aktif Binance
+/wallet     - Cek saldo Binance Futures ($) Live
 /auto       - Status autonomous trading engine
 /limit [n]  - Ubah batas modal per trade
-/leverage [n] - Ubah batas leverage
 /fx         - Kurs USD/IDR real-time
-/convert [n] [usd/idr] - Konversi mata uang
 ===========================================================================
 """
 import os
@@ -52,11 +51,9 @@ from market_data import (
     convert_usd_to_idr, convert_idr_to_usd, rank_universe_by_opportunity,
     normalize_symbol_to_pair
 )
-from pluang_mcp import PluangMCPClient
 from binance_futures import BinanceFuturesClient
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TOKEN_FILE = os.path.join(BASE_DIR, "tokens.json")
 POSITIONS_FILE = os.path.join(RESULTS_DIR, "active_positions.json")
 STATE_FILE = os.path.join(RESULTS_DIR, "autotrader_state.json")
 
@@ -109,56 +106,6 @@ def is_chat_allowed(chat_id):
     except Exception:
         pass
     return str(chat_id).strip() in whitelist
-
-def get_pluang_client():
-    """Load client and verify access token live against Pluang MCP.
-    Tries refresh_token automatically if access_token is expired."""
-    if not os.path.exists(TOKEN_FILE):
-        return None
-    try:
-        with open(TOKEN_FILE, "r", encoding="utf-8") as f:
-            t = json.load(f)
-        token = t.get("access_token")
-        refresh = t.get("refresh_token")
-        if not token:
-            return None
-
-        # Check if token is likely expired (>55 min old)
-        acquired = t.get("acquired_at", 0)
-        expires_in = t.get("expires_in", 3600)
-        if time.time() - acquired > (expires_in - 300):
-            # Token likely expired, try refresh first
-            if refresh:
-                print("[Pluang] Token likely expired, attempting refresh...", flush=True)
-                client = PluangMCPClient(token)
-                if client._refresh_token():
-                    try:
-                        client.initialize()
-                        if not (client._last_error and "401" in str(client._last_error)):
-                            print("[Pluang] ✅ Token refreshed and verified!", flush=True)
-                            return client
-                    except Exception:
-                        pass
-            return None
-
-        # Token still within TTL, verify it
-        client = PluangMCPClient(token)
-        try:
-            client.initialize()
-            if client._last_error and "401" in str(client._last_error):
-                # Unexpected 401, try refresh
-                if refresh and client._refresh_token():
-                    return client
-                return None
-            return client
-        except Exception as e:
-            if "401" in str(e) and refresh:
-                if client._refresh_token():
-                    return client
-            return None
-    except Exception as e:
-        print(f"[-] Pluang client error: {e}", flush=True)
-        return None
 
 def _esc_html(s):
     """Safely escape HTML special characters for Telegram HTML parse_mode"""
@@ -333,18 +280,18 @@ def format_pipeline_report(res: dict):
     )
     return text, status
 
-def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str = None):
-    """Execute real trade on Pluang Futures via MCP"""
+def execute_trade_with_binance(symbol: str, chat_id: int, callback_query_id: str = None):
+    """Execute real trade on Binance Futures (20x ISOLATED)"""
     raw_sym = symbol.upper().strip().replace("USDT", "-USD")
     if not raw_sym.endswith("-USD"):
         raw_sym = raw_sym + "-USD"
+    pair = raw_sym.replace("-USD", "USDT")
     
     cfg = get_trading_config()
     max_budget = cfg.get("max_budget_idr", 0)
-    max_lev = cfg.get("max_leverage", 25)
+    leverage = 20
     margin_type = cfg.get("margin_type", "ISOLATED")
     order_type = cfg.get("order_type", "MARKET")
-    budget_usd = convert_idr_to_usd(max_budget) if max_budget > 0 else None
 
     # 0. Check duplicate active position
     positions = []
@@ -354,36 +301,32 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
                 positions = json.load(f)
         except Exception:
             positions = []
-    existing_open = [p for p in positions if p.get("symbol") == raw_sym and p.get("status") == "OPEN"]
+    existing_open = [p for p in positions if (p.get("symbol") == raw_sym or p.get("binance_pair") == pair) and p.get("status") == "OPEN"]
     if existing_open:
         last_pos = existing_open[-1]
         msg = (
-            f"ℹ️ <b>POSISI {raw_sym} SUDAH AKTIF DI PLUANG!</b>\n\n"
+            f"ℹ️ <b>POSISI {pair} SUDAH AKTIF DI BINANCE FUTURES!</b>\n\n"
             f"🎯 <b>Arah:</b> {last_pos.get('direction', 'LONG')}\n"
             f"📍 <b>Entry:</b> ${last_pos.get('entry_price', 0):,.4f}\n"
             f"🆔 <b>Order ID:</b> <code>{last_pos.get('order_id', 'N/A')}</code>\n\n"
             f"<i>Posisi sedang aktif dipantau. Modal Anda aman dan order tidak diduplikasi.</i>"
         )
         if callback_query_id:
-            answer_callback(callback_query_id, f"Posisi {raw_sym} sudah aktif!", show_alert=False)
+            answer_callback(callback_query_id, f"Posisi {pair} sudah aktif!", show_alert=False)
         send_telegram_message(chat_id, msg)
         return True
 
-    # 1. Check Exchange Client (Binance Futures Primary, Pluang Fallback)
+    # 1. Check Binance Futures Client
     bn_client = get_binance_client()
-    pluang_client = get_pluang_client()
-    client = bn_client or pluang_client
-    if not client:
+    if not bn_client:
         msg = (
-            "⚠️ <b>KONEKSI BURSA BELUM TERHUBUNG</b>\n\n"
-            f"Order <b>{raw_sym}</b> tidak dapat dikirim karena kunci API bursa belum aktif.\n\n"
-            "👉 <b>Solusi:</b>\n"
-            "1. Masukkan <code>BINANCE_API_KEY</code> & <code>BINANCE_API_SECRET</code> di file .env, ATAU\n"
-            "2. Ketik <code>/login</code> di Telegram ini untuk menghubungkan Pluang.\n\n"
+            "⚠️ <b>KONEKSI BINANCE FUTURES BELUM TERHUBUNG</b>\n\n"
+            f"Order <b>{pair}</b> tidak dapat dikirim karena kunci API Binance belum aktif.\n\n"
+            "👉 Masukkan <code>BINANCE_API_KEY</code> & <code>BINANCE_API_SECRET</code> di file .env.\n\n"
             "<i>🛡️ Modal Anda tetap aman 100%.</i>"
         )
         if callback_query_id:
-            answer_callback(callback_query_id, "Gagal: Kunci bursa belum aktif!", show_alert=True)
+            answer_callback(callback_query_id, "Gagal: Kunci Binance belum aktif!", show_alert=True)
         send_telegram_message(chat_id, msg)
         return False
 
@@ -399,7 +342,7 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
             pass
 
     if not signal or not signal.get("direction") or signal.get("direction") == "NONE":
-        send_telegram_message(chat_id, f"⏳ <i>Menghitung analisis teknikal kuantitatif untuk {raw_sym}...</i>")
+        send_telegram_message(chat_id, f"⏳ <i>Menghitung analisis teknikal kuantitatif untuk {pair}...</i>")
         try:
             res = run_5_layer_pipeline(raw_sym)
             signal = res.get("layer5_final_call", {})
@@ -412,53 +355,35 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
     order_type = (signal.get("order_type") or cfg.get("order_type", "MARKET")).upper()
     limit_price = float(signal.get("limit_price") or entry_price)
 
-    # AI governs modal/position size — dynamic wallet-based Kelly
-    pos_idr_raw = float(signal.get("position_size_idr") or 0)
-    if pos_idr_raw < 5000 and budget_usd is None:
-        # Dynamic sizing from live wallet
-        try:
-            _bn_tmp = get_binance_client()
-            if _bn_tmp:
-                _bal_tmp = _bn_tmp.get_balance()
-                _avail = float(_bal_tmp.get("available_balance", 0))
-                _fx_tmp = get_fx_info()
-                _avail_idr = _avail * _fx_tmp.get("usd_idr", 16500)
-                _conf = float(signal.get("confidence_score", 65))
-                _kf = max(0.15, min(0.60, _conf / 100.0 * 0.8))
-                pos_idr_raw = max(10000, int(_avail_idr * _kf))
-            else:
-                pos_idr_raw = 50000
-        except Exception:
-            pos_idr_raw = 50000
-    elif pos_idr_raw < 5000:
-        pos_idr_raw = max_budget or 50000
-    if max_budget > 0:
-        pos_idr_raw = min(pos_idr_raw, max_budget)
-    pos_idr = int(pos_idr_raw)
-    pos_usd = round(pos_idr / get_fx_info().get("usd_idr", 16500), 2)
+    # Dynamic sizing from live wallet
+    bal = bn_client.get_balance()
+    avail_usdt = float(bal.get("available_balance", 0)) if isinstance(bal, dict) else 0.0
+    sl_pct = float(signal.get("stop_loss_pct", 2.0)) / 100.0
+    sl_pct = max(0.005, min(0.025, sl_pct))
+    
+    # 2% probation or 5% standard
+    risk_frac = 0.02 if len(positions) < 20 else 0.05
+    calc_margin_usd = (avail_usdt * risk_frac) / sl_pct if sl_pct > 0 else (avail_usdt * 0.10)
+    calc_margin_usd = max(1.0, min(calc_margin_usd, avail_usdt * 0.95))
+    pos_usd = round(calc_margin_usd, 2)
+    pos_idr = int(pos_usd * get_fx_info().get("usd_idr", 16500))
 
-    # FIXED LEVERAGE: Strictly locked at 20x (immutable user mandate)
-    leverage = 20
-
-    # Estimated time horizon from signal / pipeline
+    # Time horizon
     time_horizon = signal.get("estimated_time_horizon", "N/A")
-
-    # Pluang only supports Single Take Profit (NO dual TP)
     tp = float(signal.get("take_profit") or signal.get("take_profit_2") or signal.get("take_profit_1", 0))
     sl = float(signal.get("stop_loss", 0))
 
     limit_info = f" (@ ${limit_price:,.4f})" if order_type == "LIMIT" else ""
-    exchange_target = "Binance Futures" if bn_client else "Pluang Futures"
     send_telegram_message(
         chat_id,
-        f"⚡ <i>Mengirim order {order_type}{limit_info} {direction} {raw_sym.replace('-USD', 'USDT')} ({leverage}x) senilai ${pos_usd:.2f} USDT ke {exchange_target}...</i>"
+        f"⚡ <i>Mengirim order {order_type}{limit_info} {direction} {pair} ({leverage}x ISOLATED) senilai ${pos_usd:.2f} USDT ke Binance Futures...</i>"
     )
 
-    # 3. Call execute_full_trade (Binance Futures or Pluang)
+    # 3. Call execute_full_trade
     try:
-        execution_result = client.execute_full_trade(
+        execution_result = bn_client.execute_full_trade(
             signal={
-                "binance_pair": raw_sym.replace("-USD", "USDT"),
+                "binance_pair": pair,
                 "symbol": raw_sym,
                 "direction": direction,
                 "leverage": leverage,
@@ -467,21 +392,13 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
                 "limit_price": limit_price,
                 "entry_price": entry_price,
                 "take_profit": tp,
-                "take_profit_1": tp,
-                "take_profit_2": tp,
                 "stop_loss": sl,
-                "position_size_idr": pos_idr,
                 "position_size_usdt": pos_usd
             },
-            config={
-                "margin_type": margin_type,
-                "order_type": order_type,
-                "max_leverage": max_lev,
-                "max_budget_idr": max_budget
-            }
+            config=cfg
         )
 
-        is_synced = execution_result.get("binance_synced", False) or execution_result.get("pluang_synced", False)
+        is_synced = execution_result.get("binance_synced", False)
 
         if is_synced:
             # Record position in active_positions.json
@@ -494,12 +411,12 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
                     positions = []
 
             open_res = execution_result.get("steps", {}).get("open_position", {})
-            order_id = open_res.get("orderId") or open_res.get("id") or "LIVE_EXECUTED"
+            order_id = open_res.get("orderId") or execution_result.get("order_id") or "LIVE_EXECUTED"
 
             new_pos = {
                 "id": f"POS_{raw_sym}_{int(time.time())}",
                 "symbol": raw_sym,
-                "binance_pair": raw_sym.replace("-USD", "USDT"),
+                "binance_pair": pair,
                 "direction": direction,
                 "entry_price": entry_price,
                 "entry_price_idr": convert_usd_to_idr(entry_price),
@@ -516,9 +433,8 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
                 "position_size_usdt": pos_usd,
                 "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "status": "OPEN",
-                "exchange": "BINANCE_FUTURES" if bn_client else "PLUANG",
-                "binance_synced": True if bn_client else False,
-                "pluang_synced": True if not bn_client else False,
+                "exchange": "BINANCE_FUTURES",
+                "binance_synced": True,
                 "order_id": order_id,
                 "execution_details": execution_result
             }
@@ -526,14 +442,13 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
             with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
                 json.dump(positions, f, indent=2, ensure_ascii=False)
 
-            target_name = "Binance Futures" if bn_client else "Pluang Futures"
             if callback_query_id:
-                answer_callback(callback_query_id, f"Order {raw_sym} berhasil dibuka di {target_name}!", show_alert=False)
+                answer_callback(callback_query_id, f"Order {pair} berhasil dibuka di Binance Futures!", show_alert=False)
 
             limit_txt = f" (@ ${limit_price:,.4f})" if order_type == "LIMIT" else ""
             msg = (
-                f"⚡ <b>ORDER BERHASIL DIEKSEKUSI DI {target_name.upper()}!</b>\n\n"
-                f"💎 <b>Aset:</b> <code>{raw_sym}</code>\n"
+                f"⚡ <b>ORDER BERHASIL DIEKSEKUSI DI BINANCE FUTURES!</b>\n\n"
+                f"💎 <b>Aset:</b> <code>{pair}</code>\n"
                 f"🎯 <b>Arah:</b> <b>{direction}</b>\n"
                 f"📋 <b>Order Type:</b> <b>{order_type}{limit_txt}</b>\n"
                 f"📊 <b>Leverage:</b> <b>{leverage}x</b> ({margin_type})\n"
@@ -542,236 +457,61 @@ def execute_trade_with_pluang(symbol: str, chat_id: int, callback_query_id: str 
                 f"🎯 <b>Take Profit:</b> ${tp:,.4f}\n"
                 f"🛑 <b>Stop Loss:</b> ${sl:,.4f}\n"
                 f"⏱️ <b>Est. Waktu TP:</b> <b>{time_horizon}</b>\n"
-                f"🆔 <b>Order ID ({target_name}):</b> <code>{order_id}</code>\n"
+                f"🆔 <b>Order ID (Binance):</b> <code>{order_id}</code>\n"
                 f"⏰ <b>Waktu:</b> {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}\n\n"
                 f"<i>Posisi aktif kini terpantau real-time oleh AI Sentinel.</i>"
             )
             send_telegram_message(chat_id, msg)
             return True
         else:
-            target_name = "Binance Futures" if bn_client else "Pluang"
-            err = execution_result.get("error") or f"Order ditolak oleh {target_name} API"
+            err = execution_result.get("error") or "Order ditolak oleh Binance Futures API"
             if callback_query_id:
-                answer_callback(callback_query_id, f"{target_name}: {err[:60]}", show_alert=True)
+                answer_callback(callback_query_id, f"Binance: {err[:60]}", show_alert=True)
             msg = (
-                f"❌ <b>{target_name.upper()} MENOLAK ORDER {raw_sym}</b>\n\n"
-                f"Detail Error dari {target_name}:\n<code>{err}</code>\n\n"
+                f"❌ <b>BINANCE MENOLAK ORDER {pair}</b>\n\n"
+                f"Detail Error dari Binance:\n<code>{err}</code>\n\n"
                 f"<i>Catatan: Tidak ada modal yang terpotong. Sinyal tidak didaftarkan sebagai posisi aktif.</i>"
             )
             send_telegram_message(chat_id, msg)
             return False
 
     except Exception as e:
-        target_name = "Binance Futures" if bn_client else "Pluang"
         if callback_query_id:
             answer_callback(callback_query_id, f"Error: {str(e)[:60]}", show_alert=True)
-        send_telegram_message(chat_id, f"❌ <b>Error Eksekusi {target_name}:</b>\n<code>{e}</code>")
+        send_telegram_message(chat_id, f"❌ <b>Error Eksekusi Binance Futures:</b>\n<code>{e}</code>")
         return False
 
-class OAuthCallbackHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        if parsed.path == "/callback":
-            qs = parse_qs(parsed.query)
-            if "code" in qs:
-                code = qs["code"][0]
-                target_chat_id = None
-                pending_file = os.path.join(BASE_DIR, "pending_auth.json")
-                if os.path.exists(pending_file):
-                    try:
-                        with open(pending_file, "r", encoding="utf-8") as pf:
-                            target_chat_id = json.load(pf).get("chat_id")
-                    except Exception:
-                        pass
-                if not target_chat_id:
-                    last_cid_file = os.path.join(BASE_DIR, "last_chat_id.txt")
-                    if os.path.exists(last_cid_file):
-                        try:
-                            with open(last_cid_file, "r") as cf:
-                                target_chat_id = int(cf.read().strip())
-                        except Exception:
-                            pass
-
-                success = exchange_oauth_code(code, target_chat_id)
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                status_color = "#22c55e" if success else "#ef4444"
-                status_title = "✅ Login Berhasil! Akun Pluang Terhubung" if success else "⚠️ Gagal Menukar Token"
-                status_desc = "Akun Pluang Anda berhasil dihubungkan ke Bot Telegram. Status Pluang di Telegram kini 🟢 HIJAU (Aktif)." if success else "Kode otentikasi gagal ditukar. Silakan coba /login ulang dari Telegram."
-                html = f"""
-                <html>
-                <body style="font-family:sans-serif; text-align:center; padding:50px; background:#0f172a; color:#f8fafc;">
-                    <h1 style="color:{status_color};">{status_title}</h1>
-                    <p style="font-size:18px;">{status_desc}</p>
-                    <p style="color:#94a3b8;">Anda boleh menutup tab browser ini dan kembali ke Telegram.</p>
-                </body>
-                </html>
-                """
-                self.wfile.write(html.encode("utf-8"))
-            elif "error" in qs:
-                self.send_response(400)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(f"<h1>Error Login: {qs['error'][0]}</h1>".encode("utf-8"))
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def log_message(self, format, *args):
-        return
-
-def start_callback_server():
-    try:
-        server = HTTPServer(("0.0.0.0", 8080), OAuthCallbackHandler)
-        print("[*] Local OAuth Callback Server listening on port 8080...", flush=True)
-        server.serve_forever()
-    except Exception as e:
-        print(f"[!] Info: Port 8080 callback notice ({e})", flush=True)
+# Backward compat alias
+execute_trade_with_pluang = execute_trade_with_binance
 
 def handle_login_command(chat_id):
-    """Generate official Pluang OAuth URL, save pending PKCE, and send interactive instructions"""
-    try:
-        from auth_pluang import get_or_create_client, generate_pkce, AUTH_ENDPOINT, REDIRECT_URI
-        cid = get_or_create_client()
-        cv, cc = generate_pkce()
-        scopes = "market:read portfolio:read trade:write"
-        auth_url = (
-            f"{AUTH_ENDPOINT}?response_type=code"
-            f"&client_id={cid}"
-            f"&redirect_uri={REDIRECT_URI}"
-            f"&scope={scopes.replace(' ', '%20')}"
-            f"&code_challenge={cc}"
-            f"&code_challenge_method=S256"
-        )
-
-        # Save pending_auth.json with code_verifier and chat_id for instant callback
-        pending_file = os.path.join(BASE_DIR, "pending_auth.json")
-        with open(pending_file, "w", encoding="utf-8") as pf:
-            json.dump({
-                "client_id": cid,
-                "code_verifier": cv,
-                "url": auth_url,
-                "chat_id": chat_id,
-                "timestamp": time.time()
-            }, pf, indent=2)
-
+    """Check and verify Binance Futures API connection"""
+    bn = get_binance_client()
+    if bn:
         try:
-            with open(os.path.join(BASE_DIR, "last_chat_id.txt"), "w") as cf:
-                cf.write(str(chat_id))
-        except Exception:
-            pass
-
-        reply_markup = {
-            "inline_keyboard": [
-                [{"text": "🔑 Buka Halaman Login Pluang", "url": auth_url}]
-            ]
-        }
-        send_telegram_message(
-            chat_id,
-            "🔐 <b>LOGIN / SAMBUNGKAN AKUN PLUANG (INSTAN)</b>\n\n"
-            "Untuk membuka posisi futures otomatis dengan USDT/IDR Anda, akun Pluang harus dihubungkan via OAuth resmi:\n\n"
-            "👉 <b>Langkah Mudah:</b>\n"
-            "1. Klik tombol <b>Buka Halaman Login Pluang</b> di bawah\n"
-            "2. Masukkan nomor HP & PIN Pluang Anda di browser\n"
-            "3. Setujui izin akses trading untuk bot\n"
-            "4. <b>Di PC/Laptop:</b> Bot akan otomatis menangkap login Anda & langsung IJO!\n"
-            "5. <b>Di HP / Browser Eksternal:</b> Jika dialihkan ke link localhost, cukup <b>COPY URL tersebut atau kodenya, lalu PASTE LANGSUNG ke chat bot ini!</b>\n\n"
-            "<i>Bot akan otomatis menukar kode & status Pluang Anda langsung IJO (🟢 Terhubung & Verified)!</i>",
-            reply_markup=reply_markup
-        )
-    except Exception as e:
-        send_telegram_message(chat_id, f"❌ Gagal membuat link login: {e}")
-
-def exchange_oauth_code(code_str: str, chat_id: int = None):
-    """Exchange OAuth code or redirect URL for tokens and activate immediately"""
-    code_val = code_str.strip()
-    if "code=" in code_val:
-        from urllib.parse import urlparse, parse_qs
-        try:
-            parsed = parse_qs(urlparse(code_val).query)
-            if "code" in parsed:
-                code_val = parsed["code"][0]
-        except Exception:
-            for part in code_val.split("&"):
-                if "code=" in part:
-                    code_val = part.split("code=")[-1].split()[0]
-
-    pending_file = os.path.join(BASE_DIR, "pending_auth.json")
-    if not os.path.exists(pending_file):
-        if chat_id:
+            bal = bn.get_balance()
+            tot = bal.get("total_wallet_balance", 0) if isinstance(bal, dict) else 0
+            avail = bal.get("available_balance", 0) if isinstance(bal, dict) else 0
             send_telegram_message(
                 chat_id,
-                "⚠️ <b>Tidak ada sesi login aktif.</b>\n"
-                "Ketik <code>/login</code> terlebih dahulu untuk membuat link otentikasi baru."
+                f"🟢 <b>KONEKSI BINANCE FUTURES AKTIF!</b>\n\n"
+                f"✅ API Key valid & terhubung live.\n"
+                f"💰 Total Wallet: <b>${tot:.2f} USDT</b>\n"
+                f"💵 Margin Tersedia: <b>${avail:.2f} USDT</b>\n"
+                f"⚙️ Leverage: <b>20x ISOLATED Fixed</b>\n\n"
+                f"Ketik <code>/scan</code> untuk radar sinyal trading atau <code>/wallet</code> untuk cek saldo."
             )
-        return False
-
-    try:
-        with open(pending_file, "r", encoding="utf-8") as f:
-            pending = json.load(f)
-
-        if not chat_id and pending.get("chat_id"):
-            chat_id = pending.get("chat_id")
-
-        token_payload = {
-            "grant_type": "authorization_code",
-            "client_id": pending["client_id"],
-            "code": code_val,
-            "redirect_uri": "http://localhost:8080/callback",
-            "code_verifier": pending["code_verifier"]
-        }
-        if chat_id:
-            send_telegram_message(chat_id, "⏳ <i>Menghubungkan ke server Pluang untuk aktivasi token...</i>")
-        resp = requests.post("https://mcp.pluang.com/token", data=token_payload, timeout=15)
-        if resp.status_code == 200:
-            token_data = resp.json()
-            token_data["acquired_at"] = time.time()
-            with open(TOKEN_FILE, "w", encoding="utf-8") as f:
-                json.dump(token_data, f, indent=2)
-
-            client = get_pluang_client()
-            bal_info = ""
-            if client:
-                try:
-                    b_res = client.get_balance()
-                    if isinstance(b_res, dict) and "content" in b_res and b_res["content"]:
-                        txt = b_res["content"][0].get("text", "")
-                        bal_info = f"\n\n💰 <b>Status Wallet Pluang:</b>\n<code>{txt[:250]}</code>"
-                except Exception:
-                    pass
-
-                if chat_id:
-                    send_telegram_message(
-                        chat_id,
-                        f"🟢 <b>LOGIN BERHASIL! STATUS KONEKSI PLUANG IJO!</b>\n\n"
-                        f"✅ Akun Pluang Anda berhasil terhubung via OAuth resmi.\n"
-                        f"✅ Akses token aktif & verified live terhadap Pluang MCP.\n"
-                        f"✅ AI Trading Engine kini siap membuka posisi otomatis.{bal_info}\n\n"
-                        f"Ketik <code>/status</code> untuk melihat portofolio Anda, atau <code>/scan</code> untuk mencari peluang trade."
-                    )
-                print("[+] OAuth token exchanged successfully & saved to tokens.json!", flush=True)
-                return True
-            else:
-                if chat_id:
-                    send_telegram_message(chat_id, "⚠️ Token diterima namun inisialisasi Pluang MCP gagal. Silakan coba <code>/login</code> ulang.")
-                return False
-        else:
-            if chat_id:
-                send_telegram_message(
-                    chat_id,
-                    f"❌ <b>Gagal Menukar Kode Pluang:</b>\n"
-                    f"Status: {resp.status_code}\n"
-                    f"Detail: <code>{resp.text[:300]}</code>\n\n"
-                    f"<i>Kode otentikasi hanya berlaku satu kali. Ketik <code>/login</code> untuk membuat yang baru.</i>"
-                )
-            print(f"[-] Token exchange failed ({resp.status_code}): {resp.text}", flush=True)
-            return False
-    except Exception as e:
-        if chat_id:
-            send_telegram_message(chat_id, f"❌ Terjadi kesalahan saat aktivasi: {e}")
-        print(f"[-] Activation exception: {e}", flush=True)
-        return False
+        except Exception as e:
+            send_telegram_message(chat_id, f"⚠️ Error membaca akun Binance: {e}")
+    else:
+        send_telegram_message(
+            chat_id,
+            "⚠️ <b>BINANCE FUTURES BELUM TERHUBUNG</b>\n\n"
+            "Kunci API Binance belum disetel di file <code>.env</code>.\n\n"
+            "Pastikan Anda menambahkan baris berikut di <code>.env</code>:\n"
+            "<code>BINANCE_API_KEY=...</code>\n"
+            "<code>BINANCE_API_SECRET=...</code>"
+        )
 
 def run_radar_scan(chat_id):
     """Fast Parallel Quant Radar Scan (Top 3 Candidates in Parallel - <10s)"""
@@ -891,7 +631,7 @@ def run_radar_scan(chat_id):
         send_telegram_message(chat_id, summary)
 
 def handle_wallet_command(chat_id):
-    """Query live balances from Binance Futures and Pluang"""
+    """Query live balances from Binance Futures"""
     bn_client = get_binance_client()
     fx = get_fx_info()
     usd_idr = fx.get("usd_idr", 16500)
@@ -926,23 +666,6 @@ def handle_wallet_command(chat_id):
     else:
         lines.append("🟡 <b>BINANCE FUTURES:</b> ⚪ Belum terkonfigurasi")
 
-    lines.append("────────────────────────")
-
-    # 2. Pluang
-    pl_client = get_pluang_client()
-    if pl_client:
-        lines.append("🟢 <b>PLUANG:</b> CONNECTED & VERIFIED")
-        try:
-            p_bal = pl_client.get_balance()
-            if isinstance(p_bal, dict) and "content" in p_bal and p_bal["content"]:
-                txt = p_bal["content"][0].get("text", "")
-                lines.append(f"<code>{txt[:200]}</code>")
-        except Exception:
-            pass
-    else:
-        lines.append("🟢 <b>PLUANG:</b> 🔴 Token Expired (Ketik <code>/login</code>)")
-
-    lines.append("────────────────────────")
     lines.append(f"💱 <b>Kurs Acuan:</b> $1 = Rp {usd_idr:,.0f}")
     send_telegram_message(chat_id, "\n".join(lines))
 
@@ -973,10 +696,7 @@ def get_system_status():
     else:
         binance_badge = "⚪ <b>NOT CONFIGURED</b>"
 
-    client = get_pluang_client()
-    pluang_badge = "🟢 <b>CONNECTED & VERIFIED</b>" if client else "🔴 <b>TOKEN EXPIRED (Ketik /login)</b>"
-
-    ai_desc = "Google Gemini 3.8 Flash (Flagship AI)" if GEMINI_API_KEY else f"Groq ({GROQ_MODEL})"
+    ai_desc = "Google Gemini + Groq + OpenRouter Cascade" if GEMINI_API_KEY else f"Groq ({GROQ_MODEL})"
 
     guard = {}
     try:
@@ -988,21 +708,20 @@ def get_system_status():
     if guard.get("pause_scanning"):
         mode_badge = "🛡️ <b>ALL-IN POSITION MONITOR (100% Fokus Mengawal Posisi)</b>"
     else:
-        mode_badge = "🔍 <b>ACTIVE UNIVERSE SCANNER (524 pairs)</b>"
+        mode_badge = f"🔍 <b>ACTIVE UNIVERSE SCANNER ({len(universe)} pairs)</b>"
 
     modal_txt = "Dynamic Wallet-Based (Kelly Criterion)" if cfg.get('max_budget_idr', 0) == 0 else f"Rp {cfg.get('max_budget_idr'):,} max"
 
     text = (
-        f"📊 <b>STATUS SISTEM TRADING AI CRYPTO FUTURES</b>\n"
+        f"📊 <b>STATUS SISTEM TRADING AI BINANCE FUTURES</b>\n"
         f"────────────────────────\n"
         f"🟡 <b>Binance Futures:</b> {binance_badge}\n"
-        f"🏦 <b>Pluang Status:</b> {pluang_badge}\n"
-        f"🤖 <b>AI Utama:</b> {ai_desc} (6+ AI Cascade)\n"
+        f"🤖 <b>AI Engine:</b> {ai_desc}\n"
         f"📈 <b>Quant Matrix:</b> 500+ Factors (Simons, Wyckoff, Minervini, DeMark)\n"
         f"🌐 <b>Universe:</b> {len(universe)} crypto futures pairs\n"
         f"🎯 <b>Mode Engine:</b> {mode_badge}\n"
         f"💰 <b>Modal Sizing:</b> {modal_txt}\n"
-        f"⚡ <b>Leverage:</b> Dynamic 2x-25x (AI ATR-Based)\n"
+        f"⚡ <b>Leverage:</b> 20x ISOLATED Fixed (User Mandate)\n"
         f"💱 <b>Kurs USD/IDR:</b> Rp {fx['usd_idr']:,.0f}\n"
         f"💼 <b>Posisi Aktif:</b> {len(open_pos)} posisi\n"
         f"────────────────────────\n"
@@ -1010,10 +729,9 @@ def get_system_status():
     if open_pos:
         text += "<b>Daftar Posisi Aktif:</b>\n"
         for p in open_pos[:10]:
-            exch = p.get("exchange", "BINANCE" if p.get("binance_synced") else "PLUANG")
-            synced_mark = f"✅ {exch} Live" if (p.get("binance_synced") or p.get("pluang_synced")) else "📝 Lokal"
+            synced_mark = "✅ Binance Live" if p.get("binance_synced") else "📝 Lokal"
             text += (f"• <code>{p['symbol']}</code> {p['direction']} @ ${p.get('entry_price', 0):,.4f} "
-                     f"(Lev: {p.get('leverage', 1)}x, {synced_mark})\n")
+                     f"(Lev: {p.get('leverage', 20)}x, {synced_mark})\n")
         if len(open_pos) > 10:
             text += f"<i>... dan {len(open_pos) - 10} posisi lainnya</i>\n"
     else:
@@ -1310,7 +1028,7 @@ def handle_audit_command(chat_id):
             f"• Total Koin USDT Perpetual: <b>{univ_count} Koin (100% Full Universe)</b>\n"
             f"• Koin Likuiditas > $1M: <b>{vol_1m} Koin</b>\n"
             f"• Koin Likuiditas > $500K: <b>{vol_500k} Koin</b>\n"
-            "• Gate Pluang 43 Koin: <b>✅ DIBUKA TOTAL (Semua coin futures discan)</b>\n\n"
+            "• Universe Scope: <b>✅ MURNI BINANCE FUTURES (Full Universe Scan)</b>\n\n"
             "📐 <b>3. AKURASI ANALISA & DATA:</b>\n"
             f"• Feed Klines: <b>🟢 Binance Futures Direct REST (1h, 4h, 1d)</b>\n"
             f"• Data Quality BTC: <b>{data_qual} (RSI 14: {rsi_val})</b>\n"
@@ -1387,23 +1105,6 @@ def start_bot_listener():
                     except Exception:
                         pass
 
-                    # Intercept OAuth code / redirect URL pasted by user
-                    # Only triggered if explicitly containing OAuth URL or /code
-                    is_oauth = False
-                    if "code=" in msg_text and ("pluang" in msg_text.lower() or "localhost" in msg_text.lower()):
-                        is_oauth = True
-                    elif msg_lower.startswith("/code "):
-                        is_oauth = True
-
-                    if is_oauth:
-                        code_cand = msg_text
-                        if msg_lower.startswith("/code"):
-                            parts = msg_text.split()
-                            code_cand = parts[1] if len(parts) >= 2 else ""
-                        if code_cand:
-                            exchange_oauth_code(code_cand, chat_id)
-                            continue
-
                     if msg_lower in ["/start", "start", "halo", "help", "/help"]:
                         cfg = get_trading_config()
                         universe = get_full_universe()
@@ -1416,42 +1117,34 @@ def start_bot_listener():
                                 bn_txt = "🟢 Terhubung"
                         else:
                             bn_txt = "⚪ Belum disetel"
-                        client = get_pluang_client()
-                        pluang_txt = "🟢 Terhubung" if client else "🔴 Perlu /login"
                         modal_str = "Dynamic Wallet-Based (Kelly Criterion)" if cfg.get("max_budget_idr", 0) == 0 else f"Rp {cfg.get('max_budget_idr', 0):,} max"
                         welcome = (
                             "👋 <b>Halo! Saya Pyrofuel AI Crypto Futures Trading v3.0</b>\n\n"
                             f"🟡 <b>Binance Futures:</b> {bn_txt}\n"
-                            f"🏦 <b>Pluang Status:</b> {pluang_txt}\n"
                             f"🌐 <b>Universe:</b> {len(universe)} crypto futures pairs (100% Full Binance)\n"
                             f"💰 <b>Modal Sizing:</b> {modal_str}\n"
-                            f"⚡ <b>Leverage:</b> FIXED 20x (Mandat User — Eksekusi Disiplin)\n\n"
+                            f"⚡ <b>Leverage:</b> FIXED 20x ISOLATED (Mandat User — Eksekusi Disiplin)\n\n"
                             "Sistem dirancang dengan <b>5-Layer AI Pipeline + 9-Agent Committee:</b>\n"
-                            "• Scanner ➔ Setup Hunter ➔ Plan ➔ Risk Audit ➔ Supreme Judge\n"
-                            "• 4 Analyst → Bull/Bear Debate → Trader → Risk Officer → Portfolio Mgr\n\n"
+                            "• Scanner ➔ Setup Hunter ➔ Plan ➔ Risk Audit ➔ Supreme Judge\n\n"
                             "<b>🛡️ Keamanan & Proteksi Whitelist:</b>\n"
                             f"• Akun Anda (ID: <code>{chat_id}</code>) <b>TEROTORISASI RESMI</b> pada bot ini.\n"
-                            "• Tidak ada orang luar yang bisa mengakses bot Anda.\n"
-                            "• Link login Pluang hanya muncul saat Anda ketik /login dan berasal dari OAuth resmi Pluang (mcp.pluang.com). Bukan hack.\n\n"
+                            "• Eksekusi order murni langsung ke Binance Futures USDT-M.\n\n"
                             "<b>📋 Perintah Utama:</b>\n"
-                            "• <code>/audit</code> - 🔍 Audit menyeluruh sistem, data, analisa & full universe\n"
-                            "• <code>/wallet</code> - Cek saldo Binance Futures ($) & Pluang (Live)\n"
+                            "• <code>/wallet</code> - Cek saldo Binance Futures ($) Live\n"
+                            "• <code>/binance</code> - Cek status koneksi Binance Futures API\n"
                             "• <code>/konfirmasi [coin]</code> - Eksekusi riil ke Binance Futures\n"
                             "• <code>/scan</code> - Radar scan koin dengan peluang tertinggi (500+ pairs)\n"
-                            "• <code>/scan [coin]</code> - Analisis spesifik (misal: /scan pepe, /scan zec)\n"
-                            "• <code>/sidang [coin]</code> - 🏛️ Sidang 9-Agent Committee (7 Ronde debat Bull vs Bear)\n"
+                            "• <code>/scan [coin]</code> - Analisis spesifik (misal: /scan btc, /scan eth)\n"
                             "• <code>/universe</code> - Status full universe 500+ pairs\n"
                             "• <code>/top</code> - Top 20 movers saat ini\n"
-                            "• <code>/btc</code> <code>/eth</code> <code>/sol</code> <code>/pepe</code> - Analisis cepat\n"
                             "• <code>/status</code> - Portfolio, margin & posisi aktif\n"
                             "• <code>/pnl</code> - Win Rate % & Total P&L Real-time\n"
                             "• <code>/news</code> - AI Crypto News & Macro Sentiment\n"
-                            "• <code>/auto</code> - Status auto-trading background\n"
-                            "• <code>/login</code> - Hubungkan akun Pluang Anda via OAuth"
+                            "• <code>/auto</code> - Status auto-trading background"
                         )
                         send_telegram_message(chat_id, welcome)
 
-                    elif msg_lower in ["/login", "login", "/auth", "auth"]:
+                    elif msg_lower in ["/login", "login", "/auth", "auth", "/binance", "binance"]:
                         handle_login_command(chat_id)
 
                     elif msg_lower in ["/wallet", "wallet", "/balance", "balance", "/saldo", "saldo"]:
@@ -1461,7 +1154,7 @@ def start_bot_listener():
                         parts = msg_text.split()
                         if len(parts) >= 2:
                             coin = parts[1].upper().strip().replace("-USD", "").replace("USDT", "")
-                            threading.Thread(target=execute_trade_with_pluang, args=(coin, chat_id), daemon=True).start()
+                            threading.Thread(target=execute_trade_with_binance, args=(coin, chat_id), daemon=True).start()
                         else:
                             # Look for latest approved signal
                             latest_approved = None
@@ -1477,7 +1170,7 @@ def start_bot_listener():
                                         except Exception:
                                             pass
                             if latest_approved:
-                                threading.Thread(target=execute_trade_with_pluang, args=(latest_approved, chat_id), daemon=True).start()
+                                threading.Thread(target=execute_trade_with_binance, args=(latest_approved, chat_id), daemon=True).start()
                             else:
                                 send_telegram_message(
                                     chat_id,
@@ -1648,7 +1341,7 @@ def start_bot_listener():
                         answer_callback(cb_id, f"⚡ Mengeksekusi order {symbol}...")
                         # Run in thread for instant response - don't block polling
                         t = threading.Thread(
-                            target=execute_trade_with_pluang,
+                            target=execute_trade_with_binance,
                             args=(symbol, chat_id),
                             kwargs={"callback_query_id": cb_id},
                             daemon=True
