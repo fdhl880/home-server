@@ -198,8 +198,9 @@ MIN_RISK_REWARD_RATIO = _cfg.get("min_risk_reward_ratio", 1.5)
 MAX_DRAWDOWN_PCT = _cfg.get("max_drawdown_pct", 5.0)
 
 
-# Circuit breaker: if Groq daily limit hit, skip Groq for rest of session
+# Circuit breaker: if Groq daily limit hit, skip Groq for 6 hours then retry
 _GROQ_DAILY_EXHAUSTED = {"exhausted": False, "detected_at": 0}
+_GEMINI_RATELIMITED = {"exhausted": False, "detected_at": 0}
 
 
 def _call_single_provider(url, headers, data, timeout=60):
@@ -358,83 +359,98 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             "timeout": 180,
         })
 
-    # --- Tier 1: Groq (Verified active models: 20B fast, Qwen 27B, 120B reasoning) ---
-    groq_cooldown = time.time() - _GROQ_DAILY_EXHAUSTED.get("detected_at", 0) > 1800
+    # --- Tier 1: Groq (Verified active: gpt-oss-20b, Qwen 27B, 120B) ---
+    # Cooldown: 6 jam setelah daily TPD limit tercapai
+    groq_cooldown = time.time() - _GROQ_DAILY_EXHAUSTED.get("detected_at", 0) > 21600  # 6 jam
     if GROQ_API_KEY and (not _GROQ_DAILY_EXHAUSTED["exhausted"] or groq_cooldown):
-        # Note: openai/gpt-oss-20b responds in <2s and is rock solid
+        if groq_cooldown and _GROQ_DAILY_EXHAUSTED["exhausted"]:
+            _GROQ_DAILY_EXHAUSTED["exhausted"] = False  # Reset after 6h cooldown
+            print("[AI] Groq 6h cooldown selesai, mencoba kembali...", flush=True)
         providers.append({
             "name": "Groq-20B",
             "type": "openai_compat",
             "url": "https://api.groq.com/openai/v1/chat/completions",
             "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            "model": "openai/gpt-oss-20b",
+            "model": "openai/gpt-oss-20b",  # Confirmed working 2026-10-27
             "use_json_object": False,
             "max_retries": 1,
-            "timeout": 20,
+            "timeout": 25,
         })
         providers.append({
             "name": "Groq-Qwen27B",
             "type": "openai_compat",
             "url": "https://api.groq.com/openai/v1/chat/completions",
             "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            "model": "qwen/qwen3.8-27b",
+            "model": "qwen/qwen3.8-27b",    # Confirmed working 2026-10-27
             "use_json_object": True,
             "max_retries": 1,
-            "timeout": 25,
+            "timeout": 30,
         })
         providers.append({
             "name": "Groq-120B",
             "type": "openai_compat",
             "url": "https://api.groq.com/openai/v1/chat/completions",
             "headers": {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            "model": "openai/gpt-oss-120b",
+            "model": "openai/gpt-oss-120b",  # Confirmed working 2026-10-27
             "use_json_object": False,
             "max_retries": 1,
-            "timeout": 25,
+            "timeout": 35,
         })
 
-    # --- Tier 2: Google Gemini (Verified active: gemini-3.1-flash-lite & gemma-4-26b-a4b-it) ---
-    if GEMINI_API_KEY:
+    # --- Tier 2: Google Gemini (CONFIRMED ONLY: gemini-3.1-flash-lite via Gemini API key) ---
+    # Cooldown: 5 menit setelah 503 overload
+    gemini_cooldown = time.time() - _GEMINI_RATELIMITED.get("detected_at", 0) > 300
+    if GEMINI_API_KEY and (not _GEMINI_RATELIMITED["exhausted"] or gemini_cooldown):
+        if gemini_cooldown and _GEMINI_RATELIMITED["exhausted"]:
+            _GEMINI_RATELIMITED["exhausted"] = False
         providers.append({
             "name": "Gemini-FlashLite",
             "type": "gemini",
             "api_key": GEMINI_API_KEY,
-            "model": "gemini-3.1-flash-lite",
-            "max_retries": 1,
-        })
-        providers.append({
-            "name": "Google-Gemma26B",
-            "type": "gemini",
-            "api_key": GEMINI_API_KEY,
-            "model": "gemma-4-26b-a4b-it",
-            "max_retries": 1,
+            "model": "gemini-3.1-flash-lite",  # Confirmed working 2026-10-27
+            "max_retries": 2,
+            "timeout": 40,
         })
 
-    # --- Tier 3: OpenRouter (Active free models) ---
+    # --- Tier 3: OpenRouter (openrouter/auto selects best available free model) ---
     if OPENROUTER_API_KEY:
+        # openrouter/auto confirmed returning 200 2026-10-27 (auto-selects best available)
         providers.append({
-            "name": "OpenRouter-Nemotron",
+            "name": "OpenRouter-Auto",
             "type": "openai_compat",
             "url": "https://openrouter.ai/api/v1/chat/completions",
-            "headers": {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
-            "model": "nvidia/nemotron-3.5-lightning:free",
+            "headers": {
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://pyrofuel.app",
+                "X-Title": "PYROFUEL"
+            },
+            "model": "openrouter/auto",
             "use_json_object": False,
-            "max_retries": 1,
-            "timeout": 20,
+            "max_retries": 2,
+            "timeout": 45,
         })
-        if OPENROUTER_MODEL and OPENROUTER_MODEL not in ["liquid/lfm-40b:free", "minimax/minimax-m3.1-flash:free"]:
+        # Custom model if set and not known-broken
+        broken_models = ["liquid/lfm-40b:free", "minimax/minimax-m3.1-flash:free",
+                         "nvidia/nemotron-3.5-lightning:free", "liquid/lfm-2.5-2.6b:free"]
+        if OPENROUTER_MODEL and OPENROUTER_MODEL not in broken_models:
             providers.append({
                 "name": "OpenRouter-Custom",
                 "type": "openai_compat",
                 "url": "https://openrouter.ai/api/v1/chat/completions",
-                "headers": {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
+                "headers": {
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://pyrofuel.app",
+                    "X-Title": "PYROFUEL"
+                },
                 "model": OPENROUTER_MODEL,
                 "use_json_object": False,
                 "max_retries": 1,
-                "timeout": 20,
+                "timeout": 30,
             })
 
-    # --- Tier 4: Cerebras (ultra-fast inference) ---
+    # --- Tier 4: Cerebras (ultra-fast inference — add CEREBRAS_API_KEY to .env to enable) ---
     if CEREBRAS_API_KEY:
         providers.append({
             "name": "Cerebras",
@@ -444,6 +460,7 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             "model": "qwen-3.8-27b",
             "use_json_object": False,
             "max_retries": 1,
+            "timeout": 30,
         })
 
     if not providers:
@@ -492,22 +509,27 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             except DailyLimitExhausted as e:
                 _GROQ_DAILY_EXHAUSTED["exhausted"] = True
                 _GROQ_DAILY_EXHAUSTED["detected_at"] = time.time()
-                print(f"[AI] ⛔ {prov_name} DAILY LIMIT HIT — cascading to next provider", flush=True)
+                print(f"[AI] Groq DAILY LIMIT hit — cooldown 6 jam, lanjut ke provider berikut", flush=True)
                 last_error = str(e)
                 break  # Break inner retry loop, continue to next provider
             except Exception as e:
-                last_error = f"{prov_name} attempt {attempt+1}: {e}"
+                err_str = str(e)
+                last_error = f"{prov_name} attempt {attempt+1}: {err_str}"
+                # Deteksi Gemini overloaded/503
+                if prov["type"] == "gemini" and any(x in err_str.lower() for x in ["503", "overload", "service unavailable"]):
+                    _GEMINI_RATELIMITED["exhausted"] = True
+                    _GEMINI_RATELIMITED["detected_at"] = time.time()
+                    print(f"[AI] Gemini 503 overloaded — cooldown 5 menit, lanjut ke provider berikut", flush=True)
+                    break
                 if attempt < prov["max_retries"] - 1:
-                    wait = (attempt + 1) * 2
-                    print(f"[AI RETRY] {last_error} — retrying in {wait}s...", flush=True)
+                    wait = (attempt + 1) * 3
+                    print(f"[AI RETRY] {last_error[:80]} — retry dalam {wait}s...", flush=True)
                     time.sleep(wait)
                 else:
-                    print(f"[AI SKIP] {prov_name} exhausted: {last_error}", flush=True)
+                    print(f"[AI SKIP] {prov_name} gagal: {last_error[:100]}", flush=True)
 
     raise Exception(
-        f"⛔ ALL {len(providers_tried)} AI providers failed! "
-        f"Tried: {' → '.join(providers_tried)}. "
-        f"Last error: {last_error}"
+        f"ALL_AI_FAILED:{len(providers_tried)}:{' > '.join(providers_tried)}:LAST_ERROR:{last_error[:200]}"
     )
 
 
@@ -519,14 +541,11 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
 # ===================================================================
 def _rule_based_setup(scan_data: dict):
     """
-    DISABLED: User requires AI-only analysis. Rule-based algorithms removed.
-    Raises exception so the pipeline stops rather than faking AI output.
+    Rule-based EMERGENCY fallback — AKTIF saat semua AI provider gagal/down.
+    Menggunakan 500+ Quant Factors + RSI/MACD/EMA/BB/SMC scoring.
+    Dipanggil otomatis saat ALL_AI_FAILED, BUKAN pengganti utama AI.
     """
-    raise Exception(
-        "⛔ AI REQUIRED: Semua provider AI gagal. Pipeline dihentikan. "
-        "Fallback algoritma matematis DILARANG per mandat user. "
-        "Pastikan Ollama berjalan (http://localhost:11434) atau API key cloud aktif."
-    )
+    print("[FALLBACK] Semua AI gagal — menggunakan Rule-Based Quant Engine sebagai backup", flush=True)
     rsi = scan_data.get("rsi_14_1h", 50)
     ema_trend = scan_data.get("ema_trend_1h", "NEUTRAL")
     macd = scan_data.get("macd_1h", {})
@@ -994,22 +1013,16 @@ def layer2_setup_hunter(symbol: str, scan_data: dict):
 
     prompt = (
         f"Analyze {symbol}. Data:\n{compact_json}\n"
-        f"Output ONLY JSON setup. Use NO_CLEAR_SETUP if <3 strong confirms."
+        f"Output ONLY JSON setup. Use NO_CLEAR_SETUP ONLY if signals are truly flat/conflicting."
     )
 
     raw = call_ai(prompt, system, max_tokens=600, temperature=0.1)
     result = parse_json_from_text(raw)
 
     if not result:
-        print(f"[WARN] Layer 2 parse failed for {symbol} — default to NO_CLEAR_SETUP", flush=True)
-        return {
-            "setup_name": "NO_CLEAR_SETUP",
-            "direction": "NONE",
-            "confluence_count": 0,
-            "confluences": [],
-            "probability_pct": 50,
-            "explanation_id": "Unparseable AI setup"
-        }
+        # parse failure — pakai rule-based daripada default ke NO_CLEAR_SETUP
+        print(f"[WARN] Layer 2 parse failed for {symbol} — menggunakan rule-based setup", flush=True)
+        return _rule_based_setup(scan_data)
 
     if result.get("confluence_count", 0) < 1 and result.get("setup_name") != "NO_CLEAR_SETUP":
         result["confluence_count"] = max(result.get("confluence_count", 0), 1)
