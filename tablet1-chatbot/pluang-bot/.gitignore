@@ -2,6 +2,12 @@ __pycache__/
 *.pyc
 results/
 tokens.json
+pending_auth.json
+login_url.txt
 .env
+.env.*
+!.env.example
 node_modules/
 *.log
+*.bak_*
+journal.db*

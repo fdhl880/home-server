@@ -230,45 +230,79 @@ def record_position(signal: dict):
     global pluang_client
     cfg = _get_config()
     max_budget = cfg.get("max_budget_idr", 0)   # 0 = no cap, dynamic wallet-based
-    max_lev = 20
+    max_lev = cfg.get("max_leverage", 20)
+    leverage = min(20, max_lev)  # Fixed 20x leverage (user mandate)
     margin_type = signal.get("margin_type") or cfg.get("margin_type", "ISOLATED")
-    
+
     # 1. AI GOVERNS ORDER TYPE & LIMIT PRICE
     order_type = (signal.get("order_type") or cfg.get("order_type", "MARKET")).upper()
     limit_price = float(signal.get("limit_price") or signal.get("entry_price", 0))
 
-    # 2. MODAL ALL-IN SALDO AKTIF (USER MANDATE: 100% SALDO MARGIN TERSEDIA)
-    # Gunakan 98% saldo margin yang tersedia di wallet (2% buffer untuk exchange taker fee)
+    tp = float(signal.get("take_profit") or signal.get("take_profit_2") or signal.get("take_profit_1", 0))
+    sl = float(signal.get("stop_loss", 0))
+
+    # 2. SIZING FRAKSIONAL BERDASARKAN RISIKO (RISK_FRACTIONAL)
+    # Mandat: Risiko per trade dibatasi ketat (2% saat probation, 5% setelah lolos gate).
+    # Sisa margin tetap utuh di wallet untuk menjaga liquidation distance pada leverage 20x.
+    avail_usdt = 100.0
     try:
         _bn = get_binance_client()
         if _bn:
             _bal = _bn.get_balance()
             if isinstance(_bal, dict) and "available_balance" in _bal:
-                avail_usdt = float(_bal.get("available_balance", 0))
-                _fx = get_fx_info()
-                pos_size = max(10000, int(avail_usdt * 0.98 * _fx.get("usd_idr", 16500)))
-            else:
-                pos_size = float(signal.get("position_size_idr") or 50000)
-        else:
-            pos_size = float(signal.get("position_size_idr") or 50000)
+                avail_usdt = float(_bal.get("available_balance", 0.0))
+    except Exception as e:
+        print(f"[SIZING] ⚠️ Balance check warning: {e}", flush=True)
+
+    if avail_usdt <= 0:
+        avail_usdt = 10.0
+
+    # Evaluasi status probation dari journal
+    try:
+        import journal
+        rep = journal.generate_report()
+        is_probation = (rep.get("total_trades", 0) < 20) or not rep.get("gate_passed", False)
     except Exception:
-        pos_size = float(signal.get("position_size_idr") or 50000)
+        is_probation = True
 
-    # If config max_budget_idr > 0, cap to it; 0 means dynamic all-in (no cap)
+    risk_pct = cfg.get("probation_risk_pct", 2.0) if is_probation else cfg.get("risk_pct", 5.0)
+
+    # Jarak Stop Loss (%)
+    entry_p = float(signal.get("entry_price") or limit_price or 0.0)
+    if entry_p > 0 and sl > 0:
+        sl_pct = abs(entry_p - sl) / entry_p
+    else:
+        sl_pct = 0.02
+
+    # Clamp SL distance sesuai config max_sl_pct (misal 2.5%)
+    max_sl = cfg.get("max_sl_pct", 2.5) / 100.0
+    sl_pct = max(0.005, min(sl_pct, max_sl))
+
+    # Formula Risk Fractional:
+    # Target loss ($) = avail_usdt * (risk_pct / 100.0)
+    # loss ($) = margin_usd * leverage * sl_pct
+    # margin_usd = target_loss / (sl_pct * leverage)
+    target_loss_usd = avail_usdt * (risk_pct / 100.0)
+    calc_margin_usd = target_loss_usd / (sl_pct * leverage)
+
+    # Batasi agar satu trade tidak memakan lebih dari 85% saldo margin
+    calc_margin_usd = min(calc_margin_usd, avail_usdt * 0.85)
+
+    # Pastikan notional minimal Binance terpenuhi (~$5 notional -> margin minimal $5/20 = $0.25)
+    min_margin_for_notional = 5.5 / leverage
+    calc_margin_usd = max(calc_margin_usd, min_margin_for_notional)
+
+    _fx = get_fx_info()
     if max_budget > 0:
-        pos_size = min(pos_size, max_budget)
+        max_budget_usd = max_budget / _fx.get("usd_idr", 16500)
+        calc_margin_usd = min(calc_margin_usd, max_budget_usd)
 
-    # FIXED LEVERAGE: Always 20x (user mandate)
-    leverage = 20
-    max_lev = cfg.get("max_leverage", 20)
-    leverage = min(leverage, max_lev)  # already 20, but enforce config cap
+    pos_size_usd = round(calc_margin_usd, 2)
+    pos_size = int(pos_size_usd * _fx.get("usd_idr", 16500))
 
-    # 4. PLUANG ONLY SUPPORTS SINGLE TAKE PROFIT (NO DUAL TP)
-    tp = float(signal.get("take_profit") or signal.get("take_profit_2") or signal.get("take_profit_1", 0))
-    sl = float(signal.get("stop_loss", 0))
-
-    fx = get_fx_info()
-    pos_size_usd = round(pos_size / fx["usd_idr"], 4)
+    prob_tag = "PROBATION (2% risk)" if is_probation else "STANDARD (5% risk)"
+    print(f"[SIZING] ⚖️ Mode RISK_FRACTIONAL [{prob_tag}]: Saldo=${avail_usdt:.2f}, SL={sl_pct*100:.2f}%, "
+          f"Margin=${pos_size_usd:.2f} USDT (Rp {pos_size:,.0f}), Notional=${pos_size_usd*leverage:.2f}", flush=True)
 
     auto_execute = cfg.get("auto_execute_on_pluang", True)
     max_concurrent = cfg.get("max_concurrent_positions", 5)
@@ -396,7 +430,57 @@ def record_position(signal: dict):
             json.dump(positions, f, indent=2, ensure_ascii=False)
     except Exception:
         pass
+
+    # Log new position to SQLite WAL Journal
+    try:
+        import journal
+        journal.open_trade({
+            "id": pos["id"],
+            "signal_id": pos.get("signal_id") or pos["id"],
+            "symbol": pos["symbol"],
+            "direction": pos["direction"],
+            "open_ts": pos["opened_at"],
+            "entry_fill": pos["entry_price"],
+            "qty": pos.get("quantity") or (pos["position_size_usd"] * pos["leverage"] / pos["entry_price"] if pos["entry_price"] else 0),
+            "leverage": pos["leverage"],
+            "margin_usd": pos["position_size_usd"],
+            "fee_usd": round(pos["position_size_usd"] * pos["leverage"] * 0.0005, 4)
+        })
+        print(f"[JOURNAL] 📖 Open trade recorded in journal: {pos['id']}", flush=True)
+    except Exception as je:
+        print(f"[JOURNAL] ⚠️ Journal open trade logging error: {je}", flush=True)
+
     return pos
+
+
+def _record_trade_close_in_journal(pos: dict, exit_price: float, exit_reason: str, pnl_usd: float = None):
+    """Helper to record closed trades into SQLite WAL journal for accurate win-rate and profit factor metrics"""
+    try:
+        import journal
+        pos_id = pos.get("id")
+        if not pos_id:
+            return
+        lev = int(pos.get("leverage", 20))
+        pos_usd = float(pos.get("position_size_usd") or 1.0)
+        entry_px = float(pos.get("entry_price") or 1.0)
+        dir_str = pos.get("direction", "LONG").upper()
+        if pnl_usd is None:
+            if dir_str == "LONG":
+                pnl_usd = (exit_price - entry_px) / entry_px * pos_usd * lev if entry_px > 0 else 0.0
+            else:
+                pnl_usd = (entry_px - exit_price) / entry_px * pos_usd * lev if entry_px > 0 else 0.0
+        fee_usd = round(pos_usd * lev * 0.0010, 4)  # ~0.10% roundtrip taker fee
+        journal.close_trade(pos_id, {
+            "close_ts": pos.get("closed_at") or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "exit_fill": exit_price,
+            "pnl_usd": round(pnl_usd, 4),
+            "fee_usd": fee_usd,
+            "exit_reason": exit_reason,
+            "is_estimated": 0
+        })
+        print(f"[JOURNAL] 📕 Closed trade logged in journal: {pos_id} ({exit_reason}, PnL: ${pnl_usd:+.2f})", flush=True)
+    except Exception as je:
+        print(f"[JOURNAL] ⚠️ Error recording trade close in journal: {je}", flush=True)
 
 
 def monitor_and_update_positions():
@@ -520,6 +604,7 @@ def monitor_and_update_positions():
                 pos["pnl_pct"] = round(final_pnl_pct, 2)
                 pos["pnl_idr"] = round(final_pnl_idr, 2)
                 pos["pnl_usd"] = round(final_pnl_usd, 4)
+                _record_trade_close_in_journal(pos, curr_px, pos["status"], final_pnl_usd)
                 
                 event_type = "TAKE PROFIT" if final_pnl_pct >= 0 else "STOP LOSS"
                 send_telegram(
@@ -694,6 +779,7 @@ def monitor_and_update_positions():
                     pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
                     pos["close_price"] = current_price
                     pos["close_reason"] = f"FLASH_CRASH_EXIT: -{price_move_against:.1f}% dalam {mins_open:.0f} menit"
+                    _record_trade_close_in_journal(pos, current_price, "CLOSED_EMERGENCY", pnl_usd)
                     if is_binance_pos and bn_client:
                         try:
                             bn_client.close_position(pair, direction)
@@ -740,6 +826,7 @@ def monitor_and_update_positions():
                     pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
                     pos["close_price"] = current_price
                     pos["close_reason"] = f"TIMEOUT_48H: {_hrs_open:.0f}h open, {_tp_progress:.1f}% progress, PnL {pnl_pct:.1f}%"
+                    _record_trade_close_in_journal(pos, current_price, "CLOSED_TIMEOUT_48H", pnl_usd)
                     if is_binance_pos and bn_client:
                         try:
                             bn_client.close_position(pair, direction)
@@ -762,6 +849,7 @@ def monitor_and_update_positions():
                     pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
                     pos["close_price"] = current_price
                     pos["close_reason"] = f"TIMEOUT_72H_PROFIT: {_hrs_open:.0f}h, profit {pnl_pct:.1f}%"
+                    _record_trade_close_in_journal(pos, current_price, "CLOSED_TIMEOUT_72H", pnl_usd)
                     if is_binance_pos and bn_client:
                         try:
                             bn_client.close_position(pair, direction)
@@ -787,6 +875,7 @@ def monitor_and_update_positions():
             pos["status"] = "CLOSED_TP"
             pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             pos["close_price"] = current_price
+            _record_trade_close_in_journal(pos, current_price, "CLOSED_TP", pnl_usd)
             if is_binance_pos and bn_client:
                 try:
                     bn_client.close_position(pair, direction)
@@ -809,6 +898,7 @@ def monitor_and_update_positions():
             pos["status"] = "CLOSED_SL"
             pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             pos["close_price"] = current_price
+            _record_trade_close_in_journal(pos, current_price, "CLOSED_SL", pnl_usd)
             if is_binance_pos and bn_client:
                 try:
                     bn_client.close_position(pair, direction)
@@ -1376,6 +1466,26 @@ def run_full_scan_cycle():
             print(f"[COMMITTEE VETO] {sym}: Pipeline lolos tapi 9-Agent Committee mem-veto: {pm_dec}", flush=True)
             status = "REJECTED_BY_COMMITTEE"
 
+        # BTC TREND DUMP FILTER (Blueprint T3.1):
+        # Batalkan sinyal LONG altcoin jika tren BTC sedang dump tajam
+        candidate_dir = com_dir if com_dir in ("LONG", "SHORT") else fc.get("direction", "NONE")
+        if is_trade_approved and candidate_dir == "LONG" and sym not in ("BTC-USD", "BTCUSDT"):
+            try:
+                from market_data import get_market_indicators_fast
+                btc_data = get_market_indicators_fast("BTCUSDT")
+                if isinstance(btc_data, dict):
+                    btc_rsi = float(btc_data.get("rsi_14") or 50.0)
+                    btc_p = float(btc_data.get("current_price") or 0.0)
+                    btc_e20 = float(btc_data.get("ema_20") or 0.0)
+                    btc_e9 = float(btc_data.get("ema_9") or 0.0)
+                    btc_chg4h = float(btc_data.get("change_4h_pct") or 0.0)
+                    if btc_rsi < 40.0 or (btc_p < btc_e20 and btc_e9 < btc_e20 and btc_chg4h < -1.5):
+                        is_trade_approved = False
+                        status = "REJECTED_BTC_DUMP"
+                        print(f"[BTC GUARD] 🛡️ Altcoin LONG di {sym} DIBATALKAN: BTC sedang dump (RSI: {btc_rsi:.1f}, 4h: {btc_chg4h:+.2f}%)", flush=True)
+            except Exception as btc_err:
+                print(f"[BTC GUARD] ⚠️ Error evaluating BTC trend: {btc_err}", flush=True)
+
         sig_entry = {
             "symbol": sym,
             "binance_pair": pair,
@@ -1397,19 +1507,9 @@ def run_full_scan_cycle():
             final_dir = com_dir if com_dir in ("LONG", "SHORT") else fc.get("direction", "LONG")
             trade_params = (com_res.get("trade_params") or {}) if com_res else {}
             
-            # Gunakan ALL-IN sizing dan leverage 20x terstandarisasi
+            # Leverage 20x fixed & Sizing via RISK_FRACTIONAL di record_position
             budget_allocated = trade_params.get("position_size_idr") or trade_params.get("budget_idr") or fc.get("position_size_idr", 0)
-            if not budget_allocated or budget_allocated <= 0:
-                try:
-                    _bn = get_binance_client()
-                    if _bn:
-                        _bal = _bn.get_balance()
-                        if isinstance(_bal, dict) and "available_balance" in _bal:
-                            avail_u = float(_bal.get("available_balance", 0))
-                            budget_allocated = max(10000, int(avail_u * 0.98 * 16500))
-                except Exception:
-                    budget_allocated = 50000
-            if max_budget > 0:
+            if max_budget > 0 and budget_allocated > 0:
                 budget_allocated = min(budget_allocated, max_budget)
             leverage_allocated = 20  # Always 20x (user mandate)
 

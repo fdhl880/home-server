@@ -270,7 +270,15 @@ def fetch_all_binance_futures_pairs():
 
     all_pairs = []
     for s in symbols_raw:
-        pair = s.get("symbol")
+        pair = s.get("symbol", "")
+        pair_upper = pair.upper()
+
+        # Exclude index baskets, dominance, tokenized assets, and quarterly delivery futures
+        if any(pair_upper.endswith(ex) for ex in ("DOMUSDT", "_PERP", "DEFUSDT")) or \
+           pair_upper in ("DEFIUSDT", "FOOTBALLUSDT", "BLUEBIRDUSDT") or \
+           (len(pair_upper) > 6 and pair_upper[-6:].isdigit()):
+            continue
+
         base_asset = s.get("baseAsset", pair.replace("USDT", ""))
         lot = next((f for f in s.get("filters", []) if f["filterType"] == "LOT_SIZE"), {})
         p_filt = next((f for f in s.get("filters", []) if f["filterType"] == "PRICE_FILTER"), {})
@@ -282,6 +290,12 @@ def fetch_all_binance_futures_pairs():
         change_24h = float(tk.get("priceChangePercent", 0) or 0)
         high_24h = float(tk.get("highPrice", 0) or 0)
         low_24h = float(tk.get("lowPrice", 0) or 0)
+
+        # High-Liquidity Filter for 20x Leverage Safety:
+        # Require >= $50M 24h volume for general altcoins, except CORE major coins
+        is_core = pair_upper in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "SUIUSDT", "NEARUSDT")
+        if not is_core and vol_usd < 50_000_000:
+            continue
 
         # Categorize tier
         if pair in ("BTCUSDT", "ETHUSDT"):

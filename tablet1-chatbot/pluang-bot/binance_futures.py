@@ -459,16 +459,76 @@ class BinanceFuturesClient:
             print(f"[BinanceFutures] 🎯 Take Profit Algo Order set at ${fmt_price} (Algo ID: {res.get('algoId')})", flush=True)
         return res
 
+    def get_open_orders(self, symbol: str = None):
+        """Fetch all open standard orders on Binance Futures"""
+        params = {}
+        if symbol:
+            params["symbol"] = self.normalize_symbol(symbol)
+        return self._request("GET", "/fapi/v1/openOrders", params=params, signed=True)
+
+    def verify_stop_loss_active(self, symbol: str, max_wait_sec: float = 3.0) -> bool:
+        """
+        Verify that a STOP_MARKET / STOP order is actively registered on Binance.
+        Polls for up to max_wait_sec (default 3.0s).
+        Returns True if verified, False otherwise.
+        """
+        sym = self.normalize_symbol(symbol)
+        start = time.time()
+        while time.time() - start < max_wait_sec:
+            # 1. Check standard open orders
+            orders = self.get_open_orders(sym)
+            if isinstance(orders, list):
+                for o in orders:
+                    otype = str(o.get("type", "")).upper()
+                    orig_type = str(o.get("origType", "")).upper()
+                    if "STOP" in otype or "STOP" in orig_type:
+                        return True
+            # 2. Check algo open orders
+            try:
+                algo_orders = self._request("GET", "/fapi/v1/algoOpenOrders", params={"symbol": sym}, signed=True)
+                if isinstance(algo_orders, list) and len(algo_orders) > 0:
+                    return True
+                if isinstance(algo_orders, dict) and "orders" in algo_orders and len(algo_orders["orders"]) > 0:
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.5)
+        return False
+
     def set_stop_loss(self, symbol: str, direction: str, trigger_price: float, quantity: float = None):
         """
-        Place Stop Loss Market order via Binance Algo Order API (/fapi/v1/algoOrder).
+        Place Stop Loss Market order on Binance Futures.
+        Tries native STOP_MARKET order via /fapi/v1/order first, with /fapi/v1/algoOrder fallback.
         - If position was LONG → SL is a SELL
         - If position was SHORT → SL is a BUY
         """
         sym = self.normalize_symbol(symbol)
         side = "SELL" if direction.upper() == "LONG" else "BUY"
         fmt_price = self.format_price(sym, trigger_price)
-        params = {
+
+        # 1. Primary: Native STOP_MARKET conditional order (/fapi/v1/order)
+        order_params = {
+            "symbol": sym,
+            "side": side,
+            "type": "STOP_MARKET",
+            "stopPrice": str(fmt_price),
+            "workingType": "MARK_PRICE"
+        }
+        if quantity is None:
+            order_params["closePosition"] = "true"
+        else:
+            fmt_qty = self.format_quantity(sym, quantity)
+            order_params["quantity"] = fmt_qty if self.get_symbol_filters(sym)["quantityPrecision"] > 0 else int(fmt_qty)
+            order_params["reduceOnly"] = "true"
+
+        res = self._request("POST", "/fapi/v1/order", params=order_params, signed=True)
+        if isinstance(res, dict) and ("orderId" in res or res.get("status") in ("NEW", "FILLED")):
+            print(f"[BinanceFutures] 🛡️ Native Stop Loss Order set at ${fmt_price} (Order ID: {res.get('orderId')})", flush=True)
+            return res
+
+        # 2. Secondary Fallback: Algo Order API (/fapi/v1/algoOrder)
+        print(f"[BinanceFutures] ⚠️ Standard SL order returned {res}. Trying /fapi/v1/algoOrder fallback...", flush=True)
+        algo_params = {
             "algoType": "CONDITIONAL",
             "symbol": sym,
             "side": side,
@@ -478,13 +538,15 @@ class BinanceFuturesClient:
         }
         if quantity is not None:
             fmt_qty = self.format_quantity(sym, quantity)
-            params["quantity"] = fmt_qty if self.get_symbol_filters(sym)["quantityPrecision"] > 0 else int(fmt_qty)
-            params["reduceOnly"] = "true"
-            params.pop("closePosition", None)
-            
-        res = self._request("POST", "/fapi/v1/algoOrder", params=params, signed=True)
-        if isinstance(res, dict) and "algoId" in res:
-            print(f"[BinanceFutures] 🛡️ Stop Loss Algo Order set at ${fmt_price} (Algo ID: {res.get('algoId')})", flush=True)
+            algo_params["quantity"] = fmt_qty if self.get_symbol_filters(sym)["quantityPrecision"] > 0 else int(fmt_qty)
+            algo_params["reduceOnly"] = "true"
+            algo_params.pop("closePosition", None)
+
+        res_algo = self._request("POST", "/fapi/v1/algoOrder", params=algo_params, signed=True)
+        if isinstance(res_algo, dict) and "algoId" in res_algo:
+            print(f"[BinanceFutures] 🛡️ Stop Loss Algo Order set at ${fmt_price} (Algo ID: {res_algo.get('algoId')})", flush=True)
+            return res_algo
+
         return res
 
     def close_position(self, symbol: str, direction: str, quantity: float = None):
@@ -672,13 +734,25 @@ class BinanceFuturesClient:
                 except Exception as e:
                     print(f"[BinanceFutures] ⚠️ TP placement notice: {e}")
 
-            # 3. Set SL Order
+            # 3. Set SL Order & Mandatory Verification (20x safety)
             if sl > 0:
                 try:
                     sl_res = self.set_stop_loss(symbol, direction, trigger_price=sl)
                     execution_log["steps"]["stop_loss"] = sl_res
                 except Exception as e:
                     print(f"[BinanceFutures] ⚠️ SL placement notice: {e}")
+
+                # 20X LEVERAGE FAIL-SAFE: Verify Stop Loss is actively registered on exchange within 3 seconds
+                sl_verified = self.verify_stop_loss_active(symbol, max_wait_sec=3.0)
+                execution_log["sl_verified"] = sl_verified
+                if not sl_verified:
+                    print(f"[BinanceFutures] 🚨 CRITICAL FAIL-SAFE: Stop Loss NOT verified on exchange within 3s! Closing position immediately for safety.", flush=True)
+                    try:
+                        self.close_position(symbol, direction)
+                        self.cancel_all_orders(symbol)
+                    except Exception as e_close:
+                        print(f"[BinanceFutures] Emergency close error: {e_close}", flush=True)
+                    raise Exception("CRITICAL SAFETY FAIL-SAFE: Stop Loss failed to register on Binance within 3s. Position closed immediately.")
 
             execution_log["status"] = "EXECUTED"
             execution_log["binance_synced"] = True
