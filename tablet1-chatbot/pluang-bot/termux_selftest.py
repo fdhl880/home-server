@@ -21,7 +21,11 @@ try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(BOT_DIR, ".env"))
 except ImportError:
-    pass
+    try:
+        from pipeline import load_env
+        load_env()
+    except Exception:
+        pass
 
 print("=" * 60)
 print("  PYROFUEL BOT - ENVIRONMENT & CONNECTIVITY SELF-TEST")

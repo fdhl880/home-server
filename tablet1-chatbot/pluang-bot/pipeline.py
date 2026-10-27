@@ -121,9 +121,10 @@ def load_env():
                     line = line.strip()
                     if line and not line.startswith("#") and "=" in line:
                         k, v = line.split("=", 1)
-                        env[k.strip()] = v.strip()
         except Exception:
             pass
+    for k, v in env.items():
+        os.environ[k] = v
     return env
 
 ENV = load_env()
