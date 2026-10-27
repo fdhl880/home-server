@@ -57,6 +57,12 @@ if [ -f "pluang-bot/telegram_bot.py" ]; then
     $PY_BIN pluang-bot/telegram_bot.py > telegram_bot.log 2>&1 &
 fi
 
+# 5b. Launch Autonomous Binance Futures Auto Trader in background
+if [ -f "pluang-bot/auto_trader.py" ]; then
+    echo "[*] Launching Autonomous Binance Futures Auto-Trader in background..."
+    $PY_BIN pluang-bot/auto_trader.py > auto_trader.log 2>&1 &
+fi
+
 # 6. Start Unified Bloomberg & Crypto Futures Engine
 echo "[*] Launching Unified Bloomberg Terminal & Crypto Futures Engine on Port 4000..."
 exec node server.js

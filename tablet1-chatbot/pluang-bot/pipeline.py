@@ -420,18 +420,19 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             "timeout": 180,
         })
 
-    # --- Tier 1: Groq (Official flagship models: llama-3.3-70b-versatile & llama-3.1-8b-instant) ---
+    # --- Tier 1: Groq (Active verified models: Qwen 27B, GPT-OSS 20B, GPT-OSS 120B) ---
     if GROQ_API_KEY:
-        _gh = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-        for _n, _m, _jo, _to in [
-            ("Groq-Llama70B", "llama-3.3-70b-versatile", True, 30),
-            ("Groq-Llama8B", "llama-3.1-8b-instant", True, 20),
+        _gh = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+        for _n, _m, _eff, _jo, _to in [
+            ("Groq-Qwen27B", "qwen/qwen3.8-27b", None, True, 30),
+            ("Groq-20B", "openai/gpt-oss-20b", "low", False, 30),
+            ("Groq-120B", "openai/gpt-oss-120b", "low", False, 45),
         ]:
             providers.append({
                 "name": _n, "type": "openai_compat",
                 "url": "https://api.groq.com/openai/v1/chat/completions",
                 "headers": _gh, "model": _m, "use_json_object": _jo,
-                "reasoning_effort": None, "min_tokens": 0,
+                "reasoning_effort": _eff, "min_tokens": 1500 if _eff else 0,
                 "max_retries": 1, "timeout": _to,
             })
 
