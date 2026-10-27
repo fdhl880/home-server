@@ -19,7 +19,9 @@
   "max_concurrent_positions": 1,
   "max_daily_trades": 10,
   "currency": "USDT",
-  "auto_execute_on_pluang": false,
+  "auto_execute": true,
+  "auto_execute_on_binance": true,
+  "auto_execute_on_pluang": true,
   "trading_mode": "AI_QUANT_AUTONOMOUS",
   "updated_at": "2026-10-27 20:59:00 UTC",
   "note": "Leverage locked at 20x ISOLATED. Risk per trade capped at 5% equity (2% probation). SL hard capped at 2.5% to ensure liquidation safety."

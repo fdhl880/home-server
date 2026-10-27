@@ -304,7 +304,7 @@ def record_position(signal: dict):
     print(f"[SIZING] ⚖️ Mode RISK_FRACTIONAL [{prob_tag}]: Saldo=${avail_usdt:.2f}, SL={sl_pct*100:.2f}%, "
           f"Margin=${pos_size_usd:.2f} USDT (Rp {pos_size:,.0f}), Notional=${pos_size_usd*leverage:.2f}", flush=True)
 
-    auto_execute = cfg.get("auto_execute_on_pluang", True)
+    auto_execute = cfg.get("auto_execute", cfg.get("auto_execute_on_binance", cfg.get("auto_execute_on_pluang", True)))
     max_concurrent = cfg.get("max_concurrent_positions", 5)
     
     # Check concurrent position limit
