@@ -124,8 +124,10 @@ if command -v tmux &>/dev/null && [ -z "$TMUX" ]; then
             exit 1
         fi
         while true; do
-            echo \"[SUPERVISOR] Memulai bot pada \$(date)...\" >> logs/bot.log
-            python3 server.py >> logs/bot.log 2>&1 &
+            echo \"[SUPERVISOR] Memulai Pyrofuel Bot Suite pada \$(date)...\" >> logs/bot.log
+            python3 server.py >> logs/server.log 2>&1 &
+            python3 telegram_bot.py >> logs/telegram.log 2>&1 &
+            python3 auto_trader.py >> logs/bot.log 2>&1 &
             BOT_PID=\$!
             while kill -0 \$BOT_PID 2>/dev/null; do
                 sleep 30
@@ -134,19 +136,30 @@ if command -v tmux &>/dev/null && [ -z "$TMUX" ]; then
                     if [ \$HB_AGE -gt 300 ]; then
                         echo \"[WATCHDOG] Heartbeat stale (\${HB_AGE}s > 300s). Merestart proses...\" >> logs/bot.log
                         kill -9 \$BOT_PID 2>/dev/null || true
+                        pkill -9 -f \"telegram_bot.py\" 2>/dev/null || true
+                        pkill -9 -f \"server.py\" 2>/dev/null || true
                         break
                     fi
                 fi
             done
             wait \$BOT_PID 2>/dev/null || true
+            pkill -9 -f \"telegram_bot.py\" 2>/dev/null || true
+            pkill -9 -f \"server.py\" 2>/dev/null || true
             echo \"[SUPERVISOR] Proses berhenti. Restart dalam 5 detik...\" >> logs/bot.log
             sleep 5
         done
     '"
     echo "     [OK] Bot aktif di background dengan Heartbeat Watchdog!"
-    echo "     - Lihat output real-time: tail -f logs/bot.log"
+    echo "     - Lihat output scanner real-time: tail -f logs/bot.log"
     echo "     - Masuk ke dashboard terminal: tmux attach -t $SESSION_NAME"
 else
-    echo "     [*] Menjalankan bot langsung di terminal..."
-    python3 server.py
+    echo "     [*] Memulai background API server & Telegram Bot..."
+    python3 server.py > logs/server.log 2>&1 &
+    SRV_PID=$!
+    python3 telegram_bot.py > logs/telegram.log 2>&1 &
+    TG_PID=$!
+    trap "kill $SRV_PID $TG_PID 2>/dev/null" EXIT INT TERM
+
+    echo "     [*] Menjalankan Autonomous AI Scanner langsung di terminal..."
+    python3 auto_trader.py
 fi
