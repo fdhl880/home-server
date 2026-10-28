@@ -203,52 +203,68 @@ def record_position(signal: dict):
     if avail_usdt <= 0:
         avail_usdt = 10.0
 
-    # Evaluasi status probation dari journal
-    try:
-        import journal
-        rep = journal.generate_report()
-        is_probation = (rep.get("total_trades", 0) < 20) or not rep.get("gate_passed", False)
-    except Exception:
-        is_probation = True
-
-    risk_pct = cfg.get("probation_risk_pct", 2.0) if is_probation else cfg.get("risk_pct", 5.0)
-
     # Jarak Stop Loss (%)
     entry_p = float(signal.get("entry_price") or limit_price or 0.0)
     if entry_p > 0 and sl > 0:
         sl_pct = abs(entry_p - sl) / entry_p
     else:
-        sl_pct = 0.02
+        sl_pct = 0.008
 
-    # Clamp SL distance sesuai config max_sl_pct (misal 2.5%)
-    max_sl = cfg.get("max_sl_pct", 2.5) / 100.0
-    sl_pct = max(0.005, min(sl_pct, max_sl))
+    # Clamp SL distance sesuai config max_sl_pct (misal 2.25%)
+    max_sl = cfg.get("max_sl_pct", 2.25) / 100.0
+    min_sl = cfg.get("min_sl_pct", 0.45) / 100.0
+    sl_pct = max(min_sl, min(sl_pct, max_sl))
 
-    # Formula Risk Fractional:
-    # Target loss ($) = avail_usdt * (risk_pct / 100.0)
-    # loss ($) = margin_usd * leverage * sl_pct
-    # margin_usd = target_loss / (sl_pct * leverage)
-    target_loss_usd = avail_usdt * (risk_pct / 100.0)
-    calc_margin_usd = target_loss_usd / (sl_pct * leverage)
+    # T7.2 & T7.3: Evaluasi sizing_mode (ALL_IN default sesuai mandat user, dengan pengunci Profit Vault)
+    sizing_mode = str(cfg.get("sizing_mode", "ALL_IN")).upper()
+    all_in_fraction = float(cfg.get("all_in_balance_fraction", 0.95))
+    locked_vault_usdt = 0.0
+    vault_file = os.path.join(RESULTS_DIR, "vault_state.json")
+    if os.path.exists(vault_file):
+        try:
+            with open(vault_file, "r", encoding="utf-8") as vf:
+                vdata = json.load(vf)
+                locked_vault_usdt = max(0.0, float(vdata.get("locked_profit_vault_usdt", 0.0)))
+        except Exception:
+            locked_vault_usdt = 0.0
 
-    # Batasi agar satu trade tidak memakan lebih dari 85% saldo margin
-    calc_margin_usd = min(calc_margin_usd, avail_usdt * 0.85)
-
-    # Pastikan notional minimal Binance terpenuhi (~$5 notional -> margin minimal $5/20 = $0.25)
-    min_margin_for_notional = 5.5 / leverage
-    calc_margin_usd = max(calc_margin_usd, min_margin_for_notional)
-
+    working_usdt = max(min(avail_usdt, 1.0), avail_usdt - locked_vault_usdt)
     _fx = get_fx_info()
-    if max_budget > 0:
-        max_budget_usd = max_budget / _fx.get("usd_idr", 16500)
-        calc_margin_usd = min(calc_margin_usd, max_budget_usd)
 
-    pos_size_usd = round(calc_margin_usd, 2)
-    pos_size = int(pos_size_usd * _fx.get("usd_idr", 16500))
-
-    prob_tag = "PROBATION (2% risk)" if is_probation else "STANDARD (5% risk)"
-    print(f"[SIZING] ⚖️ Mode RISK_FRACTIONAL [{prob_tag}]: Saldo=${avail_usdt:.2f}, SL={sl_pct*100:.2f}%, "
-          f"Margin=${pos_size_usd:.2f} USDT (Rp {pos_size:,.0f}), Notional=${pos_size_usd*leverage:.2f}", flush=True)
+    if sizing_mode == "ALL_IN":
+        calc_margin_usd = working_usdt * all_in_fraction
+        pos_size_usd = round(calc_margin_usd, 4)
+        pos_size = int(pos_size_usd * _fx.get("usd_idr", 16500))
+        est_sl_loss_pct = round(sl_pct * leverage * all_in_fraction * 100.0, 2)
+        print(
+            f"[SIZING] 🔥 Mode ALL_IN ({all_in_fraction*100:.0f}% Working Balance): "
+            f"Avail=${avail_usdt:.2f} (Vault=${locked_vault_usdt:.2f}), SL={sl_pct*100:.2f}% "
+            f"(Risiko Ekuitas=-{est_sl_loss_pct:.1f}%), Margin=${pos_size_usd:.2f} USDT, Notional=${pos_size_usd*leverage:.2f}",
+            flush=True,
+        )
+    else:
+        try:
+            import journal
+            rep = journal.generate_report() if hasattr(journal, "generate_report") else journal.generate_gate_report()
+            is_probation = (rep.get("total_trades", 0) < 20) or not rep.get("gate_passed", False)
+        except Exception:
+            is_probation = True
+        risk_pct = cfg.get("probation_risk_pct", 2.0) if is_probation else cfg.get("risk_pct", 5.0)
+        target_loss_usd = working_usdt * (risk_pct / 100.0)
+        calc_margin_usd = min(target_loss_usd / (sl_pct * leverage), working_usdt * all_in_fraction)
+        min_margin_for_notional = 5.5 / leverage
+        calc_margin_usd = max(calc_margin_usd, min_margin_for_notional)
+        if max_budget > 0:
+            max_budget_usd = max_budget / _fx.get("usd_idr", 16500)
+            calc_margin_usd = min(calc_margin_usd, max_budget_usd)
+        pos_size_usd = round(calc_margin_usd, 4)
+        pos_size = int(pos_size_usd * _fx.get("usd_idr", 16500))
+        prob_tag = "PROBATION (2% risk)" if is_probation else "STANDARD (5% risk)"
+        print(
+            f"[SIZING] ⚖️ Mode RISK_FRACTIONAL [{prob_tag}]: Saldo=${avail_usdt:.2f}, SL={sl_pct*100:.2f}%, "
+            f"Margin=${pos_size_usd:.2f} USDT (Rp {pos_size:,.0f}), Notional=${pos_size_usd*leverage:.2f}",
+            flush=True,
+        )
 
     auto_execute = cfg.get("auto_execute", cfg.get("auto_execute_on_binance", True))
     max_concurrent = cfg.get("max_concurrent_positions", 5)
@@ -439,8 +455,38 @@ def monitor_and_update_positions():
                         entry_px = float(lp.get("entry_price", 0))
                         lev = int(lp.get("leverage", 20))
                         dir_str = lp.get("direction", "LONG" if amt > 0 else "SHORT")
-                        tp_px = round(entry_px * (1.03 if dir_str == "LONG" else 0.97), 4)
-                        sl_px = round(entry_px * (0.985 if dir_str == "LONG" else 1.015), 4)
+                        # T0.5: Read existing SL/TP from Binance openAlgoOrders instead of overwriting with +3%/-1.5%
+                        tp_px = 0.0
+                        sl_px = 0.0
+                        sl_algo_id = None
+                        tp_algo_id = None
+                        sl_state = "MISSING"
+                        try:
+                            ok_algo, open_algos = bn_client.get_open_algo_orders(sym)
+                            if ok_algo:
+                                for ao in open_algos:
+                                    otype = str(ao.get("orderType", ao.get("type", ""))).upper()
+                                    tpx = float(ao.get("triggerPrice", ao.get("stopPrice", 0)) or 0)
+                                    if "TAKE_PROFIT" in otype and tpx > 0:
+                                        tp_px = tpx
+                                        tp_algo_id = ao.get("algoId")
+                                    elif "STOP" in otype and tpx > 0:
+                                        sl_px = tpx
+                                        sl_algo_id = ao.get("algoId")
+                                        sl_state = "CONFIRMED"
+                        except Exception:
+                            sl_state = "UNKNOWN"
+                        if tp_px <= 0:
+                            tp_px = round(entry_px * (1.015 if dir_str == "LONG" else 0.985), 6)
+                        if sl_px <= 0:
+                            sl_px = round(entry_px * (0.990 if dir_str == "LONG" else 1.010), 6)
+                            try:
+                                sl_res = bn_client.set_stop_loss(sym, dir_str, sl_px)
+                                if isinstance(sl_res, dict) and "algoId" in sl_res:
+                                    sl_algo_id = sl_res["algoId"]
+                                    sl_state = "CONFIRMED"
+                            except Exception:
+                                pass
                         iso_margin = abs(float(lp.get("isolated_margin", (amt * entry_px / lev) if lev else 0)))
                         new_pos = {
                             "id": f"POS_BINANCE_{sym}_{int(time.time())}",
@@ -453,11 +499,16 @@ def monitor_and_update_positions():
                             "take_profit_1": tp_px,
                             "take_profit_2": tp_px,
                             "stop_loss": sl_px,
+                            "init_stop_loss": sl_px,
+                            "sl_state": sl_state,
+                            "sl_algo_id": sl_algo_id,
+                            "tp_algo_id": tp_algo_id,
                             "leverage": lev,
                             "margin_type": lp.get("margin_type", "ISOLATED"),
                             "order_type": "MARKET",
                             "limit_price": entry_px,
                             "position_size_usdt": iso_margin,
+                            "position_size_usd": iso_margin,
                             "position_size_idr": round(iso_margin * fx_rate, 2),
                             "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                             "status": "OPEN",
@@ -470,7 +521,7 @@ def monitor_and_update_positions():
                         }
                         positions.append(new_pos)
                         updated = True
-                        print(f"[MONITOR] 📥 Auto-imported active Binance position: {sym} ({dir_str} {lev}x)", flush=True)
+                        print(f"[MONITOR] 📥 Auto-imported active Binance position: {sym} ({dir_str} {lev}x, SL State: {sl_state})", flush=True)
         except Exception as e:
             print(f"[MONITOR] Binance sync warning: {e}", flush=True)
 
@@ -504,29 +555,63 @@ def monitor_and_update_positions():
             if pair not in bn_live_map:
                 # The position was closed on Binance (via native TP/SL or manual close)
                 curr_px = ticker_map.get(pair, entry_price)
-                if direction == "LONG":
-                    final_pnl_pct = ((curr_px - entry_price) / entry_price) * leverage * 100.0 if entry_price > 0 else 0
+                realized_pnl_from_trades = None
+                commission_from_trades = 0.0
+                if bn_client:
+                    try:
+                        recent_trades = bn_client.get_user_trades(pair, limit=10)
+                        if isinstance(recent_trades, list) and recent_trades:
+                            closing_trades = [t for t in recent_trades if abs(float(t.get("realizedPnl", 0))) > 0]
+                            if closing_trades:
+                                last_t = closing_trades[-1]
+                                curr_px = float(last_t.get("price", curr_px)) or curr_px
+                                realized_pnl_from_trades = sum(float(t.get("realizedPnl", 0)) for t in closing_trades[-3:])
+                                commission_from_trades = sum(float(t.get("commission", 0)) for t in closing_trades[-3:])
+                    except Exception:
+                        pass
+
+                if realized_pnl_from_trades is not None and pos_usd > 0:
+                    final_pnl_usd = realized_pnl_from_trades - commission_from_trades
+                    final_pnl_pct = (final_pnl_usd / pos_usd) * 100.0
+                    final_pnl_idr = final_pnl_usd * fx_rate
                 else:
-                    final_pnl_pct = ((entry_price - curr_px) / entry_price) * leverage * 100.0 if entry_price > 0 else 0
-                
-                final_pnl_idr = (final_pnl_pct / 100.0) * pos_idr
-                final_pnl_usd = (final_pnl_pct / 100.0) * pos_usd
-                
-                pos["status"] = "CLOSED_TP" if final_pnl_pct >= 0 else "CLOSED_SL"
+                    if direction == "LONG":
+                        final_pnl_pct = ((curr_px - entry_price) / entry_price) * leverage * 100.0 if entry_price > 0 else 0
+                    else:
+                        final_pnl_pct = ((entry_price - curr_px) / entry_price) * leverage * 100.0 if entry_price > 0 else 0
+                    final_pnl_idr = (final_pnl_pct / 100.0) * pos_idr
+                    final_pnl_usd = (final_pnl_pct / 100.0) * pos_usd
+
+                if final_pnl_pct >= 0:
+                    close_status = "CLOSED_TP1_PROFIT_LOCK" if pos.get("tp1_profit_locked") and curr_px != tp else "CLOSED_TP"
+                else:
+                    close_status = "CLOSED_SL"
+
+                pos["status"] = close_status
                 pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
                 pos["close_price"] = curr_px
                 pos["pnl_pct"] = round(final_pnl_pct, 2)
                 pos["pnl_idr"] = round(final_pnl_idr, 2)
                 pos["pnl_usd"] = round(final_pnl_usd, 4)
+                pos["commission_usd"] = round(commission_from_trades, 6)
                 _record_trade_close_in_journal(pos, curr_px, pos["status"], final_pnl_usd)
-                
-                event_type = "TAKE PROFIT" if final_pnl_pct >= 0 else "STOP LOSS"
+
+                # T7.3: Update High-Water Mark Profit Vault if available
+                try:
+                    from risk.vault import ProfitVault
+                    bal_now = bn_client.get_balance() if bn_client else {}
+                    if isinstance(bal_now, dict) and bal_now.get("total_wallet_balance"):
+                        ProfitVault().update_equity(float(bal_now["total_wallet_balance"]))
+                except Exception:
+                    pass
+
+                event_type = "TAKE PROFIT / PROFIT LOCK" if final_pnl_pct >= 0 else "STOP LOSS"
                 send_telegram(
                     f"⚡ <b>[BINANCE LIVE] POSISI {pos.get('symbol')} TELAH DITUTUP!</b>\n\n"
                     f"🎯 <b>Status:</b> <b>{event_type} TEREKSEKUSI DI EXCHANGE</b>\n"
                     f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction} {leverage}x)\n"
-                    f"💰 <b>Hasil PnL:</b> {final_pnl_pct:+.2f}% ({final_pnl_idr:+,.0f} IDR / ${final_pnl_usd:+.2f} USDT)\n"
-                    f"📍 <b>Entry:</b> ${entry_price:,.4f} ➔ <b>Exit:</b> ${curr_px:,.4f}\n\n"
+                    f"💰 <b>Hasil PnL Net:</b> {final_pnl_pct:+.2f}% ({final_pnl_idr:+,.0f} IDR / ${final_pnl_usd:+.4f} USDT)\n"
+                    f"📍 <b>Entry:</b> ${entry_price:,.4f} ➔ <b>Exit Fill:</b> ${curr_px:,.4f}\n\n"
                     f"<i>Margin posisi kini telah kembali utuh ke saldo wallet.</i>"
                 )
                 updated = True
@@ -606,70 +691,78 @@ def monitor_and_update_positions():
 
         updated = True
 
-        # Trailing Stop & Breakeven Protection for 20x Leverage:
-        # If PnL reaches +20% ROE (+1.0% price move on 20x), move SL to entry price to lock in a risk-free trade!
-        if pnl_pct >= 20.0 and not pos.get("breakeven_set"):
-            pos["breakeven_set"] = True
-            if direction == "LONG":
-                new_sl = round(entry_price * 1.001, 6)
-                if new_sl > sl:
-                    pos["stop_loss"] = new_sl
-                    sl = new_sl
-                    send_telegram(
-                        f"🛡️ <b>[PYROFUEL PROTECTOR] TRAILING SL KE BREAKEVEN!</b>\n\n"
-                        f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction} 20x)\n"
-                        f"📈 <b>Floating Profit:</b> +{pnl_pct:.2f}%\n"
-                        f"🔒 <b>Stop Loss Dinaikkan ke:</b> ${new_sl:,.4f} (Entry + Fee Buffer)\n"
-                        f"✨ <i>Trade ini sekarang 100% BEBAS RESIKO (Risk-Free)! Modal utama aman terlindungi.</i>"
-                    )
-            elif direction == "SHORT":
-                new_sl = round(entry_price * 0.999, 6)
-                if new_sl < sl:
-                    pos["stop_loss"] = new_sl
-                    sl = new_sl
-                    send_telegram(
-                        f"🛡️ <b>[PYROFUEL PROTECTOR] TRAILING SL KE BREAKEVEN!</b>\n\n"
-                        f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction} 20x)\n"
-                        f"📈 <b>Floating Profit:</b> +{pnl_pct:.2f}%\n"
-                        f"🔒 <b>Stop Loss Diturunkan ke:</b> ${new_sl:,.4f} (Entry - Fee Buffer)\n"
-                        f"✨ <i>Trade ini sekarang 100% BEBAS RESIKO (Risk-Free)! Modal utama aman terlindungi.</i>"
-                    )
+        # T0.5: Reconcile Guard — Ensure exchange SL is CONFIRMED; if MISSING, re-place automatically
+        if is_binance_pos and bn_client and sl > 0:
+            try:
+                expected_sl_side = "SELL" if direction == "LONG" else "BUY"
+                sl_state = bn_client.verify_stop_loss_active(pair, expected_side=expected_sl_side, max_wait_sec=0.8, return_tristate=True)
+                pos["sl_state"] = sl_state
+                if sl_state == "MISSING":
+                    print(f"[RECONCILE GUARD] 🛡️ SL MISSING on {pair}! Re-placing SL at ${sl:,.4f} on exchange...", flush=True)
+                    sl_res = bn_client.set_stop_loss(pair, direction, sl)
+                    if isinstance(sl_res, dict) and "algoId" in sl_res:
+                        pos["sl_algo_id"] = sl_res["algoId"]
+                        pos["sl_state"] = "CONFIRMED"
+            except Exception:
+                pass
 
-        # ══════════════════════════════════════════════════════════════
-        # SMART TRAILING STOP — BERTINGKAT (20x leverage protection)
-        # Level 1: ROE +20%  → SL ke breakeven (sudah ada di atas)
-        # Level 2: ROE +30%  → SL ke +0.8% profit lock
-        # Level 3: ROE +50%  → SL ke +1.5% profit lock
-        # Level 4: ROE +80%  → SL ke +2.5% profit lock (hampir setengah TP)
-        # ══════════════════════════════════════════════════════════════
-        trail_levels = [
-            (30.0, "trail_30_set", 0.008, "lock +0.8% profit"),
-            (50.0, "trail_50_set", 0.015, "lock +1.5% profit"),
-            (80.0, "trail_80_set", 0.025, "lock +2.5% profit"),
+        # T0.6 & T7.4: HIGH-PRECISION SNIPER TWO-STAGE PROFIT LOCK & ON-EXCHANGE R-BASED TRAILING
+        # Replaces premature local +20% ROE breakeven with exchange-native amend_stop_loss!
+        init_sl = float(pos.get("init_stop_loss") or sl or 0)
+        sl_dist_pct = abs(entry_price - init_sl) / entry_price if (entry_price > 0 and init_sl > 0) else 0.008
+        sl_dist_pct = max(0.0045, min(sl_dist_pct, 0.025))
+        price_gain_pct = ((current_price - entry_price) / entry_price) if direction == "LONG" else ((entry_price - current_price) / entry_price)
+        r_multiple_curr = price_gain_pct / sl_dist_pct if sl_dist_pct > 0 else 0.0
+        pos["r_multiple_curr"] = round(r_multiple_curr, 3)
+
+        # Stage 1 (T7.4 Sniper 75% Mode): At +0.55R, lock SL on exchange at +0.38R net profit (100% Guaranteed WIN!)
+        if r_multiple_curr >= 0.55 and not pos.get("tp1_profit_lock_set"):
+            lock_pct = max(0.0022, 0.38 * sl_dist_pct)
+            new_sl = round(entry_price * (1.0 + lock_pct if direction == "LONG" else 1.0 - lock_pct), 6)
+            better = (direction == "LONG" and new_sl > sl) or (direction == "SHORT" and (sl <= 0 or new_sl < sl))
+            if better:
+                pos["tp1_profit_lock_set"] = True
+                pos["breakeven_set"] = True
+                if is_binance_pos and bn_client:
+                    amend_res = bn_client.amend_stop_loss(pair, direction, new_sl, old_algo_id=pos.get("sl_algo_id"))
+                    if amend_res.get("status") == "AMENDED":
+                        pos["sl_algo_id"] = amend_res.get("new_algo_id")
+                        pos["sl_state"] = "CONFIRMED"
+                pos["stop_loss"] = new_sl
+                sl = new_sl
+                send_telegram(
+                    f"🎯 <b>[SNIPER 75% PROFIT LOCK] TP1 (+0.55R) TERCAPAI — PROFIT DIKUNCI DI BURSA!</b>\n\n"
+                    f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction} {int(leverage)}x)\n"
+                    f"📈 <b>Floating Profit:</b> +{pnl_pct:.2f}% (+{r_multiple_curr:.2f}R)\n"
+                    f"🔒 <b>SL Bursa Di-amend ke:</b> ${new_sl:,.4f} (+0.38R Net Profit Terkunci)\n"
+                    f"✨ <i>Transaksi ini 100% TERKUNCI MENANG di bursa sambil mengawal Runner ke TP2!</i>"
+                )
+
+        # Stage 2 (T0.6 R-Based Exchange Trailing): +1.0R -> lock +0.65R; +1.5R -> lock +1.10R; +2.0R -> lock +1.55R
+        r_trail_stages = [
+            (1.00, "r_trail_10_set", 0.65, "Lock +0.65R Profit"),
+            (1.50, "r_trail_15_set", 1.10, "Lock +1.10R Profit"),
+            (2.00, "r_trail_20_set", 1.55, "Lock +1.55R Profit"),
         ]
-        for roe_threshold, flag_key, price_mult, label in trail_levels:
-            if pnl_pct >= roe_threshold and not pos.get(flag_key):
-                pos[flag_key] = True
-                if direction == "LONG":
-                    new_sl = round(entry_price * (1 + price_mult), 6)
-                    if new_sl > sl:
-                        pos["stop_loss"] = new_sl
-                        sl = new_sl
-                        send_telegram(
-                            f"📈 <b>[TRAILING] SL Dinaikkan → {label.upper()}</b>\n"
-                            f"💎 <code>{pos.get('symbol')}</code> {direction} | ROE: +{pnl_pct:.1f}%\n"
-                            f"🔒 SL baru: <b>${new_sl:,.4f}</b> (profit terkunci aman)"
-                        )
-                elif direction == "SHORT":
-                    new_sl = round(entry_price * (1 - price_mult), 6)
-                    if new_sl < sl:
-                        pos["stop_loss"] = new_sl
-                        sl = new_sl
-                        send_telegram(
-                            f"📉 <b>[TRAILING] SL Diturunkan → {label.upper()}</b>\n"
-                            f"💎 <code>{pos.get('symbol')}</code> {direction} | ROE: +{pnl_pct:.1f}%\n"
-                            f"🔒 SL baru: <b>${new_sl:,.4f}</b> (profit terkunci aman)"
-                        )
+        for r_trig, flag_key, r_lock, label in r_trail_stages:
+            if r_multiple_curr >= r_trig and not pos.get(flag_key):
+                lock_pct = max(0.004, r_lock * sl_dist_pct)
+                new_sl = round(entry_price * (1.0 + lock_pct if direction == "LONG" else 1.0 - lock_pct), 6)
+                better = (direction == "LONG" and new_sl > sl) or (direction == "SHORT" and (sl <= 0 or new_sl < sl))
+                if better:
+                    pos[flag_key] = True
+                    if is_binance_pos and bn_client:
+                        amend_res = bn_client.amend_stop_loss(pair, direction, new_sl, old_algo_id=pos.get("sl_algo_id"))
+                        if amend_res.get("status") == "AMENDED":
+                            pos["sl_algo_id"] = amend_res.get("new_algo_id")
+                            pos["sl_state"] = "CONFIRMED"
+                    pos["stop_loss"] = new_sl
+                    sl = new_sl
+                    send_telegram(
+                        f"📈 <b>[ON-EXCHANGE R-TRAILING] {label.upper()}</b>\n"
+                        f"💎 <code>{pos.get('symbol')}</code> {direction} | +{r_multiple_curr:.2f}R (ROE: +{pnl_pct:.1f}%)\n"
+                        f"🔒 SL Bursa Baru: <b>${new_sl:,.4f}</b>"
+                    )
 
         # ══════════════════════════════════════════════════════════════
         # EMERGENCY FLASH CRASH EXIT
@@ -784,7 +877,11 @@ def monitor_and_update_positions():
             pass
 
 
-        tp_hit = (direction == "LONG" and current_price >= tp > 0) or (direction == "SHORT" and current_price <= tp > 0)
+        # C6 Fix: Only execute local TP/SL market close when exchange-native SL/TP is NOT confirmed active.
+        # When sl_state == "CONFIRMED", Binance Futures native MARK_PRICE algo orders own the exit.
+        allow_local_tp_sl_fallback = (not is_binance_pos) or (pos.get("sl_state") == "MISSING")
+
+        tp_hit = allow_local_tp_sl_fallback and ((direction == "LONG" and current_price >= tp > 0) or (direction == "SHORT" and current_price <= tp > 0))
         if tp_hit:
             pos["status"] = "CLOSED_TP"
             pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -804,10 +901,11 @@ def monitor_and_update_positions():
                 f"🎯 <b>Target TP:</b> ${tp:,.4f}\n"
                 f"⚡ Posisi Take Profit berhasil ditutup penuh di Binance Futures!"
             )
+            updated = True
             continue
 
-        # Check Stop Loss
-        sl_hit = (direction == "LONG" and current_price <= sl > 0) or (direction == "SHORT" and current_price >= sl > 0)
+        # Check Stop Loss (Local Emergency Fallback only if exchange SL is MISSING)
+        sl_hit = allow_local_tp_sl_fallback and ((direction == "LONG" and current_price <= sl > 0) or (direction == "SHORT" and current_price >= sl > 0))
         if sl_hit:
             pos["status"] = "CLOSED_SL"
             pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -820,13 +918,14 @@ def monitor_and_update_positions():
                 except Exception as e:
                     print(f"[BINANCE CLOSE SL ERROR] {e}")
             send_telegram(
-                f"🛑 <b>PYROFUEL // STOP LOSS DITRIGGER</b>\n\n"
+                f"🛑 <b>PYROFUEL // STOP LOSS DITRIGGER (LOCAL FALLBACK)</b>\n\n"
                 f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction})\n"
                 f"📍 <b>Entry:</b> ${entry_price:,.4f} ➔ <b>Exit:</b> ${current_price:,.4f}\n"
                 f"🛑 <b>Level SL:</b> ${sl:,.4f}\n"
                 f"📉 <b>PnL:</b> {pnl_pct:.2f}% (Rp {pnl_idr:,.0f} / ${pnl_usd:.2f})\n"
                 f"🛡️ Posisi otomatis di-cut untuk melindungi modal utama."
             )
+            updated = True
             continue
 
     if updated:
@@ -835,6 +934,19 @@ def monitor_and_update_positions():
                 json.dump(positions, f, indent=2, ensure_ascii=False)
         except Exception:
             pass
+
+    # T9.1 / T9.3: Write heartbeat.json for watchdog & /health diagnostics
+    try:
+        hb_path = os.path.join(RESULTS_DIR, "heartbeat.json")
+        with open(hb_path, "w", encoding="utf-8") as hbf:
+            json.dump({
+                "timestamp": time.time(),
+                "utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "open_positions": len([p for p in positions if p.get("status") == "OPEN"]),
+                "status": "HEALTHY",
+            }, hbf)
+    except Exception:
+        pass
 
     return positions
 
@@ -892,8 +1004,20 @@ def check_wallet_and_position_guard():
     should_pause = False
     reason = ""
 
+    # T7.1: Check Emergency Panic Lock
+    panic_file = os.path.join(RESULTS_DIR, "panic_lock.json")
+    if os.path.exists(panic_file):
+        try:
+            with open(panic_file, "r", encoding="utf-8") as pf:
+                p_data = json.load(pf)
+            if p_data.get("locked", False):
+                should_pause = True
+                reason = f"EMERGENCY PANIC LOCK AKTIF: {p_data.get('reason', 'Triggered via /panic')}"
+        except Exception:
+            pass
+
     # MANDAT USER: JIKA ADA POSISI AKTIF -> STOP SCAN TOTAL! 100% FOKUS KAWAL POSISI!
-    if len(open_pos) > 0:
+    if not should_pause and len(open_pos) > 0:
         should_pause = True
         sym_list = ", ".join([p.get("symbol", "") for p in open_pos])
         reason = (
@@ -1151,10 +1275,11 @@ def _estimate_tokens_this_cycle(n_coins_ai):
     tokens_per_coin = 2800  # optimized (bukan 7060 lama)
     return n_coins_ai * tokens_per_coin
 
-def _technical_pre_filter(ranked_coins, max_ai_coins=8):
+def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=None):
     """
-    GATE NOL: Filter ketat murni teknikal (TANPA AI) untuk memilih
-    hanya koin yang benar-benar punya edge setup sebelum memanggil AI.
+    GATE NOL: Filter ketat murni teknikal (TANPA AI) + T0.7 Dynamic MinNotional Filter
+    untuk memilih hanya koin yang benar-benar punya edge setup DAN cukup saldo margin
+    sebelum memanggil AI.
 
     Kriteria agar lolos (min 2 dari 4):
     1. RSI ekstrem: < 32 (oversold, siap LONG) atau > 68 (overbought, siap SHORT)
@@ -1163,11 +1288,34 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8):
     4. Volatilitas dalam range: 0.5% < ATR% < 5% (tidak terlalu flat atau terlalu liar)
     5. MACD signal: histogram tidak mendekati nol
 
-    Core 10 coins (BTC, ETH, BNB, SOL, dll) SELALU masuk daftar prioritas.
+    Core 10 coins (BTC, ETH, BNB, SOL, dll) SELALU masuk daftar prioritas JIKA memenuhi minNotional.
     """
-    from market_data import get_market_indicators_fast, CRYPTO_FUTURES_WATCHLIST
+    from market_data import get_market_indicators_fast, CRYPTO_FUTURES_WATCHLIST, filter_eligible_symbols
 
-    # Core 10 coin symbols — selalu disertakan tanpa filter
+    cfg = _get_config()
+    fixed_lev = float(cfg.get("fixed_leverage", 20))
+    bal_frac = float(cfg.get("all_in_balance_fraction", 0.95))
+
+    # T0.7: Filter out symbols whose minNotional exceeds available_balance * 0.95 * 20
+    screen_pool = ranked_coins[:80]
+    if available_balance_usdt is not None and available_balance_usdt > 0:
+        eligible_pool, skipped_records = filter_eligible_symbols(
+            screen_pool,
+            available_balance_usdt=available_balance_usdt,
+            leverage=int(fixed_lev),
+            all_in_fraction=bal_frac,
+        )
+        if eligible_pool:
+            if skipped_records:
+                print(
+                    f"[T0.7 MIN-NOTIONAL FILTER] Saldo ${available_balance_usdt:.2f} USDT "
+                    f"(daya beli 20x: ${available_balance_usdt * bal_frac * fixed_lev:.2f}) → "
+                    f"{len(skipped_records)} koin minNotional tinggi (mis. BTCUSDT) dilewati otomatis.",
+                    flush=True,
+                )
+            screen_pool = eligible_pool
+
+    # Core 10 coin symbols — selalu disertakan tanpa filter (selama lolos minNotional)
     core_symbols = {c["symbol"].upper() for c in CRYPTO_FUTURES_WATCHLIST
                     if c.get("tier") in ("CORE", "MAJOR") or
                     c["symbol"].upper() in {"BTC-USD","ETH-USD","BNB-USD","SOL-USD",
@@ -1177,7 +1325,7 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8):
     candidates = []
     forced_core = []
 
-    for coin in ranked_coins[:80]:  # screen top 80
+    for coin in screen_pool:
         pair = coin.get("pair", "")
         sym = coin.get("symbol", pair.replace("USDT", "-USD"))
         change_24h = abs(coin.get("price_change_24h_pct", 0))
@@ -1218,7 +1366,7 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8):
     slots_for_dynamic = max(0, max_ai_coins - len(forced_core))
     final = forced_core + [c for _, c in candidates[:slots_for_dynamic]]
 
-    print(f"[PRE-FILTER] {len(ranked_coins[:80])} koin di-screen → "
+    print(f"[PRE-FILTER] {len(screen_pool)} koin eligible di-screen → "
           f"{len(forced_core)} core + {len(final)-len(forced_core)} dynamic = "
           f"{len(final)} lolos → AI pipeline", flush=True)
     return final
@@ -1298,8 +1446,12 @@ def run_full_scan_cycle():
             seen_pairs_pf.add(p)
             all_candidates.append(coin)
 
-    # Gate teknikal → max N koin untuk AI
-    scan_list = _technical_pre_filter(all_candidates, max_ai_coins=max_coins)
+    # Gate teknikal + T0.7 minNotional filter → max N koin untuk AI
+    scan_list = _technical_pre_filter(
+        all_candidates,
+        max_ai_coins=max_coins,
+        available_balance_usdt=guard.get("available_usdt"),
+    )
 
     # SIDEWAYS BONUS: Jika pasar sideways, tambahkan koin khusus sideways strategy
     if regime == "SIDEWAYS":

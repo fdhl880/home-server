@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# =============================================================
+# T0.8 Pre-Commit Secret Scanner Hook
+# Blocks commits containing hardcoded API keys or tokens
+# =============================================================
+set -e
+
+FORBIDDEN_PATTERNS=(
+    "8829535429:AAH"
+    "gsk_[A-Za-z0-9]{20,}"
+    "sk-or-v1-[a-f0-9]{32,}"
+    "AIzaSy[A-Za-z0-9_-]{30,}"
+)
+
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -vE '(HANDOFF_BLUEPRINT|\.env$)' || true)
+if [ -z "$STAGED_FILES" ]; then
+    exit 0
+fi
+
+for pat in "${FORBIDDEN_PATTERNS[@]}"; do
+    if echo "$STAGED_FILES" | xargs grep -nE "$pat" 2>/dev/null; then
+        echo "⛔ [T0.8 SECRET SCANNER] Commit diblokir! Ditemukan indikasi hardcoded secret ($pat)."
+        exit 1
+    fi
+done
+
+exit 0

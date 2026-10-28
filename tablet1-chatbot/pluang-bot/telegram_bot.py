@@ -2,7 +2,7 @@
 ===========================================================================
 PYROFUEL TELEGRAM BOT v3.0 - FULL UNIVERSE CRYPTO FUTURES AI
 ===========================================================================
-Token: 8829535429:AAHFHM56RDNAd7-ax6Dd-3V3g9OZEleYi5M (@idrisginting_bot)
+Token: Loaded from environment TELEGRAM_BOT_TOKEN (@idrisginting_bot)
 Koleksi Aset: ALL Binance USDT Perpetual Futures (~200+ coins)
 Fitur: 5-Layer AI Pipeline, Binance Futures Execution (20x ISOLATED)
 
@@ -1139,6 +1139,10 @@ def start_bot_listener():
                             "• <code>/top</code> - Top 20 movers saat ini\n"
                             "• <code>/status</code> - Portfolio, margin & posisi aktif\n"
                             "• <code>/pnl</code> - Win Rate % & Total P&L Real-time\n"
+                            "• <code>/vault</code> - Status High-Water Mark Profit Vault (T7.3)\n"
+                            "• <code>/health</code> - Diagnostik sistem, AI Gateway & SL State (T9.3)\n"
+                            "• <code>/panic</code> - Emergency Kill-Switch: tutup semua posisi & kunci bot (T7.1)\n"
+                            "• <code>/unpanic</code> - Buka kunci Emergency Panic Lock\n"
                             "• <code>/news</code> - AI Crypto News & Macro Sentiment\n"
                             "• <code>/auto</code> - Status auto-trading background"
                         )
@@ -1307,6 +1311,121 @@ def start_bot_listener():
 
                     elif msg_lower in ["/news", "news", "/berita", "berita", "/sentiment"]:
                         handle_news_command(chat_id)
+
+                    elif msg_lower in ["/panic", "panic", "/kill"]:
+                        bn_c = get_binance_client()
+                        closed_syms = []
+                        if bn_c:
+                            try:
+                                live_p = bn_c.get_positions()
+                                if isinstance(live_p, list):
+                                    for lp in live_p:
+                                        sym_p = lp.get("symbol", "")
+                                        dir_p = lp.get("direction", "LONG")
+                                        if sym_p:
+                                            bn_c.close_position(sym_p, dir_p)
+                                            bn_c.cancel_all_orders(sym_p)
+                                            closed_syms.append(f"{sym_p} ({dir_p})")
+                            except Exception as pe:
+                                closed_syms.append(f"Err: {pe}")
+                        panic_path = os.path.join(RESULTS_DIR, "panic_lock.json")
+                        try:
+                            with open(panic_path, "w", encoding="utf-8") as pf:
+                                json.dump({
+                                    "locked": True,
+                                    "triggered_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                                    "triggered_by": chat_id,
+                                    "reason": "Manual /panic command",
+                                }, pf, indent=2)
+                        except Exception:
+                            pass
+                        send_telegram_message(
+                            chat_id,
+                            f"🚨 <b>[T7.1 EMERGENCY PANIC KILL-SWITCH AKTIF]</b>\n\n"
+                            f"• Posisi ditutup & order dibatalkan: <b>{', '.join(closed_syms) if closed_syms else 'Tidak ada posisi terbuka'}</b>\n"
+                            f"• Status Bot: <b>LOCKED (panic_lock.json aktif)</b>\n"
+                            f"• Ketik <code>/unpanic</code> untuk membuka kembali kunci trading."
+                        )
+
+                    elif msg_lower in ["/unpanic", "unpanic", "/resume"]:
+                        panic_path = os.path.join(RESULTS_DIR, "panic_lock.json")
+                        try:
+                            if os.path.exists(panic_path):
+                                os.remove(panic_path)
+                        except Exception:
+                            pass
+                        send_telegram_message(
+                            chat_id,
+                            "🟢 <b>[PANIC LOCK DIBUKA]</b>\n"
+                            "Autonomous scanner & eksekusi trading telah diaktifkan kembali."
+                        )
+
+                    elif msg_lower in ["/vault", "vault"]:
+                        bn_c = get_binance_client()
+                        eq = 0.0
+                        if bn_c:
+                            try:
+                                b = bn_c.get_balance()
+                                if isinstance(b, dict):
+                                    eq = float(b.get("total_wallet_balance", 0))
+                            except Exception:
+                                pass
+                        vault_info = {"hwm_equity": eq, "locked_vault_usdt": 0.0, "working_balance_usdt": eq}
+                        try:
+                            from risk.vault import ProfitVault
+                            pv = ProfitVault()
+                            if eq > 0:
+                                vault_info = pv.update_equity(eq)
+                            else:
+                                vault_info = pv.get_status()
+                        except Exception:
+                            v_file = os.path.join(RESULTS_DIR, "profit_vault.json")
+                            if os.path.exists(v_file):
+                                try:
+                                    with open(v_file, "r", encoding="utf-8") as vf:
+                                        vault_info = json.load(vf)
+                                except Exception:
+                                    pass
+                        wb = float(vault_info.get("working_balance_usdt", eq))
+                        locked_v = float(vault_info.get("locked_vault_usdt", 0.0))
+                        hwm_v = float(vault_info.get("hwm_equity", eq))
+                        send_telegram_message(
+                            chat_id,
+                            f"🏦 <b>[T7.3 HIGH-WATER MARK PROFIT VAULT]</b>\n"
+                            f"────────────────────────\n"
+                            f"💰 <b>Total Wallet Balance:</b> ${eq:.4f} USDT\n"
+                            f"📈 <b>High-Water Mark (HWM):</b> ${hwm_v:.4f} USDT\n"
+                            f"🔒 <b>Locked Profit Vault:</b> ${locked_v:.4f} USDT\n"
+                            f"⚡ <b>Working Balance (Aktif):</b> ${wb:.4f} USDT\n"
+                            f"🎯 <b>ALL-IN 95% Margin (20x):</b> ${wb * 0.95:.4f} USDT (Notional: ${wb * 0.95 * 20:.2f} USDT)\n"
+                            f"────────────────────────\n"
+                            f"<i>Setiap kenaikan HWM +15%, 35% profit dikunci otomatis agar tidak ikut ter-all-in.</i>"
+                        )
+
+                    elif msg_lower in ["/health", "health", "/diag"]:
+                        hb_file = os.path.join(RESULTS_DIR, "heartbeat.json")
+                        hb_age = "N/A"
+                        if os.path.exists(hb_file):
+                            try:
+                                with open(hb_file, "r", encoding="utf-8") as hf:
+                                    hbd = json.load(hf)
+                                hb_age = f"{int(time.time() - float(hbd.get('timestamp', time.time())))}s lalu"
+                            except Exception:
+                                pass
+                        cfg_h = get_trading_config()
+                        sniper_h = cfg_h.get("sniper_75_mode", {})
+                        send_telegram_message(
+                            chat_id,
+                            f"🩺 <b>[T9.3 INSTITUTIONAL HEALTH DIAGNOSTICS]</b>\n"
+                            f"────────────────────────\n"
+                            f"💓 <b>Monitor Heartbeat:</b> {hb_age}\n"
+                            f"⚡ <b>Leverage & Margin:</b> {cfg_h.get('fixed_leverage', 20)}x {cfg_h.get('margin_type', 'ISOLATED')}\n"
+                            f"💰 <b>Sizing Mode:</b> {cfg_h.get('sizing_mode', 'ALL_IN')} ({float(cfg_h.get('all_in_balance_fraction', 0.95))*100:.0f}% Working Balance)\n"
+                            f"🎯 <b>Sniper 75% Mode:</b> {'🟢 ACTIVE' if sniper_h.get('enabled', True) else '⚪ OFF'} "
+                            f"(p_TP1 ≥ {sniper_h.get('min_calibrated_p_tp1', 0.76)}, TP1 Lock +{sniper_h.get('tp1_lock_trigger_r', 0.55)}R ➔ SL +{sniper_h.get('sl_lock_after_tp1_r', 0.38)}R)\n"
+                            f"🛡️ <b>Consecutive Loss Breaker:</b> {cfg_h.get('circuit_breaker_consecutive_losses', 2)}x\n"
+                            f"────────────────────────"
+                        )
                     
                     # Catch-all: scan any other coin name
                     elif msg_lower.startswith("/"):

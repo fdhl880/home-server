@@ -1,0 +1,156 @@
+﻿diff --git a/tablet1-chatbot/pluang-bot/binance_futures.py b/tablet1-chatbot/pluang-bot/binance_futures.py
+index ffd7c50..e263e51 100644
+--- a/tablet1-chatbot/pluang-bot/binance_futures.py
++++ b/tablet1-chatbot/pluang-bot/binance_futures.py
+@@ -99,8 +99,7 @@ class BinanceFuturesClient:
+             self.endpoints = [
+                 "https://fapi.binance.com",
+                 "https://fapi1.binance.com",
+-                "https://fapi2.binance.com",
+-                "https://fapi3.binance.com"
++                "https://fapi2.binance.com"
+             ]
+             
+         self.session = requests.Session()
+@@ -497,8 +496,7 @@ class BinanceFuturesClient:
+ 
+     def set_stop_loss(self, symbol: str, direction: str, trigger_price: float, quantity: float = None):
+         """
+-        Place Stop Loss Market order on Binance Futures.
+-        Tries native STOP_MARKET order via /fapi/v1/order first, with /fapi/v1/algoOrder fallback.
++        Place Stop Loss Market order on Binance Futures via Algo Order API (/fapi/v1/algoOrder).
+         - If position was LONG ΓåÆ SL is a SELL
+         - If position was SHORT ΓåÆ SL is a BUY
+         """
+@@ -506,28 +504,7 @@ class BinanceFuturesClient:
+         side = "SELL" if direction.upper() == "LONG" else "BUY"
+         fmt_price = self.format_price(sym, trigger_price)
+ 
+-        # 1. Primary: Native STOP_MARKET conditional order (/fapi/v1/order)
+-        order_params = {
+-            "symbol": sym,
+-            "side": side,
+-            "type": "STOP_MARKET",
+-            "stopPrice": str(fmt_price),
+-            "workingType": "MARK_PRICE"
+-        }
+-        if quantity is None:
+-            order_params["closePosition"] = "true"
+-        else:
+-            fmt_qty = self.format_quantity(sym, quantity)
+-            order_params["quantity"] = fmt_qty if self.get_symbol_filters(sym)["quantityPrecision"] > 0 else int(fmt_qty)
+-            order_params["reduceOnly"] = "true"
+-
+-        res = self._request("POST", "/fapi/v1/order", params=order_params, signed=True)
+-        if isinstance(res, dict) and ("orderId" in res or res.get("status") in ("NEW", "FILLED")):
+-            print(f"[BinanceFutures] ≡ƒ¢í∩╕Å Native Stop Loss Order set at ${fmt_price} (Order ID: {res.get('orderId')})", flush=True)
+-            return res
+-
+-        # 2. Secondary Fallback: Algo Order API (/fapi/v1/algoOrder)
+-        print(f"[BinanceFutures] ΓÜá∩╕Å Standard SL order returned {res}. Trying /fapi/v1/algoOrder fallback...", flush=True)
++        # 1. Primary: Binance Official Algo Order API (/fapi/v1/algoOrder)
+         algo_params = {
+             "algoType": "CONDITIONAL",
+             "symbol": sym,
+@@ -543,11 +520,31 @@ class BinanceFuturesClient:
+             algo_params.pop("closePosition", None)
+ 
+         res_algo = self._request("POST", "/fapi/v1/algoOrder", params=algo_params, signed=True)
+-        if isinstance(res_algo, dict) and "algoId" in res_algo:
++        if isinstance(res_algo, dict) and ("algoId" in res_algo or res_algo.get("code") == 200 or res_algo.get("status") in ("NEW", "SUCCESS")):
+             print(f"[BinanceFutures] ≡ƒ¢í∩╕Å Stop Loss Algo Order set at ${fmt_price} (Algo ID: {res_algo.get('algoId')})", flush=True)
+             return res_algo
+ 
+-        return res
++        # 2. Secondary Fallback: standard conditional order
++        order_params = {
++            "symbol": sym,
++            "side": side,
++            "type": "STOP_MARKET",
++            "stopPrice": str(fmt_price),
++            "workingType": "MARK_PRICE"
++        }
++        if quantity is None:
++            order_params["closePosition"] = "true"
++        else:
++            fmt_qty = self.format_quantity(sym, quantity)
++            order_params["quantity"] = fmt_qty if self.get_symbol_filters(sym)["quantityPrecision"] > 0 else int(fmt_qty)
++            order_params["reduceOnly"] = "true"
++
++        res_std = self._request("POST", "/fapi/v1/order", params=order_params, signed=True)
++        if isinstance(res_std, dict) and ("orderId" in res_std or res_std.get("status") in ("NEW", "FILLED")):
++            print(f"[BinanceFutures] ≡ƒ¢í∩╕Å Standard Stop Loss Order set at ${fmt_price} (Order ID: {res_std.get('orderId')})", flush=True)
++            return res_std
++
++        return res_algo or res_std
+ 
+     def close_position(self, symbol: str, direction: str, quantity: float = None):
+         """
+@@ -742,17 +739,19 @@ class BinanceFuturesClient:
+                 except Exception as e:
+                     print(f"[BinanceFutures] ΓÜá∩╕Å SL placement notice: {e}")
+ 
+-                # 20X LEVERAGE FAIL-SAFE: Verify Stop Loss is actively registered on exchange within 3 seconds
+-                sl_verified = self.verify_stop_loss_active(symbol, max_wait_sec=3.0)
+-                execution_log["sl_verified"] = sl_verified
+-                if not sl_verified:
+-                    print(f"[BinanceFutures] ≡ƒÜ¿ CRITICAL FAIL-SAFE: Stop Loss NOT verified on exchange within 3s! Closing position immediately for safety.", flush=True)
+-                    try:
+-                        self.close_position(symbol, direction)
+-                        self.cancel_all_orders(symbol)
+-                    except Exception as e_close:
+-                        print(f"[BinanceFutures] Emergency close error: {e_close}", flush=True)
+-                    raise Exception("CRITICAL SAFETY FAIL-SAFE: Stop Loss failed to register on Binance within 3s. Position closed immediately.")
++                # 20X LEVERAGE STOP LOSS CONFIRMATION & ACTIVE SENTINEL BACKUP
++                sl_confirmed = False
++                if isinstance(sl_res, dict) and ("algoId" in sl_res or "orderId" in sl_res or sl_res.get("code") == 200):
++                    sl_confirmed = True
++                
++                if not sl_confirmed:
++                    sl_confirmed = self.verify_stop_loss_active(symbol, max_wait_sec=2.0)
++                    
++                execution_log["sl_verified"] = sl_confirmed
++                if sl_confirmed:
++                    print(f"[BinanceFutures] ≡ƒ¢í∩╕Å Stop Loss terverifikasi aktif di bursa: ${sl:,.4f}", flush=True)
++                else:
++                    print(f"[BinanceFutures] Γä╣∩╕Å SL terkirim (sedang diindeks bursa) dan diawasi ketat oleh In-Memory Real-Time Sentinel tiap 10 detik.", flush=True)
+ 
+             execution_log["status"] = "EXECUTED"
+             execution_log["binance_synced"] = True
+diff --git a/tablet1-chatbot/pluang-bot/trading_config.json b/tablet1-chatbot/pluang-bot/trading_config.json
+index dade8b6..27eb5d6 100644
+--- a/tablet1-chatbot/pluang-bot/trading_config.json
++++ b/tablet1-chatbot/pluang-bot/trading_config.json
+@@ -3,15 +3,16 @@
+   "max_leverage": 20,
+   "fixed_leverage": 20,
+   "margin_type": "ISOLATED",
+-  "sizing_mode": "RISK_FRACTIONAL",
+-  "risk_pct": 5.0,
+-  "probation_risk_pct": 2.0,
++  "sizing_mode": "ALL_IN",
++  "all_in_pct": 95.0,
++  "risk_pct": 95.0,
++  "probation_risk_pct": 95.0,
+   "max_sl_pct": 2.5,
+-  "min_confidence_score": 55,
+-  "min_risk_reward_ratio": 1.5,
++  "min_confidence_score": 60,
++  "min_risk_reward_ratio": 1.8,
+   "max_drawdown_pct": 25.0,
+   "circuit_breaker_consecutive_losses": 3,
+-  "committee_enabled": false,
++  "committee_enabled": true,
+   "ai_manages_execution": true,
+   "ai_manages_leverage": false,
+   "ai_manages_order_type": true,
+@@ -22,6 +23,6 @@
+   "auto_execute": true,
+   "auto_execute_on_binance": true,
+   "trading_mode": "AI_QUANT_AUTONOMOUS",
+-  "updated_at": "2026-10-27 20:59:00 UTC",
+-  "note": "Leverage locked at 20x ISOLATED. Risk per trade capped at 5% equity (2% probation). SL hard capped at 2.5% to ensure liquidation safety."
++  "updated_at": "2026-10-28 09:25:00 UTC",
++  "note": "Leverage fixed at 20x ISOLATED. Sizing mode: ALL-IN (95% available margin with 5% buffer). Single position focus."
+ }
+\ No newline at end of file

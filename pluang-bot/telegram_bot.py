@@ -2,7 +2,7 @@
 ===========================================================================
 PYROFUEL TELEGRAM BOT v3.0 - FULL UNIVERSE CRYPTO FUTURES AI
 ===========================================================================
-Token: 8829535429:AAHFHM56RDNAd7-ax6Dd-3V3g9OZEleYi5M (@idrisginting_bot)
+Token: Loaded from environment TELEGRAM_BOT_TOKEN (@idrisginting_bot)
 Koleksi Aset: ALL Binance USDT Perpetual Futures (~200+ coins)
 Fitur: 5-Layer AI Pipeline, Pluang MCP Execution, Live Token Validation
 

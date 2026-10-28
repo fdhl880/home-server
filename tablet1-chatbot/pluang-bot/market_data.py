@@ -24,40 +24,42 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ---------------------------------------------------------
-# ISP DNS Poisoning / DPI Bypass via DNS-over-HTTPS
+# T9.2: ISP DNS Poisoning / DPI Bypass via TTL-Cached DoH
 # ---------------------------------------------------------
 _orig_getaddrinfo = socket.getaddrinfo
-_dns_cache = {
-    "fapi.binance.com": "65.8.76.49",
-    "fapi1.binance.com": "65.8.76.14",
-    "fapi2.binance.com": "65.8.76.6",
-    "fapi3.binance.com": "65.8.76.4",
-}
+_dns_cache = {}
+_DNS_TTL_SEC = 600
 
 def _resolve_doh(domain: str):
-    if domain in _dns_cache:
-        return _dns_cache[domain]
+    now = time.time()
+    cached = _dns_cache.get(domain)
+    if cached and cached[1] > now:
+        return cached[0]
     for doh_url in [
         f"https://1.1.1.1/dns-query?name={domain}&type=A",
-        f"https://dns.google/resolve?name={domain}&type=A"
+        f"https://dns.google/resolve?name={domain}&type=A",
+        f"https://9.9.9.9:5053/dns-query?name={domain}&type=A",
     ]:
         try:
-            r = requests.get(doh_url, headers={"accept": "application/dns-json"}, timeout=3)
+            r = requests.get(doh_url, headers={"accept": "application/dns-json"}, timeout=2.5)
             data = r.json()
             ips = [ans["data"] for ans in data.get("Answer", []) if ans.get("type") == 1]
             if ips:
-                _dns_cache[domain] = ips[0]
+                _dns_cache[domain] = (ips[0], now + _DNS_TTL_SEC)
                 return ips[0]
         except Exception:
             continue
     return None
 
 def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    if isinstance(host, str) and ("binance" in host.lower()):
-        ip = _resolve_doh(host)
-        if ip:
-            return _orig_getaddrinfo(ip, port, family, type, proto, flags)
-    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+    try:
+        return _orig_getaddrinfo(host, port, family, type, proto, flags)
+    except Exception:
+        if isinstance(host, str) and ("binance" in host.lower()):
+            ip = _resolve_doh(host)
+            if ip:
+                return _orig_getaddrinfo(ip, port, family, type, proto, flags)
+        raise
 
 socket.getaddrinfo = _custom_getaddrinfo
 
@@ -95,6 +97,75 @@ def normalize_symbol_to_pair(symbol: str) -> str:
     if s.startswith("1000") and s[4:] in K1000_COINS:
         return s + "USDT"
     return s + "USDT"
+
+
+# T0.7: Known minimum notional & blacklist rules for pre-AI eligibility check
+KNOWN_MIN_NOTIONAL = {
+    "BTCUSDT": 50.0,
+    "ETHUSDT": 20.0,
+    "BNBUSDT": 10.0,
+}
+BLACKLIST_PREFIXES = ("AXTIB", "SNDKB", "SOXLB", "TSLAB", "NVDA", "AAPL", "GOOG", "MSFT", "AMZN", "BTCDOM", "DEFI")
+
+
+def filter_eligible_symbols(
+    symbols: list,
+    available_balance_usdt: float,
+    leverage: int = 20,
+    sizing_mode: str = "ALL_IN",
+    all_in_fraction: float = 0.95,
+    balance_fraction: float = None,
+    exchange_filters: dict = None,
+    exchange_info_map: dict = None,
+) -> tuple:
+    """
+    T0.7: Pre-check symbol capital & liquidity eligibility BEFORE calling AI.
+    Eliminates symbols whose minNotional exceeds account purchasing power (e.g. BTCUSDT $50 when balance is $1.32 -> $25 max notional).
+    Returns (eligible_list, skipped_records).
+    """
+    frac = float(balance_fraction) if balance_fraction is not None else float(all_in_fraction)
+    ex_map = exchange_info_map if exchange_info_map is not None else exchange_filters
+    eff_balance = max(0.0, float(available_balance_usdt))
+    max_notional = eff_balance * frac * int(leverage)
+    eligible = []
+    skipped = []
+
+    for item in symbols:
+        sym_raw = item.get("pair") or item.get("symbol") if isinstance(item, dict) else str(item)
+        pair = normalize_symbol_to_pair(sym_raw)
+        base = pair.replace("USDT", "")
+
+        # 1. Blacklist / non-standard symbols
+        if len(base) <= 1 or any(pair.startswith(bp) for bp in BLACKLIST_PREFIXES):
+            skipped.append({"symbol": pair, "skip_reason": "SKIP_NON_STANDARD_OR_ILLIQUID"})
+            continue
+
+        # 2. Check minNotional
+        min_not = KNOWN_MIN_NOTIONAL.get(pair, 5.0)
+        if ex_map and pair in ex_map:
+            min_not = max(min_not, float(ex_map[pair].get("minNotional", 5.0)))
+            if ex_map[pair].get("status", "TRADING") != "TRADING":
+                skipped.append({"symbol": pair, "skip_reason": "SKIP_NOT_TRADING"})
+                continue
+
+        if max_notional < min_not * 1.04:
+            skipped.append({
+                "symbol": pair,
+                "skip_reason": f"SKIP_MIN_NOTIONAL (max_notional=${max_notional:.2f} < required=${min_not * 1.04:.2f})",
+                "min_notional": min_not,
+                "max_notional": round(max_notional, 2),
+            })
+            continue
+
+        # 3. Check 24h volume if provided in item dict
+        if isinstance(item, dict) and "quoteVolume" in item:
+            if float(item.get("quoteVolume", 0)) < 15_000_000:
+                skipped.append({"symbol": pair, "skip_reason": "SKIP_LOW_24H_VOLUME"})
+                continue
+
+        eligible.append(item)
+
+    return eligible, skipped
 
 # ===================================================================
 # STATIC CORE UNIVERSE (INSTANT FALLBACK / BOOTSTRAP)
@@ -831,44 +902,92 @@ def get_crypto_fear_greed():
 
 
 # ===================================================================
-# BINANCE KLINES (FASTER THAN YAHOO, BETTER FOR CRYPTO)
+# BINANCE KLINES (T3.1: STRICT CLOSED-BAR INTEGRITY, NO LOOKAHEAD)
 # ===================================================================
-def get_binance_klines(pair="BTCUSDT", interval="1h", limit=120):
+def get_binance_klines(pair="BTCUSDT", interval="1h", limit=120, closed_only=True):
     """
     Fetch klines from Binance Futures API with multi-endpoint failover.
-    Returns OHLCV data.
+    T3.1 Fix: By default (closed_only=True), inspects closeTime (k[6]) of the last bar.
+    If the last bar is still forming (closeTime > now_ms), excludes it from the indicator
+    arrays (opens, highs, lows, closes, volumes, taker_buy_quote) and stores it separately
+    in 'forming_bar' so indicators never suffer from intra-bar volume/wick contamination!
     """
     pair = normalize_symbol_to_pair(pair)
+    req_limit = min(1500, int(limit) + 1) if closed_only else int(limit)
     endpoints = [
-        f"https://fapi.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={limit}",
-        f"https://fapi1.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={limit}",
-        f"https://fapi2.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={limit}",
-        f"https://fapi3.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={limit}",
-        f"https://data-api.binance.vision/api/v3/klines?symbol={pair}&interval={interval}&limit={limit}",
+        f"https://fapi.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={req_limit}",
+        f"https://fapi1.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={req_limit}",
+        f"https://fapi2.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={req_limit}",
+        f"https://fapi4.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={req_limit}",
+        f"https://data-api.binance.vision/api/v3/klines?symbol={pair}&interval={interval}&limit={req_limit}",
     ]
     for url in endpoints:
         try:
-            resp = requests.get(url, timeout=8, verify=False)
+            resp = requests.get(url, timeout=(3.05, 8.0), verify=False)
             if resp.status_code != 200:
                 continue
-            
+
             data = resp.json()
             if not isinstance(data, list) or len(data) == 0:
                 continue
 
-            opens = [float(k[1]) for k in data]
-            highs = [float(k[2]) for k in data]
-            lows = [float(k[3]) for k in data]
-            closes = [float(k[4]) for k in data]
-            volumes = [float(k[5]) for k in data]
-            
+            now_ms = int(time.time() * 1000)
+            forming_bar = None
+            closed_rows = data
+
+            if closed_only and len(data) >= 2:
+                last_k = data[-1]
+                close_time_ms = int(last_k[6]) if len(last_k) > 6 else 0
+                open_time_ms = int(last_k[0]) if len(last_k) > 0 else 0
+                if close_time_ms > now_ms:
+                    duration_ms = max(1, close_time_ms - open_time_ms)
+                    elapsed_ratio = max(0.01, min(1.0, (now_ms - open_time_ms) / duration_ms))
+                    forming_bar = {
+                        "open_time": open_time_ms,
+                        "open": float(last_k[1]),
+                        "high": float(last_k[2]),
+                        "low": float(last_k[3]),
+                        "close": float(last_k[4]),
+                        "volume": float(last_k[5]),
+                        "close_time": close_time_ms,
+                        "quote_volume": float(last_k[7]) if len(last_k) > 7 else 0.0,
+                        "taker_buy_base": float(last_k[9]) if len(last_k) > 9 else 0.0,
+                        "taker_buy_quote": float(last_k[10]) if len(last_k) > 10 else 0.0,
+                        "elapsed_ratio": round(elapsed_ratio, 4),
+                        "projected_volume": round(float(last_k[5]) / max(elapsed_ratio, 0.05), 4),
+                        "is_closed": False,
+                    }
+                    closed_rows = data[:-1]
+
+            if len(closed_rows) > limit:
+                closed_rows = closed_rows[-limit:]
+
+            opens = [float(k[1]) for k in closed_rows]
+            highs = [float(k[2]) for k in closed_rows]
+            lows = [float(k[3]) for k in closed_rows]
+            closes = [float(k[4]) for k in closed_rows]
+            volumes = [float(k[5]) for k in closed_rows]
+            close_times = [int(k[6]) for k in closed_rows if len(k) > 6]
+            quote_volumes = [float(k[7]) if len(k) > 7 else 0.0 for k in closed_rows]
+            taker_buy_base = [float(k[9]) if len(k) > 9 else 0.0 for k in closed_rows]
+            taker_buy_quote = [float(k[10]) if len(k) > 10 else 0.0 for k in closed_rows]
+
+            live_price = forming_bar["close"] if forming_bar else (closes[-1] if closes else 0.0)
+
             return {
                 "opens": opens,
                 "highs": highs,
                 "lows": lows,
                 "closes": closes,
                 "volumes": volumes,
-                "count": len(data)
+                "close_times": close_times,
+                "quote_volumes": quote_volumes,
+                "taker_buy_base": taker_buy_base,
+                "taker_buy_quote": taker_buy_quote,
+                "live_price": live_price,
+                "forming_bar": forming_bar,
+                "closed_only": closed_only,
+                "count": len(closes),
             }
         except Exception:
             continue

@@ -33,20 +33,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # - Binance Futures (fapi.binance.com)
 # ---------------------------------------------------------------------------
 _orig_getaddrinfo = socket.getaddrinfo
-_UNIVERSAL_DNS_CACHE = {
-    "fapi.binance.com": "65.8.76.49",
-    "fapi1.binance.com": "65.8.76.14",
-    "fapi2.binance.com": "65.8.76.6",
-    "fapi3.binance.com": "65.8.76.4",
-    "api.groq.com": "104.18.38.236",
-    "generativelanguage.googleapis.com": "172.217.114.4",
-    "openrouter.ai": "104.18.3.115",
-    "api.telegram.org": "149.154.166.110"
-}
+_UNIVERSAL_DNS_CACHE = {}
+_DNS_TTL_SEC = 300.0
 
 def _resolve_doh(domain: str):
-    if domain in _UNIVERSAL_DNS_CACHE:
-        return _UNIVERSAL_DNS_CACHE[domain]
+    now = time.time()
+    cached = _UNIVERSAL_DNS_CACHE.get(domain)
+    if cached and (now - cached["ts"] < _DNS_TTL_SEC):
+        return cached["ip"]
     for doh_url in [
         f"https://1.1.1.1/dns-query?name={domain}&type=A",
         f"https://dns.google/resolve?name={domain}&type=A"
@@ -56,18 +50,21 @@ def _resolve_doh(domain: str):
             data = r.json()
             ips = [ans["data"] for ans in data.get("Answer", []) if ans.get("type") == 1]
             if ips:
-                _UNIVERSAL_DNS_CACHE[domain] = ips[0]
+                _UNIVERSAL_DNS_CACHE[domain] = {"ip": ips[0], "ts": now}
                 return ips[0]
         except Exception:
             continue
-    return None
+    return cached["ip"] if cached else None
 
 def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    if isinstance(host, str) and any(kw in host.lower() for kw in ["binance", "groq", "googleapis", "openrouter", "telegram"]):
-        ip = _resolve_doh(host)
-        if ip:
-            return _orig_getaddrinfo(ip, port, family, type, proto, flags)
-    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+    try:
+        return _orig_getaddrinfo(host, port, family, type, proto, flags)
+    except Exception:
+        if isinstance(host, str) and any(kw in host.lower() for kw in ["binance", "groq", "googleapis", "openrouter", "telegram"]):
+            ip = _resolve_doh(host)
+            if ip:
+                return _orig_getaddrinfo(ip, port, family, type, proto, flags)
+        raise
 
 socket.getaddrinfo = _custom_getaddrinfo
 
@@ -392,9 +389,25 @@ def _openrouter_free_models():
 
 def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature: float = 0.1, is_json: bool = True):
     """
-    ULTIMATE AI caller — LOCAL OLLAMA FIRST (if online), then cloud cascade.
+    ULTIMATE AI caller — delegates to ai_gateway.py (T2.1-T2.2) with persistent rate-limit
+    state & verified model IDs, falling back to built-in cascade if ai_gateway is not loaded.
     NEVER falls back to rule-based math. Always AI.
     """
+    try:
+        from ai_gateway import call_ai as _gw_call_ai
+        return _gw_call_ai(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            is_json=is_json,
+        )
+    except ImportError:
+        pass
+    except Exception as gw_err:
+        if "ALL_AI_FAILED" in str(gw_err) or "AIUnavailable" in type(gw_err).__name__:
+            raise
+
     global _GROQ_DAILY_EXHAUSTED
 
     effective_system = system_prompt or ""
@@ -421,13 +434,13 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             "timeout": 180,
         })
 
-    # --- Tier 1: Groq (Active verified models: Qwen 27B, GPT-OSS 20B, GPT-OSS 120B) ---
+    # --- Tier 1: Groq (T2.1 Verified active model IDs) ---
     if GROQ_API_KEY:
         _gh = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
         for _n, _m, _eff, _jo, _to in [
-            ("Groq-Qwen27B", "qwen/qwen3.8-27b", None, True, 30),
-            ("Groq-20B", "openai/gpt-oss-20b", "low", False, 30),
-            ("Groq-120B", "openai/gpt-oss-120b", "low", False, 45),
+            ("Groq-Llama70B", "llama-3.3-70b-versatile", None, True, 30),
+            ("Groq-QwenQwQ", "qwen-qwq-32b", None, False, 35),
+            ("Groq-DeepSeek70B", "deepseek-r1-distill-llama-70b", None, False, 40),
         ]:
             providers.append({
                 "name": _n, "type": "openai_compat",
@@ -441,7 +454,7 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
     if GEMINI_API_KEY:
         for _gm in [x.strip() for x in os.getenv(
                 "GEMINI_MODELS",
-                "gemini-flash-latest,gemini-2.5-flash,gemini-flash-lite-latest,gemini-2.5-flash-lite").split(",") if x.strip()]:
+                "gemini-2.5-flash,gemini-2.0-flash,gemini-2.5-flash-lite").split(",") if x.strip()]:
             providers.append({
                 "name": f"Gemini-{_gm}", "type": "gemini", "api_key": GEMINI_API_KEY,
                 "model": _gm, "min_tokens": 1500, "max_retries": 1, "timeout": 30,
@@ -459,15 +472,15 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
                 "max_retries": 1, "timeout": 45,
             })
 
-    # --- Tier 4: Cerebras (ultra-fast inference — add CEREBRAS_API_KEY to .env to enable) ---
+    # --- Tier 4: Cerebras (T2.1 Verified active model ID) ---
     if CEREBRAS_API_KEY:
         providers.append({
-            "name": "Cerebras",
+            "name": "Cerebras-Llama70B",
             "type": "openai_compat",
             "url": "https://api.cerebras.ai/v1/chat/completions",
             "headers": {"Authorization": f"Bearer {CEREBRAS_API_KEY}", "Content-Type": "application/json"},
-            "model": "qwen-3.8-27b",
-            "use_json_object": False,
+            "model": "llama-3.3-70b",
+            "use_json_object": True,
             "max_retries": 1,
             "timeout": 30,
         })
@@ -1540,6 +1553,50 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
             plan_result = layer3_build_plan(symbol, scan_summary, setup_result, market_data)
             risk_result = layer4_risk_audit(symbol, scan_summary, setup_result, plan_result, market_data)
             final_call = layer5_final_judgment(symbol, scan_summary, setup_result, plan_result, risk_result, market_data)
+
+            # === INSTITUTIONAL V2 (28-PILLAR + SNIPER 75% META-LABELING ENRICHMENT) ===
+            try:
+                cfg_v2 = get_trading_config()
+                sniper_cfg = cfg_v2.get("sniper_75_mode", {})
+                raw_p = float(final_call.get("confidence_score", 50)) / 100.0
+                cal_p = raw_p
+                try:
+                    from calibration import IsotonicCalibrator
+                    cal_p = IsotonicCalibrator().calibrate_prob(raw_p)
+                except Exception:
+                    pass
+                conformal_set = ["WIN"] if cal_p >= float(sniper_cfg.get("min_calibrated_p_tp1", 0.76)) else ["WIN", "LOSS"]
+                try:
+                    from ai.conformal import SplitConformalGate
+                    sg = SplitConformalGate(alpha=float(sniper_cfg.get("conformal_alpha_target", 0.18)))
+                    c_res = sg.predict_set(cal_p)
+                    if isinstance(c_res, (list, set)):
+                        conformal_set = sorted(list(c_res))
+                except Exception:
+                    pass
+
+                # T3.15: Dynamic Funding & Macro Shock Shield
+                macro_shield = {"blocked": False, "reason": "CLEAR"}
+                try:
+                    from features.macro_funding_shield import check_macro_and_cme_shield
+                    macro_shield = check_macro_and_cme_shield(time.time())
+                    if macro_shield.get("blocked") and final_call.get("status") == "APPROVED":
+                        final_call["status"] = "REJECTED"
+                        final_call["final_reason"] = f"{final_call.get('final_reason', '')} [MACRO SHIELD: {macro_shield.get('reason')}]"
+                except Exception:
+                    pass
+
+                final_call["calibrated_prob"] = round(cal_p, 4)
+                final_call["conformal_set"] = conformal_set
+                final_call["macro_shield"] = macro_shield
+                final_call["sniper_75_plan"] = {
+                    "enabled": bool(sniper_cfg.get("enabled", True)),
+                    "tp1_lock_trigger_r": float(sniper_cfg.get("tp1_lock_trigger_r", 0.55)),
+                    "sl_lock_after_tp1_r": float(sniper_cfg.get("sl_lock_after_tp1_r", 0.38)),
+                    "tp2_runner_r": float(sniper_cfg.get("tp2_runner_r", 1.60)),
+                }
+            except Exception as _v2e:
+                print(f"[INSTITUTIONAL V2] Enrichment notice: {_v2e}", flush=True)
     except Exception as e:
         if isinstance(e, AIUnavailable) or "ALL_AI_FAILED" in str(e):
             print(f"[AI-ONLY] {symbol}: AI tidak tersedia -> TIDAK TRADE ({str(e)[:140]})", flush=True)

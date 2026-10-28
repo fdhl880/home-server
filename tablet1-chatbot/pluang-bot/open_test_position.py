@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 POSITIONS_FILE = os.path.join(BASE_DIR, "results", "active_positions.json")
-TELE_TOKEN = "8829535429:AAHFHM56RDNAd7-ax6Dd-3V3g9OZEleYi5M"
+TELE_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
 # 1. Fetch live BTC price
 r = requests.get("https://data-api.binance.vision/api/v3/ticker/price?symbol=BTCUSDT", timeout=5)
