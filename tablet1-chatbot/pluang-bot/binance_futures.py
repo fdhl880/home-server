@@ -113,12 +113,10 @@ class BinanceFuturesClient:
             self.endpoints = ["https://testnet.binancefuture.com"]
         else:
             self.base_url = "https://fapi.binance.com"
-            # T0.1: fapi3 removed due to SSLv3 handshake failure
+            # T0.1: Only official Binance Futures endpoints with valid SSL certificates
             self.endpoints = [
                 "https://fapi.binance.com",
                 "https://fapi1.binance.com",
-                "https://fapi2.binance.com",
-                "https://fapi4.binance.com",
             ]
 
         self._host_cooldown = {}     # host -> ready_timestamp
@@ -1137,7 +1135,7 @@ class BinanceFuturesClient:
             # Step 3: Place Take Profit Algo Order
             if tp > 0:
                 try:
-                    tp_res = self.set_take_profit(symbol, direction, trigger_price=tp)
+                    tp_res = self.set_take_profit(symbol, direction, trigger_price=tp, quantity=quantity)
                     execution_log["steps"]["take_profit"] = tp_res
                     if isinstance(tp_res, dict) and "algoId" in tp_res:
                         execution_log["tp_algo_id"] = tp_res["algoId"]
@@ -1151,7 +1149,7 @@ class BinanceFuturesClient:
                 retry_delays = [0.5, 1.0, 2.0]
 
                 for attempt in range(3):
-                    sl_res = self.set_stop_loss(symbol, direction, trigger_price=sl)
+                    sl_res = self.set_stop_loss(symbol, direction, trigger_price=sl, quantity=quantity)
                     execution_log["steps"][f"stop_loss_attempt_{attempt + 1}"] = sl_res
 
                     if isinstance(sl_res, dict) and "algoId" in sl_res:
@@ -1175,22 +1173,15 @@ class BinanceFuturesClient:
                     if attempt < len(retry_delays):
                         time.sleep(retry_delays[attempt])
 
-                execution_log["sl_state"] = sl_state
-                execution_log["sl_verified"] = (sl_state == "CONFIRMED")
-
-                if sl_state == "MISSING":
-                    # Confirmed missing after 3 attempts on a healthy API -> emergency close
-                    print(f"[BinanceFutures] 🚨 SL REJECTED 3x on {symbol}! Closing position for safety.", flush=True)
-                    try:
-                        self.close_position(symbol, direction)
-                        self.cancel_all_orders(symbol)
-                    except Exception as e_close:
-                        print(f"[BinanceFutures] Emergency close error: {e_close}", flush=True)
-                    execution_log["close_reason"] = "SL_PLACEMENT_REJECTED_3X"
-                    raise RuntimeError("SL_PLACEMENT_REJECTED_3X: Stop Loss rejected 3x by exchange; position closed.")
-                elif sl_state == "UNKNOWN":
-                    # T0.4: Network hiccup during verification -> DO NOT close the position! Hand off to Reconcile Guard.
-                    print(f"[BinanceFutures] ⚠️ SL verification state is UNKNOWN (network hiccup). Keeping position open for Reconcile Guard.", flush=True)
+                if sl_state == "CONFIRMED":
+                    execution_log["sl_state"] = "CONFIRMED"
+                    execution_log["sl_verified"] = True
+                else:
+                    # NEVER dump an open position at market just because exchange SL registration lagged!
+                    # Keep the position alive. Local Sentinel Guard in auto_trader.py monitors every 10s and retries.
+                    print(f"[BinanceFutures] ⚠️ SL order {sl_state} on exchange. Position KEPT OPEN under local Sentinel Guard.", flush=True)
+                    execution_log["sl_state"] = "LOCAL_GUARD_MONITORED"
+                    execution_log["sl_verified"] = False
 
             execution_log["status"] = "EXECUTED"
             execution_log["binance_synced"] = True
