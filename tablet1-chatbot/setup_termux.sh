@@ -1,11 +1,12 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ==============================================================================
-# PYROFUEL & BLOOMBERG TERMINAL - ONE-CLICK TERMUX SETUP SCRIPT
+# TABLET1-CHATBOT: ONE-CLICK TERMUX SETUP SCRIPT (INSTITUTIONAL V2)
+# T0.8: Zero hardcoded/base64 credentials in repository scripts
 # ==============================================================================
 set -e
 
 echo "=================================================================="
-echo "📱 PYROFUEL TRADING DESK - INSTALLASI TERMUX (ANDROID TABLET)"
+echo "📱 TABLET1-CHATBOT TRADING DESK - INSTALLASI TERMUX (ANDROID)"
 echo "=================================================================="
 
 # 1. Update Termux Packages
@@ -14,7 +15,7 @@ pkg update -y && pkg upgrade -y
 
 # 2. Install Dependencies (Pre-built ARM64 packages)
 echo "[2/5] Menginstall Node.js, Python, dan Numpy ARM64..."
-pkg install -y git nodejs python python-numpy clang make coreutils
+pkg install -y git nodejs python python-numpy clang make coreutils util-linux termux-api
 
 # 3. Install Node Modules
 echo "[3/5] Menginstall Node.js dependencies..."
@@ -22,17 +23,33 @@ npm install
 
 # 4. Install Python Dependencies
 echo "[4/5] Menginstall Python packages via pip..."
-pip install flask flask-cors requests python-dotenv urllib3
+pip install flask flask-cors requests python-dotenv urllib3 websocket-client
 
-# 5. Auto-inject ready-to-use .env configuration (Zero Typing Required)
-echo "[5/5] Memasang konfigurasi .env otomatis..."
-mkdir -p pluang-bot
+# 5. Initialize .env files safely (without hardcoded secrets in git)
+echo "[5/5] Memeriksa konfigurasi .env..."
+mkdir -p pluang-bot/results
 
-echo "IyA9PT0gQkxPT01CRVJHIFRFUk1JTkFMIChOb2RlLmpzIC0gUG9ydCA0MDAwKSA9PT0KUE9SVD00MDAwCkdFTUlOSV9BUElfS0VZPUFRLkFiOFJONkplc09laUViNVZxOThFWVF3TW9jTWg3TTZ5bl9LcmVoUkRHTVFnVUdWaWh3CkdST1FfQVBJX0tFWT1nc2tfbGF1UzMwREdYYU94ZTdLSEZ4S1pXR2R5YjNGWXRrYzcwWDhGYVVHMXlXektoQlo1WjRKagpPUEVOUk9VVEVSX0FQSV9LRVk9c2stb3ItdjEtMGQzMmI2MWZjOTM4ODRjNzdhMjYxMWM0MzZiN2FmZjlhYmQ3ZjdiZWZkNzQ4Mzg4MzdiZDhiMGQ2ZjE0NGVhNgoKIyA9PT0gUExVQU5HIEJPVCAoUHl0aG9uIC0gUG9ydCA1MDAwKSA9PT0KUExVQU5HX1BPUlQ9NTAwMApURUxFR1JBTV9CT1RfVE9LRU49ODgyOTUzNTQyOTpBQUhGSE01NlJETkFkNy1heDZEZC0zVjNnOU9aRWxlWWk1TQpBSV9QUk9WSURFUj1ncm9xCkdST1FfTU9ERUw9b3BlbmFpL2dwdC1vc3MtMTIwYgpPUEVOUk9VVEVSX01PREVMPW1pbmltYXgvbWluaW1heC1tMy4xLWZsYXNoOmZyZWUK" | base64 -d > .env
+if [ ! -f ".env" ]; then
+    cp .env.example .env 2>/dev/null || cat > .env << 'EOF'
+PORT=4000
+PLUANG_PORT=5000
+AI_PROVIDER=groq
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_API_KEY=
+GEMINI_API_KEY=
+OPENROUTER_API_KEY=
+TELEGRAM_BOT_TOKEN=
+BINANCE_API_KEY=
+BINANCE_API_SECRET=
+EOF
+    chmod 600 .env 2>/dev/null || true
+    echo "[!] Template .env dibuat. Silakan isi API keys Anda di .env dan pluang-bot/.env"
+fi
 
-echo "T1BFTlJPVVRFUl9BUElfS0VZPXNrLW9yLXYxLWM0OWIzNmI2MDlkYjVlOWFiMDM4MTRmM2Y5ZjgyNTIzNzc2NTZhMWFmMDA0ZDZmOTJjOTFmNzZmZWQxMDVhMmYKT1BFTlJPVVRFUl9NT0RFTD1taW5pbWF4L21pbmltYXgtbTMuMS1mbGFzaDpmcmVlCkdST1FfQVBJX0tFWT1nc2tfbGF1UzMwREdYYU94ZTdLSEZ4S1pXR2R5YjNGWXRrYzcwWDhGYVVHMXlXektoQlo1WjRKagpHUk9RX01PREVMPW9wZW5haS9ncHQtb3NzLTEyMGIKVEVMRUdSQU1fQk9UX1RPS0VOPTg4Mjk1MzU0Mjk6QUFIRkhNNTZSRE5BZDctYXg2RGQtM1YzZzlPWkVsZVlpNU0KQUlfUFJPVklERVI9Z3JvcQo=" | base64 -d > pluang-bot/.env
-
-echo "[+] File .env dan pluang-bot/.env berhasil dibuat otomatis!"
+if [ ! -f "pluang-bot/.env" ]; then
+    cp .env pluang-bot/.env 2>/dev/null || true
+    chmod 600 pluang-bot/.env 2>/dev/null || true
+fi
 
 chmod +x start.sh
 
@@ -43,8 +60,8 @@ if command -v termux-wake-lock &> /dev/null; then
 fi
 
 echo "=================================================================="
-echo "✅ SETUP SELESAI TANPA PERLU KETIK APA-APA!"
-echo "👉 Untuk menjalankan server, ketik:"
+echo "✅ SETUP TABLET1-CHATBOT SELESAI!"
+echo "👉 Untuk menjalankan seluruh sistem (Bloomberg + Bot), ketik:"
 echo "   ./start.sh"
-echo "🌐 Buka browser tablet di: http://localhost:4000 (Tab 10 - Crypto Desk)"
+echo "🌐 Buka browser di: http://localhost:4000 (Tab 10 - Crypto Desk)"
 echo "=================================================================="

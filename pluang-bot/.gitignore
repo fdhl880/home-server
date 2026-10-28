@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-results/
-tokens.json
-.env
-node_modules/
-*.log
-scratch/
-test_*.py

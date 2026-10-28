@@ -53,7 +53,7 @@ function getValidKey(envVal, defaultVal) {
     }
     return defaultVal;
 }
-const GROQ_API_KEY = getValidKey(process.env.GROQ_API_KEY, ['gsk_', 'lauS30DGXaOxe7KHF', 'xKZWGdyb3FYtkc70X8FaUG1', 'yWzKhBZ5Z4Jj'].join(''));
+const GROQ_API_KEY = getValidKey(process.env.GROQ_API_KEY, '');
 
 // ============================================================
 // PORTFOLIO DATABASE ENGINE (RP 200 JUTA INITIAL CAPITAL)
@@ -2660,14 +2660,23 @@ app.post('/api/crypto-futures/execute', (req, res) => {
     const symbol = signal.symbol || "SOL-USD";
     const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
     
-    // Call python script to execute trade directly on Binance Futures
+    // Call python script to execute trade directly on Binance Futures (Institutional V2 28-Pillar)
+    const cfgNow = getLocalTradingConfig();
     const pyCode = `
 import json, sys
 sys.path.append('${pluangDir.replace(/\\/g, '/')}')
 from binance_futures import BinanceFuturesClient
 client = BinanceFuturesClient()
 signal = ${JSON.stringify(signal)}
-config = {'max_leverage': 20, 'margin_type': 'ISOLATED', 'order_type': signal.get('order_type', 'MARKET')}
+config = ${JSON.stringify({
+        fixed_leverage: 20,
+        max_leverage: 20,
+        margin_type: 'ISOLATED',
+        sizing_mode: cfgNow.sizing_mode || 'ALL_IN',
+        all_in_balance_fraction: cfgNow.all_in_balance_fraction || 0.95,
+        order_type: signal.order_type || cfgNow.order_type || 'MARKET',
+        sniper_75_mode: cfgNow.sniper_75_mode || { enabled: true, min_calibrated_p_tp1: 0.76, tp1_lock_trigger_r: 0.55, sl_lock_after_tp1_r: 0.38 }
+    })}
 res = client.execute_full_trade(signal, config)
 print(json.dumps(res))
 `;
@@ -2699,10 +2708,17 @@ print(json.dumps(res))
             binance_pair: signal.binance_pair || symbol.replace('-USD', 'USDT'),
             direction: signal.direction || "LONG",
             entry_price: execRes.entry_price || signal.entry_price || 0,
+            take_profit: execRes.take_profit || signal.take_profit || signal.take_profit_1 || 0,
             take_profit_1: signal.take_profit_1 || signal.take_profit || 0,
             take_profit_2: signal.take_profit_2 || signal.take_profit || 0,
-            stop_loss: signal.stop_loss || 0,
+            stop_loss: execRes.stop_loss || signal.stop_loss || 0,
+            init_stop_loss: execRes.stop_loss || signal.stop_loss || 0,
+            sl_state: execRes.sl_state || "CONFIRMED",
+            sl_algo_id: execRes.sl_algo_id || null,
+            tp_algo_id: execRes.tp_algo_id || null,
             leverage: 20,
+            margin_type: "ISOLATED",
+            sizing_mode: "ALL_IN",
             position_size_idr: signal.position_size_idr || (execRes.position_size_usdt ? Math.round(execRes.position_size_usdt * 16500) : 0),
             position_size_usd: execRes.position_size_usdt || signal.position_size_usd || (signal.position_size_idr ? (signal.position_size_idr / 16500).toFixed(2) : "0.00"),
             risk_reward_ratio: signal.risk_reward_ratio || "1:2.0",
@@ -2873,20 +2889,91 @@ app.post('/api/crypto-futures/positions/close', (req, res) => {
     res.json({ status: "SUCCESS", message: `Position ${symbol || id} closed.` });
 });
 
-// Auto-start background Auto-Trader worker if Python is present
+// 9b. INSTITUTIONAL V2 ENDPOINTS: VAULT, PANIC KILL-SWITCH, & 28-PILLAR HEALTH
+app.get(['/api/crypto-futures/vault', '/api/vault'], (req, res) => {
+    const vaultPath = path.join(resultsDir, 'vault_state.json');
+    let vault = { locked_profit_vault_usdt: 0, high_water_mark_equity: 0, ratchet_step_pct: 0.15, lock_fraction: 0.35 };
+    try {
+        if (fs.existsSync(vaultPath)) vault = JSON.parse(fs.readFileSync(vaultPath, 'utf8'));
+    } catch (e) {}
+    res.json({ status: "SUCCESS", vault });
+});
+
+app.post(['/api/crypto-futures/panic', '/api/panic'], (req, res) => {
+    const panicPath = path.join(resultsDir, 'panic_lock.json');
+    const payload = {
+        locked: true,
+        triggered_at: new Date().toISOString(),
+        reason: (req.body && req.body.reason) || "Triggered via Dashboard /api/panic"
+    };
+    try {
+        fs.mkdirSync(resultsDir, { recursive: true });
+        fs.writeFileSync(panicPath, JSON.stringify(payload, null, 2));
+    } catch (e) {}
+    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const pyCode = `
+import sys
+sys.path.append('${pluangDir.replace(/\\/g, '/')}')
+from binance_futures import BinanceFuturesClient
+c = BinanceFuturesClient()
+for p in (c.get_positions() or []):
+    sym = p.get('symbol')
+    if sym:
+        c.close_position(sym, p.get('direction', 'LONG'))
+        c.cancel_all_orders(sym)
+`;
+    execFile(pyCmd, ['-c', pyCode], { cwd: pluangDir, timeout: 20000 }, () => {});
+    saveLocalPositions([]);
+    res.json({ status: "PANIC_LOCKED", success: true, panic: payload });
+});
+
+app.post(['/api/crypto-futures/unpanic', '/api/unpanic'], (req, res) => {
+    const panicPath = path.join(resultsDir, 'panic_lock.json');
+    try {
+        if (fs.existsSync(panicPath)) fs.unlinkSync(panicPath);
+    } catch (e) {}
+    res.json({ status: "UNPANICKED", success: true });
+});
+
+app.get(['/api/crypto-futures/health', '/api/health'], (req, res) => {
+    const hbPath = path.join(resultsDir, 'heartbeat.json');
+    const panicPath = path.join(resultsDir, 'panic_lock.json');
+    let hb = null;
+    let panic = null;
+    try { if (fs.existsSync(hbPath)) hb = JSON.parse(fs.readFileSync(hbPath, 'utf8')); } catch (e) {}
+    try { if (fs.existsSync(panicPath)) panic = JSON.parse(fs.readFileSync(panicPath, 'utf8')); } catch (e) {}
+    const cfg = getLocalTradingConfig();
+    res.json({
+        status: "HEALTHY",
+        architecture: "INSTITUTIONAL_V2_28_PILLARS",
+        fixed_leverage: 20,
+        margin_type: "ISOLATED",
+        sizing_mode: cfg.sizing_mode || "ALL_IN",
+        all_in_balance_fraction: cfg.all_in_balance_fraction || 0.95,
+        sniper_75_mode: cfg.sniper_75_mode || { enabled: true, min_calibrated_p_tp1: 0.76, tp1_lock_trigger_r: 0.55, sl_lock_after_tp1_r: 0.38 },
+        heartbeat: hb,
+        panic_lock: panic
+    });
+});
+
+// Auto-start background Auto-Trader worker if Python is present (Single-Instance Guard)
+let _autoTraderProc = null;
 function startBackgroundAutoTrader() {
+    if (_autoTraderProc || process.env.DISABLE_INTERNAL_AUTOTRADER === '1') return;
     if (!fs.existsSync(pluangDir)) return;
     const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
     const autoTraderScript = path.join(pluangDir, 'auto_trader.py');
     if (!fs.existsSync(autoTraderScript)) return;
 
     try {
-        console.log(`[PYROFUEL] Launching background Auto-Trader worker...`);
+        console.log(`[PYROFUEL] Launching single-instance background Auto-Trader worker...`);
         const proc = spawn(pyCmd, ['-u', 'auto_trader.py'], {
             cwd: pluangDir,
             env: { ...process.env, PYTHONUNBUFFERED: '1' },
             stdio: ['ignore', 'pipe', 'pipe']
         });
+        _autoTraderProc = proc;
+        proc.on('exit', () => { _autoTraderProc = null; });
         proc.stdout.on('data', d => {
             const s = d.toString().trim();
             if (s) console.log(`[AUTOTRADER] ${s}`);

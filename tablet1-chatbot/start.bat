@@ -1,9 +1,9 @@
 @echo off
-title BLOOMBERG TERMINAL & PYROFUEL AI TRADING ENGINE
+title TABLET1-CHATBOT: BLOOMBERG TERMINAL & PYROFUEL 28-PILLAR ENGINE
 cd /d "%~dp0"
 
 echo ==================================================================
-echo BLOOMBERG TERMINAL & PYROFUEL 5-LAYER AI TRADING ENGINE
+echo TABLET1-CHATBOT: BLOOMBERG TERMINAL ^& PYROFUEL 28-PILLAR AI ENGINE
 echo ==================================================================
 
 if not exist node_modules (
@@ -14,8 +14,7 @@ if not exist node_modules (
 echo [*] Checking Python dependencies...
 python -m pip install -r requirements.txt --quiet >nul 2>&1
 
-echo [*] Launching Unified Bloomberg & Binance Futures Engine...
+echo [*] Launching Unified Bloomberg ^& Binance Futures Engine (Single-Instance)...
 start "Pyrofuel Telegram Bot" /B python pluang-bot\telegram_bot.py
-start "Pyrofuel Auto Trader" /B python pluang-bot\auto_trader.py
 node server.js
 pause
