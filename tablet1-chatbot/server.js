@@ -2958,6 +2958,7 @@ app.get(['/api/crypto-futures/health', '/api/health'], (req, res) => {
 
 // Auto-start background Auto-Trader worker if Python is present (Single-Instance Guard)
 let _autoTraderProc = null;
+let _autoTraderRestartTimer = null;
 function startBackgroundAutoTrader() {
     if (_autoTraderProc || process.env.DISABLE_INTERNAL_AUTOTRADER === '1') return;
     if (!fs.existsSync(pluangDir)) return;
@@ -2973,7 +2974,16 @@ function startBackgroundAutoTrader() {
             stdio: ['ignore', 'pipe', 'pipe']
         });
         _autoTraderProc = proc;
-        proc.on('exit', () => { _autoTraderProc = null; });
+        proc.on('exit', (code) => {
+            console.log(`[AUTOTRADER] Worker exited with code ${code}. Auto-restarting in 5s...`);
+            _autoTraderProc = null;
+            if (!_autoTraderRestartTimer && process.env.DISABLE_INTERNAL_AUTOTRADER !== '1') {
+                _autoTraderRestartTimer = setTimeout(() => {
+                    _autoTraderRestartTimer = null;
+                    startBackgroundAutoTrader();
+                }, 5000);
+            }
+        });
         proc.stdout.on('data', d => {
             const s = d.toString().trim();
             if (s) console.log(`[AUTOTRADER] ${s}`);

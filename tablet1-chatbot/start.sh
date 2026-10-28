@@ -3,6 +3,7 @@
 # TABLET1-CHATBOT: UNIFIED BLOOMBERG TERMINAL & PYROFUEL 28-PILLAR ENGINE
 # ==============================================================================
 set -e
+export PYTHONUNBUFFERED=1
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"

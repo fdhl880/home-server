@@ -218,16 +218,16 @@ def _cooldown_from_error(err: str) -> float:
     m = re.search(r"try again in (?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s)?", e)
     if m and any(m.groups()):
         h, mi, se = (float(x) if x else 0.0 for x in m.groups())
-        return h * 3600 + mi * 60 + se + 5
+        return max(3, h * 3600 + mi * 60 + se + 1)
     if "http 404" in e or "no longer available" in e or "does not exist" in e:
         return 24 * 3600
     if any(x in e for x in ("http 401", "http 403", "http 402", "insufficient credits", "invalid api key")):
         return 6 * 3600
     if "429" in e or "rate limit" in e or "quota" in e:
-        return 600
+        return 10  # Groq TPM reset is 2-5s; cooldown 10s instead of 600s
     if any(x in e for x in ("503", "overload", "high demand", "unavailable", "timed out", "timeout")):
-        return 120
-    return 30
+        return 30
+    return 10
 
 
 class AIUnavailable(Exception):
@@ -434,13 +434,13 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
             "timeout": 180,
         })
 
-    # --- Tier 1: Groq (T2.1 Verified active model IDs) ---
+    # --- Tier 1: Groq (Verified active model IDs) ---
     if GROQ_API_KEY:
         _gh = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
         for _n, _m, _eff, _jo, _to in [
-            ("Groq-Llama70B", "llama-3.3-70b-versatile", None, True, 30),
-            ("Groq-QwenQwQ", "qwen-qwq-32b", None, False, 35),
-            ("Groq-DeepSeek70B", "deepseek-r1-distill-llama-70b", None, False, 40),
+            ("Groq-Qwen27B", "qwen/qwen3.8-27b", None, False, 30),
+            ("Groq-GPT120B", "openai/gpt-oss-120b", None, False, 30),
+            ("Groq-GPT20B", "openai/gpt-oss-20b", None, False, 25),
         ]:
             providers.append({
                 "name": _n, "type": "openai_compat",

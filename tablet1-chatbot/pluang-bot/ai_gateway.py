@@ -343,10 +343,9 @@ class AIGateway:
             "chat_url": "https://api.groq.com/openai/v1/chat/completions",
             "models_url": "https://api.groq.com/openai/v1/models",
             "default_models": [
-                "qwen/qwen3-32b",
-                "llama-3.3-70b-versatile",
-                "deepseek-r1-distill-llama-70b",
-                "llama-3.1-8b-instant",
+                "openai/gpt-oss-120b",
+                "qwen/qwen3.8-27b",
+                "openai/gpt-oss-20b",
             ],
             "tpd_limit": DEFAULT_GROQ_TPD_LIMIT,
             "env_keys": ("GROQ_API_KEYS", "GROQ_API_KEY"),
@@ -641,7 +640,7 @@ class AIGateway:
                 ]
                 for m in models_raw:
                     if m not in preferred and any(
-                        tag in m.lower() for tag in ("qwen", "llama-3.3", "deepseek", "llama-3.1")
+                        tag in m.lower() for tag in ("gpt-oss", "qwen", "llama-3.3", "deepseek", "llama-3.1")
                     ):
                         if "whisper" not in m.lower() and "guard" not in m.lower() and "tts" not in m.lower():
                             preferred.append(m)
