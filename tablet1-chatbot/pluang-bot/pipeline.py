@@ -102,6 +102,11 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # ===== ENVIRONMENT LOADING =====
 def load_env():
+    try:
+        import bootstrap_credentials
+        bootstrap_credentials.bootstrap()
+    except Exception:
+        pass
     env = {}
     # 1. System environment variables
     for k, v in os.environ.items():
@@ -1267,7 +1272,7 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
     ai_sl = result.get("stop_loss", 0)
     if ai_sl and current_price > 0:
         ai_sl_pct = abs(current_price - ai_sl) / current_price * 100
-        if ai_sl_pct > 4.0 or ai_sl_pct < 0.1:
+        if ai_sl_pct > 2.25 or ai_sl_pct < 0.45:
             print(f"[SL SAFETY] {symbol}: AI SL distance {ai_sl_pct:.2f}% unsafe → forcing to {sl_dist_pct:.2f}%", flush=True)
             result["stop_loss"] = sl_safe
             result["sl_distance_pct"] = sl_dist_pct

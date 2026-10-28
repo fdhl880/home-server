@@ -30,6 +30,12 @@ import requests
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+try:
+    import bootstrap_credentials
+    bootstrap_credentials.bootstrap()
+except Exception:
+    pass
+
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8')
@@ -294,6 +300,7 @@ def record_position(signal: dict):
         "take_profit_1": tp,  # alias for backward compat
         "take_profit_2": tp,  # alias for backward compat
         "stop_loss": sl,
+        "init_stop_loss": sl,
         "leverage": leverage,
         "margin_type": margin_type,
         "order_type": order_type,
@@ -340,8 +347,10 @@ def record_position(signal: dict):
                     pos["entry_price"] = execution_result.get("entry_price") or pos["entry_price"]
                     pos["take_profit"] = execution_result.get("take_profit") or pos["take_profit"]
                     pos["stop_loss"] = execution_result.get("stop_loss") or pos["stop_loss"]
+                    pos["init_stop_loss"] = execution_result.get("stop_loss") or pos.get("init_stop_loss") or pos["stop_loss"]
                     pos["sl_algo_id"] = execution_result.get("sl_algo_id")
                     pos["tp_algo_id"] = execution_result.get("tp_algo_id")
+                    pos["sl_state"] = execution_result.get("sl_state", "CONFIRMED")
                     pos["quantity"] = execution_result.get("quantity")
                     limit_str = f" @ ${limit_price:,.4f}" if order_type == "LIMIT" else ""
                     print(f"[BINANCE] ✅ Real trade executed on Binance Futures: {pos['direction']} {pos['binance_pair']} "
@@ -770,46 +779,8 @@ def monitor_and_update_positions():
                         f"🔒 SL Bursa Baru: <b>${new_sl:,.4f}</b>"
                     )
 
-        # ══════════════════════════════════════════════════════════════
-        # EMERGENCY FLASH CRASH EXIT
-        # Jika harga bergerak >6% melawan posisi dalam <60 menit sejak entry,
-        # tutup PAKSA tanpa menunggu SL (slippage pada 20x bisa fatal)
-        # ══════════════════════════════════════════════════════════════
-        try:
-            open_time_str = pos.get("opened_at") or pos.get("entry_time") or ""
-            if open_time_str:
-                from datetime import timezone as _tz
-                open_dt = datetime.fromisoformat(open_time_str.replace(" UTC", "+00:00").replace("Z", "+00:00"))
-                mins_open = (datetime.now(_tz.utc) - open_dt.astimezone(_tz.utc)).total_seconds() / 60
-                price_move_against = 0.0
-                if direction == "LONG" and entry_price > 0:
-                    price_move_against = (entry_price - current_price) / entry_price * 100
-                elif direction == "SHORT" and entry_price > 0:
-                    price_move_against = (current_price - entry_price) / entry_price * 100
-                # Trigger: >6% against us within 90 minutes = flash crash
-                if price_move_against > 6.0 and mins_open < 90:
-                    pos["status"] = "CLOSED_EMERGENCY"
-                    pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-                    pos["close_price"] = current_price
-                    pos["close_reason"] = f"FLASH_CRASH_EXIT: -{price_move_against:.1f}% dalam {mins_open:.0f} menit"
-                    _record_trade_close_in_journal(pos, current_price, "CLOSED_EMERGENCY", pnl_usd)
-                    if is_binance_pos and bn_client:
-                        try:
-                            bn_client.close_position(pair, direction)
-                            bn_client.cancel_all_orders(pair)
-                        except Exception as _ece:
-                            print(f"[EMERGENCY CLOSE ERROR] {_ece}", flush=True)
-                    send_telegram(
-                        f"🚨 <b>[PYROFUEL EMERGENCY EXIT] FLASH CRASH TERDETEKSI!</b>\n\n"
-                        f"💎 <code>{pos.get('symbol')}</code> {direction} 20x\n"
-                        f"📉 Harga bergerak <b>-{price_move_against:.1f}%</b> melawan posisi\n"
-                        f"⏱️ Hanya {mins_open:.0f} menit sejak entry — potensi flash crash!\n"
-                        f"✂️ <b>Posisi ditutup DARURAT</b> untuk cegah likuidasi paksa.\n"
-                        f"💰 PnL: {pnl_pct:.2f}% | Exit: ${current_price:,.4f}"
-                    )
-                    continue
-        except Exception as _fe:
-            pass
+        # Blueprint v3 C4: Legacy Flash Crash Exit removed.
+        # Native exchange STOP_MARKET orders handle stop-loss protection directly.
 
         # ══════════════════════════════════════════════════════════════
         # TIME-BASED AUTO-CUT (Anti Nyangkut)
@@ -884,8 +855,8 @@ def monitor_and_update_positions():
 
 
         # C6 Fix: For Binance positions, let Binance exchange-side STOP_MARKET orders handle execution.
-        # Only allow local emergency close if position has been open > 120s AND exchange SL is confirmed MISSING.
-        time_since_open_sec = 999
+        # Only allow local emergency close if position has been open > 300s AND exchange SL is confirmed MISSING.
+        time_since_open_sec = 0.0
         open_time_str = pos.get("opened_at") or pos.get("entry_time") or ""
         if open_time_str:
             try:
@@ -893,9 +864,9 @@ def monitor_and_update_positions():
                 open_dt = datetime.fromisoformat(open_time_str.replace(" UTC", "+00:00").replace("Z", "+00:00"))
                 time_since_open_sec = (datetime.now(_tz.utc) - open_dt.astimezone(_tz.utc)).total_seconds()
             except Exception:
-                pass
+                time_since_open_sec = 0.0
 
-        allow_local_tp_sl_fallback = (not is_binance_pos) or (pos.get("sl_state") == "MISSING" and time_since_open_sec > 120)
+        allow_local_tp_sl_fallback = (not is_binance_pos) or (pos.get("sl_state") == "MISSING" and time_since_open_sec > 300)
 
         tp_hit = allow_local_tp_sl_fallback and ((direction == "LONG" and current_price >= tp > 0) or (direction == "SHORT" and current_price <= tp > 0))
         if tp_hit:

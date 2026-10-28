@@ -24,6 +24,12 @@ import socket
 from urllib.parse import urlencode
 from datetime import datetime, timezone
 
+try:
+    import bootstrap_credentials
+    bootstrap_credentials.bootstrap()
+except Exception:
+    pass
+
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")

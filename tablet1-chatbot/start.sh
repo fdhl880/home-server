@@ -13,6 +13,13 @@ echo "🏛️ STARTING TABLET1-CHATBOT (BLOOMBERG TERMINAL & 28-PILLAR AI BOT)"
 echo "📂 Location: $DIR"
 echo "=================================================================="
 
+# 0. Zero-Config Environment & Credential Bootstrap (No manual .env typing needed!)
+if [ -f "bootstrap_credentials.py" ]; then
+    python3 bootstrap_credentials.py 2>/dev/null || python bootstrap_credentials.py 2>/dev/null || true
+elif [ -f "bootstrap_credentials.js" ]; then
+    node bootstrap_credentials.js 2>/dev/null || true
+fi
+
 # 1. Install Node.js dependencies if node_modules missing
 if [ ! -d "node_modules" ]; then
     echo "[*] Installing Node.js dependencies..."
