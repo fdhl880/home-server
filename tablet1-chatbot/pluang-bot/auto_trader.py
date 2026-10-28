@@ -483,9 +483,9 @@ def monitor_and_update_positions():
                         except Exception:
                             sl_state = "UNKNOWN"
                         if tp_px <= 0:
-                            tp_px = round(entry_px * (1.015 if dir_str == "LONG" else 0.985), 6)
+                            tp_px = round(entry_px * (1.035 if dir_str == "LONG" else 0.965), 6)
                         if sl_px <= 0:
-                            sl_px = round(entry_px * (0.990 if dir_str == "LONG" else 1.010), 6)
+                            sl_px = round(entry_px * (0.980 if dir_str == "LONG" else 1.020), 6)
                             try:
                                 sl_res = bn_client.set_stop_loss(sym, dir_str, sl_px)
                                 if isinstance(sl_res, dict) and "algoId" in sl_res:
@@ -883,9 +883,19 @@ def monitor_and_update_positions():
             pass
 
 
-        # C6 Fix: Only execute local TP/SL market close when exchange-native SL/TP is NOT confirmed active.
-        # When sl_state == "CONFIRMED", Binance Futures native MARK_PRICE algo orders own the exit.
-        allow_local_tp_sl_fallback = (not is_binance_pos) or (pos.get("sl_state") == "MISSING")
+        # C6 Fix: For Binance positions, let Binance exchange-side STOP_MARKET orders handle execution.
+        # Only allow local emergency close if position has been open > 120s AND exchange SL is confirmed MISSING.
+        time_since_open_sec = 999
+        open_time_str = pos.get("opened_at") or pos.get("entry_time") or ""
+        if open_time_str:
+            try:
+                from datetime import timezone as _tz
+                open_dt = datetime.fromisoformat(open_time_str.replace(" UTC", "+00:00").replace("Z", "+00:00"))
+                time_since_open_sec = (datetime.now(_tz.utc) - open_dt.astimezone(_tz.utc)).total_seconds()
+            except Exception:
+                pass
+
+        allow_local_tp_sl_fallback = (not is_binance_pos) or (pos.get("sl_state") == "MISSING" and time_since_open_sec > 120)
 
         tp_hit = allow_local_tp_sl_fallback and ((direction == "LONG" and current_price >= tp > 0) or (direction == "SHORT" and current_price <= tp > 0))
         if tp_hit:

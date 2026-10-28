@@ -30,6 +30,15 @@ _orig_getaddrinfo = socket.getaddrinfo
 _dns_cache = {}
 _DNS_TTL_SEC = 600
 
+_BINANCE_STATIC_IPS = {
+    "fapi.binance.com": "65.8.76.49",
+    "fapi1.binance.com": "65.8.76.14",
+    "fapi2.binance.com": "65.8.76.6",
+    "fapi3.binance.com": "65.8.76.4",
+    "fapi4.binance.com": "65.8.76.51",
+    "api.binance.com": "65.8.76.49",
+}
+
 def _resolve_doh(domain: str):
     now = time.time()
     cached = _dns_cache.get(domain)
@@ -38,28 +47,28 @@ def _resolve_doh(domain: str):
     for doh_url in [
         f"https://1.1.1.1/dns-query?name={domain}&type=A",
         f"https://dns.google/resolve?name={domain}&type=A",
-        f"https://9.9.9.9:5053/dns-query?name={domain}&type=A",
     ]:
         try:
-            r = requests.get(doh_url, headers={"accept": "application/dns-json"}, timeout=2.5)
+            r = requests.get(doh_url, headers={"accept": "application/dns-json"}, timeout=2.0)
             data = r.json()
             ips = [ans["data"] for ans in data.get("Answer", []) if ans.get("type") == 1]
             if ips:
-                _dns_cache[domain] = (ips[0], now + _DNS_TTL_SEC)
-                return ips[0]
+                ip = ips[0]
+                if not ip.startswith("202.3.") and not ip.startswith("36."):
+                    _dns_cache[domain] = (ip, now + _DNS_TTL_SEC)
+                    return ip
         except Exception:
             continue
-    return None
+    fallback_ip = _BINANCE_STATIC_IPS.get(domain, "65.8.76.49")
+    _dns_cache[domain] = (fallback_ip, now + _DNS_TTL_SEC)
+    return fallback_ip
 
 def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    try:
-        return _orig_getaddrinfo(host, port, family, type, proto, flags)
-    except Exception:
-        if isinstance(host, str) and ("binance" in host.lower()):
-            ip = _resolve_doh(host)
-            if ip:
-                return _orig_getaddrinfo(ip, port, family, type, proto, flags)
-        raise
+    if isinstance(host, str) and ("binance" in host.lower()):
+        ip = _resolve_doh(host)
+        if ip:
+            return _orig_getaddrinfo(ip, port, family, type, proto, flags)
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
 socket.getaddrinfo = _custom_getaddrinfo
 

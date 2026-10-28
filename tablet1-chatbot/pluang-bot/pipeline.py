@@ -36,6 +36,15 @@ _orig_getaddrinfo = socket.getaddrinfo
 _UNIVERSAL_DNS_CACHE = {}
 _DNS_TTL_SEC = 300.0
 
+_STATIC_EDGE_IPS = {
+    "fapi.binance.com": "65.8.76.49",
+    "fapi1.binance.com": "65.8.76.14",
+    "api.binance.com": "65.8.76.49",
+    "api.groq.com": "104.18.38.236",
+    "openrouter.ai": "104.18.3.115",
+    "api.telegram.org": "149.154.166.110"
+}
+
 def _resolve_doh(domain: str):
     now = time.time()
     cached = _UNIVERSAL_DNS_CACHE.get(domain)
@@ -46,25 +55,28 @@ def _resolve_doh(domain: str):
         f"https://dns.google/resolve?name={domain}&type=A"
     ]:
         try:
-            r = requests.get(doh_url, headers={"accept": "application/dns-json"}, timeout=3)
+            r = requests.get(doh_url, headers={"accept": "application/dns-json"}, timeout=2.0)
             data = r.json()
             ips = [ans["data"] for ans in data.get("Answer", []) if ans.get("type") == 1]
             if ips:
-                _UNIVERSAL_DNS_CACHE[domain] = {"ip": ips[0], "ts": now}
-                return ips[0]
+                ip = ips[0]
+                if not ip.startswith("202.3.") and not ip.startswith("36."):
+                    _UNIVERSAL_DNS_CACHE[domain] = {"ip": ip, "ts": now}
+                    return ip
         except Exception:
             continue
+    fallback_ip = _STATIC_EDGE_IPS.get(domain)
+    if fallback_ip:
+        _UNIVERSAL_DNS_CACHE[domain] = {"ip": fallback_ip, "ts": now}
+        return fallback_ip
     return cached["ip"] if cached else None
 
 def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    try:
-        return _orig_getaddrinfo(host, port, family, type, proto, flags)
-    except Exception:
-        if isinstance(host, str) and any(kw in host.lower() for kw in ["binance", "groq", "googleapis", "openrouter", "telegram"]):
-            ip = _resolve_doh(host)
-            if ip:
-                return _orig_getaddrinfo(ip, port, family, type, proto, flags)
-        raise
+    if isinstance(host, str) and any(kw in host.lower() for kw in ["binance", "groq", "openrouter", "telegram"]):
+        ip = _resolve_doh(host)
+        if ip:
+            return _orig_getaddrinfo(ip, port, family, type, proto, flags)
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
 socket.getaddrinfo = _custom_getaddrinfo
 
