@@ -1,5 +1,6 @@
 'use strict';
-const WebSocket = require('ws');
+let WebSocket = null;
+try { WebSocket = require('ws'); } catch (e) { console.warn('[terminal] optional ws module missing, running REST-only mode'); }
 const U = require('./util');
 const agg = require('./aggregator');
 const binance = require('./providers/binance');
@@ -10,6 +11,9 @@ const MAX_CH = 100;
 const POLL_MS = 5000;
 
 function createHub(server) {
+  if (!WebSocket || !WebSocket.WebSocketServer) {
+    return { attach() {}, stats: () => ({ uptimeSec: 0, wsClients: 0, wsSubscriptions: 0, wsDisabled: true }) };
+  }
   const wss = new WebSocket.WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
   const clients = new Set();
   const chans = new Map(); // channelKey -> Set(client)

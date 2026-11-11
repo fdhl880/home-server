@@ -28,10 +28,10 @@ if ! node --version >/dev/null 2>&1; then
     fi
 fi
 
-# 1. Install Node.js dependencies if node_modules missing
-if [ ! -d "node_modules" ]; then
+# 1. Install Node.js dependencies if node_modules or ws missing
+if [ ! -d "node_modules" ] || [ ! -d "node_modules/ws" ]; then
     echo "[*] Installing Node.js dependencies..."
-    npm install --silent || echo "[!] npm install skipped or minimal"
+    npm install --no-audit --no-fund --silent || echo "[!] npm install skipped or minimal"
 fi
 
 # 2. Check Python & install requirements if pip available
