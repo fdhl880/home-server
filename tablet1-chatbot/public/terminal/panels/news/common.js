@@ -1,14 +1,7 @@
 // Shared helpers for WP5 panels (news + macro). No external deps, no dummy data.
-// ctx contract (agreed with shell):
-//   ctx.fetchJson(path, {signal}) -> Promise<any>  (rejects on HTTP/network error)
-//   ctx.symbol                    -> current security string (may be '')
-//   ctx.subscribe(topic, cb)      -> unsubscribe fn (optional; may be undefined)
-//   ctx.theme                     -> {bg,panel,amber,label,up,down,border,font}
-// mount(container, ctx) returns {unmount(), setSymbol(sym)}.
-
 export const NA = 'N/A (source down)';
 export const ENDPOINTS = {
-  topNews: '/api/terminal/news?cat=general&limit=30',
+  topNews: '/api/terminal/news?cat=all&limit=120',
   news: '/api/terminal/news',
   calendar: '/api/terminal/calendar',
   fng: '/api/terminal/fng',
@@ -16,8 +9,6 @@ export const ENDPOINTS = {
   quote: '/api/terminal/quote',   // ?symbols=A,B
 };
 
-// Fetch an API.md envelope. Throws if ok=false, data null, or status N/A.
-// Returns {data, env}; env carries source/mode/ts for the header label.
 export async function api(ctx, path) {
   const env = await ctx.fetchJson(path);
   if (!env || env.ok === false || env.data == null || env.status === 'N/A') throw new Error((env && env.error) || 'source down');
@@ -43,13 +34,26 @@ export function h(tag, attrs, ...kids) {
 export function baseStyle(container, ctx) {
   const t = theme(ctx);
   container.innerHTML = '';
-  Object.assign(container.style, { background: t.panel, color: t.amber, fontFamily: t.font, fontSize: '12px', lineHeight: '1.3', fontVariantNumeric: 'tabular-nums', overflow: 'auto', height: '100%', boxSizing: 'border-box', padding: '4px' });
+  Object.assign(container.style, { background: t.panel, color: t.amber, fontFamily: t.font, fontSize: '12px', lineHeight: '1.35', fontVariantNumeric: 'tabular-nums', overflow: 'auto', height: '100%', boxSizing: 'border-box', padding: '4px' });
   return t;
 }
 
 export function header(t, title, extra) {
-  const right = h('span', { style: { color: t.label, float: 'right' } }, extra || '');
-  return { el: h('div', { style: { borderBottom: '1px solid ' + t.border, paddingBottom: '2px', marginBottom: '3px', textTransform: 'uppercase', fontWeight: 'bold' } }, title, right), right };
+  const right = h('span', { style: { color: t.label, float: 'right', fontSize: '11px' } }, extra || '');
+  return {
+    el: h('div', {
+      style: {
+        background: '#140c00',
+        borderBottom: '1px solid ' + t.amber,
+        padding: '2px 6px',
+        marginBottom: '4px',
+        textTransform: 'uppercase',
+        fontWeight: 'bold',
+        color: t.amber
+      }
+    }, title, right),
+    right
+  };
 }
 
 export function fmtTime(ts) {
@@ -58,7 +62,7 @@ export function fmtTime(ts) {
   const p = n => String(n).padStart(2, '0');
   const now = new Date();
   const same = d.toDateString() === now.toDateString();
-  return (same ? '' : p(d.getUTCMonth() + 1) + '/' + p(d.getUTCDate()) + ' ') + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + 'Z';
+  return (same ? '' : p(d.getUTCMonth() + 1) + '/' + p(d.getUTCDate()) + ' ') + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes());
 }
 
 export function num(v, dp = 2) {
@@ -66,7 +70,6 @@ export function num(v, dp = 2) {
   return (n == null || !isFinite(n)) ? '--' : n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
 }
 
-// Accept array or {data|items|results|articles|events|observations: []}
 export function arr(x) {
   if (Array.isArray(x)) return x;
   if (x && typeof x === 'object') for (const k of ['data', 'items', 'results', 'articles', 'events', 'observations']) if (Array.isArray(x[k])) return x[k];
@@ -76,14 +79,13 @@ export function arr(x) {
 export function srcLabel(env) {
   if (!env || typeof env !== 'object' || Array.isArray(env)) return '';
   const parts = [env.source, env.mode, env.status === 'PARTIAL' ? 'PARTIAL' : '', env.ts ? fmtTime(env.ts) : ''].filter(Boolean);
-  return parts.join(' ');
+  return parts.join(' • ');
 }
 
 export function down(container, t, msg) {
   container.append(h('div', { style: { color: t.down, padding: '6px' } }, msg || NA));
 }
 
-// Polling with abort + unmount safety. Returns stop().
 export function poll(fn, ms) {
   let stopped = false, timer = null;
   const run = async () => { if (stopped) return; try { await fn(); } catch (_) {} if (!stopped) timer = setTimeout(run, ms); };
@@ -91,28 +93,103 @@ export function poll(fn, ms) {
   return () => { stopped = true; clearTimeout(timer); };
 }
 
-// Minimal SVG line chart. points: [{x:number(ts/idx), y:number}]
+// High-Clarity Bloomberg SVG Area + Grid Chart
 export function lineChart(t, points, opts = {}) {
-  const W = opts.w || 320, H = opts.h || 110, P = 4;
+  const W = opts.w || 640, H = opts.h || 115, PL = 8, PR = 54, PT = 10, PB = 16;
   const pts = points.filter(p => isFinite(p.y));
   const ns = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('width', '100%'); svg.setAttribute('height', H);
-  svg.style.background = t.bg; svg.style.border = '1px solid ' + t.border;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.style.cssText = `width:100%;height:${H}px;display:block;background:#000;border:1px solid ${t.border}`;
   if (pts.length < 2) return svg;
+
   const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
-  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
-  const sx = v => P + (x1 === x0 ? 0 : (v - x0) / (x1 - x0)) * (W - 2 * P);
-  const sy = v => H - P - (y1 === y0 ? 0.5 : (v - y0) / (y1 - y0)) * (H - 2 * P);
-  const path = document.createElementNS(ns, 'polyline');
-  path.setAttribute('points', pts.map(p => sx(p.x).toFixed(1) + ',' + sy(p.y).toFixed(1)).join(' '));
-  path.setAttribute('fill', 'none'); path.setAttribute('stroke', opts.color || t.amber); path.setAttribute('stroke-width', '1');
-  svg.append(path);
-  for (const [v, anchor] of [[y1, P + 8], [y0, H - P]]) {
-    const tx = document.createElementNS(ns, 'text');
-    tx.setAttribute('x', W - P); tx.setAttribute('y', anchor); tx.setAttribute('text-anchor', 'end');
-    tx.setAttribute('fill', t.label); tx.setAttribute('font-size', '9'); tx.textContent = num(v, opts.dp ?? 2);
-    svg.append(tx);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const minVal = Math.min(...ys), maxVal = Math.max(...ys);
+  const padY = (maxVal - minVal) * 0.08 || 0.5;
+  const y0 = minVal - padY, y1 = maxVal + padY;
+
+  const plotW = W - PL - PR;
+  const plotH = H - PT - PB;
+  const sx = v => PL + (x1 === x0 ? 0 : ((v - x0) / (x1 - x0)) * plotW);
+  const sy = v => PT + plotH - (y1 === y0 ? 0.5 : ((v - y0) / (y1 - y0)) * plotH);
+
+  // Horizontal & vertical Bloomberg grid lines
+  for (let i = 0; i <= 3; i++) {
+    const gy = PT + (plotH * i) / 3;
+    const gl = document.createElementNS(ns, 'line');
+    gl.setAttribute('x1', PL); gl.setAttribute('x2', W - PR);
+    gl.setAttribute('y1', gy.toFixed(1)); gl.setAttribute('y2', gy.toFixed(1));
+    gl.setAttribute('stroke', '#191919');
+    gl.setAttribute('stroke-dasharray', '2,2');
+    svg.append(gl);
+
+    const valAtGrid = y1 - ((y1 - y0) * i) / 3;
+    const lbl = document.createElementNS(ns, 'text');
+    lbl.setAttribute('x', W - 4);
+    lbl.setAttribute('y', (gy + 3).toFixed(1));
+    lbl.setAttribute('text-anchor', 'end');
+    lbl.setAttribute('fill', '#666');
+    lbl.setAttribute('font-size', '9.5');
+    lbl.textContent = num(valAtGrid, opts.dp ?? 2);
+    svg.append(lbl);
   }
+
+  for (let i = 1; i <= 4; i++) {
+    const gx = PL + (plotW * i) / 4;
+    const vl = document.createElementNS(ns, 'line');
+    vl.setAttribute('x1', gx.toFixed(1)); vl.setAttribute('x2', gx.toFixed(1));
+    vl.setAttribute('y1', PT); vl.setAttribute('y2', PT + plotH);
+    vl.setAttribute('stroke', '#141414');
+    svg.append(vl);
+  }
+
+  const strokeCol = opts.color || t.amber;
+  const coords = pts.map(p => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`);
+
+  // Area fill polygon
+  const area = document.createElementNS(ns, 'polygon');
+  area.setAttribute('points', `${sx(pts[0].x).toFixed(1)},${(PT + plotH).toFixed(1)} ${coords.join(' ')} ${sx(pts[pts.length - 1].x).toFixed(1)},${(PT + plotH).toFixed(1)}`);
+  area.setAttribute('fill', strokeCol === t.up ? 'rgba(0,210,106,0.14)' : strokeCol === t.down ? 'rgba(255,59,48,0.14)' : 'rgba(255,176,0,0.14)');
+  svg.append(area);
+
+  // Main line
+  const path = document.createElementNS(ns, 'polyline');
+  path.setAttribute('points', coords.join(' '));
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', strokeCol);
+  path.setAttribute('stroke-width', '1.8');
+  svg.append(path);
+
+  // Latest point dot & price callout tag
+  const lastPt = pts[pts.length - 1];
+  const lx = sx(lastPt.x), ly = sy(lastPt.y);
+  const dot = document.createElementNS(ns, 'circle');
+  dot.setAttribute('cx', lx.toFixed(1));
+  dot.setAttribute('cy', ly.toFixed(1));
+  dot.setAttribute('r', '3');
+  dot.setAttribute('fill', strokeCol);
+  svg.append(dot);
+
+  const tag = document.createElementNS(ns, 'text');
+  tag.setAttribute('x', W - 4);
+  tag.setAttribute('y', Math.max(PT + 8, Math.min(PT + plotH, ly + 3)).toFixed(1));
+  tag.setAttribute('text-anchor', 'end');
+  tag.setAttribute('fill', strokeCol);
+  tag.setAttribute('font-size', '10');
+  tag.setAttribute('font-weight', 'bold');
+  tag.textContent = '◀ ' + num(lastPt.y, opts.dp ?? 2);
+  svg.append(tag);
+
+  // Min / Max Range Footer inside SVG
+  const rangeTxt = document.createElementNS(ns, 'text');
+  rangeTxt.setAttribute('x', PL + 2);
+  rangeTxt.setAttribute('y', H - 3);
+  rangeTxt.setAttribute('fill', t.label);
+  rangeTxt.setAttribute('font-size', '9.5');
+  rangeTxt.textContent = `HI: ${num(maxVal, opts.dp ?? 2)}   LO: ${num(minVal, opts.dp ?? 2)}   LAST: ${num(lastPt.y, opts.dp ?? 2)}`;
+  svg.append(rangeTxt);
+
   return svg;
 }

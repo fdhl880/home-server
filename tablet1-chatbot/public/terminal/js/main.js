@@ -113,9 +113,8 @@ export const CATALOG = [
 
   // Operations, Portfolio, Risk, AI & System
   { code: 'BOT', cat: 'AI ENGINE', title: 'Pyrofuel 28-Pillar AI Bot', desc: 'Live Binance Futures Auto-Trader Telemetry, Active Positions & 5-Layer Signals', mount: mountBOT },
-  { code: 'PORT', cat: 'PORTFOLIO', title: 'Portfolio & P&L Analytics (IDR 200 Juta)', desc: 'Fadhil Muhammad Syafiq Lubis Rp 200.000.000 Multi-Asset Holdings, NAV & DMA Execution', mount: mountPORT },
-  { code: 'PRTU', cat: 'PORTFOLIO', title: 'Portfolio Administration (IDR 200 Juta)', desc: 'Fadhil Muhammad Syafiq Lubis Rp 200.000.000 Portfolio Holdings (SPCX, TSLA, BTC-USD) & Blotter', mount: mountPORT },
-  { code: 'EMSX', cat: 'EXECUTION', title: 'Electronic Order Execution (EMSX)', desc: 'Direct Market Access (DMA) Multi-Asset Order Routing & Execution Blotter', mount: mountEMSX },
+  { code: 'PORT', cat: 'PORTFOLIO', title: 'Portfolio & Risk Analytics', desc: 'Institutional Multi-Asset Holdings Valuation, Weight Attribution & DMA Execution', mount: mountPORT },
+  { code: 'EMSX', cat: 'EXECUTION', title: 'Execution Management System (EMSX)', desc: 'Direct Market Access (DMA) Multi-Asset Order Routing & Execution Blotter', mount: mountEMSX },
   { code: 'BLOT', cat: 'EXECUTION', title: 'Execution Trade Blotter', desc: 'Audited Multi-Asset Order & Trade History Blotter', mount: mountEMSX },
   { code: 'ORD', cat: 'EXECUTION', title: 'Order Entry Ticket', desc: 'Institutional Buy/Sell Order Entry & Settlement', mount: mountEMSX },
   { code: 'MARS', cat: 'RISK', title: 'Multi-Asset Risk System', desc: 'Parametric & Historical VaR (95%/99%), CVaR, Max DD & Stress Tests', mount: mountMARS },
@@ -135,15 +134,15 @@ const FN_MAP = new Map(CATALOG.map(x => [x.code, x]));
 const WORKSPACES = {
   'DEFAULT DESK': [
     { symbol: 'BTCUSDT', fn: 'GP' },
-    { symbol: 'BTCUSDT', fn: 'MON' },
-    { symbol: 'SPCX', fn: 'PRTU' },
-    { symbol: 'BTCUSDT', fn: 'BOT' }
+    { symbol: 'BTCUSDT', fn: 'TOP' },
+    { symbol: 'SPCX', fn: 'PORT' },
+    { symbol: 'SPCX', fn: 'EMSX' }
   ],
-  'FADHIL 200JT DESK': [
-    { symbol: 'SPCX', fn: 'PRTU' },
-    { symbol: 'SPCX', fn: 'EMSX' },
-    { symbol: 'TSLA', fn: 'GP' },
-    { symbol: 'BTCUSDT', fn: 'BOT' }
+  'GLOBAL NEWS & MACRO': [
+    { symbol: 'BTCUSDT', fn: 'TOP' },
+    { symbol: 'BTCUSDT', fn: 'N' },
+    { symbol: '^TNX', fn: 'YCRV' },
+    { symbol: '^GSPC', fn: 'WEI' }
   ],
   'CRYPTO QUANT': [
     { symbol: 'BTCUSDT', fn: 'GP' },
@@ -179,12 +178,12 @@ const WORKSPACES = {
 
 const slots = [...document.querySelectorAll('.slot')];
 let activeSlot = 0;
-let panes = LS.get('bbg_active_panes_v3', WORKSPACES['DEFAULT DESK']);
+let panes = LS.get('bbg_active_panes_v4', WORKSPACES['DEFAULT DESK']);
 if (!Array.isArray(panes) || panes.length !== 4) panes = JSON.parse(JSON.stringify(WORKSPACES['DEFAULT DESK']));
 
 const cleanups = [null, null, null, null];
 
-function savePanes() { LS.set('bbg_active_panes_v3', panes); }
+function savePanes() { LS.set('bbg_active_panes_v4', panes); }
 
 function setActiveSlot(idx) {
   activeSlot = idx;
@@ -279,8 +278,15 @@ function mountSlot(idx) {
     }
   });
 
+  const subHdr = h('div', {
+    style: 'display:flex;justify-content:space-between;align-items:center;background:#5c0808;color:#fff;padding:0 6px;font-size:10px;border-bottom:1px solid #3a0000;flex:none;user-select:none'
+  },
+    h('span', { text: `90) Actions  91) Edit  92) Export  99) Help   |   ${state.symbol} <${fnDef.cat}> ${fnDef.code}` }),
+    h('span', { style: 'color:#ffb000;font-weight:bold', text: `BLOOMBERG PROFESSIONAL • PAGE 1/1` })
+  );
+
   const body = h('div', { class: 'pb', onclick: () => setActiveSlot(idx) });
-  const panelEl = h('div', { class: 'panel' }, hdr, body);
+  const panelEl = h('div', { class: 'panel' }, hdr, subHdr, body);
   slot.append(panelEl);
 
   const cbs = [];
@@ -485,13 +491,13 @@ const FKEYS = [
   ['F3', 'MACRO', 'MACRO'],
   ['F4', 'ECO', 'ECO'],
   ['F5', 'NEWS', 'TOP'],
-  ['F6', 'CRYP', 'BTCUSDT CRYP'],
-  ['F7', 'FUND', 'BTCUSDT.P FUND'],
+  ['F6', 'INDEX', '^GSPC WEI'],
+  ['F7', 'CRYP', 'BTCUSDT CRYP'],
   ['F8', 'EQUITY', 'AAPL DES'],
   ['F9', 'CMDTY', 'GC=F CMDTY'],
-  ['F10', 'INDEX', '^GSPC WEI'],
-  ['F11', 'CURNCY', 'EURUSD=X FXC'],
-  ['F12', 'AI BOT', 'BOT']
+  ['F10', 'CURNCY', 'EURUSD=X FXC'],
+  ['F11', 'PORT', 'SPCX PORT'],
+  ['F12', 'EMSX', 'SPCX EMSX']
 ];
 const fkBar = $('#fkeys');
 for (const [fk, lbl, cmd] of FKEYS) {
@@ -552,10 +558,12 @@ function setWinMode(m) {
   $('#msg').textContent = `DISPLAY MODE: ${m}-WINDOW BLOOMBERG PROFESSIONAL`;
 }
 modeBtns.forEach(b => b.addEventListener('click', () => setWinMode(b.dataset.mode)));
-const btnPrtu200 = $('#btnPrtu200');
-if (btnPrtu200) {
-  btnPrtu200.addEventListener('click', () => {
-    executeCommand('SPCX PRTU');
+const btnCancel = $('#btnCancel');
+if (btnCancel) {
+  btnCancel.addEventListener('click', () => {
+    cmdInput.value = '';
+    acBox.style.display = 'none';
+    $('#msg').textContent = 'CANCELLED — READY FOR COMMAND';
   });
 }
 

@@ -44,6 +44,9 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 
 app.use(express.json());
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'terminal', 'index.html'));
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Safe API Keys for Bloomberg Terminal AI Analyst

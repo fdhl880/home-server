@@ -3,30 +3,29 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BLOOMBERG</title>
-<link rel="stylesheet" href="css/terminal.css">
+<title>BLOOMBERG PROFESSIONAL</title>
+<link rel="stylesheet" href="/terminal/css/terminal.css">
 </head>
 <body>
 <div id="app">
-  <div id="devbanner">DEV ADAPTER ACTIVE - SYNTHETIC DATA - NOT MARKET DATA</div>
+  <div id="devbanner">DEV ADAPTER ACTIVE - SYNTHETIC DATA</div>
   <header id="top">
+    <button id="btnCancel" title="Cancel / Reset Active Command (ESC)" style="background:#d91e18;color:#fff;border:1px solid #ff4d4d;font-weight:700;padding:0 7px;font-size:11px">CANCEL</button>
     <span class="brand">BLOOMBERG</span>
     <div id="cmdwrap">
       <span id="cmdctx"></span>
-      <input id="cmd" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="[SECURITY] [FUNCTION] then GO  (Ctrl+K, F1=HELP)">
-      <button id="go">GO</button>
+      <input id="cmd" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ENTER [SECURITY] [SECTOR] [FUNCTION] <GO>   (Ctrl+K, F1=HELP, TOP, GP, WEI, PORT, EMSX)">
+      <button id="go">&lt;GO&gt;</button>
       <div id="ac"></div>
     </div>
     <div id="fkeys"></div>
     <div id="winmodes" style="display:flex;gap:2px;flex:none">
       <button data-mode="4" class="on" title="4-Window Quad Bloomberg Terminal (1-BLOOMBERG..4-BLOOMBERG)">4-WIN</button>
-      <button data-mode="2" title="2-Window Dual Split Mode">2-WIN</button>
-      <button data-mode="1" title="1-Window Single Screen Mode">1-WIN</button>
-      <button id="btnPrtu200" style="color:var(--up);border-color:var(--up);font-weight:bold" title="Open Fadhil Rp 200 Juta Portfolio (PRTU <GO>)">PRTU 200JT</button>
+      <button data-mode="2" title="2-Window Dual Split Screen">2-WIN</button>
+      <button data-mode="1" title="1-Window Full Screen">1-WIN</button>
     </div>
-    <a href="/" style="background:#181818;color:var(--amber);border:1px solid var(--amber);padding:0 6px;text-decoration:none;font-weight:bold;font-size:11px;white-space:nowrap" title="Switch to Full-Screen Single-Window PRTU & Order Desk (http://localhost:4000/)">SINGLE-VIEW PRTU</a>
   </header>
-  <main id="grid">
+  <main id="grid" class="mode-4">
     <div class="slot" data-i="0"></div><div class="slot" data-i="1"></div>
     <div class="slot" data-i="2"></div><div class="slot" data-i="3"></div>
     <div class="split" id="vs"></div><div class="split" id="hs"></div>
@@ -36,11 +35,10 @@
     <span class="prov" id="prov"></span>
     <span id="wsstate"></span>
     <span id="clocks"></span>
-    <select id="wsel" title="Workspaces"></select>
+    <select id="wsel" title="Bloomberg Launchpad Workspaces (BLP)"></select>
   </footer>
-  <div id="foot"><span>Unofficial personal clone - not affiliated with Bloomberg L.P.</span><span>Data from public sources; see per-panel source / time / mode badges.</span></div>
 </div>
-<script src="vendor/lightweight-charts.standalone.production.js"></script>
-<script type="module" src="js/main.js"></script>
+<script src="/terminal/vendor/lightweight-charts.standalone.production.js"></script>
+<script type="module" src="/terminal/js/main.js"></script>
 </body>
 </html>

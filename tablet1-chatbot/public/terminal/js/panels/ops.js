@@ -201,12 +201,11 @@ export function mountPORT(body, ctx) {
     const iSym = h('input', { value: ctx.symbol || 'SPCX', placeholder: 'TICKER', style: 'width:80px;text-transform:uppercase' });
     const iQty = h('input', { value: '1', placeholder: 'QTY', style: 'width:55px' });
     tb.append(
-      h('span', { class: 'lbl', text: 'PRTU // FADHIL MUHAMMAD SYAFIQ LUBIS (IDR 200 JUTA):' }),
+      h('span', { class: 'lbl', text: '90) Actions  91) Attribution  |  PORT - Portfolio & Risk Analytics:' }),
       iSym, iQty,
-      h('button', { class: 'on', style: 'background:var(--up);color:#000;border-color:var(--up)', text: '+DMA BUY', onclick: () => execQuickTrade('BUY', iSym.value.trim().toUpperCase(), iQty.value) }),
-      h('button', { style: 'background:var(--dn);color:#fff;border-color:var(--dn)', text: '-DMA SELL', onclick: () => execQuickTrade('SELL', iSym.value.trim().toUpperCase(), iQty.value) }),
-      h('button', { text: 'EMSX TICKET <GO>', onclick: () => ctx.run('EMSX') }),
-      h('button', { text: 'FULL PRTU DESK ↗', onclick: () => { window.location.href = '/'; } })
+      h('button', { class: 'on', style: 'background:var(--up);color:#000;border-color:var(--up)', text: '+BUY DMA', onclick: () => execQuickTrade('BUY', iSym.value.trim().toUpperCase(), iQty.value) }),
+      h('button', { style: 'background:var(--dn);color:#fff;border-color:var(--dn)', text: '-SELL DMA', onclick: () => execQuickTrade('SELL', iSym.value.trim().toUpperCase(), iQty.value) }),
+      h('button', { text: 'EMSX ORDER DESK <GO>', onclick: () => ctx.run('EMSX') })
     );
 
     if (!pRes.ok || !pRes.data) {
@@ -228,10 +227,9 @@ export function mountPORT(body, ctx) {
     const holdings = Array.isArray(port.holdings) ? port.holdings : [];
     const trades = Array.isArray(port.trades) ? port.trades : [];
 
-    // 4-Metric Executive HUD matching `/`
     const hud = h('div', { class: 'kv', style: 'border-bottom:1px solid var(--border);background:#060606;padding:6px 8px' },
-      h('div', { class: 'k', text: 'PORTFOLIO OWNER & BASE' }),
-      h('div', { class: 'v am sym', text: `FADHIL MUHAMMAD SYAFIQ LUBIS • MODAL AWAL: ${fmtIdr(initCap)}` }),
+      h('div', { class: 'k', text: 'INSTITUTIONAL ACCOUNT' }),
+      h('div', { class: 'v am sym', text: `FADHIL MUHAMMAD SYAFIQ LUBIS • BASE CAPITAL: ${fmtIdr(initCap)}` }),
       h('div', { class: 'k', text: 'NET ASSET VALUE (NAV)' }),
       h('div', { class: 'v sym ' + dirCls(retPct), text: `${fmtIdr(navIdr)} ($${fmtNum(navUsd, 2)} USD) [${fmtPct(retPct)}]` }),
       h('div', { class: 'k', text: 'AVAILABLE CASH BALANCE' }),
@@ -240,6 +238,23 @@ export function mountPORT(body, ctx) {
       h('div', { class: 'v sym ' + dirCls(uPnl), text: `${uPnl >= 0 ? '+' : ''}${fmtIdr(uPnl)} (${fmtPct(uPnlPct)}) • REALIZED: ${fmtIdr(rPnl)}` })
     );
     sc.append(hud);
+
+    // Visual Asset Allocation Bar Diagram
+    const allocColors = ['#ffb000', '#4da3ff', '#00d26a', '#e040fb', '#ff3b30'];
+    const allocSlices = holdings.map((it, idx) => ({
+      label: it.symbol,
+      wt: navIdr > 0 ? ((it.marketValue || 0) / navIdr) * 100 : 0,
+      col: allocColors[idx % allocColors.length]
+    })).concat([{ label: 'CASH IDR', wt: Math.max(0, cashWt), col: '#555555' }]);
+    const allocBar = h('div', { style: 'padding:5px 8px;border-bottom:1px solid var(--border);background:#040404' },
+      h('div', { style: 'display:flex;justify-content:space-between;font-size:10.5px;margin-bottom:3px' },
+        ...allocSlices.map(s => h('span', { style: `color:${s.col};font-weight:bold`, text: `■ ${s.label}: ${s.wt.toFixed(1)}%` }))
+      ),
+      h('div', { style: 'display:flex;height:8px;width:100%;background:#111;border:1px solid #222;overflow:hidden' },
+        ...allocSlices.map(s => h('div', { style: `width:${s.wt.toFixed(2)}%;background:${s.col};height:100%`, title: `${s.label}: ${s.wt.toFixed(2)}%` }))
+      )
+    );
+    sc.append(allocBar);
 
     // Holdings Table
     sc.append(
@@ -305,8 +320,8 @@ export function mountPORT(body, ctx) {
 export function mountEMSX(body, ctx) {
   body.classList.add('fill');
   const tb = h('div', { class: 'tb' },
-    h('span', { class: 'lbl', text: 'EMSX ELECTRONIC ORDER EXECUTION DESK // ACCOUNT: FADHIL MUHAMMAD SYAFIQ LUBIS (IDR 200 JUTA)' }),
-    h('button', { text: 'VIEW PRTU <GO>', onclick: () => ctx.run('PRTU') })
+    h('span', { class: 'lbl', text: '90) Actions  91) Routes  92) Blotter  |  EMSX - Execution Management System // FADHIL MUHAMMAD SYAFIQ LUBIS' }),
+    h('button', { text: 'VIEW PORT <GO>', onclick: () => ctx.run('PORT') })
   );
   const sc = h('div', { class: 'pb', style: 'padding:6px' });
   body.append(tb, sc);

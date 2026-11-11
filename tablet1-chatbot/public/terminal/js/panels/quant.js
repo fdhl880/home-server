@@ -267,6 +267,52 @@ export function mountHVT(body, ctx) {
       return { w, cur, med, hi, lo, pctRank };
     });
 
+    // Volatility Cone SVG Diagram
+    if (rows.length >= 2) {
+      const ns = 'http://www.w3.org/2000/svg';
+      const W = 680, H = 145, PL = 38, PR = 20, PT = 16, PB = 22;
+      const svg = document.createElementNS(ns, 'svg');
+      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+      svg.setAttribute('preserveAspectRatio', 'none');
+      svg.style.cssText = 'width:100%;height:145px;display:block;background:#000;border-bottom:1px solid var(--border)';
+      const maxV = Math.max(...rows.map(r => r.hi)) * 1.05;
+      const minV = Math.max(0, Math.min(...rows.map(r => r.lo)) * 0.9);
+      const sx = i => PL + (i / (rows.length - 1)) * (W - PL - PR);
+      const sy = v => PT + (H - PT - PB) - ((v - minV) / (maxV - minV || 1)) * (H - PT - PB);
+
+      const drawLine = (key, col, dash = '') => {
+        const pl = document.createElementNS(ns, 'polyline');
+        pl.setAttribute('fill', 'none'); pl.setAttribute('stroke', col); pl.setAttribute('stroke-width', key === 'cur' ? '2.2' : '1.3');
+        if (dash) pl.setAttribute('stroke-dasharray', dash);
+        pl.setAttribute('points', rows.map((r, i) => `${sx(i).toFixed(1)},${sy(r[key]).toFixed(1)}`).join(' '));
+        svg.append(pl);
+      };
+      drawLine('hi', '#ff3b30', '3,3');
+      drawLine('med', '#4da3ff', '4,2');
+      drawLine('lo', '#00d26a', '3,3');
+      drawLine('cur', '#ffb000');
+
+      rows.forEach((r, i) => {
+        const x = sx(i), y = sy(r.cur);
+        const c = document.createElementNS(ns, 'circle');
+        c.setAttribute('cx', x.toFixed(1)); c.setAttribute('cy', y.toFixed(1)); c.setAttribute('r', '3.5'); c.setAttribute('fill', '#ffb000');
+        svg.append(c);
+        const tx = document.createElementNS(ns, 'text');
+        tx.setAttribute('x', x.toFixed(1)); tx.setAttribute('y', H - 6); tx.setAttribute('text-anchor', 'middle'); tx.setAttribute('fill', '#4da3ff'); tx.setAttribute('font-size', '10');
+        tx.textContent = r.w + 'D';
+        svg.append(tx);
+      });
+      sc.append(
+        h('div', { class: 'tb', style: 'background:#070707;gap:14px;font-size:10.5px' },
+          h('span', { style: 'color:#ffb000;font-weight:bold', text: '■ CURRENT HV' }),
+          h('span', { style: 'color:#4da3ff', text: '--- MEDIAN HV' }),
+          h('span', { style: 'color:#ff3b30', text: '--- 1Y HIGH CONE' }),
+          h('span', { style: 'color:#00d26a', text: '--- 1Y LOW CONE' })
+        ),
+        svg
+      );
+    }
+
     sc.append(h('table', { class: 't' },
       h('thead', null, h('tr', null, ['Tenor Window', 'Current HV %', 'Median HV %', '1Y High HV %', '1Y Low HV %', 'Vol Percentile', 'Regime'].map(x => h('th', { text: x })))),
       h('tbody', null, rows.map(r => h('tr', { class: 'row' },
