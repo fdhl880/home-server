@@ -846,14 +846,27 @@ export function mountHELP(body, ctx, { catalog = [] } = {}) {
 
 export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
   body.classList.add('fill');
-  let tab = initialTab; // 'INBOX' | 'COMPOSE' | 'SENT' | 'SPDL'
+  let tab = initialTab; // 'INBOX' | 'COMPOSE' | 'SENT' | 'SPDL' | 'ALERTS'
   let activeMsg = null;
-  let store = { account: { name: 'FADHIL MUHAMMAD SYAFIQ LUBIS', email: 'fadhil.lubis@bloomberg.net', uuid: '38492018' }, inbox: [], sent: [], directory: [] };
-  let composeState = { to: 'gs.macro@bloomberg.net', cc: '', subject: `INSTITUTIONAL DESK INQUIRY [${ctx.symbol}]`, priority: 'NORMAL', body: '', attachmentFn: `${ctx.symbol} GP`, attachmentLabel: `${ctx.symbol}_CHART.BBG` };
+  let store = {
+    account: { name: 'FADHIL MUHAMMAD SYAFIQ LUBIS', email: 'fadhil.lubis@bloomberg.net', externalEmail: 'fadhilsyafiq90@gmail.com', uuid: '38492018' },
+    alertConfig: { targetEmail: 'fadhilsyafiq90@gmail.com', enableHotNews: true, enableFuturesOpen: true, enableFuturesClose: true, enableEmsxOrders: true, smtpUser: 'fadhilsyafiq90@gmail.com', smtpPass: '' },
+    alertLog: [],
+    inbox: [],
+    sent: [],
+    directory: []
+  };
+  let composeState = { to: 'fadhilsyafiq90@gmail.com', cc: 'gs.macro@bloomberg.net', subject: `INSTITUTIONAL DESK & FUTURES ALERT [${ctx.symbol}]`, priority: 'URGENT', body: '', attachmentFn: `${ctx.symbol} GP`, attachmentLabel: `${ctx.symbol}_CHART.BBG` };
+  let alertStatusBanner = '';
 
   const tb = h('div', { class: 'tb' });
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
+
+  function openGmailWeb(to, sub, txt) {
+    const url = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to || 'fadhilsyafiq90@gmail.com')}&su=${encodeURIComponent(sub || '')}&body=${encodeURIComponent(txt || '')}`;
+    window.open(url, '_blank');
+  }
 
   async function sync() {
     const r = await getRaw('/api/terminal/bmail');
@@ -866,6 +879,7 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
     tb.textContent = '';
     sc.textContent = '';
     const unreadCnt = (store.inbox || []).filter(m => m.unread).length;
+    const cfg = store.alertConfig || { targetEmail: 'fadhilsyafiq90@gmail.com', enableHotNews: true, enableFuturesOpen: true, enableFuturesClose: true };
 
     tb.append(
       h('span', { class: 'lbl', text: `MSG // ${store.account.email}:` }),
@@ -873,6 +887,7 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
       h('button', { class: tab === 'COMPOSE' ? 'on' : '', style: tab === 'COMPOSE' ? '' : 'color:var(--up);border-color:var(--up)', text: '2) COMPOSE (MSG1)', onclick: () => { tab = 'COMPOSE'; activeMsg = null; render(); } }),
       h('button', { class: tab === 'SENT' ? 'on' : '', text: `3) SENT (${(store.sent || []).length})`, onclick: () => { tab = 'SENT'; activeMsg = null; render(); } }),
       h('button', { class: tab === 'SPDL' ? 'on' : '', text: '4) DIRECTORY (SPDL)', onclick: () => { tab = 'SPDL'; activeMsg = null; render(); } }),
+      h('button', { class: tab === 'ALERTS' ? 'on' : '', style: tab === 'ALERTS' ? '' : 'color:#ff9f0a;border-color:#ff9f0a', text: `5) AUTO-EMAIL (${cfg.targetEmail || 'fadhilsyafiq90@gmail.com'})`, onclick: () => { tab = 'ALERTS'; activeMsg = null; render(); } }),
       h('button', { text: 'IB LIVE CHAT <GO>', onclick: () => ctx.run('IB') })
     );
 
@@ -889,6 +904,7 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
                 composeState.body = `\n\n--- On ${fmtTime(m.ts)}, ${m.fromName || m.from} wrote: ---\n${m.body}`;
                 activeMsg = null; tab = 'COMPOSE'; render();
               } }),
+              h('button', { style: 'color:#4da3ff;border-color:#4da3ff', text: 'FORWARD TO fadhilsyafiq90@gmail.com (GMAIL) ↗', onclick: () => openGmailWeb('fadhilsyafiq90@gmail.com', m.subject, m.body) }),
               m.attachmentFn ? h('button', { style: 'color:var(--up);border-color:var(--up)', text: `OPEN ATTACHMENT [${m.attachmentFn}] <GO>`, onclick: () => ctx.run(m.attachmentFn) }) : null,
               h('button', { style: 'background:var(--dn);color:#fff', text: '× BACK TO LIST', onclick: () => { activeMsg = null; render(); } })
             )
@@ -910,8 +926,8 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
       const list = tab === 'INBOX' ? (store.inbox || []) : (store.sent || []);
       sc.append(
         h('div', { class: 'tb', style: 'background:#070707;justify-content:space-between' },
-          h('span', { class: 'lbl', text: tab === 'INBOX' ? `BLOOMBERG MAIL INBOX — ${store.account.name} <${store.account.email}>` : `SENT MESSAGES ARCHIVE — ${store.account.email}` }),
-          h('span', { class: 'up sym', text: '● B-MAIL TLS GATEWAY CONNECTED' })
+          h('span', { class: 'lbl', text: tab === 'INBOX' ? `BLOOMBERG MAIL INBOX — ${store.account.name} <${store.account.email}> (AUTO-RELAY: ${cfg.targetEmail})` : `SENT MESSAGES ARCHIVE — ${store.account.email}` }),
+          h('span', { class: 'up sym', text: `● AUTO-ALERT RELAY: ${cfg.targetEmail || 'fadhilsyafiq90@gmail.com'}` })
         ),
         list.length ? h('table', { class: 't' },
           h('thead', null, h('tr', null, ['St', 'Pri', 'Time (UTC)', tab === 'INBOX' ? 'From (@bloomberg.net)' : 'To Recipient', 'Subject & Attachment', 'Attachment', 'Open'].map(x => h('th', { text: x })))),
@@ -937,8 +953,71 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
           )))
         ) : h('div', { class: 'empty', text: 'No messages in this folder.' })
       );
+    } else if (tab === 'ALERTS') {
+      const iEmail = h('input', { value: cfg.targetEmail || 'fadhilsyafiq90@gmail.com', style: 'width:240px;color:var(--up);font-weight:bold' });
+      const iPass = h('input', { type: 'password', value: cfg.smtpPass || '', placeholder: 'Optional 16-char Gmail App Password for direct background SMTP...', style: 'width:320px' });
+
+      const saveCfg = async (patch = {}) => {
+        const next = Object.assign({}, cfg, { targetEmail: iEmail.value.trim() || 'fadhilsyafiq90@gmail.com', smtpPass: iPass.value.trim() }, patch);
+        const r = await fetch('/api/terminal/bmail/alert-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) });
+        const j = await r.json();
+        if (j.ok && j.data) store = j.data;
+        alertStatusBanner = `✓ SAVED AUTO-EMAIL RULES FOR ${(store.alertConfig && store.alertConfig.targetEmail) || 'fadhilsyafiq90@gmail.com'}`;
+        render();
+      };
+
+      const triggerTest = async (type) => {
+        alertStatusBanner = `DISPATCHING ${type} EMAIL TO ${cfg.targetEmail || 'fadhilsyafiq90@gmail.com'}...`;
+        render();
+        const r = await fetch('/api/terminal/bmail/test-alert', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type }) });
+        const j = await r.json();
+        if (j.ok && j.data) store = j.data;
+        alertStatusBanner = `✓ ${type} DISPATCHED TO ${(j.entry && j.entry.to) || 'fadhilsyafiq90@gmail.com'} [${(j.entry && j.entry.status) || 'OK'}]`;
+        render();
+      };
+
+      sc.append(
+        h('div', { style: 'padding:8px;border:1px solid var(--amber);background:#050505;margin:6px' },
+          h('div', { class: 'tb', style: 'background:#160f00;justify-content:space-between;margin-bottom:6px' },
+            h('span', { class: 'lbl', text: 'BLOOMBERG AUTOMATIC EXTERNAL EMAIL DISPATCHER (HOT NEWS & FUTURES OPEN/CLOSE)' }),
+            h('span', { class: 'up sym', text: `TARGET: ${cfg.targetEmail || 'fadhilsyafiq90@gmail.com'}` })
+          ),
+          alertStatusBanner ? h('div', { style: 'background:#07210f;border:1px solid var(--up);color:var(--up);padding:5px 8px;margin-bottom:6px;font-weight:bold', text: alertStatusBanner }) : null,
+          h('div', { class: 'kv', style: 'margin-bottom:8px;padding:6px;background:#090909;border:1px solid #222' },
+            h('div', { class: 'k', text: 'TARGET RECIPIENT EMAIL' }),
+            h('div', { class: 'v' }, iEmail, h('button', { class: 'on', style: 'margin-left:8px', text: 'SAVE TARGET EMAIL', onclick: () => saveCfg() })),
+            h('div', { class: 'k', text: 'AUTO-TRIGGER RULES' }),
+            h('div', { class: 'v', style: 'display:flex;gap:6px;flex-wrap:wrap' },
+              h('button', { class: cfg.enableHotNews !== false ? 'on' : '', text: `${cfg.enableHotNews !== false ? '✓' : '✗'} 1. BREAKING HOT NEWS WIRE`, onclick: () => saveCfg({ enableHotNews: cfg.enableHotNews === false }) }),
+              h('button', { class: cfg.enableFuturesOpen !== false ? 'on' : '', text: `${cfg.enableFuturesOpen !== false ? '✓' : '✗'} 2. FUTURES POSITION OPEN (20x)`, onclick: () => saveCfg({ enableFuturesOpen: cfg.enableFuturesOpen === false }) }),
+              h('button', { class: cfg.enableFuturesClose !== false ? 'on' : '', text: `${cfg.enableFuturesClose !== false ? '✓' : '✗'} 3. FUTURES POSITION CLOSE (TP/SL)`, onclick: () => saveCfg({ enableFuturesClose: cfg.enableFuturesClose === false }) }),
+              h('button', { class: cfg.enableEmsxOrders !== false ? 'on' : '', text: `${cfg.enableEmsxOrders !== false ? '✓' : '✗'} 4. EMSX PORTFOLIO ORDERS`, onclick: () => saveCfg({ enableEmsxOrders: cfg.enableEmsxOrders === false }) })
+            ),
+            h('div', { class: 'k', text: 'GMAIL TLS SMTP APP PASS' }),
+            h('div', { class: 'v' }, iPass, h('button', { style: 'margin-left:6px', text: 'SAVE SMTP KEY', onclick: () => saveCfg() })),
+            h('div', { class: 'k', text: 'INSTANT LIVE TEST DISPATCH' }),
+            h('div', { class: 'v', style: 'display:flex;gap:6px;flex-wrap:wrap' },
+              h('button', { style: 'background:#ffb000;color:#000;font-weight:bold', text: '⚡ TEST HOT NEWS EMAIL', onclick: () => triggerTest('HOT_NEWS') }),
+              h('button', { style: 'background:var(--up);color:#000;font-weight:bold', text: '⚡ TEST FUTURES OPEN EMAIL', onclick: () => triggerTest('FUTURES_OPEN') }),
+              h('button', { style: 'background:#4da3ff;color:#000;font-weight:bold', text: '⚡ TEST FUTURES CLOSE EMAIL', onclick: () => triggerTest('FUTURES_CLOSE') })
+            )
+          ),
+          h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: `LIVE AUTO-EMAIL DISPATCH LOG (-> ${cfg.targetEmail || 'fadhilsyafiq90@gmail.com'})` })),
+          h('table', { class: 't' },
+            h('thead', null, h('tr', null, ['Time', 'Trigger Event', 'Recipient', 'Subject', 'Status', 'Direct Gmail'].map(x => h('th', { text: x })))),
+            h('tbody', null, (store.alertLog || []).map(a => h('tr', { class: 'row' },
+              h('td', { class: 'l lb', text: fmtTime(a.ts) }),
+              h('td', { class: 'l sym ' + (a.eventType === 'FUTURES_OPEN' ? 'up' : a.eventType === 'FUTURES_CLOSE' ? 'lb' : 'am'), text: a.eventType }),
+              h('td', { class: 'l up sym', text: a.to }),
+              h('td', { class: 'l', style: 'color:#fff', text: a.subject }),
+              h('td', { class: 'l mu', text: a.status }),
+              h('td', null, h('button', { style: 'color:var(--up);border-color:var(--up)', text: 'SEND IN GMAIL ↗', onclick: () => openGmailWeb(a.to, a.subject, a.body) }))
+            )))
+          )
+        )
+      );
     } else if (tab === 'COMPOSE') {
-      const iTo = h('input', { value: composeState.to, placeholder: 'recipient@bloomberg.net or external email...', style: 'width:260px' });
+      const iTo = h('input', { value: composeState.to, placeholder: 'fadhilsyafiq90@gmail.com or desk@bloomberg.net...', style: 'width:260px' });
       const iCc = h('input', { value: composeState.cc, placeholder: 'Optional CC...', style: 'width:200px' });
       const iSub = h('input', { value: composeState.subject, placeholder: 'Subject line...', style: 'width:340px;font-weight:bold' });
       const selPri = h('select', null, h('option', { value: 'NORMAL', selected: composeState.priority === 'NORMAL' ? 'selected' : null, text: 'NORMAL' }), h('option', { value: 'URGENT', selected: composeState.priority === 'URGENT' ? 'selected' : null, text: '! URGENT' }));
@@ -972,7 +1051,7 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
 
       const sendNow = async () => {
         const payload = {
-          to: iTo.value.trim() || 'gs.macro@bloomberg.net',
+          to: iTo.value.trim() || 'fadhilsyafiq90@gmail.com',
           cc: iCc.value.trim(),
           subject: iSub.value.trim() || 'BLOOMBERG DESK MESSAGE',
           priority: selPri.value,
@@ -998,7 +1077,8 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
             h('span', { class: 'lbl', text: `MSG1 COMPOSE BLOOMBERG MAIL // FROM: ${store.account.name} <${store.account.email}>` })
           ),
           h('div', { class: 'tb', style: 'background:#080808;margin-bottom:6px' },
-            h('span', { class: 'lbl', text: 'QUICK DESK TO:' }),
+            h('span', { class: 'lbl', text: 'QUICK RECIPIENT:' }),
+            h('button', { style: 'color:var(--up);border-color:var(--up);font-weight:bold', text: 'FADHILSYAFIQ90@GMAIL.COM', onclick: () => { composeState.to = 'fadhilsyafiq90@gmail.com'; composeState.body = txtBody.value; render(); } }),
             ...(store.directory || []).map(d => h('button', {
               text: d.email.split('@')[0].toUpperCase(),
               title: `${d.name} <${d.email}>`,
@@ -1017,11 +1097,16 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
             )
           ),
           txtBody,
-          h('div', { style: 'display:flex;gap:8px;margin-top:8px' },
-            h('button', { class: 'on', style: 'background:var(--up);color:#000;font-weight:bold;padding:4px 14px', text: 'SEND VIA B-MAIL GATEWAY <GO>', onclick: sendNow }),
+          h('div', { style: 'display:flex;gap:8px;margin-top:8px;flex-wrap:wrap' },
+            h('button', { class: 'on', style: 'background:var(--up);color:#000;font-weight:bold;padding:4px 14px', text: 'SEND VIA B-MAIL + SMTP GATEWAY <GO>', onclick: sendNow }),
+            h('button', {
+              style: 'background:#4da3ff;color:#000;font-weight:bold;padding:4px 12px',
+              text: 'SEND VIA GMAIL WEB (fadhilsyafiq90@gmail.com) ↗',
+              onclick: () => openGmailWeb(iTo.value.trim() || 'fadhilsyafiq90@gmail.com', iSub.value.trim(), txtBody.value)
+            }),
             h('button', {
               style: 'color:var(--label);border-color:var(--label);padding:4px 10px',
-              text: 'OPEN IN EXTERNAL EMAIL CLIENT (MAILTO) ↗',
+              text: 'OPEN IN MAILTO CLIENT ↗',
               onclick: () => {
                 window.open(`mailto:${encodeURIComponent(iTo.value.trim())}?subject=${encodeURIComponent(iSub.value.trim())}&body=${encodeURIComponent(txtBody.value)}`, '_blank');
               }
@@ -1033,7 +1118,7 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
       sc.append(
         h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'SPDL / PEOP BLOOMBERG INSTITUTIONAL SPEED DIAL & COUNTERPARTY DIRECTORY' })),
         h('table', { class: 't' },
-          h('thead', null, h('tr', null, ['Counterparty / Desk', 'Bloomberg Address', 'Institution', 'Specialty', 'Hub', 'Action'].map(x => h('th', { text: x })))),
+          h('thead', null, h('tr', null, ['Counterparty / Desk', 'Email Address', 'Institution', 'Specialty', 'Hub', 'Action'].map(x => h('th', { text: x })))),
           h('tbody', null, (store.directory || []).map(d => h('tr', { class: 'row' },
             h('td', { class: 'l sym am', text: d.name }),
             h('td', { class: 'l lb', text: d.email }),

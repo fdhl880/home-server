@@ -3,10 +3,10 @@ import { get, net, startHub } from './api.js';
 import { dev } from './dev-adapter.js';
 
 import { mountGP, mountHP, mountCOMP } from './panels/charts.js';
-import { mountMON, mountWL, mountMOST, mountFXC, mountIMAP } from './panels/monitors.js';
+import { mountMON, mountWL, mountMOST, mountFXC, mountIMAP, mountBMAP } from './panels/monitors.js';
 import { mountOB, mountTRADES, mountFUND } from './panels/micro.js';
 import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS } from './panels/equities.js';
-import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST } from './panels/quant.js';
+import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS } from './panels/quant.js';
 import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP } from './panels/ops.js';
 
 import { panels as newsPanels } from '../panels/news/index.js';
@@ -54,6 +54,8 @@ export const CATALOG = [
   { code: 'WFX', cat: 'FX', title: 'World FX Monitor', desc: 'Global Foreign Exchange Monitor', mount: mountFXC },
   { code: 'CMDTY', cat: 'CMDTY', title: 'Global Commodities', desc: 'Energy (WTI, Brent, NatGas), Metals (Gold, Silver, Copper) & Ags', mount: (b, c) => mountMON(b, c, { defaultGroup: 'COMMODITIES' }) },
   { code: 'GLCO', cat: 'CMDTY', title: 'Global Commodity Prices', desc: 'Benchmark Commodity Futures & Spot Monitor', mount: (b, c) => mountMON(b, c, { defaultGroup: 'COMMODITIES' }) },
+  { code: 'BMAP', cat: 'CMDTY', title: 'Bloomberg Commodity & Maritime Map', desc: 'Interactive World Map of Oil Hubs, LNG Tankers, Gold/Copper Mines & Chokepoints (Hormuz, Malacca, Suez)', mount: mountBMAP },
+  { code: 'CMAP', cat: 'CMDTY', title: 'Commodity Geospatial Map', desc: 'Global Energy, Metals, Agriculture & Chokepoint Geospatial Map', mount: mountBMAP },
   { code: 'WB', cat: 'FIXED INC', title: 'World Bond Markets', desc: 'US Treasury Yields & Global Fixed Income Benchmarks', mount: (b, c) => mountMON(b, c, { defaultGroup: 'BONDS' }) },
   { code: 'BTMM', cat: 'FIXED INC', title: 'Treasury & Money Markets', desc: 'US Treasury Bills/Notes/Bonds & Money Market Rates', mount: (b, c) => mountMON(b, c, { defaultGroup: 'BONDS' }) },
   { code: 'RATES', cat: 'FIXED INC', title: 'Rates, Commodities & FX', desc: 'Cross-Asset Yields, Commodities & Major FX Rates', mount: wrapWP5(macroPanels.RATES) },
@@ -116,6 +118,11 @@ export const CATALOG = [
   { code: 'WIRP', cat: 'FIXED INC', title: 'World Interest Rate Prob', desc: 'Implied Fed Rate Path, 2Y-EFFR Spread & 10Y TIPS Breakevens', mount: mountWIRP },
   { code: 'FOMC', cat: 'FIXED INC', title: 'FOMC Policy Monitor', desc: 'Federal Reserve Policy Rate, Real Yields & Inflation Breakevens', mount: mountWIRP },
   { code: 'TIPS', cat: 'FIXED INC', title: 'TIPS & Breakeven Inflation', desc: '10Y TIPS Real Yields vs Breakeven Inflation Expectations', mount: mountWIRP },
+  { code: 'ECFC', cat: 'MACRO', title: 'Economic Forecasts & Recession Prob', desc: 'US & Global 12-Month Recession Probability Model (NY Fed Probit + Sahm Rule) & Consensus Forecasts', mount: mountECFC },
+  { code: 'RPROB', cat: 'MACRO', title: 'Recession Probability Monitor', desc: 'Federal Reserve Yield Curve Probit 12M Recession Probability Curve & Country Matrix', mount: mountECFC },
+  { code: 'REC', cat: 'MACRO', title: 'US & Global Recession Tracker', desc: '12-Month Recession Probability & Macroeconomic Cycle Regime', mount: mountECFC },
+  { code: 'WCDS', cat: 'FIXED INC', title: 'World Sovereign CDS Monitor', desc: '5Y Sovereign Credit Default Swaps Spreads & Implied Default Probability Matrix', mount: mountWCDS },
+  { code: 'CDS', cat: 'FIXED INC', title: 'Credit Default Swaps & Default Prob', desc: 'Sovereign 5Y CDS Spreads & Cumulative Default Probabilities', mount: mountWCDS },
   { code: 'BTST', cat: 'QUANT', title: 'Strategy Backtester', desc: 'Quantitative Strategy Backtester (SMA Cross, RSI Reversion, Breakout) & Equity Curve Diagram', mount: mountBTST },
 
   // Operations, Portfolio, Risk, AI & System
@@ -128,8 +135,9 @@ export const CATALOG = [
   { code: 'VAR', cat: 'RISK', title: 'Value at Risk', desc: 'Daily Value-at-Risk, Expected Shortfall & Leverage Shock Scenarios', mount: mountMARS },
   { code: 'RISK', cat: 'RISK', title: 'Risk Analytics', desc: 'Portfolio & Single-Security Tail Risk Workbench', mount: mountMARS },
   { code: 'ALRT', cat: 'SYSTEM', title: 'Price Alert Manager', desc: 'Real-Time WebSocket Price Alerts with Audio & Visual Trigger', mount: mountALRT },
-  { code: 'MSG', cat: 'B-MAIL', title: 'Bloomberg Mail (@bloomberg.net)', desc: 'Institutional Terminal Email Inbox, Compose (MSG1), Sent & Speed Dial Directory', mount: (b, c) => mountMSG(b, c, { initialTab: 'INBOX' }) },
-  { code: 'BMAIL', cat: 'B-MAIL', title: 'Bloomberg Mail Client', desc: 'Institutional @bloomberg.net Email Gateway & Attachments', mount: (b, c) => mountMSG(b, c, { initialTab: 'INBOX' }) },
+  { code: 'MSG', cat: 'B-MAIL', title: 'Bloomberg Mail (@bloomberg.net)', desc: 'Institutional Terminal Email Inbox, Compose (MSG1), Sent & Auto-Email to fadhilsyafiq90@gmail.com', mount: (b, c) => mountMSG(b, c, { initialTab: 'INBOX' }) },
+  { code: 'BMAIL', cat: 'B-MAIL', title: 'Bloomberg Mail Client', desc: 'Institutional @bloomberg.net Email Gateway & Auto-Relay to fadhilsyafiq90@gmail.com', mount: (b, c) => mountMSG(b, c, { initialTab: 'INBOX' }) },
+  { code: 'GMAIL', cat: 'B-MAIL', title: 'Auto-Email Alerts (fadhilsyafiq90@gmail.com)', desc: 'Automatic Email Dispatcher to fadhilsyafiq90@gmail.com on Hot News & Futures Open/Close', mount: (b, c) => mountMSG(b, c, { initialTab: 'ALERTS' }) },
   { code: 'MSG1', cat: 'B-MAIL', title: 'Compose Bloomberg Mail', desc: 'Compose & Dispatch Institutional @bloomberg.net Email with Terminal Attachments', mount: (b, c) => mountMSG(b, c, { initialTab: 'COMPOSE' }) },
   { code: 'SPDL', cat: 'B-MAIL', title: 'Bloomberg Speed Dial Directory', desc: 'Institutional Counterparty Directory (Goldman, JPM, MS, BlackRock, EMSX)', mount: (b, c) => mountMSG(b, c, { initialTab: 'SPDL' }) },
   { code: 'PEOP', cat: 'B-MAIL', title: 'People & Desk Directory', desc: 'Global Institutional Counterparty & Analyst Directory', mount: (b, c) => mountMSG(b, c, { initialTab: 'SPDL' }) },
@@ -499,13 +507,13 @@ $('#go').addEventListener('click', () => {
 const FKEYS = [
   ['F1', 'HELP', 'HELP'],
   ['F2', 'GOVT', '^TNX YCRV'],
-  ['F3', 'MACRO', 'MACRO'],
-  ['F4', 'ECO', 'ECO'],
+  ['F3', 'RECESSION', '^TNX ECFC'],
+  ['F4', 'BMAP', 'CL=F BMAP'],
   ['F5', 'NEWS', 'TOP'],
   ['F6', 'B-MAIL', 'MSG'],
-  ['F7', 'INDEX', '^GSPC WEI'],
+  ['F7', 'GMAIL ALRT', 'GMAIL'],
   ['F8', 'EQUITY', 'AAPL DES'],
-  ['F9', 'ANR/SPLC', 'NVDA SPLC'],
+  ['F9', 'SPLC', 'NVDA SPLC'],
   ['F10', 'CRYP', 'BTCUSDT CRYP'],
   ['F11', 'PORT', 'SPCX PORT'],
   ['F12', 'EMSX', 'SPCX EMSX']

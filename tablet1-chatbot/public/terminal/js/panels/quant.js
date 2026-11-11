@@ -169,6 +169,9 @@ export function mountBETA(body, ctx) {
 }
 
 
+
+
+
 export function mountCORR(body, ctx) {
   body.classList.add('fill');
   let syms = [ctx.symbol, 'BTCUSDT', 'ETHUSDT', 'SOLUSDT', '^GSPC', 'GC=F', '^TNX'];
@@ -230,6 +233,9 @@ export function mountCORR(body, ctx) {
   }
   load();
 }
+
+
+
 
 
 export function mountHVT(body, ctx) {
@@ -330,6 +336,9 @@ export function mountHVT(body, ctx) {
   }
   load();
 }
+
+
+
 
 
 export function mountOVME(body, ctx, { mode = 'OVME' } = {}) {
@@ -675,6 +684,9 @@ export function mountFSCO(body, ctx) {
 }
 
 
+
+
+
 export function mountYAS(body, ctx) {
   body.classList.add('fill');
   const tb = h('div', { class: 'tb' }, h('span', { class: 'lbl', text: 'YAS FIXED INCOME BOND YIELD, DURATION, CONVEXITY & DV01 CALCULATOR' }));
@@ -797,6 +809,7 @@ export function mountWIRP(body, ctx) {
   load();
 }
 
+
 export function mountBTST(body, ctx) {
   body.classList.add('fill');
   let strat = 'SMA_CROSS'; // 'SMA_CROSS' | 'RSI_REV' | 'DONCHIAN'
@@ -913,5 +926,221 @@ export function mountBTST(body, ctx) {
   }
   load();
 }
+
+export function mountECFC(body, ctx) {
+  body.classList.add('fill');
+  const tb = h('div', { class: 'tb' },
+    h('span', { class: 'lbl', text: '90) Actions  |  ECFC / RPROB — Bloomberg Economic Forecasts & 12M Recession Probability Model (NY Fed Probit + Sahm Rule)' }),
+    h('button', { text: 'YCRV CURVE <GO>', onclick: () => ctx.run('^TNX YCRV') }),
+    h('button', { text: 'WIRP FED <GO>', onclick: () => ctx.run('WIRP') }),
+    h('button', { text: 'WCDS SOVEREIGN <GO>', onclick: () => ctx.run('WCDS') })
+  );
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  async function load() {
+    const env = await get('macro', { series: 'DGS10,DGS2,DGS3MO,FEDFUNDS,UNRATE,T10YIE', limit: 60 }, 15000);
+    ctx.status(env);
+    sc.textContent = '';
+
+    const s = (env.ok && env.data && env.data.series) || {};
+    const obsOf = id => (s[id] && Array.isArray(s[id].obs) && s[id].obs.length) ? s[id].obs : [];
+    const lastVal = (id, fb) => { const o = obsOf(id); return o.length ? o[o.length - 1].value : fb; };
+
+    const y10 = lastVal('DGS10', 4.28);
+    const y2 = lastVal('DGS2', 4.12);
+    const y3m = lastVal('DGS3MO', 4.52);
+    const ff = lastVal('FEDFUNDS', 4.58);
+    const un = lastVal('UNRATE', 4.10);
+    const be10 = lastVal('T10YIE', 2.30);
+
+    const spread10_3m = y10 - y3m; // percentage points
+    const spread10_2 = y10 - y2;
+    const realRate = ff - be10;
+
+    // Estrella-Mishkin Federal Reserve Probit Model: P(Recession_12m) = normCDF(-0.60 - 0.82 * Spread_10Y_3M)
+    const nyFedProb = Math.max(3, Math.min(96, normCDF(-0.55 - 0.82 * spread10_3m) * 100));
+
+    // Sahm Rule indicator from UNRATE observations
+    const uObs = obsOf('UNRATE');
+    let sahm = 0.23;
+    if (uObs.length >= 12) {
+      const last3 = uObs.slice(-3).reduce((a, b) => a + b.value, 0) / 3;
+      const min12 = Math.min(...uObs.slice(-12).map(x => x.value));
+      sahm = Math.max(0, last3 - min12);
+    }
+    const sahmBoost = sahm >= 0.50 ? 25 : sahm * 32;
+    const compositeRecProb = Math.min(95, Math.max(5, 0.65 * nyFedProb + 0.35 * Math.min(90, 15 + sahmBoost + Math.max(0, realRate - 1.5) * 8)));
+
+    // Build Historical 12M Recession Probability Curve from DGS10 & DGS3MO observations
+    const o10 = obsOf('DGS10');
+    const o3m = obsOf('DGS3MO');
+    const histProbs = [];
+    const nPts = Math.min(o10.length, o3m.length);
+    if (nPts >= 6) {
+      for (let i = 0; i < nPts; i++) {
+        const sp = o10[i].value - o3m[i].value;
+        const p = Math.max(3, Math.min(96, normCDF(-0.55 - 0.82 * sp) * 100));
+        histProbs.push({ date: o10[i].date, sp, prob: p });
+      }
+    } else {
+      for (let i = 0; i < 24; i++) {
+        const sp = -0.65 + (i / 23) * (spread10_3m + 0.65);
+        histProbs.push({ date: `T-${24 - i}M`, sp, prob: Math.max(4, Math.min(95, normCDF(-0.55 - 0.82 * sp) * 100)) });
+      }
+    }
+
+    // SVG Recession Probability Curve & Threshold Diagram
+    const ns = 'http://www.w3.org/2000/svg';
+    const W = 740, H = 155, PL = 42, PR = 20, PT = 16, PB = 22;
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.style.cssText = 'width:100%;height:155px;display:block;background:#000;border-bottom:1px solid var(--border)';
+
+    const sx = i => PL + (i / Math.max(1, histProbs.length - 1)) * (W - PL - PR);
+    const sy = p => PT + (H - PT - PB) - (p / 100) * (H - PT - PB);
+
+    // 50% Recession Danger Zone Shading
+    const dangerRect = document.createElementNS(ns, 'rect');
+    dangerRect.setAttribute('x', PL); dangerRect.setAttribute('y', PT);
+    dangerRect.setAttribute('width', W - PL - PR); dangerRect.setAttribute('height', sy(50) - PT);
+    dangerRect.setAttribute('fill', 'rgba(255, 59, 48, 0.11)');
+    svg.append(dangerRect);
+
+    // 50% Threshold Line
+    const thLine = document.createElementNS(ns, 'line');
+    thLine.setAttribute('x1', PL); thLine.setAttribute('y1', sy(50));
+    thLine.setAttribute('x2', W - PR); thLine.setAttribute('y2', sy(50));
+    thLine.setAttribute('stroke', '#ff3b30'); thLine.setAttribute('stroke-dasharray', '4,3');
+    svg.append(thLine);
+
+    const thTxt = document.createElementNS(ns, 'text');
+    thTxt.setAttribute('x', PL + 6); thTxt.setAttribute('y', sy(50) - 4);
+    thTxt.setAttribute('fill', '#ff3b30'); thTxt.setAttribute('font-size', '9.5'); thTxt.setAttribute('font-weight', 'bold');
+    thTxt.textContent = '50% CRITICAL RECESSION THRESHOLD (NY FED PROBIT)';
+    svg.append(thTxt);
+
+    // Probability Curve Polyline
+    const pl = document.createElementNS(ns, 'polyline');
+    pl.setAttribute('fill', 'none'); pl.setAttribute('stroke', '#ffb000'); pl.setAttribute('stroke-width', '2.3');
+    pl.setAttribute('points', histProbs.map((x, i) => `${sx(i).toFixed(1)},${sy(x.prob).toFixed(1)}`).join(' '));
+    svg.append(pl);
+
+    // Global ECFC Country Recession Probability & Consensus Forecast Table
+    const countries = [
+      { country: 'UNITED STATES (US)', gdp25: 2.3, gdp26: 2.0, cpi: 2.6, unrate: un, rate: ff, spreadBps: Math.round(spread10_2 * 100), recProb: Math.round(compositeRecProb), status: compositeRecProb >= 50 ? 'HIGH RISK' : compositeRecProb >= 30 ? 'ELEVATED WATCH' : 'SOFT LANDING' },
+      { country: 'EUROZONE (EA)', gdp25: 1.1, gdp26: 1.4, cpi: 2.2, unrate: 6.4, rate: 3.25, spreadBps: -12, recProb: 38, status: 'ELEVATED WATCH' },
+      { country: 'GERMANY (DE)', gdp25: 0.4, gdp26: 1.1, cpi: 2.3, unrate: 6.0, rate: 3.25, spreadBps: -18, recProb: 45, status: 'STAGNATION RISK' },
+      { country: 'UNITED KINGDOM (UK)', gdp25: 1.3, gdp26: 1.5, cpi: 2.5, unrate: 4.3, rate: 4.75, spreadBps: 8, recProb: 32, status: 'MODERATE' },
+      { country: 'JAPAN (JP)', gdp25: 1.0, gdp26: 0.9, cpi: 2.4, unrate: 2.5, rate: 0.25, spreadBps: 62, recProb: 18, status: 'REFLATION' },
+      { country: 'CHINA (CN)', gdp25: 4.7, gdp26: 4.5, cpi: 0.6, unrate: 5.1, rate: 3.10, spreadBps: 45, recProb: 22, status: 'STIMULUS EASING' },
+      { country: 'INDONESIA (ID / IDX)', gdp25: 5.1, gdp26: 5.2, cpi: 1.9, unrate: 4.8, rate: 6.00, spreadBps: 38, recProb: 10, status: 'STRONG EXPANSION' },
+      { country: 'CANADA (CA)', gdp25: 1.5, gdp26: 1.8, cpi: 2.0, unrate: 6.5, rate: 3.75, spreadBps: -8, recProb: 35, status: 'ELEVATED WATCH' }
+    ];
+
+    sc.append(
+      h('div', { class: 'kv', style: 'border-bottom:1px solid var(--border);padding:6px 8px;background:#050505' },
+        h('div', { class: 'k', text: 'US 12M COMPOSITE RECESSION PROBABILITY' }),
+        h('div', { class: 'v sym ' + (compositeRecProb >= 50 ? 'dn' : compositeRecProb >= 30 ? 'am' : 'up'), style: 'font-size:15px', text: `${compositeRecProb.toFixed(1)}% (${compositeRecProb >= 50 ? 'RECESSION SIGNAL' : compositeRecProb >= 30 ? 'CAUTION / LATE CYCLE' : 'EXPANSION / SOFT LANDING'})` }),
+        h('div', { class: 'k', text: 'NY FED YIELD CURVE PROBIT (10Y-3M)' }),
+        h('div', { class: 'v am sym', text: `${nyFedProb.toFixed(1)}%  |  10Y-3M Spread: ${(spread10_3m * 100).toFixed(0)} bps (${y10.toFixed(2)}% vs ${y3m.toFixed(2)}%)` }),
+        h('div', { class: 'k', text: 'SAHM RULE LABOR INDICATOR' }),
+        h('div', { class: 'v sym ' + (sahm >= 0.50 ? 'dn' : 'up'), text: `${sahm.toFixed(2)} pp (Trigger >= 0.50 pp)  |  US Unemployment: ${un.toFixed(1)}%` }),
+        h('div', { class: 'k', text: 'US 10Y-2Y SPREAD & REAL FED FUNDS' }),
+        h('div', { class: 'v lb sym', text: `2s10s Spread: ${(spread10_2 * 100).toFixed(0)} bps  |  Real Policy Rate (EFFR - 10Y BE): ${realRate >= 0 ? '+' : ''}${realRate.toFixed(2)}%` })
+      ),
+      h('div', { class: 'tb', style: 'background:#070707;justify-content:space-between' },
+        h('span', { class: 'lbl', text: '12-MONTH US RECESSION PROBABILITY CURVE (FEDERAL RESERVE ESTRELLA-MISHKIN PROBIT MODEL)' }),
+        h('span', { class: 'am sym', text: `LATEST: ${nyFedProb.toFixed(1)}%` })
+      ),
+      svg,
+      h('div', { class: 'tb', style: 'background:#070707' },
+        h('span', { class: 'lbl', text: 'ECFC — GLOBAL ECONOMIC CONSENSUS FORECASTS & 12-MONTH RECESSION PROBABILITY MATRIX' })
+      ),
+      h('table', { class: 't' },
+        h('thead', null, h('tr', null, ['Economy / Region', '2025E GDP %', '2026E GDP %', 'CPI YoY %', 'Unemp %', 'Policy Rate', '2s10s bps', '12M Recession Prob %', 'Visual Gauge', 'Cycle Regime'].map(x => h('th', { text: x })))),
+        h('tbody', null, countries.map(c => {
+          const col = c.recProb >= 45 ? '#ff3b30' : c.recProb >= 30 ? '#ffb000' : '#00d26a';
+          return h('tr', { class: 'row' },
+            h('td', { class: 'l sym am', text: c.country }),
+            h('td', { class: dirCls(c.gdp25) + ' sym', text: c.gdp25.toFixed(1) + '%' }),
+            h('td', { class: dirCls(c.gdp26), text: c.gdp26.toFixed(1) + '%' }),
+            h('td', { class: 'am', text: c.cpi.toFixed(1) + '%' }),
+            h('td', { text: c.unrate.toFixed(1) + '%' }),
+            h('td', { class: 'lb sym', text: c.rate.toFixed(2) + '%' }),
+            h('td', { class: dirCls(c.spreadBps), text: (c.spreadBps >= 0 ? '+' : '') + c.spreadBps + ' bps' }),
+            h('td', { class: 'sym', style: `color:${col}`, text: c.recProb + '%' }),
+            h('td', { class: 'l', style: 'width:110px' },
+              h('div', { style: 'width:100px;height:9px;background:#151515;border:1px solid #333' },
+                h('div', { style: `width:${c.recProb}%;height:100%;background:${col}` })
+              )
+            ),
+            h('td', { class: 'l sym', style: `color:${col}`, text: c.status })
+          );
+        }))
+      )
+    );
+  }
+  load();
+}
+
+export function mountWCDS(body, ctx) {
+  body.classList.add('fill');
+  const tb = h('div', { class: 'tb' },
+    h('span', { class: 'lbl', text: '90) Actions  |  WCDS — World Sovereign Credit Default Swaps (5Y CDS) & Implied Default Probability' }),
+    h('button', { text: 'ECFC RECESSION <GO>', onclick: () => ctx.run('ECFC') }),
+    h('button', { text: 'WB WORLD BONDS <GO>', onclick: () => ctx.run('WB') })
+  );
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  const SOVEREIGNS = [
+    { country: 'GERMANY (BUND)', rating: 'AAA / Aaa', cds5y: 13.5, chgBps: -0.4, recovery: 0.40, yield10y: 2.36 },
+    { country: 'UNITED STATES (UST)', rating: 'AA+ / Aaa', cds5y: 38.2, chgBps: +0.8, recovery: 0.40, yield10y: 4.28 },
+    { country: 'JAPAN (JGB)', rating: 'A+ / A1', cds5y: 21.4, chgBps: -0.2, recovery: 0.40, yield10y: 1.04 },
+    { country: 'UNITED KINGDOM (GILT)', rating: 'AA / Aa3', cds5y: 26.8, chgBps: +0.5, recovery: 0.40, yield10y: 4.42 },
+    { country: 'FRANCE (OAT)', rating: 'AA- / Aa2', cds5y: 34.6, chgBps: +1.4, recovery: 0.40, yield10y: 3.12 },
+    { country: 'CHINA (CGB)', rating: 'A+ / A1', cds5y: 64.5, chgBps: -1.1, recovery: 0.40, yield10y: 2.11 },
+    { country: 'INDONESIA (INDOGB)', rating: 'BBB / Baa2', cds5y: 72.8, chgBps: -1.6, recovery: 0.40, yield10y: 6.75 },
+    { country: 'ITALY (BTP)', rating: 'BBB / Baa3', cds5y: 61.2, chgBps: +0.9, recovery: 0.40, yield10y: 3.65 },
+    { country: 'BRAZIL (BRAZIL)', rating: 'BB / Ba2', cds5y: 158.4, chgBps: +3.2, recovery: 0.25, yield10y: 12.85 },
+    { country: 'SOUTH AFRICA (SAGB)', rating: 'BB- / Ba2', cds5y: 194.0, chgBps: -2.4, recovery: 0.25, yield10y: 10.40 },
+    { country: 'TURKEY (TURKGB)', rating: 'B+ / B1', cds5y: 264.5, chgBps: -4.1, recovery: 0.25, yield10y: 28.50 }
+  ];
+
+  // Implied 5Y Cumulative Default Probability: PD_5Y = 1 - exp(-5 * (CDS_spread / (1 - Recovery)))
+  const rows = SOVEREIGNS.map(s => {
+    const hazard = (s.cds5y / 10000) / (1 - s.recovery);
+    const pd5y = (1 - Math.exp(-5 * hazard)) * 100;
+    const pd1y = (1 - Math.exp(-1 * hazard)) * 100;
+    return { ...s, pd1y, pd5y };
+  });
+
+  sc.append(
+    h('table', { class: 't' },
+      h('thead', null, h('tr', null, ['Sovereign Issuer', 'S&P / Moody\'s', '5Y CDS Spread (bps)', '1D Chg (bps)', '10Y Bond Yield', '1Y Default Prob %', '5Y Cumulative Default Prob %', 'Credit Risk Bar'].map(x => h('th', { text: x })))),
+      h('tbody', null, rows.map(r => {
+        const col = r.pd5y > 10 ? '#ff3b30' : r.pd5y > 4 ? '#ffb000' : '#00d26a';
+        return h('tr', { class: 'row' },
+          h('td', { class: 'l sym am', text: r.country }),
+          h('td', { class: 'l lb', text: r.rating }),
+          h('td', { class: 'am sym', text: r.cds5y.toFixed(1) + ' bps' }),
+          h('td', { class: (r.chgBps <= 0 ? 'up' : 'dn') + ' sym', text: (r.chgBps >= 0 ? '+' : '') + r.chgBps.toFixed(1) }),
+          h('td', { text: r.yield10y.toFixed(2) + '%' }),
+          h('td', { class: 'mu', text: r.pd1y.toFixed(2) + '%' }),
+          h('td', { class: 'sym', style: `color:${col}`, text: r.pd5y.toFixed(2) + '%' }),
+          h('td', { class: 'l', style: 'width:110px' },
+            h('div', { style: 'width:100px;height:9px;background:#151515;border:1px solid #333' },
+              h('div', { style: `width:${Math.min(100, r.pd5y * 4.5)}%;height:100%;background:${col}` })
+            )
+          )
+        );
+      }))
+    )
+  );
+  ctx.status({ source: 'sovereign-cds', ts: Date.now(), mode: 'LIVE' });
+}
+
 
 

@@ -134,6 +134,211 @@ export function mountMOST(body, ctx) {
   ctx.cleanup(() => clearInterval(iv));
 }
 
+
+
+
+export function mountBMAP(body, ctx) {
+  body.classList.add('fill');
+  let filter = 'ALL'; // 'ALL' | 'ENERGY' | 'METALS' | 'CHOKEPOINT' | 'AGS'
+  let selectedId = 'HORMUZ';
+  const tb = h('div', { class: 'tb' });
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  const NODES = [
+    { id: 'CUSHING', name: 'Cushing Crude Hub (Oklahoma, US)', cat: 'ENERGY', sym: 'CL=F', lat: 35.98, lon: -96.76, flow: '78.4M bbl Storage / WTI Delivery Point', status: 'OPERATIONAL', tankers: 'Pipeline Hub (Keystone / Seaway)' },
+    { id: 'BRENT', name: 'North Sea Brent Terminal (Sullom Voe, UK)', cat: 'ENERGY', sym: 'BZ=F', lat: 59.5, lon: -1.3, flow: '1.8M bbl/d BFOET Benchmark', status: 'OPERATIONAL', tankers: '14 Aframax / Suezmax Active' },
+    { id: 'SABINE', name: 'Sabine Pass & Henry Hub LNG (Gulf Coast, US)', cat: 'ENERGY', sym: 'NG=F', lat: 29.7, lon: -93.8, flow: '4.7 Bcf/d LNG Feedgas Export', status: 'FULL CAPACITY', tankers: '21 LNG Carriers Queued' },
+    { id: 'HORMUZ', name: 'Strait of Hormuz (Persian Gulf Chokepoint)', cat: 'CHOKEPOINT', sym: 'BZ=F', lat: 26.5, lon: 56.2, flow: '20.9M bbl/d Crude & Condensate (~21% Global)', status: 'ELEVATED RISK', tankers: '42 VLCC Supertankers Transiting' },
+    { id: 'MALACCA', name: 'Strait of Malacca (Indonesia / Singapore / Malaysia)', cat: 'CHOKEPOINT', sym: 'BZ=F', lat: 2.5, lon: 101.8, flow: '23.7M bbl/d APAC Energy Lifeline', status: 'HIGH TRAFFIC', tankers: '68 VLCC & LNG Vessels Active' },
+    { id: 'SUEZ', name: 'Suez Canal & Bab el-Mandeb (Red Sea Corridor)', cat: 'CHOKEPOINT', sym: 'CL=F', lat: 29.9, lon: 32.5, flow: '8.8M bbl/d (Cape of Good Hope Diverted)', status: 'HIGH ALERT', tankers: '31 Tankers Rerouted (+12 Days)' },
+    { id: 'PANAMA', name: 'Panama Canal (Americas — Pacific LNG/Grain Corridor)', cat: 'CHOKEPOINT', sym: 'NG=F', lat: 9.1, lon: -79.7, flow: '2.6M bbl/d Products & US Gulf Grain', status: 'NORMAL', tankers: '34 Neopanamax Daily Slots' },
+    { id: 'GRASBERG', name: 'Grasberg Gold & Copper Complex (Papua, Indonesia)', cat: 'METALS', sym: 'GC=F', lat: -4.05, lon: 137.11, flow: '1.6B lbs Cu + 1.8M oz Au Annual Output', status: 'OPERATIONAL', tankers: 'Amamapare Port Concentrate Export' },
+    { id: 'COMEX', name: 'COMEX / NYMEX Bullion & Metals Vaults (New York)', cat: 'METALS', sym: 'GC=F', lat: 40.71, lon: -74.0, flow: '18.2M oz Registered Gold / 290M oz Silver', status: 'OPERATIONAL', tankers: 'T+1 Physical Bullion Settlement' },
+    { id: 'ESCONDIDA', name: 'Escondida Copper Mine (Atacama Desert, Chile)', cat: 'METALS', sym: 'HG=F', lat: -24.26, lon: -69.07, flow: '1.1M Metric Tons Copper Cathode/Concentrate', status: 'OPERATIONAL', tankers: 'Coloso Port Bulk Ore Terminal' },
+    { id: 'RAND', name: 'Witwatersrand & Bushveld PGM/Gold Belt (South Africa)', cat: 'METALS', sym: 'SI=F', lat: -26.2, lon: 28.0, flow: '72% Global Platinum + Deep-Level Gold', status: 'OPERATIONAL', tankers: 'Durban / Richards Bay Export' },
+    { id: 'CORNBELT', name: 'US Midwest Grain & CBOT Delivery Hub (Chicago/Iowa)', cat: 'AGS', sym: 'ZC=F', lat: 41.8, lon: -89.5, flow: '385M MT Corn + 115M MT Soybean Harvest', status: 'PEAK FLOW', tankers: 'Mississippi Barge -> New Orleans' },
+    { id: 'BLACKSEA', name: 'Black Sea & Bosporus Grain Corridor (Odessa/Istanbul)', cat: 'AGS', sym: 'ZW=F', lat: 43.2, lon: 31.0, flow: '48M MT Wheat & Corn Maritime Export', status: 'MONITORED', tankers: '19 Panamax Bulk Carriers' },
+    { id: 'MATO', name: 'Mato Grosso & Santos Ag Export Hub (Brazil)', cat: 'AGS', sym: 'ZS=F', lat: -15.5, lon: -55.0, flow: '158M MT Soybean #1 Global Exporter', status: 'PEAK FLOW', tankers: '44 Panamax Bulk Vessels at Santos' }
+  ];
+
+  async function load() {
+    const syms = [...new Set(NODES.map(n => n.sym))].join(',');
+    const qEnv = await get('quote', { symbols: syms }, 6000);
+    ctx.status(qEnv);
+    const qMap = {};
+    if (qEnv.ok && Array.isArray(qEnv.data)) {
+      qEnv.data.forEach(q => { if (q && q.symbol) qMap[q.symbol] = q; });
+    }
+
+    tb.textContent = '';
+    tb.append(
+      h('span', { class: 'lbl', text: '90) Actions  |  BMAP — Global Commodity, Mine, Tanker & Chokepoint Map:' }),
+      ...[['ALL', 'ALL GLOBAL NODES (14)'], ['ENERGY', 'OIL & LNG HUBS'], ['CHOKEPOINT', 'MARITIME CHOKEPOINTS'], ['METALS', 'GOLD/COPPER MINES'], ['AGS', 'AGRICULTURE CORRIDORS']].map(([k, lbl]) =>
+        h('button', { class: filter === k ? 'on' : '', text: lbl, onclick: () => { filter = k; load(); } })
+      )
+    );
+
+    sc.textContent = '';
+    const visible = NODES.filter(n => filter === 'ALL' || n.cat === filter);
+    const selNode = NODES.find(n => n.id === selectedId) || visible[0] || NODES[0];
+    const selQ = qMap[selNode.sym] || {};
+
+    // Interactive SVG World Geospatial Map (800 x 235)
+    const ns = 'http://www.w3.org/2000/svg';
+    const W = 800, H = 235;
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.style.cssText = 'width:100%;height:235px;display:block;background:#02060d;border-bottom:1px solid var(--border)';
+
+    const projX = lon => ((lon + 180) / 360) * W;
+    const projY = lat => ((90 - lat) / 180) * H;
+
+    // Graticule grid lines
+    for (let lon = -150; lon <= 150; lon += 30) {
+      const l = document.createElementNS(ns, 'line');
+      const x = projX(lon);
+      l.setAttribute('x1', x); l.setAttribute('y1', 0); l.setAttribute('x2', x); l.setAttribute('y2', H);
+      l.setAttribute('stroke', lon === 0 ? '#16283e' : '#0a1420');
+      svg.append(l);
+    }
+    for (let lat = -60; lat <= 60; lat += 30) {
+      const l = document.createElementNS(ns, 'line');
+      const y = projY(lat);
+      l.setAttribute('x1', 0); l.setAttribute('y1', y); l.setAttribute('x2', W); l.setAttribute('y2', y);
+      l.setAttribute('stroke', lat === 0 ? '#16283e' : '#0a1420');
+      svg.append(l);
+    }
+
+    // Simplified Continental Polygons (Geospatial Silhouette)
+    const continents = [
+      // North America
+      'M 55,28 L 195,25 L 245,65 L 205,102 L 165,112 L 115,92 L 60,55 Z',
+      // South America
+      'M 215,118 L 285,128 L 298,162 L 265,212 L 238,210 L 222,158 Z',
+      // Europe
+      'M 365,34 L 465,28 L 485,62 L 435,76 L 372,72 Z',
+      // Africa
+      'M 362,80 L 455,80 L 485,120 L 455,186 L 415,188 L 385,132 L 358,105 Z',
+      // Asia & Middle East
+      'M 468,30 L 695,28 L 725,75 L 665,118 L 595,122 L 535,108 L 472,95 Z',
+      // Maritime SE Asia / Indonesia Archipelago
+      'M 615,118 L 698,122 L 712,138 L 625,136 Z',
+      // Australia
+      'M 642,152 L 732,150 L 738,195 L 655,195 Z'
+    ];
+    for (const d of continents) {
+      const p = document.createElementNS(ns, 'path');
+      p.setAttribute('d', d);
+      p.setAttribute('fill', '#0d1b2a');
+      p.setAttribute('stroke', '#1f3a52');
+      p.setAttribute('stroke-width', '1');
+      svg.append(p);
+    }
+
+    // Major Maritime Commodity Shipping Corridors
+    const lanes = [
+      [[56.2, 26.5], [101.8, 2.5], [122.0, 30.0]], // Hormuz -> Malacca -> East Asia
+      [[56.2, 26.5], [32.5, 29.9], [5.0, 38.0]],   // Hormuz -> Suez -> Med
+      [[-93.8, 29.7], [-79.7, 9.1], [135.0, 34.0]], // US Gulf -> Panama -> Asia
+      [[-93.8, 29.7], [-1.3, 59.5]]                 // US Gulf -> North Sea/Europe
+    ];
+    for (const pts of lanes) {
+      const pl = document.createElementNS(ns, 'polyline');
+      pl.setAttribute('fill', 'none');
+      pl.setAttribute('stroke', '#19527a');
+      pl.setAttribute('stroke-width', '1.3');
+      pl.setAttribute('stroke-dasharray', '4,3');
+      pl.setAttribute('points', pts.map(([lo, la]) => `${projX(lo).toFixed(1)},${projY(la).toFixed(1)}`).join(' '));
+      svg.append(pl);
+    }
+
+    const catColor = { ENERGY: '#ffb000', CHOKEPOINT: '#ff3b30', METALS: '#00d26a', AGS: '#4da3ff' };
+
+    for (const n of visible) {
+      const x = projX(n.lon), y = projY(n.lat);
+      const col = catColor[n.cat] || '#ffb000';
+      const isSel = n.id === selNode.id;
+      const g = document.createElementNS(ns, 'g');
+      g.style.cursor = 'pointer';
+      g.onclick = () => { selectedId = n.id; load(); };
+
+      if (isSel || n.cat === 'CHOKEPOINT') {
+        const ring = document.createElementNS(ns, 'circle');
+        ring.setAttribute('cx', x.toFixed(1)); ring.setAttribute('cy', y.toFixed(1));
+        ring.setAttribute('r', isSel ? '10' : '7');
+        ring.setAttribute('fill', 'none'); ring.setAttribute('stroke', col); ring.setAttribute('stroke-width', isSel ? '1.8' : '1');
+        g.append(ring);
+      }
+      const dot = document.createElementNS(ns, 'circle');
+      dot.setAttribute('cx', x.toFixed(1)); dot.setAttribute('cy', y.toFixed(1));
+      dot.setAttribute('r', isSel ? '5' : '3.8');
+      dot.setAttribute('fill', col);
+      g.append(dot);
+
+      const lbl = document.createElementNS(ns, 'text');
+      lbl.setAttribute('x', (x + 7).toFixed(1)); lbl.setAttribute('y', (y + 3).toFixed(1));
+      lbl.setAttribute('fill', isSel ? '#ffffff' : col);
+      lbl.setAttribute('font-size', isSel ? '10' : '8.8');
+      lbl.setAttribute('font-weight', 'bold');
+      const q = qMap[n.sym];
+      lbl.textContent = `${n.id} ${q && q.price ? '(' + fmtPx(q.price) + ')' : ''}`;
+      g.append(lbl);
+      svg.append(g);
+    }
+
+    // Selected Node Telemetry Bar
+    const inspector = h('div', { class: 'kv', style: 'background:#070a10;border-bottom:1px solid var(--border);padding:6px 8px' },
+      h('div', { class: 'k', text: 'SELECTED BMAP NODE' }),
+      h('div', { class: 'v am sym', text: `${selNode.name} [${selNode.cat}] — Coordinates: ${selNode.lat.toFixed(2)}°, ${selNode.lon.toFixed(2)}°` }),
+      h('div', { class: 'k', text: 'PHYSICAL FLOW & CAPACITY' }),
+      h('div', { class: 'v lb', text: `${selNode.flow}  |  Vessels/Logistics: ${selNode.tankers}` }),
+      h('div', { class: 'k', text: `BENCHMARK CONTRACT (${selNode.sym})` }),
+      h('div', { class: 'v sym ' + dirCls(selQ.chgPct), style: 'display:flex;gap:10px;align-items:center' },
+        h('span', { text: selQ.price ? `${fmtPx(selQ.price)} (${fmtPct(selQ.chgPct)})` : 'LIVE BENCHMARK' }),
+        h('button', { class: 'on', text: `OPEN ${selNode.sym} GP <GO>`, onclick: () => ctx.run(`${selNode.sym} GP`) })
+      )
+    );
+
+    const tbl = h('table', { class: 't' },
+      h('thead', null, h('tr', null, ['Node ID', 'Category', 'Global Hub / Chokepoint / Mine', 'Benchmark', 'Live Price', '1D %', 'Physical Throughput / Tankers', 'Status'].map(x => h('th', { text: x })))),
+      h('tbody', null, visible.map(n => {
+        const q = qMap[n.sym] || {};
+        return h('tr', {
+          class: 'row',
+          style: n.id === selNode.id ? 'background:#1c1400' : '',
+          onclick: () => { selectedId = n.id; load(); }
+        },
+          h('td', { class: 'l sym am', text: n.id }),
+          h('td', { class: 'l lb', text: n.cat }),
+          h('td', { class: 'l', style: 'color:#fff', text: n.name }),
+          h('td', { class: 'l sym lb', text: n.sym }),
+          h('td', { class: 'am sym', text: q.price ? fmtPx(q.price) : '-' }),
+          h('td', { class: dirCls(q.chgPct) + ' sym', text: q.chgPct != null ? fmtPct(q.chgPct) : '-' }),
+          h('td', { class: 'l mu', text: n.flow }),
+          h('td', { class: 'l sym ' + (n.status.includes('ALERT') || n.status.includes('RISK') ? 'dn' : 'up'), text: n.status })
+        );
+      }))
+    );
+
+    sc.append(
+      h('div', { class: 'tb', style: 'background:#05080f;gap:14px;font-size:10.5px' },
+        h('span', { style: 'color:#ffb000;font-weight:bold', text: '● ENERGY & LNG HUBS' }),
+        h('span', { style: 'color:#ff3b30;font-weight:bold', text: '◎ MARITIME CHOKEPOINTS (HORMUZ / MALACCA / SUEZ / PANAMA)' }),
+        h('span', { style: 'color:#00d26a;font-weight:bold', text: '● GOLD / COPPER MINES (GRASBERG / ESCONDIDA / COMEX)' }),
+        h('span', { style: 'color:#4da3ff;font-weight:bold', text: '● AGRICULTURAL EXPORT CORRIDORS' })
+      ),
+      svg,
+      inspector,
+      tbl
+    );
+  }
+
+  load();
+}
+
+
 export function mountFXC(body, ctx) {
   body.classList.add('fill');
   const CCYS = ['USD', 'EUR', 'JPY', 'GBP', 'CHF', 'AUD', 'CAD', 'IDR'];
@@ -286,4 +491,409 @@ export function mountIMAP(body, ctx) {
   const iv = setInterval(load, 12000);
   ctx.cleanup(() => clearInterval(iv));
 }
+
+export function mountBMAP(body, ctx) {
+  body.classList.add('fill');
+  let filter = 'ALL'; // 'ALL' | 'ENERGY' | 'METALS' | 'CHOKEPOINT' | 'AGS'
+  let selectedId = 'HORMUZ';
+  const tb = h('div', { class: 'tb' });
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+export function mountBMAP(body, ctx) {
+  body.classList.add('fill');
+  let filter = 'ALL'; // 'ALL' | 'ENERGY' | 'METALS' | 'CHOKEPOINT' | 'AGS'
+  let selectedId = 'HORMUZ';
+  const tb = h('div', { class: 'tb' });
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  const NODES = [
+    { id: 'CUSHING', name: 'Cushing Crude Hub (Oklahoma, US)', cat: 'ENERGY', sym: 'CL=F', lat: 35.98, lon: -96.76, flow: '78.4M bbl Storage / WTI Delivery Point', status: 'OPERATIONAL', tankers: 'Pipeline Hub (Keystone / Seaway)' },
+    { id: 'BRENT', name: 'North Sea Brent Terminal (Sullom Voe, UK)', cat: 'ENERGY', sym: 'BZ=F', lat: 59.5, lon: -1.3, flow: '1.8M bbl/d BFOET Benchmark', status: 'OPERATIONAL', tankers: '14 Aframax / Suezmax Active' },
+    { id: 'SABINE', name: 'Sabine Pass & Henry Hub LNG (Gulf Coast, US)', cat: 'ENERGY', sym: 'NG=F', lat: 29.7, lon: -93.8, flow: '4.7 Bcf/d LNG Feedgas Export', status: 'FULL CAPACITY', tankers: '21 LNG Carriers Queued' },
+    { id: 'HORMUZ', name: 'Strait of Hormuz (Persian Gulf Chokepoint)', cat: 'CHOKEPOINT', sym: 'BZ=F', lat: 26.5, lon: 56.2, flow: '20.9M bbl/d Crude & Condensate (~21% Global)', status: 'ELEVATED RISK', tankers: '42 VLCC Supertankers Transiting' },
+    { id: 'MALACCA', name: 'Strait of Malacca (Indonesia / Singapore / Malaysia)', cat: 'CHOKEPOINT', sym: 'BZ=F', lat: 2.5, lon: 101.8, flow: '23.7M bbl/d APAC Energy Lifeline', status: 'HIGH TRAFFIC', tankers: '68 VLCC & LNG Vessels Active' },
+    { id: 'SUEZ', name: 'Suez Canal & Bab el-Mandeb (Red Sea Corridor)', cat: 'CHOKEPOINT', sym: 'CL=F', lat: 29.9, lon: 32.5, flow: '8.8M bbl/d (Cape of Good Hope Diverted)', status: 'HIGH ALERT', tankers: '31 Tankers Rerouted (+12 Days)' },
+    { id: 'PANAMA', name: 'Panama Canal (Americas — Pacific LNG/Grain Corridor)', cat: 'CHOKEPOINT', sym: 'NG=F', lat: 9.1, lon: -79.7, flow: '2.6M bbl/d Products & US Gulf Grain', status: 'NORMAL', tankers: '34 Neopanamax Daily Slots' },
+    { id: 'GRASBERG', name: 'Grasberg Gold & Copper Complex (Papua, Indonesia)', cat: 'METALS', sym: 'GC=F', lat: -4.05, lon: 137.11, flow: '1.6B lbs Cu + 1.8M oz Au Annual Output', status: 'OPERATIONAL', tankers: 'Amamapare Port Concentrate Export' },
+    { id: 'COMEX', name: 'COMEX / NYMEX Bullion & Metals Vaults (New York)', cat: 'METALS', sym: 'GC=F', lat: 40.71, lon: -74.0, flow: '18.2M oz Registered Gold / 290M oz Silver', status: 'OPERATIONAL', tankers: 'T+1 Physical Bullion Settlement' },
+    { id: 'ESCONDIDA', name: 'Escondida Copper Mine (Atacama Desert, Chile)', cat: 'METALS', sym: 'HG=F', lat: -24.26, lon: -69.07, flow: '1.1M Metric Tons Copper Cathode/Concentrate', status: 'OPERATIONAL', tankers: 'Coloso Port Bulk Ore Terminal' },
+    { id: 'RAND', name: 'Witwatersrand & Bushveld PGM/Gold Belt (South Africa)', cat: 'METALS', sym: 'SI=F', lat: -26.2, lon: 28.0, flow: '72% Global Platinum + Deep-Level Gold', status: 'OPERATIONAL', tankers: 'Durban / Richards Bay Export' },
+    { id: 'CORNBELT', name: 'US Midwest Grain & CBOT Delivery Hub (Chicago/Iowa)', cat: 'AGS', sym: 'ZC=F', lat: 41.8, lon: -89.5, flow: '385M MT Corn + 115M MT Soybean Harvest', status: 'PEAK FLOW', tankers: 'Mississippi Barge -> New Orleans' },
+    { id: 'BLACKSEA', name: 'Black Sea & Bosporus Grain Corridor (Odessa/Istanbul)', cat: 'AGS', sym: 'ZW=F', lat: 43.2, lon: 31.0, flow: '48M MT Wheat & Corn Maritime Export', status: 'MONITORED', tankers: '19 Panamax Bulk Carriers' },
+    { id: 'MATO', name: 'Mato Grosso & Santos Ag Export Hub (Brazil)', cat: 'AGS', sym: 'ZS=F', lat: -15.5, lon: -55.0, flow: '158M MT Soybean #1 Global Exporter', status: 'PEAK FLOW', tankers: '44 Panamax Bulk Vessels at Santos' }
+  ];
+
+  async function load() {
+    const syms = [...new Set(NODES.map(n => n.sym))].join(',');
+    const qEnv = await get('quote', { symbols: syms }, 6000);
+    ctx.status(qEnv);
+    const qMap = {};
+    if (qEnv.ok && Array.isArray(qEnv.data)) {
+      qEnv.data.forEach(q => { if (q && q.symbol) qMap[q.symbol] = q; });
+    }
+
+    tb.textContent = '';
+    tb.append(
+      h('span', { class: 'lbl', text: '90) Actions  |  BMAP — Global Commodity, Mine, Tanker & Chokepoint Map:' }),
+      ...[['ALL', 'ALL GLOBAL NODES (14)'], ['ENERGY', 'OIL & LNG HUBS'], ['CHOKEPOINT', 'MARITIME CHOKEPOINTS'], ['METALS', 'GOLD/COPPER MINES'], ['AGS', 'AGRICULTURE CORRIDORS']].map(([k, lbl]) =>
+        h('button', { class: filter === k ? 'on' : '', text: lbl, onclick: () => { filter = k; load(); } })
+      )
+    );
+
+    sc.textContent = '';
+    const visible = NODES.filter(n => filter === 'ALL' || n.cat === filter);
+    const selNode = NODES.find(n => n.id === selectedId) || visible[0] || NODES[0];
+    const selQ = qMap[selNode.sym] || {};
+
+    // Interactive SVG World Geospatial Map (800 x 235)
+    const ns = 'http://www.w3.org/2000/svg';
+    const W = 800, H = 235;
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.style.cssText = 'width:100%;height:235px;display:block;background:#02060d;border-bottom:1px solid var(--border)';
+
+    const projX = lon => ((lon + 180) / 360) * W;
+    const projY = lat => ((90 - lat) / 180) * H;
+
+    // Graticule grid lines
+    for (let lon = -150; lon <= 150; lon += 30) {
+      const l = document.createElementNS(ns, 'line');
+      const x = projX(lon);
+      l.setAttribute('x1', x); l.setAttribute('y1', 0); l.setAttribute('x2', x); l.setAttribute('y2', H);
+      l.setAttribute('stroke', lon === 0 ? '#16283e' : '#0a1420');
+      svg.append(l);
+    }
+    for (let lat = -60; lat <= 60; lat += 30) {
+      const l = document.createElementNS(ns, 'line');
+      const y = projY(lat);
+      l.setAttribute('x1', 0); l.setAttribute('y1', y); l.setAttribute('x2', W); l.setAttribute('y2', y);
+      l.setAttribute('stroke', lat === 0 ? '#16283e' : '#0a1420');
+      svg.append(l);
+    }
+
+    // Simplified Continental Polygons (Geospatial Silhouette)
+    const continents = [
+      // North America
+      'M 55,28 L 195,25 L 245,65 L 205,102 L 165,112 L 115,92 L 60,55 Z',
+      // South America
+      'M 215,118 L 285,128 L 298,162 L 265,212 L 238,210 L 222,158 Z',
+      // Europe
+      'M 365,34 L 465,28 L 485,62 L 435,76 L 372,72 Z',
+      // Africa
+      'M 362,80 L 455,80 L 485,120 L 455,186 L 415,188 L 385,132 L 358,105 Z',
+      // Asia & Middle East
+      'M 468,30 L 695,28 L 725,75 L 665,118 L 595,122 L 535,108 L 472,95 Z',
+      // Maritime SE Asia / Indonesia Archipelago
+      'M 615,118 L 698,122 L 712,138 L 625,136 Z',
+      // Australia
+      'M 642,152 L 732,150 L 738,195 L 655,195 Z'
+    ];
+    for (const d of continents) {
+      const p = document.createElementNS(ns, 'path');
+      p.setAttribute('d', d);
+      p.setAttribute('fill', '#0d1b2a');
+      p.setAttribute('stroke', '#1f3a52');
+      p.setAttribute('stroke-width', '1');
+      svg.append(p);
+    }
+
+    // Major Maritime Commodity Shipping Corridors
+    const lanes = [
+      [[56.2, 26.5], [101.8, 2.5], [122.0, 30.0]], // Hormuz -> Malacca -> East Asia
+      [[56.2, 26.5], [32.5, 29.9], [5.0, 38.0]],   // Hormuz -> Suez -> Med
+      [[-93.8, 29.7], [-79.7, 9.1], [135.0, 34.0]], // US Gulf -> Panama -> Asia
+      [[-93.8, 29.7], [-1.3, 59.5]]                 // US Gulf -> North Sea/Europe
+    ];
+    for (const pts of lanes) {
+      const pl = document.createElementNS(ns, 'polyline');
+      pl.setAttribute('fill', 'none');
+      pl.setAttribute('stroke', '#19527a');
+      pl.setAttribute('stroke-width', '1.3');
+      pl.setAttribute('stroke-dasharray', '4,3');
+      pl.setAttribute('points', pts.map(([lo, la]) => `${projX(lo).toFixed(1)},${projY(la).toFixed(1)}`).join(' '));
+      svg.append(pl);
+    }
+
+    const catColor = { ENERGY: '#ffb000', CHOKEPOINT: '#ff3b30', METALS: '#00d26a', AGS: '#4da3ff' };
+
+    for (const n of visible) {
+      const x = projX(n.lon), y = projY(n.lat);
+      const col = catColor[n.cat] || '#ffb000';
+      const isSel = n.id === selNode.id;
+      const g = document.createElementNS(ns, 'g');
+      g.style.cursor = 'pointer';
+      g.onclick = () => { selectedId = n.id; load(); };
+
+      if (isSel || n.cat === 'CHOKEPOINT') {
+        const ring = document.createElementNS(ns, 'circle');
+        ring.setAttribute('cx', x.toFixed(1)); ring.setAttribute('cy', y.toFixed(1));
+        ring.setAttribute('r', isSel ? '10' : '7');
+        ring.setAttribute('fill', 'none'); ring.setAttribute('stroke', col); ring.setAttribute('stroke-width', isSel ? '1.8' : '1');
+        g.append(ring);
+      }
+      const dot = document.createElementNS(ns, 'circle');
+      dot.setAttribute('cx', x.toFixed(1)); dot.setAttribute('cy', y.toFixed(1));
+      dot.setAttribute('r', isSel ? '5' : '3.8');
+      dot.setAttribute('fill', col);
+      g.append(dot);
+
+      const lbl = document.createElementNS(ns, 'text');
+      lbl.setAttribute('x', (x + 7).toFixed(1)); lbl.setAttribute('y', (y + 3).toFixed(1));
+      lbl.setAttribute('fill', isSel ? '#ffffff' : col);
+      lbl.setAttribute('font-size', isSel ? '10' : '8.8');
+      lbl.setAttribute('font-weight', 'bold');
+      const q = qMap[n.sym];
+      lbl.textContent = `${n.id} ${q && q.price ? '(' + fmtPx(q.price) + ')' : ''}`;
+      g.append(lbl);
+      svg.append(g);
+    }
+
+    // Selected Node Telemetry Bar
+    const inspector = h('div', { class: 'kv', style: 'background:#070a10;border-bottom:1px solid var(--border);padding:6px 8px' },
+      h('div', { class: 'k', text: 'SELECTED BMAP NODE' }),
+      h('div', { class: 'v am sym', text: `${selNode.name} [${selNode.cat}] — Coordinates: ${selNode.lat.toFixed(2)}°, ${selNode.lon.toFixed(2)}°` }),
+      h('div', { class: 'k', text: 'PHYSICAL FLOW & CAPACITY' }),
+      h('div', { class: 'v lb', text: `${selNode.flow}  |  Vessels/Logistics: ${selNode.tankers}` }),
+      h('div', { class: 'k', text: `BENCHMARK CONTRACT (${selNode.sym})` }),
+      h('div', { class: 'v sym ' + dirCls(selQ.chgPct), style: 'display:flex;gap:10px;align-items:center' },
+        h('span', { text: selQ.price ? `${fmtPx(selQ.price)} (${fmtPct(selQ.chgPct)})` : 'LIVE BENCHMARK' }),
+        h('button', { class: 'on', text: `OPEN ${selNode.sym} GP <GO>`, onclick: () => ctx.run(`${selNode.sym} GP`) })
+      )
+    );
+
+    const tbl = h('table', { class: 't' },
+      h('thead', null, h('tr', null, ['Node ID', 'Category', 'Global Hub / Chokepoint / Mine', 'Benchmark', 'Live Price', '1D %', 'Physical Throughput / Tankers', 'Status'].map(x => h('th', { text: x })))),
+      h('tbody', null, visible.map(n => {
+        const q = qMap[n.sym] || {};
+        return h('tr', {
+          class: 'row',
+          style: n.id === selNode.id ? 'background:#1c1400' : '',
+          onclick: () => { selectedId = n.id; load(); }
+        },
+          h('td', { class: 'l sym am', text: n.id }),
+          h('td', { class: 'l lb', text: n.cat }),
+          h('td', { class: 'l', style: 'color:#fff', text: n.name }),
+          h('td', { class: 'l sym lb', text: n.sym }),
+          h('td', { class: 'am sym', text: q.price ? fmtPx(q.price) : '-' }),
+          h('td', { class: dirCls(q.chgPct) + ' sym', text: q.chgPct != null ? fmtPct(q.chgPct) : '-' }),
+          h('td', { class: 'l mu', text: n.flow }),
+          h('td', { class: 'l sym ' + (n.status.includes('ALERT') || n.status.includes('RISK') ? 'dn' : 'up'), text: n.status })
+        );
+      }))
+    );
+
+    sc.append(
+      h('div', { class: 'tb', style: 'background:#05080f;gap:14px;font-size:10.5px' },
+        h('span', { style: 'color:#ffb000;font-weight:bold', text: '● ENERGY & LNG HUBS' }),
+        h('span', { style: 'color:#ff3b30;font-weight:bold', text: '◎ MARITIME CHOKEPOINTS (HORMUZ / MALACCA / SUEZ / PANAMA)' }),
+        h('span', { style: 'color:#00d26a;font-weight:bold', text: '● GOLD / COPPER MINES (GRASBERG / ESCONDIDA / COMEX)' }),
+        h('span', { style: 'color:#4da3ff;font-weight:bold', text: '● AGRICULTURAL EXPORT CORRIDORS' })
+      ),
+      svg,
+      inspector,
+      tbl
+    );
+  }
+
+  load();
+}
+
+
+
+  const NODES = [
+    { id: 'CUSHING', name: 'Cushing Crude Hub (Oklahoma, US)', cat: 'ENERGY', sym: 'CL=F', lat: 35.98, lon: -96.76, flow: '78.4M bbl Storage / WTI Delivery Point', status: 'OPERATIONAL', tankers: 'Pipeline Hub (Keystone / Seaway)' },
+    { id: 'BRENT', name: 'North Sea Brent Terminal (Sullom Voe, UK)', cat: 'ENERGY', sym: 'BZ=F', lat: 59.5, lon: -1.3, flow: '1.8M bbl/d BFOET Benchmark', status: 'OPERATIONAL', tankers: '14 Aframax / Suezmax Active' },
+    { id: 'SABINE', name: 'Sabine Pass & Henry Hub LNG (Gulf Coast, US)', cat: 'ENERGY', sym: 'NG=F', lat: 29.7, lon: -93.8, flow: '4.7 Bcf/d LNG Feedgas Export', status: 'FULL CAPACITY', tankers: '21 LNG Carriers Queued' },
+    { id: 'HORMUZ', name: 'Strait of Hormuz (Persian Gulf Chokepoint)', cat: 'CHOKEPOINT', sym: 'BZ=F', lat: 26.5, lon: 56.2, flow: '20.9M bbl/d Crude & Condensate (~21% Global)', status: 'ELEVATED RISK', tankers: '42 VLCC Supertankers Transiting' },
+    { id: 'MALACCA', name: 'Strait of Malacca (Indonesia / Singapore / Malaysia)', cat: 'CHOKEPOINT', sym: 'BZ=F', lat: 2.5, lon: 101.8, flow: '23.7M bbl/d APAC Energy Lifeline', status: 'HIGH TRAFFIC', tankers: '68 VLCC & LNG Vessels Active' },
+    { id: 'SUEZ', name: 'Suez Canal & Bab el-Mandeb (Red Sea Corridor)', cat: 'CHOKEPOINT', sym: 'CL=F', lat: 29.9, lon: 32.5, flow: '8.8M bbl/d (Cape of Good Hope Diverted)', status: 'HIGH ALERT', tankers: '31 Tankers Rerouted (+12 Days)' },
+    { id: 'PANAMA', name: 'Panama Canal (Americas — Pacific LNG/Grain Corridor)', cat: 'CHOKEPOINT', sym: 'NG=F', lat: 9.1, lon: -79.7, flow: '2.6M bbl/d Products & US Gulf Grain', status: 'NORMAL', tankers: '34 Neopanamax Daily Slots' },
+    { id: 'GRASBERG', name: 'Grasberg Gold & Copper Complex (Papua, Indonesia)', cat: 'METALS', sym: 'GC=F', lat: -4.05, lon: 137.11, flow: '1.6B lbs Cu + 1.8M oz Au Annual Output', status: 'OPERATIONAL', tankers: 'Amamapare Port Concentrate Export' },
+    { id: 'COMEX', name: 'COMEX / NYMEX Bullion & Metals Vaults (New York)', cat: 'METALS', sym: 'GC=F', lat: 40.71, lon: -74.0, flow: '18.2M oz Registered Gold / 290M oz Silver', status: 'OPERATIONAL', tankers: 'T+1 Physical Bullion Settlement' },
+    { id: 'ESCONDIDA', name: 'Escondida Copper Mine (Atacama Desert, Chile)', cat: 'METALS', sym: 'HG=F', lat: -24.26, lon: -69.07, flow: '1.1M Metric Tons Copper Cathode/Concentrate', status: 'OPERATIONAL', tankers: 'Coloso Port Bulk Ore Terminal' },
+    { id: 'RAND', name: 'Witwatersrand & Bushveld PGM/Gold Belt (South Africa)', cat: 'METALS', sym: 'SI=F', lat: -26.2, lon: 28.0, flow: '72% Global Platinum + Deep-Level Gold', status: 'OPERATIONAL', tankers: 'Durban / Richards Bay Export' },
+    { id: 'CORNBELT', name: 'US Midwest Grain & CBOT Delivery Hub (Chicago/Iowa)', cat: 'AGS', sym: 'ZC=F', lat: 41.8, lon: -89.5, flow: '385M MT Corn + 115M MT Soybean Harvest', status: 'PEAK FLOW', tankers: 'Mississippi Barge -> New Orleans' },
+    { id: 'BLACKSEA', name: 'Black Sea & Bosporus Grain Corridor (Odessa/Istanbul)', cat: 'AGS', sym: 'ZW=F', lat: 43.2, lon: 31.0, flow: '48M MT Wheat & Corn Maritime Export', status: 'MONITORED', tankers: '19 Panamax Bulk Carriers' },
+    { id: 'MATO', name: 'Mato Grosso & Santos Ag Export Hub (Brazil)', cat: 'AGS', sym: 'ZS=F', lat: -15.5, lon: -55.0, flow: '158M MT Soybean #1 Global Exporter', status: 'PEAK FLOW', tankers: '44 Panamax Bulk Vessels at Santos' }
+  ];
+
+  async function load() {
+    const syms = [...new Set(NODES.map(n => n.sym))].join(',');
+    const qEnv = await get('quote', { symbols: syms }, 6000);
+    ctx.status(qEnv);
+    const qMap = {};
+    if (qEnv.ok && Array.isArray(qEnv.data)) {
+      qEnv.data.forEach(q => { if (q && q.symbol) qMap[q.symbol] = q; });
+    }
+
+    tb.textContent = '';
+    tb.append(
+      h('span', { class: 'lbl', text: '90) Actions  |  BMAP — Global Commodity, Mine, Tanker & Chokepoint Map:' }),
+      ...[['ALL', 'ALL GLOBAL NODES (14)'], ['ENERGY', 'OIL & LNG HUBS'], ['CHOKEPOINT', 'MARITIME CHOKEPOINTS'], ['METALS', 'GOLD/COPPER MINES'], ['AGS', 'AGRICULTURE CORRIDORS']].map(([k, lbl]) =>
+        h('button', { class: filter === k ? 'on' : '', text: lbl, onclick: () => { filter = k; load(); } })
+      )
+    );
+
+    sc.textContent = '';
+    const visible = NODES.filter(n => filter === 'ALL' || n.cat === filter);
+    const selNode = NODES.find(n => n.id === selectedId) || visible[0] || NODES[0];
+    const selQ = qMap[selNode.sym] || {};
+
+    // Interactive SVG World Geospatial Map (800 x 235)
+    const ns = 'http://www.w3.org/2000/svg';
+    const W = 800, H = 235;
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.style.cssText = 'width:100%;height:235px;display:block;background:#02060d;border-bottom:1px solid var(--border)';
+
+    const projX = lon => ((lon + 180) / 360) * W;
+    const projY = lat => ((90 - lat) / 180) * H;
+
+    // Graticule grid lines
+    for (let lon = -150; lon <= 150; lon += 30) {
+      const l = document.createElementNS(ns, 'line');
+      const x = projX(lon);
+      l.setAttribute('x1', x); l.setAttribute('y1', 0); l.setAttribute('x2', x); l.setAttribute('y2', H);
+      l.setAttribute('stroke', lon === 0 ? '#16283e' : '#0a1420');
+      svg.append(l);
+    }
+    for (let lat = -60; lat <= 60; lat += 30) {
+      const l = document.createElementNS(ns, 'line');
+      const y = projY(lat);
+      l.setAttribute('x1', 0); l.setAttribute('y1', y); l.setAttribute('x2', W); l.setAttribute('y2', y);
+      l.setAttribute('stroke', lat === 0 ? '#16283e' : '#0a1420');
+      svg.append(l);
+    }
+
+    // Simplified Continental Polygons (Geospatial Silhouette)
+    const continents = [
+      // North America
+      'M 55,28 L 195,25 L 245,65 L 205,102 L 165,112 L 115,92 L 60,55 Z',
+      // South America
+      'M 215,118 L 285,128 L 298,162 L 265,212 L 238,210 L 222,158 Z',
+      // Europe
+      'M 365,34 L 465,28 L 485,62 L 435,76 L 372,72 Z',
+      // Africa
+      'M 362,80 L 455,80 L 485,120 L 455,186 L 415,188 L 385,132 L 358,105 Z',
+      // Asia & Middle East
+      'M 468,30 L 695,28 L 725,75 L 665,118 L 595,122 L 535,108 L 472,95 Z',
+      // Maritime SE Asia / Indonesia Archipelago
+      'M 615,118 L 698,122 L 712,138 L 625,136 Z',
+      // Australia
+      'M 642,152 L 732,150 L 738,195 L 655,195 Z'
+    ];
+    for (const d of continents) {
+      const p = document.createElementNS(ns, 'path');
+      p.setAttribute('d', d);
+      p.setAttribute('fill', '#0d1b2a');
+      p.setAttribute('stroke', '#1f3a52');
+      p.setAttribute('stroke-width', '1');
+      svg.append(p);
+    }
+
+    // Major Maritime Commodity Shipping Corridors
+    const lanes = [
+      [[56.2, 26.5], [101.8, 2.5], [122.0, 30.0]], // Hormuz -> Malacca -> East Asia
+      [[56.2, 26.5], [32.5, 29.9], [5.0, 38.0]],   // Hormuz -> Suez -> Med
+      [[-93.8, 29.7], [-79.7, 9.1], [135.0, 34.0]], // US Gulf -> Panama -> Asia
+      [[-93.8, 29.7], [-1.3, 59.5]]                 // US Gulf -> North Sea/Europe
+    ];
+    for (const pts of lanes) {
+      const pl = document.createElementNS(ns, 'polyline');
+      pl.setAttribute('fill', 'none');
+      pl.setAttribute('stroke', '#19527a');
+      pl.setAttribute('stroke-width', '1.3');
+      pl.setAttribute('stroke-dasharray', '4,3');
+      pl.setAttribute('points', pts.map(([lo, la]) => `${projX(lo).toFixed(1)},${projY(la).toFixed(1)}`).join(' '));
+      svg.append(pl);
+    }
+
+    const catColor = { ENERGY: '#ffb000', CHOKEPOINT: '#ff3b30', METALS: '#00d26a', AGS: '#4da3ff' };
+
+    for (const n of visible) {
+      const x = projX(n.lon), y = projY(n.lat);
+      const col = catColor[n.cat] || '#ffb000';
+      const isSel = n.id === selNode.id;
+      const g = document.createElementNS(ns, 'g');
+      g.style.cursor = 'pointer';
+      g.onclick = () => { selectedId = n.id; load(); };
+
+      if (isSel || n.cat === 'CHOKEPOINT') {
+        const ring = document.createElementNS(ns, 'circle');
+        ring.setAttribute('cx', x.toFixed(1)); ring.setAttribute('cy', y.toFixed(1));
+        ring.setAttribute('r', isSel ? '10' : '7');
+        ring.setAttribute('fill', 'none'); ring.setAttribute('stroke', col); ring.setAttribute('stroke-width', isSel ? '1.8' : '1');
+        g.append(ring);
+      }
+      const dot = document.createElementNS(ns, 'circle');
+      dot.setAttribute('cx', x.toFixed(1)); dot.setAttribute('cy', y.toFixed(1));
+      dot.setAttribute('r', isSel ? '5' : '3.8');
+      dot.setAttribute('fill', col);
+      g.append(dot);
+
+      const lbl = document.createElementNS(ns, 'text');
+      lbl.setAttribute('x', (x + 7).toFixed(1)); lbl.setAttribute('y', (y + 3).toFixed(1));
+      lbl.setAttribute('fill', isSel ? '#ffffff' : col);
+      lbl.setAttribute('font-size', isSel ? '10' : '8.8');
+      lbl.setAttribute('font-weight', 'bold');
+      const q = qMap[n.sym];
+      lbl.textContent = `${n.id} ${q && q.price ? '(' + fmtPx(q.price) + ')' : ''}`;
+      g.append(lbl);
+      svg.append(g);
+    }
+
+    // Selected Node Telemetry Bar
+    const inspector = h('div', { class: 'kv', style: 'background:#070a10;border-bottom:1px solid var(--border);padding:6px 8px' },
+      h('div', { class: 'k', text: 'SELECTED BMAP NODE' }),
+      h('div', { class: 'v am sym', text: `${selNode.name} [${selNode.cat}] — Coordinates: ${selNode.lat.toFixed(2)}°, ${selNode.lon.toFixed(2)}°` }),
+      h('div', { class: 'k', text: 'PHYSICAL FLOW & CAPACITY' }),
+      h('div', { class: 'v lb', text: `${selNode.flow}  |  Vessels/Logistics: ${selNode.tankers}` }),
+      h('div', { class: 'k', text: `BENCHMARK CONTRACT (${selNode.sym})` }),
+      h('div', { class: 'v sym ' + dirCls(selQ.chgPct), style: 'display:flex;gap:10px;align-items:center' },
+        h('span', { text: selQ.price ? `${fmtPx(selQ.price)} (${fmtPct(selQ.chgPct)})` : 'LIVE BENCHMARK' }),
+        h('button', { class: 'on', text: `OPEN ${selNode.sym} GP <GO>`, onclick: () => ctx.run(`${selNode.sym} GP`) })
+      )
+    );
+
+    const tbl = h('table', { class: 't' },
+      h('thead', null, h('tr', null, ['Node ID', 'Category', 'Global Hub / Chokepoint / Mine', 'Benchmark', 'Live Price', '1D %', 'Physical Throughput / Tankers', 'Status'].map(x => h('th', { text: x })))),
+      h('tbody', null, visible.map(n => {
+        const q = qMap[n.sym] || {};
+        return h('tr', {
+          class: 'row',
+          style: n.id === selNode.id ? 'background:#1c1400' : '',
+          onclick: () => { selectedId = n.id; load(); }
+        },
+          h('td', { class: 'l sym am', text: n.id }),
+          h('td', { class: 'l lb', text: n.cat }),
+          h('td', { class: 'l', style: 'color:#fff', text: n.name }),
+          h('td', { class: 'l sym lb', text: n.sym }),
+          h('td', { class: 'am sym', text: q.price ? fmtPx(q.price) : '-' }),
+          h('td', { class: dirCls(q.chgPct) + ' sym', text: q.chgPct != null ? fmtPct(q.chgPct) : '-' }),
+          h('td', { class: 'l mu', text: n.flow }),
+          h('td', { class: 'l sym ' + (n.status.includes('ALERT') || n.status.includes('RISK') ? 'dn' : 'up'), text: n.status })
+        );
+      }))
+    );
+
+    sc.append(
+      h('div', { class: 'tb', style: 'background:#05080f;gap:14px;font-size:10.5px' },
+        h('span', { style: 'color:#ffb000;font-weight:bold', text: '● ENERGY & LNG HUBS' }),
+        h('span', { style: 'color:#ff3b30;font-weight:bold', text: '◎ MARITIME CHOKEPOINTS (HORMUZ / MALACCA / SUEZ / PANAMA)' }),
+        h('span', { style: 'color:#00d26a;font-weight:bold', text: '● GOLD / COPPER MINES (GRASBERG / ESCONDIDA / COMEX)' }),
+        h('span', { style: 'color:#4da3ff;font-weight:bold', text: '● AGRICULTURAL EXPORT CORRIDORS' })
+      ),
+      svg,
+      inspector,
+      tbl
+    );
+  }
+
+  load();
+}
+
 

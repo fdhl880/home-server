@@ -796,19 +796,44 @@ export function mountERN(body, ctx) {
 
 export function mountSPLC(body, ctx) {
   body.classList.add('fill');
-  const tb = h('div', { class: 'tb' }, h('span', { class: 'lbl', text: `90) Actions  91) Map  |  SPLC - Supply Chain Analysis (Suppliers, Customers & Peers) [${ctx.symbol}]` }));
+  const tb = h('div', { class: 'tb' },
+    h('span', { class: 'lbl', text: `90) Actions  91) Map  |  SPLC - Multi-Tier Supply Chain & Revenue Exposure [${ctx.symbol}]:` }),
+    ...['NVDA', 'AAPL', 'TSLA', 'SPCX', 'BTCUSDT', 'BBCA.JK', 'CL=F'].map(s =>
+      h('button', { class: ctx.symbol === s ? 'on' : '', text: s, onclick: () => ctx.setSymbol(s) })
+    )
+  );
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
   const CHAINS = {
-    DEFAULT: {
-      suppliers: [['TSM', 'Taiwan Semiconductor', '24.8%', 'Wafer Foundry & CoWoS Packaging'], ['ASML', 'ASML Holding NV', '11.4%', 'EUV Lithography Systems'], ['MU', 'Micron Technology', '9.2%', 'HBM3E High-Bandwidth Memory'], ['AVGO', 'Broadcom Inc', '7.6%', 'Custom ASIC & Networking']],
-      customers: [['MSFT', 'Microsoft Corp', '18.5%', 'Azure Cloud Infrastructure'], ['META', 'Meta Platforms', '13.2%', 'AI Cluster Deployment'], ['AMZN', 'Amazon Web Services', '11.8%', 'AWS Hyperscale Compute'], ['GOOGL', 'Alphabet Inc', '10.4%', 'GCP & TPU Infrastructure']],
-      peers: ['NVDA', 'AAPL', 'AMD', 'TSM', 'AVGO', 'MSFT']
+    SEMI: {
+      suppliers: [['TSM', 'Taiwan Semiconductor', '26.4%', '3nm/4nm Foundry & CoWoS Packaging'], ['ASML', 'ASML Holding NV', '12.1%', 'High-NA EUV Lithography Systems'], ['MU', 'Micron Technology', '9.8%', 'HBM3E High-Bandwidth Memory'], ['AVGO', 'Broadcom Inc', '7.9%', 'Custom SerDes & PCIe Switch Silicon']],
+      customers: [['MSFT', 'Microsoft Corp', '19.2%', 'Azure AI Hyperscale Clusters'], ['META', 'Meta Platforms', '13.8%', 'Llama Training Infrastructure'], ['AMZN', 'Amazon Web Services', '11.9%', 'AWS EC2 P5 GPU Clusters'], ['GOOGL', 'Alphabet Inc', '10.6%', 'Google Cloud AI Compute']],
+      geo: [['UNITED STATES', 47], ['TAIWAN / APAC', 26], ['CHINA / HK', 15], ['EMEA / EUROPE', 12]]
+    },
+    EV_SPACE: {
+      suppliers: [['ALB', 'Albemarle Corp', '16.5%', 'Battery-Grade Lithium Carbonate'], ['NVDA', 'NVIDIA Corp', '11.2%', 'FSD & Starlink AI Compute'], ['TSM', 'Taiwan Semiconductor', '9.4%', 'Custom Dojo / Avionics ASICs'], ['HG=F', 'Global Copper Cathode', '8.1%', 'Stator Windings & Harness']],
+      customers: [['NASA', 'US Gov / DoD / NASA', '28.4%', 'Artemis, NSSL & Starshield Contracts'], ['MSFT', 'Microsoft Azure', '11.5%', 'Starlink Backhaul & Cloud'], ['AMZN', 'Enterprise Logistics', '8.2%', 'Commercial Fleet & Payload'], ['UBER', 'Global Mobility Fleet', '6.8%', 'Autonomous EV Network']],
+      geo: [['NORTH AMERICA', 52], ['APAC / CHINA', 24], ['EUROPE / EMEA', 17], ['REST OF WORLD', 7]]
+    },
+    CRYPTO: {
+      suppliers: [['TSM', 'TSMC ASIC Foundry', '31.0%', '3nm SHA-256 Mining Silicon'], ['NG=F', 'North American NatGas/Hydro', '24.5%', 'Baseload Datacenter Power (MW)'], ['NVDA', 'NVIDIA Corp', '14.2%', 'HPC & ZK-Proof Accelerators'], ['COIN', 'Coinbase Custody', '9.8%', 'Prime Institutional Settlement']],
+      customers: [['BLK', 'BlackRock IBIT ETF', '24.6%', 'Spot ETF Institutional Custody'], ['MSTR', 'Strategy (MicroStrategy)', '16.2%', 'Corporate Treasury Reserve'], ['FID', 'Fidelity FBTC Trust', '11.4%', 'Wealth Management Allocation'], ['CME', 'CME Group Futures', '9.5%', 'Regulated Basis & Hedging']],
+      geo: [['NORTH AMERICA', 46], ['APAC (SG/HK/JP)', 28], ['EUROPE / ZUG', 18], ['INDONESIA / EM', 8]]
+    },
+    IDX: {
+      suppliers: [['BI-7DRR', 'Bank Indonesia Liquidity', '34.0%', 'IDR Interbank & SRBI Funding'], ['TLKM.JK', 'Telkom Indonesia', '12.4%', 'National Fiber & Cloud Backbone'], ['MSFT', 'Microsoft Enterprise', '7.8%', 'Core Banking AI & Security'], ['NVDA', 'NVIDIA Enterprise', '5.2%', 'Fraud Detection & Risk GPU']],
+      customers: [['ASII.JK', 'Astra International', '14.5%', 'Corporate Syndicated Working Capital'], ['ADRO.JK', 'Alamtri / Adaro Energy', '11.2%', 'Commodity Trade Finance'], ['AMMN.JK', 'Amman Mineral', '9.6%', 'Smelter CapEx Project Financing'], ['GOTO.JK', 'GoTo Digital Ecosystem', '8.4%', 'QRIS & Consumer Digital Payroll']],
+      geo: [['INDONESIA (DOMESTIC)', 82], ['SINGAPORE / ASEAN', 11], ['EAST ASIA', 5], ['US / EUROPE', 2]]
     }
   };
 
-  const data = CHAINS.DEFAULT;
+  const s = ctx.symbol;
+  const data = /TSLA|SPCX|SPACEX/.test(s) ? CHAINS.EV_SPACE
+    : /USDT|BTC|ETH|SOL/.test(s) ? CHAINS.CRYPTO
+    : /\.JK|JKSE/.test(s) ? CHAINS.IDX
+    : CHAINS.SEMI;
+
   ctx.status({ source: 'splc-network', ts: Date.now(), mode: 'LIVE' });
 
   // Interactive SVG Supply Chain Network Diagram
@@ -818,8 +843,12 @@ export function mountSPLC(body, ctx) {
   svg.setAttribute('preserveAspectRatio', 'none');
   svg.style.cssText = 'width:100%;height:185px;display:block;background:#020202;border-bottom:1px solid var(--border)';
 
-  const drawNode = (x, y, w, hBox, col, title, sub) => {
+  const drawNode = (x, y, w, hBox, col, title, sub, clickSym) => {
     const g = document.createElementNS(ns, 'g');
+    if (clickSym) {
+      g.style.cursor = 'pointer';
+      g.onclick = () => ctx.setSymbol(clickSym);
+    }
     const r = document.createElementNS(ns, 'rect');
     r.setAttribute('x', x); r.setAttribute('y', y); r.setAttribute('width', w); r.setAttribute('height', hBox);
     r.setAttribute('fill', '#0a0a0a'); r.setAttribute('stroke', col); r.setAttribute('stroke-width', '1.5');
@@ -841,10 +870,10 @@ export function mountSPLC(body, ctx) {
     ln.setAttribute('x1', '175'); ln.setAttribute('y1', y + 16); ln.setAttribute('x2', '275'); ln.setAttribute('y2', '92');
     ln.setAttribute('stroke', '#4da3ff'); ln.setAttribute('stroke-dasharray', '3,2');
     svg.append(ln);
-    drawNode(15, y, 160, 32, '#4da3ff', `${sym} (SUPPLIER)`, `COGS Share: ${exp}`);
+    drawNode(15, y, 160, 32, '#4da3ff', `${sym} (SUPPLIER)`, `COGS Share: ${exp}`, sym);
   });
 
-  drawNode(275, 68, 150, 48, '#ffb000', `${ctx.symbol} (CENTER)`, 'SPLC CORE VALUE CHAIN');
+  drawNode(275, 68, 150, 48, '#ffb000', `${ctx.symbol} (CENTER)`, 'SPLC CORE VALUE CHAIN', null);
 
   data.customers.forEach(([sym, , rev], i) => {
     const y = 10 + i * 42;
@@ -852,11 +881,24 @@ export function mountSPLC(body, ctx) {
     ln.setAttribute('x1', '425'); ln.setAttribute('y1', '92'); ln.setAttribute('x2', '525'); ln.setAttribute('y2', y + 16);
     ln.setAttribute('stroke', '#00d26a'); ln.setAttribute('stroke-dasharray', '3,2');
     svg.append(ln);
-    drawNode(525, y, 160, 32, '#00d26a', `${sym} (CUSTOMER)`, `Rev Share: ${rev}`);
+    drawNode(525, y, 160, 32, '#00d26a', `${sym} (CUSTOMER)`, `Rev Share: ${rev}`, sym);
   });
+
+  const geoStrip = h('div', { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:6px 8px;background:#070707;border-bottom:1px solid var(--border)' },
+    ...data.geo.map(([reg, pct]) => h('div', null,
+      h('div', { style: 'display:flex;justify-content:space-between;font-size:10px' },
+        h('span', { class: 'lb sym', text: reg }),
+        h('span', { class: 'am sym', text: pct + '% REV' })
+      ),
+      h('div', { style: 'height:7px;background:#161616;border:1px solid #333;margin-top:2px' },
+        h('div', { style: `width:${pct}%;height:100%;background:var(--amber)` })
+      )
+    ))
+  );
 
   sc.append(
     svg,
+    geoStrip,
     h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:6px' },
       h('div', null,
         h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'UPSTREAM SUPPLIERS (CLICK TO INSPECT)' })),
