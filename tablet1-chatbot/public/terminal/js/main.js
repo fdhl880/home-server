@@ -2,12 +2,12 @@ import { $, h, fmtTime, LS } from './util.js';
 import { get, net, startHub } from './api.js';
 import { dev } from './dev-adapter.js';
 
-import { mountGP, mountHP, mountCOMP } from './panels/charts.js';
-import { mountMON, mountWL, mountMOST, mountFXC, mountIMAP, mountBMAP } from './panels/monitors.js';
-import { mountOB, mountTRADES, mountFUND } from './panels/micro.js';
-import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS } from './panels/equities.js';
-import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS } from './panels/quant.js';
-import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP } from './panels/ops.js';
+import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261112c';
+import { mountMON, mountWL, mountMOST, mountFXC, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261112c';
+import { mountOB, mountTRADES, mountFUND } from './panels/micro.js?v=20261112c';
+import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS } from './panels/equities.js?v=20261112c';
+import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS } from './panels/quant.js?v=20261112c';
+import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP } from './panels/ops.js?v=20261112c';
 
 import { panels as newsPanels } from '../panels/news/index.js';
 import { panels as macroPanels } from '../panels/macro/index.js';
