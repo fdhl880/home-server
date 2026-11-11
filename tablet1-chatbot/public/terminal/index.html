@@ -18,7 +18,13 @@
       <div id="ac"></div>
     </div>
     <div id="fkeys"></div>
-    <a href="/" style="background:#181818;color:var(--amber);border:1px solid var(--amber);padding:0 6px;text-decoration:none;font-weight:bold;font-size:11px;white-space:nowrap" title="Switch to Single-View PRTU & Order Desk">PRTU DESK</a>
+    <div id="winmodes" style="display:flex;gap:2px;flex:none">
+      <button data-mode="4" class="on" title="4-Window Quad Bloomberg Terminal (1-BLOOMBERG..4-BLOOMBERG)">4-WIN</button>
+      <button data-mode="2" title="2-Window Dual Split Mode">2-WIN</button>
+      <button data-mode="1" title="1-Window Single Screen Mode">1-WIN</button>
+      <button id="btnPrtu200" style="color:var(--up);border-color:var(--up);font-weight:bold" title="Open Fadhil Rp 200 Juta Portfolio (PRTU <GO>)">PRTU 200JT</button>
+    </div>
+    <a href="/" style="background:#181818;color:var(--amber);border:1px solid var(--amber);padding:0 6px;text-decoration:none;font-weight:bold;font-size:11px;white-space:nowrap" title="Switch to Full-Screen Single-Window PRTU & Order Desk (http://localhost:4000/)">SINGLE-VIEW PRTU</a>
   </header>
   <main id="grid">
     <div class="slot" data-i="0"></div><div class="slot" data-i="1"></div>

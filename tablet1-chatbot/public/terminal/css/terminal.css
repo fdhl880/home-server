@@ -37,6 +37,12 @@ a{color:var(--label)}
 
 #grid{flex:1;min-height:0;position:relative;display:grid;gap:0;
   grid-template-columns:calc(var(--c)*1%) 4px 1fr;grid-template-rows:calc(var(--r)*1%) 4px 1fr}
+#grid.mode-2{grid-template-rows:1fr}
+#grid.mode-2 .slot[data-i="2"],#grid.mode-2 .slot[data-i="3"],#grid.mode-2 #hs{display:none}
+#grid.mode-2 #vs{grid-row:1/2}
+#grid.mode-1{grid-template-columns:1fr;grid-template-rows:1fr}
+#grid.mode-1 .slot:not(.active),#grid.mode-1 .split{display:none}
+#grid.mode-1 .slot.active{grid-column:1;grid-row:1}
 .slot{min-width:0;min-height:0;position:relative;border:1px solid var(--border);overflow:hidden;background:var(--panel)}
 .slot.active{border-color:var(--border-hi)}
 .slot.dropt{outline:2px dashed var(--label);outline-offset:-3px}

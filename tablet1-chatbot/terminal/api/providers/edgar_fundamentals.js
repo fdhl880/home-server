@@ -196,28 +196,26 @@ async function yahooEvents(symbol) {
 }
 
 async function fundamentals(symbol) {
+  const agg = require('../aggregator');
   const sym = String(symbol).trim().toUpperCase();
-  const isCryp = U.classify(sym) === 'crypto' || U.classify(sym) === 'crypto-perp';
-  if (isCryp) {
-    const [q, kl] = await Promise.all([
-      binance.quote(sym).catch(() => null),
-      binance.kline(sym, '1d', 365).catch(() => null),
-    ]);
-    const candles = (kl && kl.candles) || [];
-    const hi52 = candles.length ? Math.max(...candles.map(c => c.h)) : (q && q.high);
-    const lo52 = candles.length ? Math.min(...candles.map(c => c.l)) : (q && q.low);
+  const { providerSym, forceCrypto } = agg.resolveProviderSym(sym);
+
+  if (agg.OTC_DESK && agg.OTC_DESK[sym] && sym !== 'SPCX') {
+    const q = await agg.quote(sym);
+    const otc = agg.OTC_DESK[sym];
     return {
       symbol: sym,
-      asset: U.classify(sym),
-      source: 'binance-spot',
+      asset: 'equity',
+      source: 'otc-desk',
       mode: 'LIVE',
       profile: {
-        name: sym.replace(/USDT(\.P)?$/, ' / USDT'),
-        exchange: sym.endsWith('.P') ? 'BINANCE FUTURES PERPETUAL' : 'BINANCE SPOT',
-        currency: 'USDT',
-        instrumentType: sym.endsWith('.P') ? 'PERPETUAL_FUTURES' : 'CRYPTO_SPOT',
-        high52w: hi52,
-        low52w: lo52,
+        name: otc.name,
+        exchange: 'PRIVATE OTC / SECONDARY CROSSING DESK',
+        currency: 'USD',
+        instrumentType: 'PRE-IPO PRIVATE EQUITY',
+        sicDescription: 'AEROSPACE, AI & PRIVATE TECHNOLOGY',
+        high52w: +(otc.price * 1.18).toFixed(2),
+        low52w: +(otc.price * 0.72).toFixed(2),
       },
       quote: q,
       edgar: null,
@@ -226,22 +224,51 @@ async function fundamentals(symbol) {
     };
   }
 
+  const isCryp = forceCrypto || U.classify(providerSym) === 'crypto' || U.classify(providerSym) === 'crypto-perp';
+  if (isCryp) {
+    const [q, kl] = await Promise.all([
+      binance.quote(providerSym).catch(() => null),
+      binance.kline(providerSym, '1d', 365).catch(() => null),
+    ]);
+    const candles = (kl && kl.candles) || [];
+    const hi52 = candles.length ? Math.max(...candles.map(c => c.h)) : (q && q.high);
+    const lo52 = candles.length ? Math.min(...candles.map(c => c.l)) : (q && q.low);
+    return {
+      symbol: sym,
+      asset: U.classify(providerSym),
+      source: 'binance-spot',
+      mode: 'LIVE',
+      profile: {
+        name: providerSym.replace(/USDT(\.P)?$/, ' / USDT'),
+        exchange: providerSym.endsWith('.P') ? 'BINANCE FUTURES PERPETUAL' : 'BINANCE SPOT',
+        currency: 'USDT',
+        instrumentType: providerSym.endsWith('.P') ? 'PERPETUAL_FUTURES' : 'CRYPTO_SPOT',
+        high52w: hi52,
+        low52w: lo52,
+      },
+      quote: q ? { ...q, symbol: sym } : null,
+      edgar: null,
+      dividends: [],
+      splits: [],
+    };
+  }
+
   const [yev, sec, q] = await Promise.all([
-    yahooEvents(sym),
-    secFundamentals(sym).catch(() => null),
-    yahoo.quote(sym).catch(() => null),
+    yahooEvents(providerSym),
+    secFundamentals(providerSym).catch(() => null),
+    yahoo.quote(providerSym).catch(() => null),
   ]);
 
   if (!yev && !sec && !q) throw new Error('No fundamentals found for ' + sym);
   return {
     symbol: sym,
-    asset: U.classify(sym),
+    asset: U.classify(providerSym),
     source: [sec ? 'sec-edgar' : null, yev || q ? 'yahoo' : null].filter(Boolean).join('+') || 'yahoo',
     mode: 'DELAYED',
     profile: {
       name: (sec && sec.name) || (yev && (yev.longName || yev.shortName)) || sym,
-      exchange: (yev && yev.exchangeName) || (sec && sec.exchanges && sec.exchanges[0]) || 'US',
-      currency: (yev && yev.currency) || 'USD',
+      exchange: (yev && yev.exchangeName) || (sec && sec.exchanges && sec.exchanges[0]) || (providerSym.endsWith('.JK') ? 'IDX JAKARTA' : 'US'),
+      currency: (yev && yev.currency) || (providerSym.endsWith('.JK') ? 'IDR' : 'USD'),
       instrumentType: (yev && yev.instrumentType) || 'EQUITY',
       sicDescription: sec && sec.sicDescription,
       cik: sec && sec.cik,
@@ -250,7 +277,7 @@ async function fundamentals(symbol) {
       high52w: yev && yev.high52w,
       low52w: yev && yev.low52w,
     },
-    quote: q,
+    quote: q ? { ...q, symbol: sym } : null,
     edgar: sec,
     dividends: (yev && yev.dividends) || [],
     splits: (yev && yev.splits) || [],

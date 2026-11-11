@@ -45,12 +45,21 @@ async function search(q) {
 }
 
 const SCR = { gainers: 'day_gainers', losers: 'day_losers', active: 'most_actives' };
+const FALLBACK_EQUITY_UNIVERSE = ['NVDA', 'AAPL', 'MSFT', 'TSLA', 'AMZN', 'META', 'GOOGL', 'AMD', 'AVGO', 'PLTR', 'COIN', 'NFLX', 'TSM', 'ORCL', 'CRM', 'JPM', 'GS', 'V', 'MA', 'LLY', 'XOM', 'COST', 'WMT', 'BRK-B'];
 async function movers(dir = 'gainers', limit = 20) {
   const id = SCR[dir] || SCR.gainers;
-  const j = await U.cached('ym:' + id, 30000, () => U.getJsonFallback(BASES, `/v1/finance/screener/predefined/saved?scrIds=${id}&count=${Math.min(+limit || 20, 50)}`, { provider: 'yahoo', headers: H }));
-  const rs = j.finance && j.finance.result && j.finance.result[0] && j.finance.result[0].quotes;
-  if (!rs) throw new Error('screener returned no quotes');
-  return rs.map(m => U.tick({ symbol: m.symbol, asset: 'equity', price: m.regularMarketPrice, vol: m.regularMarketVolume, chg: m.regularMarketChange, chgPct: m.regularMarketChangePercent, high: m.regularMarketDayHigh, low: m.regularMarketDayLow, prevClose: m.regularMarketPreviousClose, bid: m.bid, ask: m.ask, ts: (m.regularMarketTime || 0) * 1000 || Date.now(), source: 'yahoo', mode: 'DELAYED' }));
+  try {
+    const j = await U.cached('ym:' + id, 30000, () => U.getJsonFallback(BASES, `/v1/finance/screener/predefined/saved?scrIds=${id}&count=${Math.min(+limit || 20, 50)}`, { provider: 'yahoo', headers: H }));
+    const rs = j.finance && j.finance.result && j.finance.result[0] && j.finance.result[0].quotes;
+    if (!rs || !rs.length) throw new Error('screener returned no quotes');
+    return rs.map(m => U.tick({ symbol: m.symbol, asset: 'equity', price: m.regularMarketPrice, vol: m.regularMarketVolume, chg: m.regularMarketChange, chgPct: m.regularMarketChangePercent, high: m.regularMarketDayHigh, low: m.regularMarketDayLow, prevClose: m.regularMarketPreviousClose, bid: m.bid, ask: m.ask, ts: (m.regularMarketTime || 0) * 1000 || Date.now(), source: 'yahoo', mode: 'DELAYED' }));
+  } catch (_) {
+    const ticks = (await Promise.all(FALLBACK_EQUITY_UNIVERSE.map(s => quote(s).catch(() => null)))).filter(Boolean);
+    if (dir === 'losers') ticks.sort((a, b) => (a.chgPct || 0) - (b.chgPct || 0));
+    else if (dir === 'active') ticks.sort((a, b) => (b.vol || 0) - (a.vol || 0));
+    else ticks.sort((a, b) => (b.chgPct || 0) - (a.chgPct || 0));
+    return ticks.slice(0, Math.min(+limit || 20, 50));
+  }
 }
 
 module.exports = { quote, kline, search, movers };

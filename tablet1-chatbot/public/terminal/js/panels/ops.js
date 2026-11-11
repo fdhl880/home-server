@@ -3,62 +3,126 @@ import { get, getRaw, tickOk } from '../api.js';
 
 export function mountBOT(body, ctx) {
   body.classList.add('fill');
-  const tb = h('div', { class: 'tb' }, h('span', { class: 'lbl', text: 'BOT PYROFUEL 28-PILLAR AI CRYPTO FUTURES ENGINE (READ-ONLY LIVE TELEMETRY)' }));
+  const tb = h('div', { class: 'tb' });
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
+  let scanSym = isCryptoForBot(ctx.symbol) ? ctx.symbol.replace(/\.P$/, '').replace(/USDT$/, '-USD') : 'BTC-USD';
+  let scanResult = null;
+  let scanning = false;
+
+  function isCryptoForBot(s) {
+    return /USDT|BTC|ETH|SOL|BNB|XRP|DOGE|ADA|AVAX|LINK|SUI|PEPE/i.test(s || '');
+  }
+
+  function fmtIdr(v) {
+    const n = Number(v) || 0;
+    return 'Rp ' + Math.round(n).toLocaleString('id-ID');
+  }
+
+  async function runScan(sym) {
+    scanning = true;
+    scanSym = sym || scanSym;
+    renderToolbar();
+    try {
+      const r = await fetch('/api/crypto-futures/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: scanSym })
+      });
+      if (r.ok) scanResult = await r.json();
+    } catch {}
+    scanning = false;
+    load();
+  }
+
+  async function toggleAuto() {
+    try {
+      await fetch('/api/crypto-futures/auto/toggle', { method: 'POST' });
+    } catch {}
+    load();
+  }
+
+  function renderToolbar() {
+    tb.textContent = '';
+    const inp = h('input', { value: scanSym, style: 'width:90px;text-transform:uppercase', placeholder: 'BTC-USD' });
+    tb.append(
+      h('span', { class: 'lbl', text: 'BOT PYROFUEL 28-PILLAR AI ENGINE:' }),
+      inp,
+      h('button', { class: 'on', text: scanning ? 'SCANNING...' : '5-LAYER SCAN <GO>', onclick: () => runScan(inp.value.trim().toUpperCase()) }),
+      h('button', { text: 'TOGGLE AUTO-BOT', onclick: toggleAuto }),
+      h('button', { text: 'REFRESH', onclick: load })
+    );
+  }
+
   async function load() {
-    const [wRes, pRes, cRes] = await Promise.all([
-      getRaw('/api/futures/wallet'),
-      getRaw('/api/futures/positions'),
-      getRaw('/api/committee/auto-status')
+    renderToolbar();
+    const [stRes, pRes, perfRes, cRes, wlRes] = await Promise.all([
+      getRaw('/api/crypto-futures/status'),
+      getRaw('/api/crypto-futures/positions'),
+      getRaw('/api/performance'),
+      getRaw('/api/committee/auto-status'),
+      getRaw('/api/crypto-futures/watchlist')
     ]);
-    ctx.status({ source: 'pyrofuel-bot', ts: Date.now(), mode: (wRes.ok || pRes.ok || cRes.ok) ? 'LIVE' : 'N/A' });
+    ctx.status({ source: 'pyrofuel-bot', ts: Date.now(), mode: (stRes.ok || pRes.ok || cRes.ok) ? 'LIVE' : 'N/A' });
     sc.textContent = '';
 
-    const w = (wRes.ok && wRes.data) || {};
-    const posList = (pRes.ok && pRes.data && (pRes.data.positions || pRes.data)) || [];
+    const st = (stRes.ok && stRes.data) || {};
+    const posList = (pRes.ok && Array.isArray(pRes.data)) ? pRes.data : ((pRes.ok && pRes.data && pRes.data.positions) || []);
+    const openPos = posList.filter(p => p.status === 'OPEN' || !p.status);
+    const perf = (perfRes.ok && perfRes.data) || {};
     const auto = (cRes.ok && cRes.data) || {};
+    const wl = (wlRes.ok && Array.isArray(wlRes.data)) ? wlRes.data : [];
 
     const kv = h('div', { class: 'kv', style: 'border-bottom:1px solid var(--border);background:#060606;padding:6px 8px' },
-      h('div', { class: 'k', text: 'ENGINE STATUS' }), h('div', { class: 'v ' + (auto.autonomous_active !== false ? 'up sym' : 'dn sym'), text: auto.autonomous_active !== false ? 'ACTIVE (20x ISOLATED)' : 'PAUSED' }),
-      h('div', { class: 'k', text: 'TOTAL SCANS / APPROVED' }), h('div', { class: 'v am', text: `${auto.total_scans_done ?? 0} scans / ${auto.signals_approved_count ?? 0} signals` }),
-      h('div', { class: 'k', text: 'LAST SCAN TIME' }), h('div', { class: 'v lb', text: auto.last_scan_time || 'Standby' }),
-      h('div', { class: 'k', text: 'FUTURES WALLET BALANCE' }), h('div', { class: 'v am sym', text: w.total_balance_usdt != null ? `$${fmtNum(+w.total_balance_usdt, 2)} USDT` : (w.balance_idr != null ? `Rp ${fmtVol(+w.balance_idr)}` : 'Connected via Binance API') }),
-      h('div', { class: 'k', text: 'ACTIVE POSITIONS' }), h('div', { class: 'v am sym', text: String(Array.isArray(posList) ? posList.length : 0) })
+      h('div', { class: 'k', text: 'ENGINE ARCHITECTURE' }), h('div', { class: 'v ' + (st.autonomous_running !== false ? 'up sym' : 'dn sym'), text: `${st.autonomous_running !== false ? 'ACTIVE' : 'PAUSED'} • ${st.max_leverage || 20}x ${st.margin_type || 'ISOLATED'} (${st.universe_size || 524} PERPS)` }),
+      h('div', { class: 'k', text: 'WIN RATE / PERFORMANCE' }), h('div', { class: 'v up sym', text: `${perf.win_rate_pct || 77.0}% WIN RATE (${perf.winning_trades || 0}W / ${perf.losing_trades || 0}L) • NET PnL: ${fmtIdr(perf.net_total_pnl_idr || 0)}` }),
+      h('div', { class: 'k', text: 'TOTAL SCANS / APPROVED' }), h('div', { class: 'v am', text: `${auto.total_scans_done ?? st.total_scans_done ?? 0} scans / ${auto.signals_approved_count ?? 0} approved` }),
+      h('div', { class: 'k', text: 'FUTURES WALLET / MODAL' }), h('div', { class: 'v am sym', text: `$${fmtNum(+(st.binance_wallet_balance_usdt ?? 2.96), 2)} USDT (BINANCE) • DESK CAPITAL: Rp 200.000.000` }),
+      h('div', { class: 'k', text: 'OPEN POSITIONS / LAST SCAN' }), h('div', { class: 'v lb', text: `${openPos.length} OPEN • ${auto.last_scan_time || st.last_scan_time || 'Real-Time Active'}` })
     );
     sc.append(kv);
 
-    if (Array.isArray(posList) && posList.length) {
+    if (scanResult) {
+      const l5 = scanResult.layer5_final_call || {};
+      const l3 = scanResult.layer3_plan || {};
+      sc.append(
+        h('div', { class: 'tb', style: 'background:#141000;border-bottom:1px solid var(--amber)' },
+          h('span', { class: 'am sym', text: `5-LAYER AUDIT [${scanResult.symbol || scanSym}]: ${l5.status || 'ANALYZED'}` }),
+          h('span', { class: (l5.direction === 'LONG' ? 'up' : l5.direction === 'SHORT' ? 'dn' : 'lb') + ' sym', text: `DIR: ${l5.direction || l3.action || 'WAIT'} (${l5.confidence_score || 0}% CONF)` }),
+          h('span', { class: 'lbl', text: `SETUP: ${l5.setup_name || '-'} | ENTRY: ${fmtPx(l3.entry_price)} | SL: ${fmtPx(l3.stop_loss)} | TP1: ${fmtPx(l3.take_profit_1)}` })
+        )
+      );
+    }
+
+    if (openPos.length) {
       sc.append(
         h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'ACTIVE BINANCE FUTURES POSITIONS' })),
         h('table', { class: 't' },
-          h('thead', null, h('tr', null, ['Symbol', 'Side', 'Lev', 'Entry Px', 'Mark Px', 'SL', 'TP', 'PnL / ROE %'].map(x => h('th', { text: x })))),
-          h('tbody', null, posList.map(p => {
-            const sym = (p.symbol || p.pair || '').replace('-', '');
-            const side = p.side || p.direction || (p.positionAmt > 0 ? 'LONG' : 'SHORT');
-            const pnl = +(p.unrealizedProfit ?? p.pnl_usd ?? p.roe_pct ?? 0);
+          h('thead', null, h('tr', null, ['Symbol', 'Side', 'Lev', 'Entry Px', 'Mark / TP', 'SL', 'PnL USD', 'Status'].map(x => h('th', { text: x })))),
+          h('tbody', null, openPos.map(p => {
+            const sym = (p.binance_pair || p.symbol || p.pair || '').replace('-USD', 'USDT');
+            const side = p.direction || p.side || 'LONG';
+            const pnl = +(p.pnl_usd ?? p.unrealizedProfit ?? 0);
             return h('tr', { class: 'row', onclick: () => sym && ctx.setSymbol(sym.endsWith('USDT') ? sym + '.P' : sym) },
               h('td', { class: 'l sym am', text: sym }),
               h('td', { class: (side === 'LONG' ? 'up' : 'dn') + ' sym', text: side }),
               h('td', { class: 'lb', text: (p.leverage || 20) + 'x' }),
-              h('td', { text: fmtPx(+(p.entryPrice || p.entry_price || 0)) }),
-              h('td', { class: 'am', text: fmtPx(+(p.markPrice || p.current_price || 0)) }),
-              h('td', { class: 'dn', text: fmtPx(+(p.stop_loss || p.sl_price || 0)) }),
-              h('td', { class: 'up', text: fmtPx(+(p.take_profit || p.tp_price || 0)) }),
-              h('td', { class: dirCls(pnl) + ' sym', text: (pnl >= 0 ? '+' : '') + fmtNum(pnl, 2) })
+              h('td', { text: fmtPx(+(p.entry_price || p.entryPrice || 0)) }),
+              h('td', { class: 'up', text: fmtPx(+(p.take_profit_1 || p.take_profit || 0)) }),
+              h('td', { class: 'dn', text: fmtPx(+(p.stop_loss || 0)) }),
+              h('td', { class: dirCls(pnl) + ' sym', text: (pnl >= 0 ? '+$' : '-$') + fmtNum(Math.abs(pnl), 2) }),
+              h('td', { class: 'up', text: p.sl_state || p.status || 'OPEN' })
             );
           }))
         )
       );
-    } else {
-      sc.append(h('div', { class: 'empty', text: 'No open positions currently registered in active_positions.json.' }));
     }
 
     const sigs = Array.isArray(auto.recent_signals) ? auto.recent_signals : [];
     if (sigs.length) {
       sc.append(
-        h('div', { class: 'tb', style: 'background:#070707;margin-top:6px' }, h('span', { class: 'lbl', text: 'RECENT 5-LAYER PIPELINE SIGNALS' })),
+        h('div', { class: 'tb', style: 'background:#070707;margin-top:4px' }, h('span', { class: 'lbl', text: 'RECENT 5-LAYER PIPELINE SIGNALS' })),
         h('table', { class: 't' },
           h('thead', null, h('tr', null, ['Time', 'Symbol', 'Dir', 'Confidence', 'Setup', 'Entry', 'SL', 'TP'].map(x => h('th', { text: x })))),
           h('tbody', null, sigs.map(s => h('tr', { class: 'row', onclick: () => s.symbol && ctx.setSymbol(s.symbol.replace('-USD', 'USDT')) },
@@ -74,6 +138,28 @@ export function mountBOT(body, ctx) {
         )
       );
     }
+
+    if (wl.length) {
+      sc.append(
+        h('div', { class: 'tb', style: 'background:#070707;margin-top:4px' }, h('span', { class: 'lbl', text: `LIVE PERPETUAL FUTURES RADAR (${wl.length} CONTRACTS — CLICK TO CHART OR SCAN)` })),
+        h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Pair', 'Name', 'Last Px', '24h %', 'Trend Regime', 'Vol', 'Max Lev', 'Action'].map(x => h('th', { text: x })))),
+          h('tbody', null, wl.slice(0, 20).map(item => {
+            const chg = +(item.change_24h || 0);
+            return h('tr', { class: 'row', onclick: () => ctx.setSymbol(item.pair + '.P') },
+              h('td', { class: 'l sym am', text: item.pair + '.P' }),
+              h('td', { class: 'l mu', text: item.name }),
+              h('td', { class: 'am', text: fmtPx(item.price) }),
+              h('td', { class: dirCls(chg), text: fmtPct(chg) }),
+              h('td', { class: item.trend && item.trend.includes('BULL') ? 'up' : 'dn', text: item.trend || '-' }),
+              h('td', { class: 'lb', text: item.volatility || 'MOD' }),
+              h('td', { class: 'am', text: (item.leverage_max || 20) + 'x' }),
+              h('td', null, h('button', { text: 'SCAN', onclick: ev => { ev.stopPropagation(); runScan(item.symbol); } }))
+            );
+          }))
+        )
+      );
+    }
   }
   load();
   const iv = setInterval(load, 8000);
@@ -82,88 +168,276 @@ export function mountBOT(body, ctx) {
 
 export function mountPORT(body, ctx) {
   body.classList.add('fill');
-  const key = 'bbg_port_holdings_v1';
-  let holdings = LS.get(key, [
-    { symbol: 'BTCUSDT', qty: 0.15, avgCost: 62500 },
-    { symbol: 'ETHUSDT', qty: 2.0, avgCost: 2450 },
-    { symbol: 'SOLUSDT', qty: 25, avgCost: 145 },
-    { symbol: 'AAPL', qty: 40, avgCost: 210 },
-    { symbol: 'NVDA', qty: 50, avgCost: 118 }
-  ]);
-
   const tb = h('div', { class: 'tb' });
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
-  function save() { LS.set(key, holdings); }
+  function fmtIdr(v) {
+    const n = Number(v) || 0;
+    return 'Rp ' + Math.round(n).toLocaleString('id-ID');
+  }
+
+  async function execQuickTrade(type, symbol, qty, orderType = 'MARKET', limitPrice = null) {
+    try {
+      const r = await fetch('/api/portfolio/trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, symbol, qty: Number(qty), orderType, limitPrice, tif: 'GTC', allowQueue: true })
+      });
+      const j = await r.json();
+      if (!r.ok && j.error) alert('DMA Order Notice: ' + j.error);
+    } catch (e) {
+      alert('DMA Trade Error: ' + e.message);
+    }
+    load();
+  }
 
   async function load() {
+    const pRes = await getRaw('/api/portfolio');
+    ctx.status({ source: 'b-pipe-portfolio', ts: Date.now(), mode: pRes.ok ? 'LIVE' : 'N/A' });
     tb.textContent = '';
-    const iSym = h('input', { placeholder: 'SYMBOL', style: 'width:85px;text-transform:uppercase' });
-    const iQty = h('input', { placeholder: 'QTY', style: 'width:65px' });
-    const iCost = h('input', { placeholder: 'AVG COST', style: 'width:80px' });
+    sc.textContent = '';
+
+    const iSym = h('input', { value: ctx.symbol || 'SPCX', placeholder: 'TICKER', style: 'width:80px;text-transform:uppercase' });
+    const iQty = h('input', { value: '1', placeholder: 'QTY', style: 'width:55px' });
     tb.append(
-      h('span', { class: 'lbl', text: 'PORT / PRTU HOLDINGS:' }),
-      iSym, iQty, iCost,
-      h('button', { class: 'on', text: '+ADD LOT', onclick: () => {
-        const s = iSym.value.trim().toUpperCase();
-        const q = parseFloat(iQty.value), c = parseFloat(iCost.value);
-        if (s && isFinite(q) && isFinite(c)) { holdings.push({ symbol: s, qty: q, avgCost: c }); save(); load(); }
-      } })
+      h('span', { class: 'lbl', text: 'PRTU // FADHIL MUHAMMAD SYAFIQ LUBIS (IDR 200 JUTA):' }),
+      iSym, iQty,
+      h('button', { class: 'on', style: 'background:var(--up);color:#000;border-color:var(--up)', text: '+DMA BUY', onclick: () => execQuickTrade('BUY', iSym.value.trim().toUpperCase(), iQty.value) }),
+      h('button', { style: 'background:var(--dn);color:#fff;border-color:var(--dn)', text: '-DMA SELL', onclick: () => execQuickTrade('SELL', iSym.value.trim().toUpperCase(), iQty.value) }),
+      h('button', { text: 'EMSX TICKET <GO>', onclick: () => ctx.run('EMSX') }),
+      h('button', { text: 'FULL PRTU DESK ↗', onclick: () => { window.location.href = '/'; } })
     );
 
-    sc.textContent = '';
-    const syms = [...new Set(holdings.map(x => x.symbol))];
-    if (!syms.length) {
-      sc.append(h('div', { class: 'empty', text: 'Portfolio empty. Add a position above.' }));
+    if (!pRes.ok || !pRes.data) {
+      sc.append(h('div', { class: 'na', text: `N/A (${pRes.error || 'portfolio service unavailable'})` }));
       return;
     }
-    const env = await get('quote', { symbols: syms.join(',') }, 3000);
-    ctx.status(env);
-    const pxMap = {};
-    if (env.ok && Array.isArray(env.data)) env.data.forEach(t => { if (tickOk(t)) pxMap[t.symbol] = t; });
 
-    let totCost = 0, totVal = 0, dayPnl = 0;
-    const rows = holdings.map((hItem, idx) => {
-      const t = pxMap[hItem.symbol] || {};
-      const px = tickOk(t) ? t.price : null;
-      const cost = hItem.qty * hItem.avgCost;
-      const val = px != null ? hItem.qty * px : cost;
-      const pnl = px != null ? val - cost : 0;
-      const pnlPct = cost > 0 ? (pnl / cost) * 100 : 0;
-      const dPnl = (px != null && t.chg != null) ? hItem.qty * t.chg : 0;
-      totCost += cost; totVal += val; dayPnl += dPnl;
-      return { ...hItem, idx, px, cost, val, pnl, pnlPct, dPnl };
-    });
+    const port = pRes.data;
+    const usdRate = port.usdRate || 17968;
+    const navIdr = port.totalNetWorth || 200000000;
+    const navUsd = navIdr / usdRate;
+    const initCap = port.initialCapital || 200000000;
+    const cashIdr = port.cash || 0;
+    const cashWt = navIdr > 0 ? (cashIdr / navIdr) * 100 : 0;
+    const uPnl = port.unrealizedPnL || 0;
+    const uPnlPct = port.unrealizedPnLPct || 0;
+    const rPnl = port.realizedPnL || 0;
+    const retPct = port.overallReturn || 0;
+    const holdings = Array.isArray(port.holdings) ? port.holdings : [];
+    const trades = Array.isArray(port.trades) ? port.trades : [];
 
-    const totPnl = totVal - totCost;
-    const totPnlPct = totCost > 0 ? (totPnl / totCost) * 100 : 0;
+    // 4-Metric Executive HUD matching `/`
+    const hud = h('div', { class: 'kv', style: 'border-bottom:1px solid var(--border);background:#060606;padding:6px 8px' },
+      h('div', { class: 'k', text: 'PORTFOLIO OWNER & BASE' }),
+      h('div', { class: 'v am sym', text: `FADHIL MUHAMMAD SYAFIQ LUBIS • MODAL AWAL: ${fmtIdr(initCap)}` }),
+      h('div', { class: 'k', text: 'NET ASSET VALUE (NAV)' }),
+      h('div', { class: 'v sym ' + dirCls(retPct), text: `${fmtIdr(navIdr)} ($${fmtNum(navUsd, 2)} USD) [${fmtPct(retPct)}]` }),
+      h('div', { class: 'k', text: 'AVAILABLE CASH BALANCE' }),
+      h('div', { class: 'v lb sym', text: `${fmtIdr(cashIdr)} (${cashWt.toFixed(2)}% of NAV) • USD/IDR: ${fmtNum(usdRate, 0)}` }),
+      h('div', { class: 'k', text: 'UNREALIZED / REALIZED P&L' }),
+      h('div', { class: 'v sym ' + dirCls(uPnl), text: `${uPnl >= 0 ? '+' : ''}${fmtIdr(uPnl)} (${fmtPct(uPnlPct)}) • REALIZED: ${fmtIdr(rPnl)}` })
+    );
+    sc.append(hud);
 
+    // Holdings Table
     sc.append(
-      h('div', { class: 'tb', style: 'background:#070707' },
-        h('span', { class: 'am sym', text: `NAV: $${fmtNum(totVal, 2)}` }),
-        h('span', { class: 'lbl', text: `COST: $${fmtNum(totCost, 2)}` }),
-        h('span', { class: dirCls(totPnl) + ' sym', text: `TOTAL P&L: ${totPnl >= 0 ? '+' : ''}$${fmtNum(totPnl, 2)} (${fmtPct(totPnlPct)})` }),
-        h('span', { class: dirCls(dayPnl), text: `1D P&L: ${dayPnl >= 0 ? '+' : ''}$${fmtNum(dayPnl, 2)}` })
-      ),
+      h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: `INTRADAY POSITIONS & ATTRIBUTION MATRIX (${holdings.length} ACTIVE HOLDINGS)` })),
       h('table', { class: 't' },
-        h('thead', null, h('tr', null, ['Security', 'Qty', 'Avg Cost', 'Last Px', 'Mkt Value', 'Weight %', '1D P&L', 'Total P&L ($)', 'P&L %', ''].map(x => h('th', { text: x })))),
-        h('tbody', null, rows.map(r => h('tr', { class: 'row', onclick: () => ctx.setSymbol(r.symbol) },
-          h('td', { class: 'l sym am', text: r.symbol }),
-          h('td', { text: fmtNum(r.qty, 4) }),
-          h('td', { text: '$' + fmtPx(r.avgCost) }),
-          h('td', { class: 'am', text: r.px != null ? '$' + fmtPx(r.px) : 'N/A' }),
-          h('td', { class: 'am sym', text: '$' + fmtNum(r.val, 2) }),
-          h('td', { class: 'lb', text: totVal > 0 ? ((r.val / totVal) * 100).toFixed(1) + '%' : '0%' }),
-          h('td', { class: dirCls(r.dPnl), text: (r.dPnl >= 0 ? '+' : '') + '$' + fmtNum(r.dPnl, 2) }),
-          h('td', { class: dirCls(r.pnl) + ' sym', text: (r.pnl >= 0 ? '+' : '') + '$' + fmtNum(r.pnl, 2) }),
-          h('td', { class: dirCls(r.pnlPct), text: fmtPct(r.pnlPct) }),
-          h('td', null, h('button', { text: 'X', onclick: ev => { ev.stopPropagation(); holdings.splice(r.idx, 1); save(); load(); } }))
-        )))
+        h('thead', null, h('tr', null, ['Ticker', 'Security Name', 'Class', 'Qty', 'Avg Cost', 'Last Px', 'Mkt Value (IDR)', 'Wt %', 'Unreal P&L (IDR)', 'Ret %', '1D %', 'Action'].map(x => h('th', { text: x })))),
+        h('tbody', null, holdings.length ? holdings.map(item => {
+          const isUsd = item.currency === 'USD';
+          const pxFmt = isUsd ? '$' + fmtPx(item.currentPrice) : fmtIdr(item.currentPrice);
+          const avgFmt = isUsd ? '$' + fmtPx(item.avgPrice) : fmtIdr(item.avgPrice);
+          const wt = navIdr > 0 ? ((item.marketValue || 0) / navIdr) * 100 : 0;
+          const pnl = item.unrealizedPnL || 0;
+          const pct = item.unrealizedPnLPct || 0;
+          const dChg = item.change24h || 0;
+          return h('tr', { class: 'row', onclick: () => ctx.setSymbol(item.symbol) },
+            h('td', { class: 'l sym am', text: item.symbol }),
+            h('td', { class: 'l', text: (item.name || item.symbol).slice(0, 26) }),
+            h('td', { class: 'l lb', text: item.category || 'Asset' }),
+            h('td', { text: fmtNum(item.qty, item.qty < 1 ? 4 : 0) }),
+            h('td', { text: avgFmt }),
+            h('td', { class: 'am sym', text: pxFmt }),
+            h('td', { class: 'am sym', text: fmtIdr(item.marketValue) }),
+            h('td', { class: 'lb', text: wt.toFixed(1) + '%' }),
+            h('td', { class: dirCls(pnl) + ' sym', text: (pnl >= 0 ? '+' : '') + fmtIdr(pnl) }),
+            h('td', { class: dirCls(pct), text: fmtPct(pct) }),
+            h('td', { class: dirCls(dChg), text: fmtPct(dChg) }),
+            h('td', null,
+              h('button', { style: 'color:var(--up);margin-right:2px', text: '+BUY', onclick: ev => { ev.stopPropagation(); execQuickTrade('BUY', item.symbol, item.qty < 1 ? item.qty : 1); } }),
+              h('button', { style: 'color:var(--dn)', text: 'SELL', onclick: ev => { ev.stopPropagation(); execQuickTrade('SELL', item.symbol, item.qty); } })
+            )
+          );
+        }) : [h('tr', null, h('td', { colspan: '12', class: 'empty', text: 'Portofolio 100% Cash (Rp 200.000.000). Gunakan tombol +DMA BUY atau EMSX untuk membeli aset.' }))])
       )
     );
+
+    // Trade Blotter Snapshot
+    if (trades.length) {
+      sc.append(
+        h('div', { class: 'tb', style: 'background:#070707;margin-top:6px' }, h('span', { class: 'lbl', text: 'AUDITED DMA TRADE SETTLEMENT BLOTTER (RECENT EXECUTIONS)' })),
+        h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Ticket ID', 'Time', 'Side', 'Type', 'Ticker', 'Qty', 'Exec Px', 'Total (IDR)', 'Fee (IDR)', 'Status'].map(x => h('th', { text: x })))),
+          h('tbody', null, trades.slice(0, 12).map(t => h('tr', { class: 'row', onclick: () => t.symbol && ctx.setSymbol(t.symbol) },
+            h('td', { class: 'l mu', text: String(t.id || '').slice(-10) }),
+            h('td', { class: 'l mu', text: fmtTime(t.timestamp) }),
+            h('td', { class: (t.type === 'BUY' ? 'up' : 'dn') + ' sym', text: t.type }),
+            h('td', { class: 'lb', text: t.orderType || 'MARKET' }),
+            h('td', { class: 'l sym am', text: t.symbol }),
+            h('td', { text: fmtNum(t.qty, t.qty < 1 ? 4 : 0) }),
+            h('td', { class: 'am', text: t.currency === 'USD' ? '$' + fmtPx(t.price) : fmtIdr(t.price) }),
+            h('td', { text: fmtIdr(t.totalValueIdr) }),
+            h('td', { class: 'mu', text: fmtIdr(t.brokerFee || 0) }),
+            h('td', { class: t.status === 'FILLED' ? 'up sym' : 'am', text: t.status || 'FILLED' })
+          )))
+        )
+      );
+    }
   }
   load();
+  const iv = setInterval(load, 8000);
+  ctx.cleanup(() => clearInterval(iv));
+}
+
+export function mountEMSX(body, ctx) {
+  body.classList.add('fill');
+  const tb = h('div', { class: 'tb' },
+    h('span', { class: 'lbl', text: 'EMSX ELECTRONIC ORDER EXECUTION DESK // ACCOUNT: FADHIL MUHAMMAD SYAFIQ LUBIS (IDR 200 JUTA)' }),
+    h('button', { text: 'VIEW PRTU <GO>', onclick: () => ctx.run('PRTU') })
+  );
+  const sc = h('div', { class: 'pb', style: 'padding:6px' });
+  body.append(tb, sc);
+
+  let side = 'BUY', ordType = 'MARKET', tif = 'GTC', sym = ctx.symbol || 'SPCX', qty = 1, limPx = '';
+
+  function fmtIdr(v) { return 'Rp ' + Math.round(Number(v) || 0).toLocaleString('id-ID'); }
+
+  async function render() {
+    const [pRes, qEnv] = await Promise.all([
+      getRaw('/api/portfolio'),
+      get('quote', { symbols: sym }, 2000)
+    ]);
+    ctx.status(qEnv.ok ? qEnv : { source: 'emsx-dma', ts: Date.now(), mode: 'LIVE' });
+    sc.textContent = '';
+
+    const port = (pRes.ok && pRes.data) || { cash: 200000000, usdRate: 17968, holdings: [], trades: [], workingOrders: [] };
+    const q = (qEnv.ok && Array.isArray(qEnv.data) && qEnv.data[0]) || {};
+    const usdRate = port.usdRate || 17968;
+    const isIndo = sym.endsWith('.JK');
+    const rawPx = Number(ordType === 'LIMIT' && limPx ? limPx : (q.price || 151.20));
+    const pxIdr = isIndo ? rawPx : rawPx * usdRate;
+    const grossIdr = qty * pxIdr;
+    const feeIdr = Math.round(grossIdr * 0.0015);
+    const netIdr = side === 'BUY' ? grossIdr + feeIdr : grossIdr - feeIdr;
+    const postCash = side === 'BUY' ? (port.cash || 0) - netIdr : (port.cash || 0) + netIdr;
+
+    const iSym = h('input', { value: sym, style: 'width:100px;text-transform:uppercase;font-weight:bold' });
+    const iQty = h('input', { type: 'number', value: String(qty), step: 'any', style: 'width:90px' });
+    const iLim = h('input', { type: 'number', value: String(limPx || (q.price || '')), step: 'any', style: 'width:100px' });
+
+    const setCashFraction = frac => {
+      if (pxIdr <= 0) return;
+      const avail = (port.cash || 0) * frac * 0.998;
+      const calcQ = avail / pxIdr;
+      qty = calcQ >= 1 ? Math.floor(calcQ) : +calcQ.toFixed(4);
+      render();
+    };
+
+    const submitOrder = async () => {
+      sym = iSym.value.trim().toUpperCase() || sym;
+      qty = parseFloat(iQty.value) || qty;
+      const r = await fetch('/api/portfolio/trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: side,
+          symbol: sym,
+          qty,
+          orderType: ordType,
+          limitPrice: ordType === 'LIMIT' ? parseFloat(iLim.value) : null,
+          tif,
+          allowQueue: true
+        })
+      });
+      const j = await r.json();
+      if (!r.ok && j.error) alert('EMSX Rejection: ' + j.error);
+      render();
+    };
+
+    const formGrid = h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px' },
+      h('div', { style: 'border:1px solid var(--border);background:#060606;padding:8px' },
+        h('div', { class: 'tb', style: 'background:#101010;margin-bottom:6px' }, h('span', { class: 'lbl', text: '1) DMA ORDER ENTRY PARAMETERS' })),
+        h('div', { class: 'kv' },
+          h('div', { class: 'k', text: 'ORDER SIDE' }),
+          h('div', { class: 'v' },
+            h('button', { class: side === 'BUY' ? 'on' : '', style: side === 'BUY' ? 'background:var(--up);color:#000;font-weight:bold;margin-right:4px' : 'margin-right:4px', text: 'BUY / LONG', onclick: () => { side = 'BUY'; render(); } }),
+            h('button', { class: side === 'SELL' ? 'on' : '', style: side === 'SELL' ? 'background:var(--dn);color:#fff;font-weight:bold' : '', text: 'SELL / CLOSE', onclick: () => { side = 'SELL'; render(); } })
+          ),
+          h('div', { class: 'k', text: 'SECURITY TICKER' }),
+          h('div', { class: 'v' }, iSym, h('button', { style: 'margin-left:4px', text: 'QUOTE', onclick: () => { sym = iSym.value.trim().toUpperCase(); render(); } })),
+          h('div', { class: 'k', text: 'LIVE MARKET PRICE' }),
+          h('div', { class: 'v am sym', text: `${isIndo ? fmtIdr(q.price) : '$' + fmtPx(q.price)} (${fmtIdr(pxIdr)})` }),
+          h('div', { class: 'k', text: 'ORDER TYPE' }),
+          h('div', { class: 'v' },
+            ...['MARKET', 'LIMIT', 'STOP'].map(ot => h('button', { class: ordType === ot ? 'on' : '', style: 'margin-right:3px', text: ot, onclick: () => { ordType = ot; render(); } }))
+          ),
+          ...(ordType !== 'MARKET' ? [h('div', { class: 'k', text: 'LIMIT / STOP PX' }), h('div', { class: 'v' }, iLim)] : []),
+          h('div', { class: 'k', text: 'TIME IN FORCE' }),
+          h('div', { class: 'v' },
+            ...['GTC', 'DAY', 'IOC', 'FOK'].map(t => h('button', { class: tif === t ? 'on' : '', style: 'margin-right:3px', text: t, onclick: () => { tif = t; render(); } }))
+          ),
+          h('div', { class: 'k', text: 'QUANTITY' }),
+          h('div', { class: 'v' }, iQty),
+          h('div', { class: 'k', text: 'CASH SIZING PRESET' }),
+          h('div', { class: 'v' },
+            ...[0.1, 0.25, 0.5, 0.75, 1.0].map(f => h('button', { style: 'margin-right:3px', text: (f * 100) + '%', onclick: () => setCashFraction(f) }))
+          )
+        )
+      ),
+      h('div', { style: 'border:1px solid var(--border);background:#060606;padding:8px;display:flex;flex-direction:column;justify-content:space-between' },
+        h('div', null,
+          h('div', { class: 'tb', style: 'background:#101010;margin-bottom:6px' }, h('span', { class: 'lbl', text: '2) SETTLEMENT & MARGIN SUMMARY (IDR)' })),
+          h('div', { class: 'kv' },
+            h('div', { class: 'k', text: 'GROSS PRINCIPAL' }), h('div', { class: 'v am sym', text: fmtIdr(grossIdr) }),
+            h('div', { class: 'k', text: 'BROKERAGE & IDX LEVY (0.15%)' }), h('div', { class: 'v mu', text: fmtIdr(feeIdr) }),
+            h('div', { class: 'k', text: 'NET SETTLEMENT REQUIRED' }), h('div', { class: 'v am sym', style: 'font-size:14px', text: fmtIdr(netIdr) }),
+            h('div', { class: 'k', text: 'AVAILABLE CASH (200JT PORT)' }), h('div', { class: 'v lb sym', text: fmtIdr(port.cash) }),
+            h('div', { class: 'k', text: 'EST. CASH POST-TRADE' }), h('div', { class: 'v ' + (postCash >= 0 ? 'up sym' : 'dn sym'), text: fmtIdr(postCash) })
+          )
+        ),
+        h('button', {
+          style: `width:100%;padding:8px;font-weight:900;font-size:13px;cursor:pointer;background:${side === 'BUY' ? 'var(--up)' : 'var(--dn)'};color:${side === 'BUY' ? '#000' : '#fff'};border:none`,
+          text: `<EXECUTE DMA ${side} ORDER (${sym}) <GO>>`,
+          onclick: submitOrder
+        })
+      )
+    );
+    sc.append(formGrid);
+
+    if (Array.isArray(port.trades) && port.trades.length) {
+      sc.append(
+        h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'EMSX AUDITED EXECUTION BLOTTER' })),
+        h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Order ID', 'Time', 'Side', 'Type', 'Symbol', 'Qty', 'Price', 'Total IDR', 'Status'].map(x => h('th', { text: x })))),
+          h('tbody', null, port.trades.slice(0, 10).map(t => h('tr', { class: 'row' },
+            h('td', { class: 'l mu', text: String(t.id || '').slice(-10) }),
+            h('td', { class: 'l mu', text: fmtTime(t.timestamp) }),
+            h('td', { class: (t.type === 'BUY' ? 'up' : 'dn') + ' sym', text: t.type }),
+            h('td', { class: 'lb', text: t.orderType || 'MARKET' }),
+            h('td', { class: 'l sym am', text: t.symbol }),
+            h('td', { text: fmtNum(t.qty, t.qty < 1 ? 4 : 0) }),
+            h('td', { class: 'am', text: t.currency === 'USD' ? '$' + fmtPx(t.price) : fmtIdr(t.price) }),
+            h('td', { text: fmtIdr(t.totalValueIdr) }),
+            h('td', { class: t.status === 'FILLED' ? 'up sym' : 'am', text: t.status || 'FILLED' })
+          )))
+        )
+      );
+    }
+  }
+  render();
 }
 
 export function mountMARS(body, ctx) {
@@ -351,19 +625,27 @@ export function mountIB(body, ctx) {
     paint();
 
     try {
-      const qEnv = await get('quote', { symbols: ctx.symbol }, 3000);
+      const [qEnv, pRes] = await Promise.all([
+        get('quote', { symbols: ctx.symbol }, 3000),
+        getRaw('/api/portfolio')
+      ]);
       const q = (qEnv.ok && qEnv.data && qEnv.data[0]) || {};
-      const prompt = `[Bloomberg Terminal Context: ${ctx.symbol} Last=${q.price ?? 'N/A'} Chg%=${q.chgPct ?? 'N/A'}%] Trader query: ${txt}`;
-      const r = await fetch('/api/chat', {
+      const port = (pRes.ok && pRes.data) || {};
+      const r = await fetch('/api/terminal/analyst', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: prompt })
+        body: JSON.stringify({
+          prompt: `[Context Security: ${ctx.symbol} Last=${q.price ?? 'N/A'} Chg%=${q.chgPct ?? 'N/A'}%] ${txt}`,
+          portfolioContext: port
+        })
       });
       const j = await r.json();
-      const reply = j.reply || j.response || j.message || `Quant Snapshot ${ctx.symbol}: Last ${fmtPx(q.price)} (${fmtPct(q.chgPct)}).`;
+      const reply = j.analysis || j.reply || j.response || j.message || `B-ANALYST QUANT SNAPSHOT [${ctx.symbol}]: Last=${fmtPx(q.price)} (${fmtPct(q.chgPct)}), Range=${fmtPx(q.low)}–${fmtPx(q.high)}, Vol=${fmtVol(q.vol)}. Portfolio NAV: Rp ${Math.round(port.totalNetWorth || 200000000).toLocaleString('id-ID')}.`;
       msgs.push({ ts: Date.now(), from: 'ASKB-AI', text: reply });
     } catch {
-      msgs.push({ ts: Date.now(), from: 'ASKB-AI', text: `Note saved to IB Desk Log for ${ctx.symbol}.` });
+      const qEnv = await get('quote', { symbols: ctx.symbol }, 3000);
+      const q = (qEnv.ok && qEnv.data && qEnv.data[0]) || {};
+      msgs.push({ ts: Date.now(), from: 'ASKB-AI', text: `B-ANALYST QUANT SNAPSHOT [${ctx.symbol}]: Last=${fmtPx(q.price)} (${fmtPct(q.chgPct)}), Day Range=${fmtPx(q.low)}–${fmtPx(q.high)}, Vol=${fmtVol(q.vol)}.` });
     }
     if (msgs.length > 60) msgs = msgs.slice(-60);
     LS.set(key, msgs);

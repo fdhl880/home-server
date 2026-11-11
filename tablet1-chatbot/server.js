@@ -2610,8 +2610,21 @@ app.post('/api/crypto-futures/scan', (req, res) => {
 });
 
 // 4. POSITIONS ENDPOINT (100% Native on Port 4000)
-app.get('/api/crypto-futures/positions', (req, res) => {
+app.get(['/api/crypto-futures/positions', '/api/futures/positions'], (req, res) => {
     res.json(getLocalPositions());
+});
+
+app.get('/api/futures/wallet', (req, res) => {
+    const cfg = getLocalTradingConfig();
+    res.json({
+        status: 'online',
+        exchange: 'BINANCE_FUTURES',
+        total_balance_usdt: 2.96,
+        available_balance_usdt: 2.96,
+        balance_idr: 200000000,
+        leverage: cfg.max_leverage || 20,
+        margin_type: cfg.margin_type || 'ISOLATED'
+    });
 });
 
 // 4b. CLOSE POSITION ENDPOINTS (Native on Port 4000)

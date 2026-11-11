@@ -16,19 +16,26 @@ export async function get(route, params = {}, ttl = 1500) {
   if (hit && Date.now() - hit.at < ttl) return hit.p;
   const p = (async () => {
     if (net.adapter) return net.adapter.get(route, params);
-    if (Date.now() < net.backoffUntil) return naEnvelope('rate limited, retrying');
-    try {
-      const r = await fetch(url, { cache: 'no-store' });
-      if (r.status === 429) {
-        const j = await r.json().catch(() => ({}));
-        net.backoffUntil = Date.now() + (j.retryAfterSec || 10) * 1000;
-        return naEnvelope('rate_limited');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const r = await fetch(url, { cache: 'no-store' });
+        if (r.status === 429) {
+          await new Promise(res => setTimeout(res, 400));
+          continue;
+        }
+        if (!r.ok) {
+          if (attempt === 0) { await new Promise(res => setTimeout(res, 300)); continue; }
+          return naEnvelope('HTTP ' + r.status);
+        }
+        const env = await r.json();
+        if (env && env.ok === false) return { ...naEnvelope(env.error), ...env };
+        return env;
+      } catch (e) {
+        if (attempt === 0) { await new Promise(res => setTimeout(res, 300)); continue; }
+        return naEnvelope('source down');
       }
-      if (!r.ok) return naEnvelope('HTTP ' + r.status);
-      const env = await r.json();
-      if (env && env.ok === false) return { ...naEnvelope(env.error), ...env };
-      return env;
-    } catch (e) { return naEnvelope('source down'); }
+    }
+    return naEnvelope('rate_limited');
   })();
   cache.set(url, { at: Date.now(), p });
   if (cache.size > 200) for (const k of cache.keys()) { cache.delete(k); if (cache.size < 100) break; }

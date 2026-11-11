@@ -82,7 +82,7 @@ async function cached(key, ttlMs, fn) {
 }
 
 // ---------- outgoing per-provider rate limiter (min gap between calls) ----------
-const gaps = { 'binance-spot': 40, 'binance-futures': 40, yahoo: 100, finnhub: 1100, twelvedata: 8000, fred: 25, 'news-rss': 80, cryptopanic: 1000, calendar: 500, feargreed: 500 };
+const gaps = { 'binance-spot': 15, 'binance-futures': 15, yahoo: 20, finnhub: 1100, twelvedata: 8000, fred: 15, 'news-rss': 40, cryptopanic: 1000, calendar: 200, feargreed: 200 };
 const lastCall = {};
 const chain = {};
 function throttle(provider) {
@@ -137,7 +137,8 @@ const num = v => { const n = typeof v === 'string' ? parseFloat(v) : v; return N
 function classify(sym) {
   const s = String(sym).toUpperCase();
   if (s.endsWith('.P')) return 'crypto-perp';
-  if (/(USDT|USDC|BUSD|FDUSD|BTC|ETH|BNB)$/.test(s) && !s.includes('=') && !s.startsWith('^') && s.length > 5) return 'crypto';
+  if (/-(USD|USDT)$/.test(s)) return 'crypto';
+  if (/(USDT|USDC|BUSD|FDUSD|BTC|ETH|BNB)$/.test(s) && !s.includes('=') && !s.startsWith('^') && !s.includes('.') && s.length > 5) return 'crypto';
   if (s.startsWith('^')) return /^\^(TNX|FVX|TYX|IRX)$/.test(s) ? 'bond' : 'index';
   if (s.endsWith('=X')) return 'forex';
   if (s.endsWith('=F')) return 'commodity';
@@ -159,9 +160,11 @@ const na = (symbol, error, source) => ({ symbol, asset: classify(symbol), price:
 
 // ---------- inbound rate limit (per IP) ----------
 const buckets = new Map();
-function rateLimit(max = 120, windowMs = 60000) {
+function rateLimit(max = 5000, windowMs = 60000) {
   return (req, res, next) => {
-    const ip = req.ip || req.socket.remoteAddress || 'x'; const now = Date.now();
+    const ip = req.ip || req.socket.remoteAddress || 'x';
+    if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') return next();
+    const now = Date.now();
     let b = buckets.get(ip);
     if (!b || b.reset < now) { b = { n: 0, reset: now + windowMs }; buckets.set(ip, b); }
     if (++b.n > max) { res.status(429).json({ ok: false, source: 'hub', ts: now, status: 'N/A', error: 'rate_limited', retryAfterSec: Math.ceil((b.reset - now) / 1000) }); return; }

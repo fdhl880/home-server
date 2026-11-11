@@ -520,7 +520,60 @@ export function mountFSCO(body, ctx) {
     sc.textContent = '';
     const ed = env.ok && env.data && env.data.edgar;
     if (!ed || !ed.financials) {
-      sc.append(h('div', { class: 'na', text: `N/A — Piotroski F-Score & Altman Z-Score require SEC XBRL balance sheet & income statements (try AAPL, MSFT, NVDA, TSLA)` }));
+      const klEnv = await get('kline', { symbol: ctx.symbol, interval: '1d', limit: 252 }, 5000);
+      const c = (klEnv.ok && klEnv.data && klEnv.data.candles) || [];
+      if (c.length < 25) {
+        sc.append(h('div', { class: 'na', text: `Insufficient history for ${ctx.symbol}` }));
+        return;
+      }
+      const closes = c.map(x => x.c);
+      const last = closes[closes.length - 1];
+      const sma = n => closes.slice(-n).reduce((a, b) => a + b, 0) / Math.min(n, closes.length);
+      const sma20 = sma(20), sma50 = sma(50);
+      const ret30 = closes.length > 30 ? (last - closes[closes.length - 30]) / closes[closes.length - 30] : 0;
+      const ret90 = closes.length > 90 ? (last - closes[closes.length - 90]) / closes[closes.length - 90] : 0;
+      let gains = 0, losses = 0;
+      for (let i = closes.length - 14; i < closes.length; i++) {
+        const d = closes[i] - closes[i - 1];
+        if (d >= 0) gains += d; else losses -= d;
+      }
+      const rsi = losses === 0 ? 70 : 100 - 100 / (1 + gains / losses);
+      const upVol = c.slice(-30).filter(x => x.c >= x.o).reduce((s, x) => s + (x.v || 0), 0);
+      const dnVol = c.slice(-30).filter(x => x.c < x.o).reduce((s, x) => s + (x.v || 0), 0);
+      const peak = Math.max(...closes.slice(-90));
+      const dd = (last - peak) / peak;
+      const low20 = Math.min(...closes.slice(-20));
+      const low60 = Math.min(...closes.slice(-60, -20));
+
+      const qChecks = [
+        ['1. Trend Regime Above 50D SMA', last >= sma50, `Last ${fmtPx(last)} vs SMA50 ${fmtPx(sma50)}`],
+        ['2. Golden Cross Structure (SMA20 >= SMA50)', sma20 >= sma50, `SMA20 ${fmtPx(sma20)} vs SMA50 ${fmtPx(sma50)}`],
+        ['3. Positive 30-Day Momentum', ret30 > 0, fmtPct(ret30 * 100)],
+        ['4. Positive 90-Day Medium-Term Trend', ret90 > 0, fmtPct(ret90 * 100)],
+        ['5. RSI(14) Constructive Regime (35–75)', rsi >= 35 && rsi <= 75, `RSI(14) = ${rsi.toFixed(1)}`],
+        ['6. Positive 30D Volume Accumulation (UpVol > DownVol)', upVol >= dnVol, `Up/Dn Vol Ratio = ${(upVol / Math.max(dnVol, 1)).toFixed(2)}x`],
+        ['7. Controlled 90D Drawdown (> -25%)', dd > -0.25, fmtPct(dd * 100)],
+        ['8. Higher Structural Low (20D Low >= Prior 40D Low)', low20 >= low60, `20D Low ${fmtPx(low20)} vs Prior ${fmtPx(low60)}`],
+        ['9. Active Institutional Liquidity Turnover', (c[c.length - 1].v || 0) > 0, `24h Vol ${fmtVol(c[c.length - 1].v || 0)}`]
+      ];
+      const qScore = qChecks.filter(x => x[1]).length;
+      sc.append(
+        h('div', { class: 'tb', style: 'background:#070707' },
+          h('span', { class: 'am sym', style: 'font-size:14px', text: `QUANTITATIVE FACTOR HEALTH SCORE (Q-SCORE): ${qScore} / 9` }),
+          h('span', { class: qScore >= 7 ? 'up sym' : qScore >= 4 ? 'am sym' : 'dn sym', text: qScore >= 7 ? 'STRONG QUANT HEALTH' : qScore >= 4 ? 'NEUTRAL / BALANCED' : 'WEAK MOMENTUM' }),
+          h('span', { class: 'lbl', text: 'SEC XBRL F-SCORE:' }),
+          ...['AAPL', 'NVDA', 'MSFT', 'TSLA'].map(s => h('button', { text: s, onclick: () => ctx.setSymbol(s) }))
+        ),
+        h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Quantitative Health Criterion', 'Status', 'Points', 'Observed Metric'].map(x => h('th', { text: x })))),
+          h('tbody', null, qChecks.map(([name, pass, obs]) => h('tr', { class: 'row' },
+            h('td', { class: 'l lb', text: name }),
+            h('td', { class: pass ? 'up sym' : 'dn sym', text: pass ? 'PASS' : 'FAIL' }),
+            h('td', { class: pass ? 'up sym' : 'mu', text: pass ? '+1' : '0' }),
+            h('td', { class: 'am', text: obs })
+          )))
+        )
+      );
       return;
     }
     const f = ed.financials;

@@ -7,7 +7,7 @@ import { mountMON, mountWL, mountMOST, mountFXC, mountIMAP } from './panels/moni
 import { mountOB, mountTRADES, mountFUND } from './panels/micro.js';
 import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN } from './panels/equities.js';
 import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP } from './panels/quant.js';
-import { mountBOT, mountPORT, mountMARS, mountALRT, mountIB, mountSECF, mountFLDS, mountHELP } from './panels/ops.js';
+import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountSECF, mountFLDS, mountHELP } from './panels/ops.js';
 
 import { panels as newsPanels } from '../panels/news/index.js';
 import { panels as macroPanels } from '../panels/macro/index.js';
@@ -113,8 +113,11 @@ export const CATALOG = [
 
   // Operations, Portfolio, Risk, AI & System
   { code: 'BOT', cat: 'AI ENGINE', title: 'Pyrofuel 28-Pillar AI Bot', desc: 'Live Binance Futures Auto-Trader Telemetry, Active Positions & 5-Layer Signals', mount: mountBOT },
-  { code: 'PORT', cat: 'PORTFOLIO', title: 'Portfolio & P&L Analytics', desc: 'Multi-Asset Holdings Valuation, Weight Attribution & Intraday P&L', mount: mountPORT },
-  { code: 'PRTU', cat: 'PORTFOLIO', title: 'Portfolio Administration', desc: 'Manage Portfolio Lots, Cost Basis & Live Valuation', mount: mountPORT },
+  { code: 'PORT', cat: 'PORTFOLIO', title: 'Portfolio & P&L Analytics (IDR 200 Juta)', desc: 'Fadhil Muhammad Syafiq Lubis Rp 200.000.000 Multi-Asset Holdings, NAV & DMA Execution', mount: mountPORT },
+  { code: 'PRTU', cat: 'PORTFOLIO', title: 'Portfolio Administration (IDR 200 Juta)', desc: 'Fadhil Muhammad Syafiq Lubis Rp 200.000.000 Portfolio Holdings (SPCX, TSLA, BTC-USD) & Blotter', mount: mountPORT },
+  { code: 'EMSX', cat: 'EXECUTION', title: 'Electronic Order Execution (EMSX)', desc: 'Direct Market Access (DMA) Multi-Asset Order Routing & Execution Blotter', mount: mountEMSX },
+  { code: 'BLOT', cat: 'EXECUTION', title: 'Execution Trade Blotter', desc: 'Audited Multi-Asset Order & Trade History Blotter', mount: mountEMSX },
+  { code: 'ORD', cat: 'EXECUTION', title: 'Order Entry Ticket', desc: 'Institutional Buy/Sell Order Entry & Settlement', mount: mountEMSX },
   { code: 'MARS', cat: 'RISK', title: 'Multi-Asset Risk System', desc: 'Parametric & Historical VaR (95%/99%), CVaR, Max DD & Stress Tests', mount: mountMARS },
   { code: 'VAR', cat: 'RISK', title: 'Value at Risk', desc: 'Daily Value-at-Risk, Expected Shortfall & Leverage Shock Scenarios', mount: mountMARS },
   { code: 'RISK', cat: 'RISK', title: 'Risk Analytics', desc: 'Portfolio & Single-Security Tail Risk Workbench', mount: mountMARS },
@@ -133,7 +136,13 @@ const WORKSPACES = {
   'DEFAULT DESK': [
     { symbol: 'BTCUSDT', fn: 'GP' },
     { symbol: 'BTCUSDT', fn: 'MON' },
-    { symbol: 'BTCUSDT', fn: 'TOP' },
+    { symbol: 'SPCX', fn: 'PRTU' },
+    { symbol: 'BTCUSDT', fn: 'BOT' }
+  ],
+  'FADHIL 200JT DESK': [
+    { symbol: 'SPCX', fn: 'PRTU' },
+    { symbol: 'SPCX', fn: 'EMSX' },
+    { symbol: 'TSLA', fn: 'GP' },
     { symbol: 'BTCUSDT', fn: 'BOT' }
   ],
   'CRYPTO QUANT': [
@@ -170,18 +179,18 @@ const WORKSPACES = {
 
 const slots = [...document.querySelectorAll('.slot')];
 let activeSlot = 0;
-let panes = LS.get('bbg_active_panes_v2', WORKSPACES['DEFAULT DESK']);
+let panes = LS.get('bbg_active_panes_v3', WORKSPACES['DEFAULT DESK']);
 if (!Array.isArray(panes) || panes.length !== 4) panes = JSON.parse(JSON.stringify(WORKSPACES['DEFAULT DESK']));
 
 const cleanups = [null, null, null, null];
 
-function savePanes() { LS.set('bbg_active_panes_v2', panes); }
+function savePanes() { LS.set('bbg_active_panes_v3', panes); }
 
 function setActiveSlot(idx) {
   activeSlot = idx;
   slots.forEach((s, i) => s.classList.toggle('active', i === idx));
   const p = panes[activeSlot];
-  $('#cmdctx').textContent = `[P${activeSlot + 1}: ${p.symbol} ${p.fn}]`;
+  $('#cmdctx').textContent = `[${activeSlot + 1}-BLOOMBERG: ${p.symbol} ${p.fn}]`;
 }
 
 function mountSlot(idx) {
@@ -243,7 +252,7 @@ function mountSlot(idx) {
     draggable: 'true',
     onclick: () => setActiveSlot(idx)
   },
-    h('span', { class: 'fn', text: `P${idx + 1}:${fnDef.code}` }),
+    h('span', { class: 'fn', text: `${idx + 1}-BLOOMBERG:${fnDef.code}` }),
     secInput,
     fnSelect,
     h('span', { class: 'ttl', text: fnDef.title }),
@@ -367,7 +376,11 @@ export function executeCommand(raw) {
 
 function normalizeTickerInput(s) {
   const map = {
-    BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', BNB: 'BNBUSDT', XRP: 'XRPUSDT', DOGE: 'DOGEUSDT',
+    BTC: 'BTCUSDT', 'BTC-USD': 'BTCUSDT', ETH: 'ETHUSDT', 'ETH-USD': 'ETHUSDT',
+    SOL: 'SOLUSDT', 'SOL-USD': 'SOLUSDT', BNB: 'BNBUSDT', XRP: 'XRPUSDT', DOGE: 'DOGEUSDT',
+    SPACEX: 'SPACEX', SPCX: 'SPCX', OPENAI: 'OPENAI', ANTHROPIC: 'ANTHROPIC', STRIPE: 'STRIPE',
+    BBCA: 'BBCA.JK', BBRI: 'BBRI.JK', BMRI: 'BMRI.JK', BBNI: 'BBNI.JK', TLKM: 'TLKM.JK',
+    ASII: 'ASII.JK', GOTO: 'GOTO.JK', BREN: 'BREN.JK', AMMN: 'AMMN.JK', ADRO: 'ADRO.JK', ANTM: 'ANTM.JK', UNVR: 'UNVR.JK',
     SPX: '^GSPC', SP500: '^GSPC', NDX: '^IXIC', DJI: '^DJI', INDU: '^DJI', NKY: '^N225', IHSG: '^JKSE', JKSE: '^JKSE',
     GOLD: 'GC=F', XAUUSD: 'GC=F', WTI: 'CL=F', OIL: 'CL=F', US10Y: '^TNX', UST10Y: '^TNX',
     EURUSD: 'EURUSD=X', USDJPY: 'USDJPY=X', GBPUSD: 'GBPUSD=X', USDIDR: 'USDIDR=X'
@@ -528,7 +541,24 @@ function bindSplitter(el, isVert) {
 bindSplitter($('#vs'), true);
 bindSplitter($('#hs'), false);
 
-// Workspace selector
+// Workspace selector & Window Layout Modes (4-WIN, 2-WIN, 1-WIN)
+const gridEl = $('#grid');
+const modeBtns = [...document.querySelectorAll('#winmodes button[data-mode]')];
+function setWinMode(m) {
+  gridEl.classList.remove('mode-1', 'mode-2', 'mode-4');
+  gridEl.classList.add('mode-' + m);
+  modeBtns.forEach(b => b.classList.toggle('on', b.dataset.mode === String(m)));
+  window.dispatchEvent(new Event('resize'));
+  $('#msg').textContent = `DISPLAY MODE: ${m}-WINDOW BLOOMBERG PROFESSIONAL`;
+}
+modeBtns.forEach(b => b.addEventListener('click', () => setWinMode(b.dataset.mode)));
+const btnPrtu200 = $('#btnPrtu200');
+if (btnPrtu200) {
+  btnPrtu200.addEventListener('click', () => {
+    executeCommand('SPCX PRTU');
+  });
+}
+
 const wsel = $('#wsel');
 wsel.append(h('option', { value: '', text: 'LAUNCHPAD WORKSPACES (BLP)...' }));
 for (const k of Object.keys(WORKSPACES)) {
