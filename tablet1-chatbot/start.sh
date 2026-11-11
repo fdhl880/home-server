@@ -20,6 +20,14 @@ elif [ -f "bootstrap_credentials.js" ]; then
     node bootstrap_credentials.js 2>/dev/null || true
 fi
 
+# 0b. Termux libicu / Node.js self-heal check (fixes: libicui18n.so.79 not found)
+if ! node --version >/dev/null 2>&1; then
+    echo "[!] Node.js library mismatch detected (e.g. libicui18n.so not found). Auto-syncing libicu + nodejs..."
+    if command -v pkg &> /dev/null; then
+        pkg update -y && pkg upgrade -y && pkg install -y libicu nodejs || pkg install -y libicu nodejs-lts || true
+    fi
+fi
+
 # 1. Install Node.js dependencies if node_modules missing
 if [ ! -d "node_modules" ]; then
     echo "[*] Installing Node.js dependencies..."

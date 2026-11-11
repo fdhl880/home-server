@@ -13,9 +13,9 @@ echo "=================================================================="
 echo "[1/5] Memperbarui repositori Termux..."
 pkg update -y && pkg upgrade -y
 
-# 2. Install Dependencies (Pre-built ARM64 packages)
-echo "[2/5] Menginstall Node.js, Python, dan Numpy ARM64..."
-pkg install -y git nodejs python python-numpy clang make coreutils util-linux termux-api
+# 2. Install Dependencies (Pre-built ARM64 packages + libicu sync)
+echo "[2/5] Menginstall Node.js, libicu, Python, dan Numpy ARM64..."
+pkg install -y git libicu nodejs python python-numpy clang make coreutils util-linux termux-api
 
 # 3. Install Node Modules
 echo "[3/5] Menginstall Node.js dependencies..."
