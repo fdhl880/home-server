@@ -3260,6 +3260,9 @@ app.get('/api/committee/auto-status', (req, res) => {
     });
 });
 
+// Mount PYRO / Bloomberg Terminal API & WebSocket Hub (/api/terminal/* and /terminal/ws)
+try { require('./terminal/api')(app); } catch (e) { console.error('[terminal] mount error:', e.message); }
+
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`================================================================`);
     console.log(`🏛️ BLOOMBERG PROFESSIONAL SERVICE - REAL-TIME TRADING DESK ON PORT ${PORT}`);
