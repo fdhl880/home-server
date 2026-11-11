@@ -3276,6 +3276,161 @@ app.get('/api/committee/auto-status', (req, res) => {
     });
 });
 
+// ============================================================
+// BLOOMBERG MAIL (MSG <GO> / BMAIL <GO> — @bloomberg.net)
+// ============================================================
+const BMAIL_FILE = path.join(__dirname, 'bmail-store.json');
+const DEFAULT_BMAIL = {
+    account: {
+        name: 'FADHIL MUHAMMAD SYAFIQ LUBIS',
+        email: 'fadhil.lubis@bloomberg.net',
+        uuid: '38492018',
+        desk: 'GLOBAL MULTI-ASSET & QUANT DESK (JKT/NYC)'
+    },
+    directory: [
+        { name: 'GOLDMAN SACHS GLOBAL MACRO', email: 'gs.macro@bloomberg.net', firm: 'Goldman Sachs & Co.', desk: 'Global Rates & FX Strategy', location: 'New York' },
+        { name: 'J.P. MORGAN QUANT DERIVATIVES', email: 'jpm.quant@bloomberg.net', firm: 'J.P. Morgan Securities', desk: 'Equity & Crypto Derivatives', location: 'New York / London' },
+        { name: 'BLOOMBERG EMSX EXECUTION DESK', email: 'emsx.desk@bloomberg.net', firm: 'Bloomberg Tradebook LLC', desk: 'DMA Multi-Asset Routing', location: 'New York / Singapore' },
+        { name: 'MORGAN STANLEY APAC EQUITIES', email: 'ms.apac@bloomberg.net', firm: 'Morgan Stanley Asia', desk: 'APAC & IDX Institutional Flow', location: 'Hong Kong / Singapore' },
+        { name: 'BLACKROCK ALADDIN RISK', email: 'aladdin.risk@bloomberg.net', firm: 'BlackRock Financial', desk: 'Portfolio VaR & Factor Risk', location: 'New York' },
+        { name: 'PYROFUEL 28-PILLAR AI ENGINE', email: 'pyrofuel.ai@bloomberg.net', firm: 'Pyrofuel Quantitative', desk: '5-Layer Autonomous Futures Bot', location: 'Jakarta / Cloud' },
+        { name: 'ASKB QUANT AI RESEARCH', email: 'askb.ai@bloomberg.net', firm: 'Bloomberg Intelligence', desk: 'Automated Security & Macro Desk', location: 'Global' }
+    ],
+    inbox: [
+        {
+            id: 'MSG-90412',
+            ts: Date.now() - 8 * 60000,
+            fromName: 'BLOOMBERG EMSX EXECUTION DESK',
+            from: 'emsx.desk@bloomberg.net',
+            to: 'fadhil.lubis@bloomberg.net',
+            subject: 'DMA ACCOUNT ACTIVE: FADHIL MUHAMMAD SYAFIQ LUBIS (IDR 200,000,000)',
+            priority: 'URGENT',
+            unread: true,
+            attachmentFn: 'SPCX PORT',
+            attachmentLabel: 'PORTFOLIO_NAV_200JT.BBG',
+            body: 'INSTITUTIONAL SETTLEMENT CONFIRMATION // B-MAIL GATEWAY\n\nAccount Holder : FADHIL MUHAMMAD SYAFIQ LUBIS <fadhil.lubis@bloomberg.net>\nInitial Capital: Rp 200.000.000 (IDR 200 Juta)\nActive Holdings: SPCX (37 shs), TSLA (15 shs), BTC-USD (0.001 BTC)\nDMA Routing    : ENABLED (EMSX <GO> & PORT <GO>)\n\nAll multi-asset orders routed via EMSX <GO> settle directly against your institutional portfolio ledger.'
+        },
+        {
+            id: 'MSG-90411',
+            ts: Date.now() - 32 * 60000,
+            fromName: 'GOLDMAN SACHS GLOBAL MACRO',
+            from: 'gs.macro@bloomberg.net',
+            to: 'fadhil.lubis@bloomberg.net',
+            subject: 'US TREASURY CURVE (YCRV) & FED FUNDS RATE PATH BRIEFING',
+            priority: 'URGENT',
+            unread: true,
+            attachmentFn: '^TNX YCRV',
+            attachmentLabel: 'UST_YIELD_CURVE_YCRV.BBG',
+            body: 'GOLDMAN SACHS GLOBAL MARKETS MORNING BRIEF // VIA BLOOMBERG MAIL\n\n1. US Treasury 2s10s & 3m10y curve spreads remain the primary macro driver for cross-asset duration positioning.\n2. Inspect live sovereign curve structure via YCRV <GO> and FOMC policy probabilities via WIRP <GO>.\n3. Gold (GC=F) and Bitcoin (BTCUSDT) continue to see institutional inflows as sovereign term premia adjust.'
+        },
+        {
+            id: 'MSG-90410',
+            ts: Date.now() - 95 * 60000,
+            fromName: 'PYROFUEL 28-PILLAR AI ENGINE',
+            from: 'pyrofuel.ai@bloomberg.net',
+            to: 'fadhil.lubis@bloomberg.net',
+            subject: '5-LAYER AUTONOMOUS BOT TELEMETRY: 77.78% WIN-RATE VERIFIED',
+            priority: 'NORMAL',
+            unread: false,
+            attachmentFn: 'BTCUSDT BOT',
+            attachmentLabel: 'PYROFUEL_BOT_TELEMETRY.BBG',
+            body: 'PYROFUEL AI QUANTITATIVE ENGINE REPORT // B-MAIL DISPATCH\n\n• Historical Verified Win-Rate : 77.78% (7W / 2L)\n• Profit Factor                : 5.99x\n• Universe Coverage            : 524 Crypto Perpetual Futures Contracts\n• Open BOT <GO> in any terminal window to trigger a live 5-Layer Pipeline Scan or toggle autonomous execution.'
+        },
+        {
+            id: 'MSG-90409',
+            ts: Date.now() - 180 * 60000,
+            fromName: 'J.P. MORGAN QUANT DERIVATIVES',
+            from: 'jpm.quant@bloomberg.net',
+            to: 'fadhil.lubis@bloomberg.net',
+            subject: 'VOLATILITY SURFACE (HVT/OVME) & PERPETUAL FUNDING BASIS NOTE',
+            priority: 'NORMAL',
+            unread: false,
+            attachmentFn: 'BTCUSDT OVME',
+            attachmentLabel: 'BLACK_SCHOLES_OVME.BBG',
+            body: 'J.P. MORGAN DERIVATIVES DESK // INSTITUTIONAL NOTE\n\nRealized 10D-180D volatility cones (HVT <GO>) and Black-Scholes strike chains (OVME <GO>) indicate constructive gamma positioning. Monitor perpetual funding rates via FUND <GO> for basis arbitrage opportunities.'
+        },
+        {
+            id: 'MSG-90408',
+            ts: Date.now() - 310 * 60000,
+            fromName: 'MORGAN STANLEY APAC EQUITIES',
+            from: 'ms.apac@bloomberg.net',
+            to: 'fadhil.lubis@bloomberg.net',
+            subject: 'ASIA-PACIFIC & INDONESIA (IDX) BLUE-CHIP FLOW UPDATE',
+            priority: 'NORMAL',
+            unread: false,
+            attachmentFn: '^JKSE WEI',
+            attachmentLabel: 'APAC_IDX_MONITOR.BBG',
+            body: 'MORGAN STANLEY ASIA DESK // JAKARTA & SINGAPORE\n\nIndonesian blue-chip equities (BBCA.JK, BBRI.JK, BMRI.JK, TLKM.JK) and regional APAC benchmarks (^N225, ^HSI, ^JKSE) are streaming live on WEI <GO> and TOP <GO> (Desk 6: INDONESIA / IDX).'
+        }
+    ],
+    sent: []
+};
+
+function loadBmail() {
+    try {
+        if (fs.existsSync(BMAIL_FILE)) {
+            return JSON.parse(fs.readFileSync(BMAIL_FILE, 'utf8'));
+        }
+    } catch (e) {}
+    return JSON.parse(JSON.stringify(DEFAULT_BMAIL));
+}
+function saveBmail(data) {
+    try { fs.writeFileSync(BMAIL_FILE, JSON.stringify(data, null, 2), 'utf8'); } catch (e) {}
+}
+
+app.get('/api/terminal/bmail', (req, res) => {
+    res.json({ ok: true, data: loadBmail() });
+});
+
+app.post('/api/terminal/bmail/read', (req, res) => {
+    const store = loadBmail();
+    const id = req.body && req.body.id;
+    const msg = store.inbox.find(m => m.id === id);
+    if (msg) msg.unread = false;
+    saveBmail(store);
+    res.json({ ok: true, data: store });
+});
+
+app.post('/api/terminal/bmail/send', (req, res) => {
+    const store = loadBmail();
+    const { to = 'gs.macro@bloomberg.net', cc = '', subject = 'INSTITUTIONAL DESK INQUIRY', priority = 'NORMAL', body = '', attachmentFn = '', attachmentLabel = '' } = req.body || {};
+    const sentMsg = {
+        id: 'SENT-' + Date.now().toString().slice(-6),
+        ts: Date.now(),
+        fromName: store.account.name,
+        from: store.account.email,
+        to: String(to).trim(),
+        cc: String(cc).trim(),
+        subject: String(subject).trim() || 'BLOOMBERG TERMINAL DISPATCH',
+        priority,
+        attachmentFn,
+        attachmentLabel,
+        status: 'DELIVERED VIA B-MAIL TLS',
+        body: String(body)
+    };
+    store.sent.unshift(sentMsg);
+
+    // Auto-acknowledge from institutional @bloomberg.net desk
+    const rec = store.directory.find(d => d.email.toLowerCase() === String(to).trim().toLowerCase());
+    const port = loadPortfolio();
+    const replyMsg = {
+        id: 'MSG-' + (Date.now() + 1).toString().slice(-6),
+        ts: Date.now() + 500,
+        fromName: rec ? rec.name : String(to).split('@')[0].toUpperCase() + ' DESK',
+        from: String(to).trim(),
+        to: store.account.email,
+        subject: 'RE: ' + sentMsg.subject,
+        priority: priority === 'URGENT' ? 'URGENT' : 'NORMAL',
+        unread: true,
+        attachmentFn: attachmentFn || 'SPCX PORT',
+        attachmentLabel: 'DESK_RESPONSE_ACK.BBG',
+        body: `AUTOMATED INSTITUTIONAL DESK ACKNOWLEDGEMENT // BLOOMBERG MAIL\n\nTo      : ${store.account.name} <${store.account.email}>\nFrom    : ${rec ? `${rec.name} (${rec.firm})` : to}\nMessage : Received & logged on institutional blotter [Ref ${sentMsg.id}].\n\nDesk Snapshot:\n• Account Cash Balance : Rp ${Math.round(port.cash || 0).toLocaleString('id-ID')}\n• Active Positions     : ${(port.holdings || []).map(h => `${h.symbol} (${h.qty})`).join(', ') || '100% Cash'}\n\n--- Original Message ---\n${sentMsg.body}`
+    };
+    store.inbox.unshift(replyMsg);
+    saveBmail(store);
+    res.json({ ok: true, sent: sentMsg, reply: replyMsg, data: store });
+});
+
 // Mount PYRO / Bloomberg Terminal API & WebSocket Hub (/api/terminal/* and /terminal/ws)
 try { require('./terminal/api')(app); } catch (e) { console.error('[terminal] mount error:', e.message); }
 

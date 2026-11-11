@@ -168,6 +168,7 @@ export function mountBETA(body, ctx) {
   load();
 }
 
+
 export function mountCORR(body, ctx) {
   body.classList.add('fill');
   let syms = [ctx.symbol, 'BTCUSDT', 'ETHUSDT', 'SOLUSDT', '^GSPC', 'GC=F', '^TNX'];
@@ -229,6 +230,7 @@ export function mountCORR(body, ctx) {
   }
   load();
 }
+
 
 export function mountHVT(body, ctx) {
   body.classList.add('fill');
@@ -328,6 +330,7 @@ export function mountHVT(body, ctx) {
   }
   load();
 }
+
 
 export function mountOVME(body, ctx, { mode = 'OVME' } = {}) {
   body.classList.add('fill');
@@ -671,6 +674,7 @@ export function mountFSCO(body, ctx) {
   load();
 }
 
+
 export function mountYAS(body, ctx) {
   body.classList.add('fill');
   const tb = h('div', { class: 'tb' }, h('span', { class: 'lbl', text: 'YAS FIXED INCOME BOND YIELD, DURATION, CONVEXITY & DV01 CALCULATOR' }));
@@ -792,4 +796,122 @@ export function mountWIRP(body, ctx) {
   }
   load();
 }
+
+export function mountBTST(body, ctx) {
+  body.classList.add('fill');
+  let strat = 'SMA_CROSS'; // 'SMA_CROSS' | 'RSI_REV' | 'DONCHIAN'
+  const tb = h('div', { class: 'tb' });
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  async function load() {
+    tb.textContent = '';
+    tb.append(
+      h('span', { class: 'lbl', text: `90) Actions  |  BTST - Quantitative Strategy Backtester [${ctx.symbol}]:` }),
+      ...[['SMA_CROSS', 'SMA(10/30) TREND CROSS'], ['RSI_REV', 'RSI(14) MEAN REVERSION'], ['DONCHIAN', '20-BAR BREAKOUT']].map(([k, lbl]) =>
+        h('button', { class: strat === k ? 'on' : '', text: lbl, onclick: () => { strat = k; load(); } })
+      )
+    );
+
+    sc.textContent = '';
+    const env = await get('kline', { symbol: ctx.symbol, interval: '1d', limit: 250 }, 5000);
+    ctx.status(env);
+    const c = (env.ok && env.data && env.data.candles) || [];
+    if (c.length < 35) {
+      sc.append(h('div', { class: 'na', text: `N/A (insufficient daily bars for ${ctx.symbol})` }));
+      return;
+    }
+
+    let eq = 100, bh = 100;
+    const eqCurve = [], bhCurve = [], trades = [];
+    let pos = 0, entryPx = 0;
+
+    for (let i = 30; i < c.length; i++) {
+      const r = (c[i].c - c[i - 1].c) / c[i - 1].c;
+      bh *= (1 + r);
+      if (pos !== 0) eq *= (1 + pos * r);
+      eqCurve.push(eq);
+      bhCurve.push(bh);
+
+      let targetPos = pos;
+      if (strat === 'SMA_CROSS') {
+        const s10 = c.slice(i - 9, i + 1).reduce((s, x) => s + x.c, 0) / 10;
+        const s30 = c.slice(i - 29, i + 1).reduce((s, x) => s + x.c, 0) / 30;
+        targetPos = s10 >= s30 ? 1 : -1;
+      } else if (strat === 'RSI_REV') {
+        let g = 0, l = 0;
+        for (let k = i - 13; k <= i; k++) {
+          const d = c[k].c - c[k - 1].c;
+          if (d >= 0) g += d; else l -= d;
+        }
+        const rsi = l === 0 ? 75 : 100 - 100 / (1 + g / l);
+        if (rsi < 35) targetPos = 1;
+        else if (rsi > 68) targetPos = -1;
+      } else {
+        const hi20 = Math.max(...c.slice(i - 20, i).map(x => x.h));
+        const lo20 = Math.min(...c.slice(i - 20, i).map(x => x.l));
+        if (c[i].c > hi20) targetPos = 1;
+        else if (c[i].c < lo20) targetPos = -1;
+      }
+
+      if (targetPos !== pos) {
+        if (pos !== 0 && entryPx > 0) {
+          const pnlPct = pos * ((c[i].c - entryPx) / entryPx) * 100;
+          trades.push({ dt: new Date(c[i].t).toISOString().slice(0, 10), side: pos > 0 ? 'LONG' : 'SHORT', entry: entryPx, exit: c[i].c, pnlPct });
+        }
+        pos = targetPos;
+        entryPx = c[i].c;
+      }
+    }
+
+    const totRet = eq - 100;
+    const bhRet = bh - 100;
+    const wins = trades.filter(t => t.pnlPct > 0).length;
+    const winRate = trades.length ? (wins / trades.length) * 100 : 0;
+
+    // SVG Equity Curve vs Buy & Hold Diagram
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 700 155');
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.style.cssText = 'width:100%;height:155px;display:block;background:#000;border-bottom:1px solid var(--border)';
+    const allV = [...eqCurve, ...bhCurve];
+    const minY = Math.min(...allV) * 0.98, maxY = Math.max(...allV) * 1.02;
+    const sx = i => 15 + (i / (eqCurve.length - 1 || 1)) * 670;
+    const sy = v => 140 - ((v - minY) / (maxY - minY || 1)) * 125;
+
+    const pBh = document.createElementNS(ns, 'polyline');
+    pBh.setAttribute('fill', 'none'); pBh.setAttribute('stroke', '#4da3ff'); pBh.setAttribute('stroke-width', '1.4'); pBh.setAttribute('stroke-dasharray', '3,2');
+    pBh.setAttribute('points', bhCurve.map((v, i) => `${sx(i).toFixed(1)},${sy(v).toFixed(1)}`).join(' '));
+
+    const pEq = document.createElementNS(ns, 'polyline');
+    pEq.setAttribute('fill', 'none'); pEq.setAttribute('stroke', '#ffb000'); pEq.setAttribute('stroke-width', '2.2');
+    pEq.setAttribute('points', eqCurve.map((v, i) => `${sx(i).toFixed(1)},${sy(v).toFixed(1)}`).join(' '));
+    svg.append(pBh, pEq);
+
+    sc.append(
+      h('div', { class: 'tb', style: 'background:#070707;gap:14px' },
+        h('span', { style: 'color:#ffb000;font-weight:bold', text: `■ STRATEGY RETURN: ${fmtPct(totRet)}` }),
+        h('span', { style: 'color:#4da3ff;font-weight:bold', text: `--- BUY & HOLD: ${fmtPct(bhRet)}` }),
+        h('span', { class: 'up sym', text: `WIN RATE: ${winRate.toFixed(1)}% (${wins}/${trades.length} TRADES)` }),
+        h('span', { class: dirCls(totRet - bhRet) + ' sym', text: `ALPHA: ${fmtPct(totRet - bhRet)}` })
+      ),
+      svg,
+      h('table', { class: 't' },
+        h('thead', null, h('tr', null, ['#', 'Exit Date', 'Direction', 'Entry Px', 'Exit Px', 'Trade Return %', 'Result'].map(x => h('th', { text: x })))),
+        h('tbody', null, [...trades].reverse().slice(0, 15).map((t, i) => h('tr', { class: 'row' },
+          h('td', { class: 'l mu', text: String(trades.length - i) }),
+          h('td', { class: 'l lb', text: t.dt }),
+          h('td', { class: (t.side === 'LONG' ? 'up' : 'dn') + ' sym', text: t.side }),
+          h('td', { text: fmtPx(t.entry) }),
+          h('td', { class: 'am', text: fmtPx(t.exit) }),
+          h('td', { class: dirCls(t.pnlPct) + ' sym', text: fmtPct(t.pnlPct) }),
+          h('td', { class: t.pnlPct >= 0 ? 'up sym' : 'dn sym', text: t.pnlPct >= 0 ? 'WIN' : 'LOSS' })
+        )))
+      )
+    );
+  }
+  load();
+}
+
 

@@ -5,9 +5,9 @@ import { dev } from './dev-adapter.js';
 import { mountGP, mountHP, mountCOMP } from './panels/charts.js';
 import { mountMON, mountWL, mountMOST, mountFXC, mountIMAP } from './panels/monitors.js';
 import { mountOB, mountTRADES, mountFUND } from './panels/micro.js';
-import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN } from './panels/equities.js';
-import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP } from './panels/quant.js';
-import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountSECF, mountFLDS, mountHELP } from './panels/ops.js';
+import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS } from './panels/equities.js';
+import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST } from './panels/quant.js';
+import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP } from './panels/ops.js';
 
 import { panels as newsPanels } from '../panels/news/index.js';
 import { panels as macroPanels } from '../panels/macro/index.js';
@@ -70,6 +70,12 @@ export const CATALOG = [
   // Equities & Fundamentals
   { code: 'DES', cat: 'EQUITY', title: 'Security Description', desc: 'Institutional Asset Profile, Snapshot Stats, 52W Range & Filings', mount: mountDES },
   { code: 'FA', cat: 'EQUITY', title: 'Financial Analysis', desc: 'SEC EDGAR XBRL Standardized Income Stmt, Balance Sheet, Cash Flow & Ratios', mount: mountFA },
+  { code: 'ANR', cat: 'EQUITY', title: 'Analyst Recommendations', desc: 'Bloomberg Consensus Rating (1-5), 12M Target Price & Institutional Broker Matrix', mount: mountANR },
+  { code: 'ERN', cat: 'EQUITY', title: 'Earnings & Estimates', desc: 'Quarterly Consensus EPS Estimates vs Actual Reported Beat/Miss Diagram', mount: mountERN },
+  { code: 'EE', cat: 'EQUITY', title: 'Earnings Estimates Workbench', desc: 'Consensus Earnings & Surprise History', mount: mountERN },
+  { code: 'SPLC', cat: 'EQUITY', title: 'Supply Chain Analysis', desc: 'Interactive Upstream Suppliers, Downstream Customers & Peer Revenue Flow Diagram', mount: mountSPLC },
+  { code: 'HDS', cat: 'EQUITY', title: 'Institutional Holders (13F)', desc: 'Top Institutional Shareholders, 13F Ownership Breakdown & QoQ Flows', mount: mountHDS },
+  { code: 'OWN', cat: 'EQUITY', title: 'Equity Ownership Structure', desc: 'Institutional, Sovereign, Insider & Public Float Ownership Diagram', mount: mountHDS },
   { code: 'CF', cat: 'EQUITY', title: 'Company Filings (EDGAR)', desc: 'Official SEC EDGAR 10-K, 10-Q, 8-K, Form 4 & Proxy Filings', mount: mountCF },
   { code: 'FLNG', cat: 'EQUITY', title: 'SEC Filings Archive', desc: 'Direct Links to Official SEC EDGAR Regulatory Filings', mount: mountCF },
   { code: 'DVD', cat: 'EQUITY', title: 'Dividend & Split History', desc: '5-Year Cash Dividend Schedule, TTM Yield & Stock Splits', mount: mountDVD },
@@ -110,6 +116,7 @@ export const CATALOG = [
   { code: 'WIRP', cat: 'FIXED INC', title: 'World Interest Rate Prob', desc: 'Implied Fed Rate Path, 2Y-EFFR Spread & 10Y TIPS Breakevens', mount: mountWIRP },
   { code: 'FOMC', cat: 'FIXED INC', title: 'FOMC Policy Monitor', desc: 'Federal Reserve Policy Rate, Real Yields & Inflation Breakevens', mount: mountWIRP },
   { code: 'TIPS', cat: 'FIXED INC', title: 'TIPS & Breakeven Inflation', desc: '10Y TIPS Real Yields vs Breakeven Inflation Expectations', mount: mountWIRP },
+  { code: 'BTST', cat: 'QUANT', title: 'Strategy Backtester', desc: 'Quantitative Strategy Backtester (SMA Cross, RSI Reversion, Breakout) & Equity Curve Diagram', mount: mountBTST },
 
   // Operations, Portfolio, Risk, AI & System
   { code: 'BOT', cat: 'AI ENGINE', title: 'Pyrofuel 28-Pillar AI Bot', desc: 'Live Binance Futures Auto-Trader Telemetry, Active Positions & 5-Layer Signals', mount: mountBOT },
@@ -121,8 +128,12 @@ export const CATALOG = [
   { code: 'VAR', cat: 'RISK', title: 'Value at Risk', desc: 'Daily Value-at-Risk, Expected Shortfall & Leverage Shock Scenarios', mount: mountMARS },
   { code: 'RISK', cat: 'RISK', title: 'Risk Analytics', desc: 'Portfolio & Single-Security Tail Risk Workbench', mount: mountMARS },
   { code: 'ALRT', cat: 'SYSTEM', title: 'Price Alert Manager', desc: 'Real-Time WebSocket Price Alerts with Audio & Visual Trigger', mount: mountALRT },
+  { code: 'MSG', cat: 'B-MAIL', title: 'Bloomberg Mail (@bloomberg.net)', desc: 'Institutional Terminal Email Inbox, Compose (MSG1), Sent & Speed Dial Directory', mount: (b, c) => mountMSG(b, c, { initialTab: 'INBOX' }) },
+  { code: 'BMAIL', cat: 'B-MAIL', title: 'Bloomberg Mail Client', desc: 'Institutional @bloomberg.net Email Gateway & Attachments', mount: (b, c) => mountMSG(b, c, { initialTab: 'INBOX' }) },
+  { code: 'MSG1', cat: 'B-MAIL', title: 'Compose Bloomberg Mail', desc: 'Compose & Dispatch Institutional @bloomberg.net Email with Terminal Attachments', mount: (b, c) => mountMSG(b, c, { initialTab: 'COMPOSE' }) },
+  { code: 'SPDL', cat: 'B-MAIL', title: 'Bloomberg Speed Dial Directory', desc: 'Institutional Counterparty Directory (Goldman, JPM, MS, BlackRock, EMSX)', mount: (b, c) => mountMSG(b, c, { initialTab: 'SPDL' }) },
+  { code: 'PEOP', cat: 'B-MAIL', title: 'People & Desk Directory', desc: 'Global Institutional Counterparty & Analyst Directory', mount: (b, c) => mountMSG(b, c, { initialTab: 'SPDL' }) },
   { code: 'IB', cat: 'SYSTEM', title: 'Instant Bloomberg & AI', desc: 'Desk Chat + Ask Bloomberg (ASKB) AI Quant Analyst', mount: mountIB },
-  { code: 'MSG', cat: 'SYSTEM', title: 'Terminal Messaging', desc: 'Desk Notes & AI Quant Communication Log', mount: mountIB },
   { code: 'ASKB', cat: 'AI ENGINE', title: 'Ask Bloomberg Quant AI', desc: 'Natural Language Quantitative Market Query Engine', mount: mountIB },
   { code: 'SECF', cat: 'SYSTEM', title: 'Security Finder', desc: 'Global Ticker Search Across Crypto, Equities, Indices, FX, Commodities', mount: mountSECF },
   { code: 'FLDS', cat: 'SYSTEM', title: 'Field Mnemonic Finder', desc: 'Bloomberg Data Field Dictionary with Live Security Values', mount: mountFLDS },
@@ -491,11 +502,11 @@ const FKEYS = [
   ['F3', 'MACRO', 'MACRO'],
   ['F4', 'ECO', 'ECO'],
   ['F5', 'NEWS', 'TOP'],
-  ['F6', 'INDEX', '^GSPC WEI'],
-  ['F7', 'CRYP', 'BTCUSDT CRYP'],
+  ['F6', 'B-MAIL', 'MSG'],
+  ['F7', 'INDEX', '^GSPC WEI'],
   ['F8', 'EQUITY', 'AAPL DES'],
-  ['F9', 'CMDTY', 'GC=F CMDTY'],
-  ['F10', 'CURNCY', 'EURUSD=X FXC'],
+  ['F9', 'ANR/SPLC', 'NVDA SPLC'],
+  ['F10', 'CRYP', 'BTCUSDT CRYP'],
   ['F11', 'PORT', 'SPCX PORT'],
   ['F12', 'EMSX', 'SPCX EMSX']
 ];

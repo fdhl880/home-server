@@ -490,7 +490,47 @@ export function mountMARS(body, ctx) {
     const param95 = 1.64485 * sd;
     const param99 = 2.32635 * sd;
 
+    // Return Distribution Histogram & VaR Tail Diagram
+    const bins = 24;
+    const minR = sorted[0], maxR = sorted[sorted.length - 1];
+    const counts = new Array(bins).fill(0);
+    for (const r of rets) {
+      const b = Math.min(bins - 1, Math.max(0, Math.floor(((r - minR) / (maxR - minR || 1)) * bins)));
+      counts[b]++;
+    }
+    const maxCnt = Math.max(...counts, 1);
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 680 120');
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.style.cssText = 'width:100%;height:120px;display:block;background:#000;border-bottom:1px solid var(--border)';
+    const bw = 640 / bins;
+    counts.forEach((cnt, idx) => {
+      const binRet = minR + (( idx + 0.5 ) / bins) * (maxR - minR);
+      const bh = (cnt / maxCnt) * 92;
+      const rect = document.createElementNS(ns, 'rect');
+      rect.setAttribute('x', (20 + idx * bw).toFixed(1));
+      rect.setAttribute('y', (102 - bh).toFixed(1));
+      rect.setAttribute('width', Math.max(2, bw - 2).toFixed(1));
+      rect.setAttribute('height', Math.max(1, bh).toFixed(1));
+      rect.setAttribute('fill', binRet <= -hist95 ? '#ff3b30' : binRet < 0 ? '#9a6b00' : '#00d26a');
+      svg.append(rect);
+    });
+    const x95 = 20 + ((-hist95 - minR) / (maxR - minR || 1)) * 640;
+    const vLine = document.createElementNS(ns, 'line');
+    vLine.setAttribute('x1', x95.toFixed(1)); vLine.setAttribute('x2', x95.toFixed(1));
+    vLine.setAttribute('y1', '8'); vLine.setAttribute('y2', '104');
+    vLine.setAttribute('stroke', '#ff3b30'); vLine.setAttribute('stroke-width', '2'); vLine.setAttribute('stroke-dasharray', '3,2');
+    svg.append(vLine);
+    const vTxt = document.createElementNS(ns, 'text');
+    vTxt.setAttribute('x', (x95 + 5).toFixed(1)); vTxt.setAttribute('y', '18');
+    vTxt.setAttribute('fill', '#ff3b30'); vTxt.setAttribute('font-size', '10'); vTxt.setAttribute('font-weight', 'bold');
+    vTxt.textContent = `◀ 95% VaR TAIL (-${(hist95 * 100).toFixed(2)}%)`;
+    svg.append(vTxt);
+
     sc.append(
+      h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'DAILY RETURN DISTRIBUTION HISTOGRAM & 95% VaR TAIL CUTOFF DIAGRAM' })),
+      svg,
       h('div', { class: 'kv', style: 'border-bottom:1px solid var(--border);padding:8px' },
         h('div', { class: 'k', text: 'REFERENCE EXPOSURE NOTIONAL' }), h('div', { class: 'v am sym', text: '$' + fmtNum(notional, 2) }),
         h('div', { class: 'k', text: '1D PARAMETRIC VaR (95%)' }), h('div', { class: 'v dn sym', text: `-$${fmtNum(notional * param95, 2)} (-${(param95 * 100).toFixed(2)}%)` }),
@@ -803,4 +843,213 @@ export function mountHELP(body, ctx, { catalog = [] } = {}) {
 
   sc.append(guide, tbl);
 }
+
+export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
+  body.classList.add('fill');
+  let tab = initialTab; // 'INBOX' | 'COMPOSE' | 'SENT' | 'SPDL'
+  let activeMsg = null;
+  let store = { account: { name: 'FADHIL MUHAMMAD SYAFIQ LUBIS', email: 'fadhil.lubis@bloomberg.net', uuid: '38492018' }, inbox: [], sent: [], directory: [] };
+  let composeState = { to: 'gs.macro@bloomberg.net', cc: '', subject: `INSTITUTIONAL DESK INQUIRY [${ctx.symbol}]`, priority: 'NORMAL', body: '', attachmentFn: `${ctx.symbol} GP`, attachmentLabel: `${ctx.symbol}_CHART.BBG` };
+
+  const tb = h('div', { class: 'tb' });
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  async function sync() {
+    const r = await getRaw('/api/terminal/bmail');
+    if (r.ok && r.data && r.data.data) store = r.data.data;
+    ctx.status({ source: 'bmail-gateway', ts: Date.now(), mode: 'LIVE' });
+    render();
+  }
+
+  function render() {
+    tb.textContent = '';
+    sc.textContent = '';
+    const unreadCnt = (store.inbox || []).filter(m => m.unread).length;
+
+    tb.append(
+      h('span', { class: 'lbl', text: `MSG // ${store.account.email}:` }),
+      h('button', { class: tab === 'INBOX' ? 'on' : '', text: `1) INBOX (${unreadCnt} NEW)`, onclick: () => { tab = 'INBOX'; activeMsg = null; render(); } }),
+      h('button', { class: tab === 'COMPOSE' ? 'on' : '', style: tab === 'COMPOSE' ? '' : 'color:var(--up);border-color:var(--up)', text: '2) COMPOSE (MSG1)', onclick: () => { tab = 'COMPOSE'; activeMsg = null; render(); } }),
+      h('button', { class: tab === 'SENT' ? 'on' : '', text: `3) SENT (${(store.sent || []).length})`, onclick: () => { tab = 'SENT'; activeMsg = null; render(); } }),
+      h('button', { class: tab === 'SPDL' ? 'on' : '', text: '4) DIRECTORY (SPDL)', onclick: () => { tab = 'SPDL'; activeMsg = null; render(); } }),
+      h('button', { text: 'IB LIVE CHAT <GO>', onclick: () => ctx.run('IB') })
+    );
+
+    if (activeMsg) {
+      const m = activeMsg;
+      sc.append(
+        h('div', { style: 'border:1px solid var(--amber);background:#050505;margin:6px;padding:10px' },
+          h('div', { style: 'display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);padding-bottom:6px;margin-bottom:8px' },
+            h('span', { style: 'background:var(--amber);color:#000;font-weight:bold;padding:1px 6px', text: `BLOOMBERG MAIL MESSAGE // ${m.id}` }),
+            h('div', { style: 'display:flex;gap:6px' },
+              h('button', { class: 'on', text: 'REPLY <GO>', onclick: () => {
+                composeState.to = m.from;
+                composeState.subject = m.subject.startsWith('RE:') ? m.subject : 'RE: ' + m.subject;
+                composeState.body = `\n\n--- On ${fmtTime(m.ts)}, ${m.fromName || m.from} wrote: ---\n${m.body}`;
+                activeMsg = null; tab = 'COMPOSE'; render();
+              } }),
+              m.attachmentFn ? h('button', { style: 'color:var(--up);border-color:var(--up)', text: `OPEN ATTACHMENT [${m.attachmentFn}] <GO>`, onclick: () => ctx.run(m.attachmentFn) }) : null,
+              h('button', { style: 'background:var(--dn);color:#fff', text: '× BACK TO LIST', onclick: () => { activeMsg = null; render(); } })
+            )
+          ),
+          h('div', { class: 'kv', style: 'background:#0a0a0a;border:1px solid #1e1e1e;margin-bottom:8px;padding:6px' },
+            h('div', { class: 'k', text: 'FROM' }), h('div', { class: 'v am sym', text: `${m.fromName || ''} <${m.from}>` }),
+            h('div', { class: 'k', text: 'TO' }), h('div', { class: 'v lb', text: m.to }),
+            h('div', { class: 'k', text: 'DATE / TIME' }), h('div', { class: 'v', text: fmtTime(m.ts, true) }),
+            h('div', { class: 'k', text: 'SUBJECT' }), h('div', { class: 'v sym', style: 'color:#fff', text: (m.priority === 'URGENT' ? '[! URGENT] ' : '') + m.subject }),
+            ...(m.attachmentLabel ? [h('div', { class: 'k', text: 'BBG ATTACHMENT' }), h('div', { class: 'v up sym', style: 'cursor:pointer', onclick: () => m.attachmentFn && ctx.run(m.attachmentFn), text: `📎 ${m.attachmentLabel} (Click to launch ${m.attachmentFn} <GO>)` })] : [])
+          ),
+          h('div', { style: 'white-space:pre-wrap;color:var(--amber);line-height:1.5;padding:8px;background:#030303;border-left:3px solid var(--amber)', text: m.body })
+        )
+      );
+      return;
+    }
+
+    if (tab === 'INBOX' || tab === 'SENT') {
+      const list = tab === 'INBOX' ? (store.inbox || []) : (store.sent || []);
+      sc.append(
+        h('div', { class: 'tb', style: 'background:#070707;justify-content:space-between' },
+          h('span', { class: 'lbl', text: tab === 'INBOX' ? `BLOOMBERG MAIL INBOX — ${store.account.name} <${store.account.email}>` : `SENT MESSAGES ARCHIVE — ${store.account.email}` }),
+          h('span', { class: 'up sym', text: '● B-MAIL TLS GATEWAY CONNECTED' })
+        ),
+        list.length ? h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['St', 'Pri', 'Time (UTC)', tab === 'INBOX' ? 'From (@bloomberg.net)' : 'To Recipient', 'Subject & Attachment', 'Attachment', 'Open'].map(x => h('th', { text: x })))),
+          h('tbody', null, list.map(m => h('tr', {
+            class: 'row',
+            style: m.unread ? 'background:#191200;font-weight:bold' : '',
+            onclick: async () => {
+              activeMsg = m;
+              if (m.unread) {
+                m.unread = false;
+                await fetch('/api/terminal/bmail/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: m.id }) });
+              }
+              render();
+            }
+          },
+            h('td', { class: 'l ' + (m.unread ? 'up sym' : 'mu'), text: m.unread ? '● NEW' : 'READ' }),
+            h('td', { class: 'l ' + (m.priority === 'URGENT' ? 'dn sym' : 'mu'), text: m.priority === 'URGENT' ? '! URG' : 'NORM' }),
+            h('td', { class: 'l lb', text: fmtTime(m.ts) }),
+            h('td', { class: 'l am sym', text: tab === 'INBOX' ? (m.fromName || m.from) : m.to }),
+            h('td', { class: 'l', style: m.unread ? 'color:#fff' : 'color:var(--amber)', text: m.subject }),
+            h('td', { class: 'l up', text: m.attachmentLabel ? '📎 ' + m.attachmentLabel : '-' }),
+            h('td', null, h('button', { text: 'READ', onclick: ev => { ev.stopPropagation(); activeMsg = m; render(); } }))
+          )))
+        ) : h('div', { class: 'empty', text: 'No messages in this folder.' })
+      );
+    } else if (tab === 'COMPOSE') {
+      const iTo = h('input', { value: composeState.to, placeholder: 'recipient@bloomberg.net or external email...', style: 'width:260px' });
+      const iCc = h('input', { value: composeState.cc, placeholder: 'Optional CC...', style: 'width:200px' });
+      const iSub = h('input', { value: composeState.subject, placeholder: 'Subject line...', style: 'width:340px;font-weight:bold' });
+      const selPri = h('select', null, h('option', { value: 'NORMAL', selected: composeState.priority === 'NORMAL' ? 'selected' : null, text: 'NORMAL' }), h('option', { value: 'URGENT', selected: composeState.priority === 'URGENT' ? 'selected' : null, text: '! URGENT' }));
+      const txtBody = h('textarea', {
+        rows: '7',
+        placeholder: 'Type institutional Bloomberg Mail message here...',
+        style: 'width:100%;background:#000;color:var(--amber);border:1px solid var(--border);padding:6px;font:inherit;resize:vertical'
+      }, composeState.body);
+
+      const injectAttachment = async type => {
+        composeState.to = iTo.value; composeState.cc = iCc.value; composeState.subject = iSub.value; composeState.body = txtBody.value;
+        if (type === 'QUOTE') {
+          const qEnv = await get('quote', { symbols: ctx.symbol }, 2000);
+          const q = (qEnv.ok && qEnv.data && qEnv.data[0]) || {};
+          composeState.attachmentFn = `${ctx.symbol} GP`;
+          composeState.attachmentLabel = `${ctx.symbol}_QUOTE_GP.BBG`;
+          composeState.body += `\n\n[BBG QUOTE SNAPSHOT: ${ctx.symbol}]\nLast Price: ${fmtPx(q.price)} | 1D Chg: ${fmtPct(q.chgPct)} | High: ${fmtPx(q.high)} | Low: ${fmtPx(q.low)} | Vol: ${fmtVol(q.vol)}`;
+        } else if (type === 'PORT') {
+          const pRes = await getRaw('/api/portfolio');
+          const p = (pRes.ok && pRes.data) || {};
+          composeState.attachmentFn = 'SPCX PORT';
+          composeState.attachmentLabel = 'PORTFOLIO_200JT_NAV.BBG';
+          composeState.body += `\n\n[BBG PORTFOLIO SNAPSHOT — FADHIL MUHAMMAD SYAFIQ LUBIS]\nBase Capital: Rp 200.000.000 | Current NAV: Rp ${Math.round(p.totalNetWorth || 200000000).toLocaleString('id-ID')}\nHoldings: ${(p.holdings || []).map(x => `${x.symbol} (${x.qty} @ ${x.currentPrice})`).join(', ')}`;
+        } else if (type === 'YCRV') {
+          composeState.attachmentFn = '^TNX YCRV';
+          composeState.attachmentLabel = 'UST_YIELD_CURVE.BBG';
+          composeState.body += `\n\n[BBG SOVEREIGN CURVE ATTACHMENT: ^TNX YCRV <GO>]`;
+        }
+        render();
+      };
+
+      const sendNow = async () => {
+        const payload = {
+          to: iTo.value.trim() || 'gs.macro@bloomberg.net',
+          cc: iCc.value.trim(),
+          subject: iSub.value.trim() || 'BLOOMBERG DESK MESSAGE',
+          priority: selPri.value,
+          body: txtBody.value,
+          attachmentFn: composeState.attachmentFn,
+          attachmentLabel: composeState.attachmentLabel
+        };
+        const r = await fetch('/api/terminal/bmail/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const j = await r.json();
+        if (j.ok && j.data) store = j.data;
+        composeState.body = '';
+        tab = 'INBOX';
+        render();
+      };
+
+      sc.append(
+        h('div', { style: 'padding:8px;border:1px solid var(--border);background:#050505;margin:6px' },
+          h('div', { class: 'tb', style: 'background:#120b00;margin-bottom:6px' },
+            h('span', { class: 'lbl', text: `MSG1 COMPOSE BLOOMBERG MAIL // FROM: ${store.account.name} <${store.account.email}>` })
+          ),
+          h('div', { class: 'tb', style: 'background:#080808;margin-bottom:6px' },
+            h('span', { class: 'lbl', text: 'QUICK DESK TO:' }),
+            ...(store.directory || []).map(d => h('button', {
+              text: d.email.split('@')[0].toUpperCase(),
+              title: `${d.name} <${d.email}>`,
+              onclick: () => { composeState.to = d.email; composeState.body = txtBody.value; render(); }
+            }))
+          ),
+          h('div', { class: 'kv', style: 'margin-bottom:6px' },
+            h('div', { class: 'k', text: 'TO RECIPIENT' }), h('div', { class: 'v' }, iTo, h('span', { class: 'mu', style: 'margin-left:8px', text: 'CC: ' }), iCc),
+            h('div', { class: 'k', text: 'SUBJECT LINE' }), h('div', { class: 'v' }, iSub, h('span', { class: 'mu', style: 'margin-left:8px', text: 'PRIORITY: ' }), selPri),
+            h('div', { class: 'k', text: 'ATTACH TERMINAL DATA' }),
+            h('div', { class: 'v', style: 'display:flex;gap:4px;flex-wrap:wrap' },
+              h('button', { text: `+ATTACH QUOTE (${ctx.symbol})`, onclick: () => injectAttachment('QUOTE') }),
+              h('button', { text: '+ATTACH PORTFOLIO 200JT', onclick: () => injectAttachment('PORT') }),
+              h('button', { text: '+ATTACH YCRV CURVE', onclick: () => injectAttachment('YCRV') }),
+              h('span', { class: 'up sym', style: 'margin-left:6px', text: `📎 ${composeState.attachmentLabel}` })
+            )
+          ),
+          txtBody,
+          h('div', { style: 'display:flex;gap:8px;margin-top:8px' },
+            h('button', { class: 'on', style: 'background:var(--up);color:#000;font-weight:bold;padding:4px 14px', text: 'SEND VIA B-MAIL GATEWAY <GO>', onclick: sendNow }),
+            h('button', {
+              style: 'color:var(--label);border-color:var(--label);padding:4px 10px',
+              text: 'OPEN IN EXTERNAL EMAIL CLIENT (MAILTO) ↗',
+              onclick: () => {
+                window.open(`mailto:${encodeURIComponent(iTo.value.trim())}?subject=${encodeURIComponent(iSub.value.trim())}&body=${encodeURIComponent(txtBody.value)}`, '_blank');
+              }
+            })
+          )
+        )
+      );
+    } else if (tab === 'SPDL') {
+      sc.append(
+        h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'SPDL / PEOP BLOOMBERG INSTITUTIONAL SPEED DIAL & COUNTERPARTY DIRECTORY' })),
+        h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Counterparty / Desk', 'Bloomberg Address', 'Institution', 'Specialty', 'Hub', 'Action'].map(x => h('th', { text: x })))),
+          h('tbody', null, (store.directory || []).map(d => h('tr', { class: 'row' },
+            h('td', { class: 'l sym am', text: d.name }),
+            h('td', { class: 'l lb', text: d.email }),
+            h('td', { class: 'l', text: d.firm }),
+            h('td', { class: 'l mu', text: d.desk }),
+            h('td', { class: 'l mu', text: d.location }),
+            h('td', null,
+              h('button', { class: 'on', text: 'COMPOSE MSG', onclick: () => { composeState.to = d.email; tab = 'COMPOSE'; render(); } })
+            )
+          )))
+        )
+      );
+    }
+  }
+
+  sync();
+}
+
 

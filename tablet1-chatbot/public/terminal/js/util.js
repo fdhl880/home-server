@@ -61,8 +61,14 @@ export function flash(el, dir) {
 export function setText(el, text, cls) {
   if (el.textContent !== text) el.textContent = text;
   if (cls !== undefined && el._cls !== cls) {
-    if (el._cls) el.classList.remove(el._cls);
-    if (cls) el.classList.add(cls);
+    if (el._cls) {
+      const oldTokens = String(el._cls).trim().split(/\s+/).filter(Boolean);
+      if (oldTokens.length) el.classList.remove(...oldTokens);
+    }
+    if (cls) {
+      const newTokens = String(cls).trim().split(/\s+/).filter(Boolean);
+      if (newTokens.length) el.classList.add(...newTokens);
+    }
     el._cls = cls;
   }
 }
