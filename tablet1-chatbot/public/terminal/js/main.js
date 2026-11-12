@@ -2,12 +2,12 @@ import { $, h, fmtTime, LS } from './util.js';
 import { get, net, startHub } from './api.js';
 import { dev } from './dev-adapter.js';
 
-import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261112c';
-import { mountMON, mountWL, mountMOST, mountFXC, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261112c';
-import { mountOB, mountTRADES, mountFUND } from './panels/micro.js?v=20261112c';
-import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS } from './panels/equities.js?v=20261112c';
-import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS } from './panels/quant.js?v=20261112c';
-import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP } from './panels/ops.js?v=20261112c';
+import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261112e';
+import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261112e';
+import { mountOB, mountTRADES, mountFUND } from './panels/micro.js?v=20261112e';
+import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT } from './panels/equities.js?v=20261112e';
+import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS } from './panels/quant.js?v=20261112e';
+import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261112e';
 
 import { panels as newsPanels } from '../panels/news/index.js';
 import { panels as macroPanels } from '../panels/macro/index.js';
@@ -51,9 +51,11 @@ export const CATALOG = [
   { code: 'FXC', cat: 'FX', title: 'Currency Rate Matrix', desc: '8x8 G10 & EM Cross-Currency Matrix + FX Converter', mount: mountFXC },
   { code: 'WCR', cat: 'FX', title: 'World Currency Rankings', desc: 'Global Spot FX Performance & Cross Matrix', mount: mountFXC },
   { code: 'FXCA', cat: 'FX', title: 'FX Conversion Calculator', desc: 'Live Cross-Currency Converter & Matrix', mount: mountFXC },
+  { code: 'FXFC', cat: 'FX', title: 'FX Forward Calculator', desc: 'Covered Interest Rate Parity Forward Points (O/N–2Y) & Forward Curve Diagram', mount: mountFXFC },
   { code: 'WFX', cat: 'FX', title: 'World FX Monitor', desc: 'Global Foreign Exchange Monitor', mount: mountFXC },
   { code: 'CMDTY', cat: 'CMDTY', title: 'Global Commodities', desc: 'Energy (WTI, Brent, NatGas), Metals (Gold, Silver, Copper) & Ags', mount: (b, c) => mountMON(b, c, { defaultGroup: 'COMMODITIES' }) },
   { code: 'GLCO', cat: 'CMDTY', title: 'Global Commodity Prices', desc: 'Benchmark Commodity Futures & Spot Monitor', mount: (b, c) => mountMON(b, c, { defaultGroup: 'COMMODITIES' }) },
+  { code: 'FUT', cat: 'CMDTY', title: 'Futures Term Structure Curve', desc: 'Contango / Backwardation Forward Curve (M1–M12) & Basis Spreads', mount: mountFUT },
   { code: 'BMAP', cat: 'CMDTY', title: 'Bloomberg Commodity & Maritime Map', desc: 'Interactive World Map of Oil Hubs, LNG Tankers, Gold/Copper Mines & Chokepoints (Hormuz, Malacca, Suez)', mount: mountBMAP },
   { code: 'CMAP', cat: 'CMDTY', title: 'Commodity Geospatial Map', desc: 'Global Energy, Metals, Agriculture & Chokepoint Geospatial Map', mount: mountBMAP },
   { code: 'WB', cat: 'FIXED INC', title: 'World Bond Markets', desc: 'US Treasury Yields & Global Fixed Income Benchmarks', mount: (b, c) => mountMON(b, c, { defaultGroup: 'BONDS' }) },
@@ -77,6 +79,7 @@ export const CATALOG = [
   { code: 'EE', cat: 'EQUITY', title: 'Earnings Estimates Workbench', desc: 'Consensus Earnings & Surprise History', mount: mountERN },
   { code: 'SPLC', cat: 'EQUITY', title: 'Supply Chain Analysis', desc: 'Interactive Upstream Suppliers, Downstream Customers & Peer Revenue Flow Diagram', mount: mountSPLC },
   { code: 'HDS', cat: 'EQUITY', title: 'Institutional Holders (13F)', desc: 'Top Institutional Shareholders, 13F Ownership Breakdown & QoQ Flows', mount: mountHDS },
+  { code: 'MGMT', cat: 'EQUITY', title: 'Company Management & Board', desc: 'Key Executives, Board Directors, Compensation, Tenure & Governance Score', mount: mountMGMT },
   { code: 'OWN', cat: 'EQUITY', title: 'Equity Ownership Structure', desc: 'Institutional, Sovereign, Insider & Public Float Ownership Diagram', mount: mountHDS },
   { code: 'CF', cat: 'EQUITY', title: 'Company Filings (EDGAR)', desc: 'Official SEC EDGAR 10-K, 10-Q, 8-K, Form 4 & Proxy Filings', mount: mountCF },
   { code: 'FLNG', cat: 'EQUITY', title: 'SEC Filings Archive', desc: 'Direct Links to Official SEC EDGAR Regulatory Filings', mount: mountCF },
@@ -145,6 +148,7 @@ export const CATALOG = [
   { code: 'ASKB', cat: 'AI ENGINE', title: 'Ask Bloomberg Quant AI', desc: 'Natural Language Quantitative Market Query Engine', mount: mountIB },
   { code: 'SECF', cat: 'SYSTEM', title: 'Security Finder', desc: 'Global Ticker Search Across Crypto, Equities, Indices, FX, Commodities', mount: mountSECF },
   { code: 'FLDS', cat: 'SYSTEM', title: 'Field Mnemonic Finder', desc: 'Bloomberg Data Field Dictionary with Live Security Values', mount: mountFLDS },
+  { code: 'BLP', cat: 'SYSTEM', title: 'Launchpad Workspace Manager', desc: 'Preset Multi-Panel Bloomberg Workspaces & Custom Layout Saver', mount: (b, c) => mountBLP(b, c, { workspaces: WORKSPACES, onLaunch: (k, list) => { panes = JSON.parse(JSON.stringify(list)); savePanes(); for (let i = 0; i < 4; i++) mountSlot(i); setActiveSlot(0); $('#msg').textContent = `WORKSPACE: ${k}`; } }) },
   { code: 'HELP', cat: 'SYSTEM', title: 'Terminal Manual & Help', desc: 'Complete Directory of All Function Codes, Sector Keys & Shortcuts', mount: (b, c) => mountHELP(b, c, { catalog: CATALOG }) }
 ];
 
@@ -192,6 +196,12 @@ const WORKSPACES = {
     { symbol: 'ETHUSDT', fn: 'GIP' },
     { symbol: 'ETHUSDT', fn: 'TRADES' },
     { symbol: 'ETHUSDT', fn: 'FNG' }
+  ],
+  'COMMODITIES & GEOPOLITICAL': [
+    { symbol: 'CL=F', fn: 'BMAP' },
+    { symbol: 'CL=F', fn: 'FUT' },
+    { symbol: 'USDIDR=X', fn: 'FXFC' },
+    { symbol: 'GC=F', fn: 'GP' }
   ]
 };
 
@@ -199,6 +209,19 @@ const slots = [...document.querySelectorAll('.slot')];
 let activeSlot = 0;
 let panes = LS.get('bbg_active_panes_v4', WORKSPACES['DEFAULT DESK']);
 if (!Array.isArray(panes) || panes.length !== 4) panes = JSON.parse(JSON.stringify(WORKSPACES['DEFAULT DESK']));
+// Deep-link layout: /?w=CL=F:BMAP,BTCUSDT:TOP,SPCX:PORT,NVDA:SPLC  (also ?win=1|2|4)
+{
+  const w = urlParams.get('w');
+  if (w) {
+    const parts = w.split(',').map(x => x.trim()).filter(Boolean).slice(0, 4);
+    parts.forEach((x, i) => {
+      const k = x.lastIndexOf(':');
+      const sym = (k > 0 ? x.slice(0, k) : 'BTCUSDT').toUpperCase();
+      const fn = (k > 0 ? x.slice(k + 1) : x).toUpperCase();
+      if (FN_MAP.has(fn)) panes[i] = { symbol: sym, fn };
+    });
+  }
+}
 
 const cleanups = [null, null, null, null];
 
@@ -209,6 +232,34 @@ function setActiveSlot(idx) {
   slots.forEach((s, i) => s.classList.toggle('active', i === idx));
   const p = panes[activeSlot];
   $('#cmdctx').textContent = `[${activeSlot + 1}-BLOOMBERG: ${p.symbol} ${p.fn}]`;
+  renderMobNav();
+}
+
+function renderMobNav() {
+  const nav = $('#mobnav');
+  if (!nav) return;
+  const grid = $('#grid');
+  const isSingle = grid.classList.contains('mode-1');
+  nav.textContent = '';
+  panes.forEach((p, i) => {
+    nav.append(h('button', {
+      class: isSingle && i === activeSlot ? 'on' : '',
+      text: `${i + 1}:${p.fn}`,
+      title: `Switch to ${i + 1}-BLOOMBERG (${p.symbol} ${p.fn})`,
+      onclick: () => {
+        setActiveSlot(i);
+        if (window.innerWidth <= 900) {
+          setWinMode(1);
+          window.scrollTo({ top: 0, behavior: 'auto' });
+        }
+      }
+    }));
+  });
+  nav.append(h('button', {
+    class: !isSingle ? 'on' : '',
+    text: window.innerWidth <= 900 ? 'STACK ALL' : '4-QUAD',
+    onclick: () => setWinMode(4)
+  }));
 }
 
 function mountSlot(idx) {
@@ -255,12 +306,7 @@ function mountSlot(idx) {
     text: '□',
     onclick: ev => {
       ev.stopPropagation();
-      const isMax = slot.style.position === 'fixed';
-      if (isMax) {
-        slot.style.cssText = '';
-      } else {
-        slot.style.cssText = 'position:fixed;inset:28px 0 38px 0;z-index:40';
-      }
+      slot.classList.toggle('maxed');
       window.dispatchEvent(new Event('resize'));
     }
   });
@@ -297,11 +343,9 @@ function mountSlot(idx) {
     }
   });
 
-  const subHdr = h('div', {
-    style: 'display:flex;justify-content:space-between;align-items:center;background:#5c0808;color:#fff;padding:0 6px;font-size:10px;border-bottom:1px solid #3a0000;flex:none;user-select:none'
-  },
+  const subHdr = h('div', { class: 'psub' },
     h('span', { text: `90) Actions  91) Edit  92) Export  99) Help   |   ${state.symbol} <${fnDef.cat}> ${fnDef.code}` }),
-    h('span', { style: 'color:#ffb000;font-weight:bold', text: `BLOOMBERG PROFESSIONAL • PAGE 1/1` })
+    h('span', { class: 'pr', text: `BLOOMBERG PROFESSIONAL • PAGE 1/1` })
   );
 
   const body = h('div', { class: 'pb', onclick: () => setActiveSlot(idx) });
@@ -573,6 +617,7 @@ function setWinMode(m) {
   gridEl.classList.remove('mode-1', 'mode-2', 'mode-4');
   gridEl.classList.add('mode-' + m);
   modeBtns.forEach(b => b.classList.toggle('on', b.dataset.mode === String(m)));
+  renderMobNav();
   window.dispatchEvent(new Event('resize'));
   $('#msg').textContent = `DISPLAY MODE: ${m}-WINDOW BLOOMBERG PROFESSIONAL`;
 }
@@ -642,5 +687,7 @@ setInterval(updateClocks, 1000);
 // Mount all 4 quadrants
 for (let i = 0; i < 4; i++) mountSlot(i);
 setActiveSlot(0);
+const winParam = urlParams.get('win');
+if (winParam === '1' || winParam === '2' || winParam === '4') setWinMode(winParam);
 $('#msg').textContent = `READY (${CATALOG.length} FUNCTIONS LOADED)`;
 

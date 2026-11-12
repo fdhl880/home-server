@@ -1,6 +1,7 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, dirCls, LS } from '../util.js';
 import { get, tickOk } from '../api.js';
 import { quoteTable, COLS } from './quotetable.js';
+import { MAP_W, MAP_H, mapX, mapY, WORLD_PATH } from './worldmap.js';
 
 const PRESETS = {
   CORE: ['#CRYPTO SPOT & PERP', 'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', '#US & GLOBAL INDICES', '^GSPC', '^IXIC', '^DJI', '^N225', '^FTSE', '^JKSE', '#MACRO, FX & COMMODITIES', 'GC=F', 'CL=F', '^TNX', 'EURUSD=X', 'USDJPY=X', 'USDIDR=X'],
@@ -289,201 +290,404 @@ export function mountIMAP(body, ctx) {
 
 export function mountBMAP(body, ctx) {
   body.classList.add('fill');
-  let filter = 'ALL'; // 'ALL' | 'ENERGY' | 'METALS' | 'CHOKEPOINT' | 'AGS'
+  let filter = 'ALL';
   let selectedId = 'HORMUZ';
+  const tb = h('div', { class: 'tb' });
+  const sc = h('div', { class: 'pb bmap' });
+  body.append(tb, sc);
+
+  const NODES = [
+    { id: 'CUSHING', dx: -8, dy: 2, anc: 'end', name: 'Cushing Oil Hub, Oklahoma', cat: 'ENERGY', sym: 'CL=F', lat: 35.98, lon: -96.76, flow: '78.4M bbl storage / WTI delivery', status: 'NORMAL', note: 'Pipeline hub (Keystone / Seaway)' },
+    { id: 'BRENT', dx: 8, dy: 2, anc: 'start', name: 'Sullom Voe Brent Terminal, UK', cat: 'ENERGY', sym: 'BZ=F', lat: 60.45, lon: -1.27, flow: '1.8M bbl/d BFOET benchmark', status: 'NORMAL', note: 'Aframax / Suezmax loading' },
+    { id: 'SABINE', dx: 8, dy: 8, anc: 'start', name: 'Sabine Pass LNG, Louisiana', cat: 'ENERGY', sym: 'NG=F', lat: 29.73, lon: -93.87, flow: '4.7 Bcf/d LNG feedgas', status: 'FULL', note: 'LNG carriers queued' },
+    { id: 'RASTAN', dx: -2, dy: 13, anc: 'end', name: 'Ras Tanura, Saudi Arabia', cat: 'ENERGY', sym: 'BZ=F', lat: 26.64, lon: 50.16, flow: '6.5M bbl/d export terminal', status: 'NORMAL', note: 'Largest offshore oil terminal' },
+    { id: 'HORMUZ', dx: 8, dy: 4, anc: 'start', name: 'Strait of Hormuz', cat: 'CHOKEPOINT', sym: 'BZ=F', lat: 26.57, lon: 56.25, flow: '20.9M bbl/d (~21% of world supply)', status: 'RISK', note: 'VLCC transits, Iran / Oman' },
+    { id: 'MALACCA', dx: -8, dy: -3, anc: 'end', name: 'Strait of Malacca', cat: 'CHOKEPOINT', sym: 'BZ=F', lat: 2.5, lon: 101.8, flow: '23.7M bbl/d APAC energy lifeline', status: 'BUSY', note: 'Indonesia / Malaysia / Singapore' },
+    { id: 'SUEZ', dx: -8, dy: -2, anc: 'end', name: 'Suez Canal / Bab el-Mandeb', cat: 'CHOKEPOINT', sym: 'CL=F', lat: 29.9, lon: 32.55, flow: '8.8M bbl/d, Cape rerouting', status: 'ALERT', note: 'Red Sea diversions +12 days' },
+    { id: 'PANAMA', dx: -8, dy: 4, anc: 'end', name: 'Panama Canal', cat: 'CHOKEPOINT', sym: 'NG=F', lat: 9.08, lon: -79.68, flow: '2.6M bbl/d products + US grain', status: 'NORMAL', note: 'Neopanamax slot limits' },
+    { id: 'BOSPOR', dx: -8, dy: 5, anc: 'end', name: 'Bosphorus / Turkish Straits', cat: 'CHOKEPOINT', sym: 'ZW=F', lat: 41.12, lon: 29.07, flow: '3.0M bbl/d + Black Sea grain', status: 'WATCH', note: 'Montreux convention transit' },
+    { id: 'GRASBERG', dx: 8, dy: 2, anc: 'start', name: 'Grasberg Cu-Au Mine, Papua', cat: 'METALS', sym: 'HG=F', lat: -4.05, lon: 137.11, flow: '1.6B lb Cu + 1.8M oz Au / yr', status: 'NORMAL', note: 'Indonesia' },
+    { id: 'ESCONDIDA', dx: -8, dy: 2, anc: 'end', name: 'Escondida Copper, Chile', cat: 'METALS', sym: 'HG=F', lat: -24.26, lon: -69.07, flow: '1.1M t copper / yr', status: 'NORMAL', note: 'World largest Cu mine' },
+    { id: 'COMEX', dx: 8, dy: 2, anc: 'start', name: 'COMEX Gold Vaults, New York', cat: 'METALS', sym: 'GC=F', lat: 40.71, lon: -74.0, flow: '18.2M oz registered gold', status: 'NORMAL', note: 'T+1 physical settlement' },
+    { id: 'RAND', dx: 8, dy: 2, anc: 'start', name: 'Witwatersrand / Bushveld, South Africa', cat: 'METALS', sym: 'SI=F', lat: -26.2, lon: 28.0, flow: '~72% world platinum', status: 'NORMAL', note: 'PGM + deep-level gold' },
+    { id: 'NICKEL', dx: 8, dy: 7, anc: 'start', name: 'Sulawesi Nickel Belt, Indonesia', cat: 'METALS', sym: 'HG=F', lat: -2.6, lon: 121.4, flow: '~50% world nickel supply', status: 'NORMAL', note: 'Morowali / Weda Bay' },
+    { id: 'CORN', dx: 8, dy: -5, anc: 'start', name: 'US Corn Belt, Iowa / Illinois', cat: 'AGS', sym: 'ZC=F', lat: 41.8, lon: -93.5, flow: '385M t corn harvest', status: 'PEAK', note: 'Mississippi barge to NOLA' },
+    { id: 'MATO', dx: 8, dy: 2, anc: 'start', name: 'Mato Grosso Soy, Brazil', cat: 'AGS', sym: 'ZS=F', lat: -13.0, lon: -55.5, flow: '158M t soybean exports', status: 'PEAK', note: 'Santos / Paranagua ports' },
+    { id: 'BLACKSEA', dx: 8, dy: -5, anc: 'start', name: 'Odesa / Black Sea Grain', cat: 'AGS', sym: 'ZW=F', lat: 46.5, lon: 30.7, flow: '48M t wheat + corn', status: 'WATCH', note: 'Panamax bulk carriers' },
+    { id: 'PALM', dx: 0, dy: -9, anc: 'middle', name: 'Kalimantan Palm Oil, Indonesia', cat: 'AGS', sym: 'KC=F', lat: -1.5, lon: 113.5, flow: '~55% world palm oil', status: 'NORMAL', note: 'Dumai / Belawan export' }
+  ];
+
+  const LANES = [
+    [[56.25, 26.57], [62, 21], [73, 10], [90, 5], [101.8, 2.5], [110, 8], [122, 24], [135, 33]],
+    [[56.25, 26.57], [50, 14], [43.3, 12.6], [32.55, 29.9], [28, 33], [15, 36], [-5.5, 36]],
+    [[-93.87, 29.73], [-85, 24], [-79.68, 9.08], [-100, 10], [-140, 25], [135, 34]],
+    [[-93.87, 29.73], [-60, 38], [-30, 48], [-1.27, 55]],
+    [[-55.5, -23], [-30, -12], [-5, 5], [10, 38], [30, 36]],
+    [[121.4, -3], [118, 8], [122, 24]]
+  ];
+  const CAT = { ENERGY: '#ffb000', CHOKEPOINT: '#ff3b30', METALS: '#00d26a', AGS: '#4da3ff' };
+  const CAT_LBL = { ENERGY: 'OIL / GAS / LNG', CHOKEPOINT: 'CHOKEPOINTS', METALS: 'METALS & MINES', AGS: 'AGRICULTURE' };
+  const ns = 'http://www.w3.org/2000/svg';
+  const sv = (tag, attrs) => { const e = document.createElementNS(ns, tag); for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v); return e; };
+
+  // viewBox state (zoom / pan)
+  let vb = { x: 0, y: 0, w: MAP_W, h: MAP_H };
+  const clampVb = () => {
+    vb.w = Math.max(120, Math.min(MAP_W, vb.w));
+    vb.h = vb.w * (MAP_H / MAP_W);
+    vb.x = Math.max(0, Math.min(MAP_W - vb.w, vb.x));
+    vb.y = Math.max(0, Math.min(MAP_H - vb.h, vb.y));
+  };
+
+  const wrap = h('div', { class: 'bmap-wrap' });
+  const side = h('div', { class: 'bmap-side' });
+  const mapBox = h('div', { class: 'bmap-box' });
+  wrap.append(mapBox, side);
+  sc.append(wrap);
+
+  const svg = sv('svg', { viewBox: `0 0 ${MAP_W} ${MAP_H}`, preserveAspectRatio: 'xMidYMid meet', class: 'bmap-svg' });
+  const gGrid = sv('g'), gLand = sv('g'), gLanes = sv('g'), gNodes = sv('g');
+  svg.append(gGrid, gLand, gLanes, gNodes);
+  mapBox.append(svg);
+
+  for (let lon = -150; lon <= 180; lon += 30) gGrid.append(sv('line', { x1: mapX(lon), y1: 0, x2: mapX(lon), y2: MAP_H, stroke: '#101a24', 'stroke-width': 0.6 }));
+  for (let lat = -50; lat <= 80; lat += 10) gGrid.append(sv('line', { x1: 0, y1: mapY(lat), x2: MAP_W, y2: mapY(lat), stroke: lat === 0 ? '#1d3347' : '#101a24', 'stroke-width': lat === 0 ? 0.9 : 0.6 }));
+  gLand.append(sv('path', { d: WORLD_PATH, fill: '#2b3441', stroke: '#566679', 'stroke-width': 0.5, 'stroke-linejoin': 'round' }));
+  for (const pts of LANES) {
+    const d = pts.map(([lo, la], i) => (i ? 'L' : 'M') + mapX(lo).toFixed(1) + ',' + mapY(la).toFixed(1)).join(' ');
+    gLanes.append(sv('path', { d, fill: 'none', stroke: '#2a78a8', 'stroke-width': 0.9, 'stroke-dasharray': '3 3', opacity: 0.8 }));
+  }
+
+  // zoom controls
+  const zoomBy = f => { const cx = vb.x + vb.w / 2, cy = vb.y + vb.h / 2; vb.w *= f; clampVb(); vb.x = cx - vb.w / 2; vb.y = cy - vb.h / 2; clampVb(); applyVb(); };
+  function applyVb() { svg.setAttribute('viewBox', `${vb.x.toFixed(1)} ${vb.y.toFixed(1)} ${vb.w.toFixed(1)} ${vb.h.toFixed(1)}`); const k = vb.w / MAP_W; gNodes.querySelectorAll('[data-s]').forEach(e => e.setAttribute('transform', `translate(${e.dataset.x},${e.dataset.y}) scale(${k})`)); }
+  mapBox.append(
+    h('div', { class: 'bmap-hud' },
+      h('span', { style: 'color:#ffb000', text: '■ ENERGY' }),
+      h('span', { style: 'color:#ff3b30', text: '● CHOKEPOINTS' }),
+      h('span', { style: 'color:#00d26a', text: '■ METALS' }),
+      h('span', { style: 'color:#4da3ff', text: '■ AGRI' }),
+      h('span', { class: 'mu', text: 'SCROLL: ZOOM • DRAG: PAN' })
+    ),
+    h('div', { class: 'bmap-zoom' },
+      h('button', { text: '+', title: 'Zoom in', onclick: () => zoomBy(0.7) }),
+      h('button', { text: '-', title: 'Zoom out', onclick: () => zoomBy(1.4) }),
+      h('button', { text: '1:1', title: 'Reset', onclick: () => { vb = { x: 0, y: 0, w: MAP_W, h: MAP_H }; applyVb(); } })
+    )
+  );
+  svg.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = svg.getBoundingClientRect();
+    const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+    const f = e.deltaY < 0 ? 0.85 : 1.18;
+    const nx = vb.x + fx * vb.w, ny = vb.y + fy * vb.h;
+    vb.w *= f; clampVb();
+    vb.x = nx - fx * vb.w; vb.y = ny - fy * vb.h; clampVb(); applyVb();
+  }, { passive: false });
+  let drag = null;
+  svg.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y }; svg.setPointerCapture(e.pointerId); });
+  svg.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const r = svg.getBoundingClientRect();
+    vb.x = drag.vx - ((e.clientX - drag.x) / r.width) * vb.w;
+    vb.y = drag.vy - ((e.clientY - drag.y) / r.height) * vb.h;
+    clampVb(); applyVb();
+  });
+  svg.addEventListener('pointerup', () => { drag = null; });
+
+  let qMap = {};
+  const U = () => MAP_W / Math.max(280, mapBox.clientWidth || 600);
+  function renderNodes() {
+    const u = U();
+    gNodes.textContent = '';
+    const sel = NODES.find(n => n.id === selectedId) || NODES[0];
+    for (const n of NODES) {
+      if (filter !== 'ALL' && n.cat !== filter) continue;
+      const x = mapX(n.lon), y = mapY(n.lat), col = CAT[n.cat];
+      const g = sv('g', { 'data-s': '1', 'data-x': x.toFixed(1), 'data-y': y.toFixed(1), transform: `translate(${x.toFixed(1)},${y.toFixed(1)}) scale(${vb.w / MAP_W})`, style: 'cursor:pointer' });
+      g.append(sv('circle', { r: (n.id === sel.id ? 14 : 8) * u, fill: col, opacity: n.id === sel.id ? 0.35 : 0.2 }));
+      g.append(sv('circle', { r: (n.id === sel.id ? 5.5 : 3.8) * u, fill: col, stroke: '#000', 'stroke-width': 0.8 * u }));
+      if (n.cat === 'CHOKEPOINT' || n.id === sel.id) g.append(sv('circle', { r: (n.id === sel.id ? 10 : 8.5) * u, fill: 'none', stroke: n.id === sel.id ? '#fff' : col, 'stroke-width': 1 * u }));
+      const t = sv('text', {
+        x: (n.dx ?? 8) * u,
+        y: (n.dy ?? 3) * u,
+        'text-anchor': n.anc || 'start',
+        fill: n.id === sel.id ? '#fff' : col,
+        'font-size': (n.id === sel.id ? 11.5 : 9) * u,
+        'font-weight': 700,
+        'paint-order': 'stroke',
+        stroke: '#000',
+        'stroke-width': 3 * u
+      });
+      const q = qMap[n.sym];
+      t.textContent = n.id + (n.id === sel.id && q && q.price ? ' ' + fmtPx(q.price) : '');
+      g.append(t);
+      g.addEventListener('click', ev => { ev.stopPropagation(); selectedId = n.id; renderNodes(); renderSide(); });
+      gNodes.append(g);
+    }
+  }
+
+  function renderSide() {
+    side.textContent = '';
+    const n = NODES.find(x => x.id === selectedId) || NODES[0];
+    const q = qMap[n.sym] || {};
+    side.append(
+      h('div', { class: 'bmap-card' },
+        h('div', { class: 'bmap-ttl', style: `color:${CAT[n.cat]}`, text: n.name }),
+        h('div', { class: 'mu', text: `${CAT_LBL[n.cat]}  |  ${n.lat.toFixed(2)}, ${n.lon.toFixed(2)}` }),
+        h('div', { class: 'kv' },
+          h('div', { class: 'k', text: 'Flow' }), h('div', { class: 'v', text: n.flow }),
+          h('div', { class: 'k', text: 'Logistics' }), h('div', { class: 'v', text: n.note }),
+          h('div', { class: 'k', text: 'Status' }), h('div', { class: 'v sym ' + (n.status === 'ALERT' || n.status === 'RISK' ? 'dn' : n.status === 'WATCH' || n.status === 'BUSY' ? 'am' : 'up'), text: n.status }),
+          h('div', { class: 'k', text: n.sym }), h('div', { class: 'v sym ' + dirCls(q.chgPct), text: q.price ? `${fmtPx(q.price)}  ${fmtPct(q.chgPct)}` : 'N/A' })
+        ),
+        h('button', { class: 'on', text: `${n.sym} GP <GO>`, onclick: () => ctx.run(`${n.sym} GP`) })
+      ),
+      h('div', { class: 'bmap-list' }, NODES.filter(x => filter === 'ALL' || x.cat === filter).map(x => {
+        const qq = qMap[x.sym] || {};
+        return h('div', { class: 'bmap-row' + (x.id === selectedId ? ' sel' : ''), onclick: () => { selectedId = x.id; renderNodes(); renderSide(); } },
+          h('i', { style: `background:${CAT[x.cat]}` }),
+          h('span', { class: 'nm', text: x.id }),
+          h('span', { class: 'mu', style: 'font-size:10px', text: qq.price ? fmtPx(qq.price) : x.sym }),
+          h('span', { class: 'px ' + dirCls(qq.chgPct), text: qq.price ? fmtPct(qq.chgPct) : '' }));
+      }))
+    );
+  }
+
+  function renderBar() {
+    tb.textContent = '';
+    tb.append(h('span', { class: 'lbl', text: 'BMAP Commodities Map' }));
+    for (const [k, lbl] of [['ALL', 'ALL'], ['ENERGY', 'ENERGY'], ['CHOKEPOINT', 'CHOKEPOINTS'], ['METALS', 'METALS'], ['AGS', 'AGRI']]) {
+      tb.append(h('button', { class: filter === k ? 'on' : '', text: lbl, onclick: () => { filter = k; renderBar(); renderNodes(); renderSide(); } }));
+    }
+  }
+
+  async function load() {
+    const syms = [...new Set(NODES.map(n => n.sym))].join(',');
+    const env = await get('quote', { symbols: syms }, 6000);
+    ctx.status(env);
+    qMap = {};
+    if (env.ok && Array.isArray(env.data)) env.data.forEach(q => { if (q && q.symbol) qMap[q.symbol] = q; });
+    renderNodes(); renderSide();
+  }
+  renderBar(); renderNodes(); renderSide();
+  if (typeof ResizeObserver !== 'undefined') { const ro = new ResizeObserver(() => renderNodes()); ro.observe(mapBox); ctx.cleanup(() => ro.disconnect()); }
+  load();
+  const iv = setInterval(load, 20000);
+  ctx.cleanup(() => clearInterval(iv));
+}
+
+export function mountFXFC(body, ctx) {
+  body.classList.add('fill');
   const tb = h('div', { class: 'tb' });
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
-  const NODES = [
-    { id: 'CUSHING', name: 'Cushing Crude Hub (Oklahoma, US)', cat: 'ENERGY', sym: 'CL=F', lat: 35.98, lon: -96.76, flow: '78.4M bbl Storage / WTI Delivery Point', status: 'OPERATIONAL', tankers: 'Pipeline Hub (Keystone / Seaway)' },
-    { id: 'BRENT', name: 'North Sea Brent Terminal (Sullom Voe, UK)', cat: 'ENERGY', sym: 'BZ=F', lat: 59.5, lon: -1.3, flow: '1.8M bbl/d BFOET Benchmark', status: 'OPERATIONAL', tankers: '14 Aframax / Suezmax Active' },
-    { id: 'SABINE', name: 'Sabine Pass & Henry Hub LNG (Gulf Coast, US)', cat: 'ENERGY', sym: 'NG=F', lat: 29.7, lon: -93.8, flow: '4.7 Bcf/d LNG Feedgas Export', status: 'FULL CAPACITY', tankers: '21 LNG Carriers Queued' },
-    { id: 'HORMUZ', name: 'Strait of Hormuz (Persian Gulf Chokepoint)', cat: 'CHOKEPOINT', sym: 'BZ=F', lat: 26.5, lon: 56.2, flow: '20.9M bbl/d Crude & Condensate (~21% Global)', status: 'ELEVATED RISK', tankers: '42 VLCC Supertankers Transiting' },
-    { id: 'MALACCA', name: 'Strait of Malacca (Indonesia / Singapore / Malaysia)', cat: 'CHOKEPOINT', sym: 'BZ=F', lat: 2.5, lon: 101.8, flow: '23.7M bbl/d APAC Energy Lifeline', status: 'HIGH TRAFFIC', tankers: '68 VLCC & LNG Vessels Active' },
-    { id: 'SUEZ', name: 'Suez Canal & Bab el-Mandeb (Red Sea Corridor)', cat: 'CHOKEPOINT', sym: 'CL=F', lat: 29.9, lon: 32.5, flow: '8.8M bbl/d (Cape of Good Hope Diverted)', status: 'HIGH ALERT', tankers: '31 Tankers Rerouted (+12 Days)' },
-    { id: 'PANAMA', name: 'Panama Canal (Americas — Pacific LNG/Grain Corridor)', cat: 'CHOKEPOINT', sym: 'NG=F', lat: 9.1, lon: -79.7, flow: '2.6M bbl/d Products & US Gulf Grain', status: 'NORMAL', tankers: '34 Neopanamax Daily Slots' },
-    { id: 'GRASBERG', name: 'Grasberg Gold & Copper Complex (Papua, Indonesia)', cat: 'METALS', sym: 'GC=F', lat: -4.05, lon: 137.11, flow: '1.6B lbs Cu + 1.8M oz Au Annual Output', status: 'OPERATIONAL', tankers: 'Amamapare Port Concentrate Export' },
-    { id: 'COMEX', name: 'COMEX / NYMEX Bullion & Metals Vaults (New York)', cat: 'METALS', sym: 'GC=F', lat: 40.71, lon: -74.0, flow: '18.2M oz Registered Gold / 290M oz Silver', status: 'OPERATIONAL', tankers: 'T+1 Physical Bullion Settlement' },
-    { id: 'ESCONDIDA', name: 'Escondida Copper Mine (Atacama Desert, Chile)', cat: 'METALS', sym: 'HG=F', lat: -24.26, lon: -69.07, flow: '1.1M Metric Tons Copper Cathode/Concentrate', status: 'OPERATIONAL', tankers: 'Coloso Port Bulk Ore Terminal' },
-    { id: 'RAND', name: 'Witwatersrand & Bushveld PGM/Gold Belt (South Africa)', cat: 'METALS', sym: 'SI=F', lat: -26.2, lon: 28.0, flow: '72% Global Platinum + Deep-Level Gold', status: 'OPERATIONAL', tankers: 'Durban / Richards Bay Export' },
-    { id: 'CORNBELT', name: 'US Midwest Grain & CBOT Delivery Hub (Chicago/Iowa)', cat: 'AGS', sym: 'ZC=F', lat: 41.8, lon: -89.5, flow: '385M MT Corn + 115M MT Soybean Harvest', status: 'PEAK FLOW', tankers: 'Mississippi Barge -> New Orleans' },
-    { id: 'BLACKSEA', name: 'Black Sea & Bosporus Grain Corridor (Odessa/Istanbul)', cat: 'AGS', sym: 'ZW=F', lat: 43.2, lon: 31.0, flow: '48M MT Wheat & Corn Maritime Export', status: 'MONITORED', tankers: '19 Panamax Bulk Carriers' },
-    { id: 'MATO', name: 'Mato Grosso & Santos Ag Export Hub (Brazil)', cat: 'AGS', sym: 'ZS=F', lat: -15.5, lon: -55.0, flow: '158M MT Soybean #1 Global Exporter', status: 'PEAK FLOW', tankers: '44 Panamax Bulk Vessels at Santos' }
+  const RATES = { USD: 4.33, EUR: 2.65, GBP: 4.50, JPY: 0.50, CHF: 0.50, AUD: 4.10, SGD: 2.75, IDR: 5.75, CNH: 2.15 };
+  const TENORS = [
+    ['O/N', 1 / 365], ['1W', 7 / 365], ['1M', 30 / 365], ['2M', 60 / 365],
+    ['3M', 91 / 365], ['6M', 182 / 365], ['9M', 273 / 365], ['1Y', 1], ['2Y', 2]
   ];
+  const PAIRS = ['EURUSD=X', 'USDJPY=X', 'GBPUSD=X', 'USDIDR=X', 'AUDUSD=X', 'USDSGD=X', 'USDCHF=X'];
+
+  let activePair = PAIRS.includes(ctx.symbol) ? ctx.symbol : 'USDIDR=X';
+  let notional = 1000000;
 
   async function load() {
-    const syms = [...new Set(NODES.map(n => n.sym))].join(',');
-    const qEnv = await get('quote', { symbols: syms }, 6000);
-    ctx.status(qEnv);
-    const qMap = {};
-    if (qEnv.ok && Array.isArray(qEnv.data)) {
-      qEnv.data.forEach(q => { if (q && q.symbol) qMap[q.symbol] = q; });
-    }
-
     tb.textContent = '';
+    const nInp = h('input', { value: String(notional), style: 'width:90px', title: 'Notional Base Amount' });
     tb.append(
-      h('span', { class: 'lbl', text: '90) Actions  |  BMAP — Global Commodity, Mine, Tanker & Chokepoint Map:' }),
-      ...[['ALL', 'ALL GLOBAL NODES (14)'], ['ENERGY', 'OIL & LNG HUBS'], ['CHOKEPOINT', 'MARITIME CHOKEPOINTS'], ['METALS', 'GOLD/COPPER MINES'], ['AGS', 'AGRICULTURE CORRIDORS']].map(([k, lbl]) =>
-        h('button', { class: filter === k ? 'on' : '', text: lbl, onclick: () => { filter = k; load(); } })
-      )
+      h('span', { class: 'lbl', text: 'FXFC FORWARD CALCULATOR:' }),
+      ...PAIRS.map(p => h('button', { class: activePair === p ? 'on' : '', text: p.replace('=X', ''), onclick: () => { activePair = p; load(); } })),
+      h('span', { class: 'lbl', text: 'NOTIONAL:' }),
+      nInp
     );
 
+    const env = await get('quote', { symbols: PAIRS.join(',') }, 6000);
+    ctx.status(env);
     sc.textContent = '';
-    const visible = NODES.filter(n => filter === 'ALL' || n.cat === filter);
-    const selNode = NODES.find(n => n.id === selectedId) || visible[0] || NODES[0];
-    const selQ = qMap[selNode.sym] || {};
+    const qMap = {};
+    if (env.ok && Array.isArray(env.data)) env.data.forEach(q => { if (q && q.symbol) qMap[q.symbol] = q; });
+    const q = qMap[activePair] || {};
+    const raw = activePair.replace('=X', '');
+    const base = raw.slice(0, 3), quote = raw.slice(3, 6);
+    const fallbacks = { EURUSD: 1.085, USDJPY: 153.2, GBPUSD: 1.292, USDIDR: 17968, AUDUSD: 0.658, USDSGD: 1.335, USDCHF: 0.878 };
+    const spot = q.price || fallbacks[raw] || 1.0;
+    const rB = RATES[base] ?? 4.0, rQ = RATES[quote] ?? 3.5;
+    const isLarge = quote === 'JPY' || quote === 'IDR';
+    const pipMult = quote === 'IDR' ? 1 : quote === 'JPY' ? 100 : 10000;
+    const dp = quote === 'IDR' ? 0 : quote === 'JPY' ? 2 : 4;
 
-    // Interactive SVG World Geospatial Map (800 x 235)
-    const ns = 'http://www.w3.org/2000/svg';
-    const W = 800, H = 235;
-    const svg = document.createElementNS(ns, 'svg');
-    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-    svg.setAttribute('preserveAspectRatio', 'none');
-    svg.style.cssText = 'width:100%;height:235px;display:block;background:#02060d;border-bottom:1px solid var(--border)';
+    const rows = TENORS.map(([tn, yr]) => {
+      const fwd = spot * ((1 + (rQ / 100) * yr) / (1 + (rB / 100) * yr));
+      const pts = (fwd - spot) * pipMult;
+      const annCarry = ((fwd - spot) / spot / yr) * 100;
+      return { tn, yr, fwd, pts, annCarry, pnl: (fwd - spot) * (parseFloat(nInp.value) || notional) };
+    });
 
-    const projX = lon => ((lon + 180) / 360) * W;
-    const projY = lat => ((90 - lat) / 180) * H;
+    nInp.oninput = () => { notional = parseFloat(nInp.value) || 0; renderCurveAndTable(); };
 
-    // Graticule grid lines
-    for (let lon = -150; lon <= 150; lon += 30) {
-      const l = document.createElementNS(ns, 'line');
-      const x = projX(lon);
-      l.setAttribute('x1', x); l.setAttribute('y1', 0); l.setAttribute('x2', x); l.setAttribute('y2', H);
-      l.setAttribute('stroke', lon === 0 ? '#16283e' : '#0a1420');
-      svg.append(l);
-    }
-    for (let lat = -60; lat <= 60; lat += 30) {
-      const l = document.createElementNS(ns, 'line');
-      const y = projY(lat);
-      l.setAttribute('x1', 0); l.setAttribute('y1', y); l.setAttribute('x2', W); l.setAttribute('y2', y);
-      l.setAttribute('stroke', lat === 0 ? '#16283e' : '#0a1420');
-      svg.append(l);
-    }
-
-    // Simplified Continental Polygons (Geospatial Silhouette)
-    const continents = [
-      // North America
-      'M 55,28 L 195,25 L 245,65 L 205,102 L 165,112 L 115,92 L 60,55 Z',
-      // South America
-      'M 215,118 L 285,128 L 298,162 L 265,212 L 238,210 L 222,158 Z',
-      // Europe
-      'M 365,34 L 465,28 L 485,62 L 435,76 L 372,72 Z',
-      // Africa
-      'M 362,80 L 455,80 L 485,120 L 455,186 L 415,188 L 385,132 L 358,105 Z',
-      // Asia & Middle East
-      'M 468,30 L 695,28 L 725,75 L 665,118 L 595,122 L 535,108 L 472,95 Z',
-      // Maritime SE Asia / Indonesia Archipelago
-      'M 615,118 L 698,122 L 712,138 L 625,136 Z',
-      // Australia
-      'M 642,152 L 732,150 L 738,195 L 655,195 Z'
-    ];
-    for (const d of continents) {
-      const p = document.createElementNS(ns, 'path');
-      p.setAttribute('d', d);
-      p.setAttribute('fill', '#0d1b2a');
-      p.setAttribute('stroke', '#1f3a52');
-      p.setAttribute('stroke-width', '1');
-      svg.append(p);
-    }
-
-    // Major Maritime Commodity Shipping Corridors
-    const lanes = [
-      [[56.2, 26.5], [101.8, 2.5], [122.0, 30.0]], // Hormuz -> Malacca -> East Asia
-      [[56.2, 26.5], [32.5, 29.9], [5.0, 38.0]],   // Hormuz -> Suez -> Med
-      [[-93.8, 29.7], [-79.7, 9.1], [135.0, 34.0]], // US Gulf -> Panama -> Asia
-      [[-93.8, 29.7], [-1.3, 59.5]]                 // US Gulf -> North Sea/Europe
-    ];
-    for (const pts of lanes) {
-      const pl = document.createElementNS(ns, 'polyline');
-      pl.setAttribute('fill', 'none');
-      pl.setAttribute('stroke', '#19527a');
-      pl.setAttribute('stroke-width', '1.3');
-      pl.setAttribute('stroke-dasharray', '4,3');
-      pl.setAttribute('points', pts.map(([lo, la]) => `${projX(lo).toFixed(1)},${projY(la).toFixed(1)}`).join(' '));
-      svg.append(pl);
-    }
-
-    const catColor = { ENERGY: '#ffb000', CHOKEPOINT: '#ff3b30', METALS: '#00d26a', AGS: '#4da3ff' };
-
-    for (const n of visible) {
-      const x = projX(n.lon), y = projY(n.lat);
-      const col = catColor[n.cat] || '#ffb000';
-      const isSel = n.id === selNode.id;
-      const g = document.createElementNS(ns, 'g');
-      g.style.cursor = 'pointer';
-      g.onclick = () => { selectedId = n.id; load(); };
-
-      if (isSel || n.cat === 'CHOKEPOINT') {
-        const ring = document.createElementNS(ns, 'circle');
-        ring.setAttribute('cx', x.toFixed(1)); ring.setAttribute('cy', y.toFixed(1));
-        ring.setAttribute('r', isSel ? '10' : '7');
-        ring.setAttribute('fill', 'none'); ring.setAttribute('stroke', col); ring.setAttribute('stroke-width', isSel ? '1.8' : '1');
-        g.append(ring);
-      }
-      const dot = document.createElementNS(ns, 'circle');
-      dot.setAttribute('cx', x.toFixed(1)); dot.setAttribute('cy', y.toFixed(1));
-      dot.setAttribute('r', isSel ? '5' : '3.8');
-      dot.setAttribute('fill', col);
-      g.append(dot);
-
-      const lbl = document.createElementNS(ns, 'text');
-      lbl.setAttribute('x', (x + 7).toFixed(1)); lbl.setAttribute('y', (y + 3).toFixed(1));
-      lbl.setAttribute('fill', isSel ? '#ffffff' : col);
-      lbl.setAttribute('font-size', isSel ? '10' : '8.8');
-      lbl.setAttribute('font-weight', 'bold');
-      const q = qMap[n.sym];
-      lbl.textContent = `${n.id} ${q && q.price ? '(' + fmtPx(q.price) + ')' : ''}`;
-      g.append(lbl);
-      svg.append(g);
-    }
-
-    // Selected Node Telemetry Bar
-    const inspector = h('div', { class: 'kv', style: 'background:#070a10;border-bottom:1px solid var(--border);padding:6px 8px' },
-      h('div', { class: 'k', text: 'SELECTED BMAP NODE' }),
-      h('div', { class: 'v am sym', text: `${selNode.name} [${selNode.cat}] — Coordinates: ${selNode.lat.toFixed(2)}°, ${selNode.lon.toFixed(2)}°` }),
-      h('div', { class: 'k', text: 'PHYSICAL FLOW & CAPACITY' }),
-      h('div', { class: 'v lb', text: `${selNode.flow}  |  Vessels/Logistics: ${selNode.tankers}` }),
-      h('div', { class: 'k', text: `BENCHMARK CONTRACT (${selNode.sym})` }),
-      h('div', { class: 'v sym ' + dirCls(selQ.chgPct), style: 'display:flex;gap:10px;align-items:center' },
-        h('span', { text: selQ.price ? `${fmtPx(selQ.price)} (${fmtPct(selQ.chgPct)})` : 'LIVE BENCHMARK' }),
-        h('button', { class: 'on', text: `OPEN ${selNode.sym} GP <GO>`, onclick: () => ctx.run(`${selNode.sym} GP`) })
-      )
-    );
-
-    const tbl = h('table', { class: 't' },
-      h('thead', null, h('tr', null, ['Node ID', 'Category', 'Global Hub / Chokepoint / Mine', 'Benchmark', 'Live Price', '1D %', 'Physical Throughput / Tankers', 'Status'].map(x => h('th', { text: x })))),
-      h('tbody', null, visible.map(n => {
-        const q = qMap[n.sym] || {};
-        return h('tr', {
-          class: 'row',
-          style: n.id === selNode.id ? 'background:#1c1400' : '',
-          onclick: () => { selectedId = n.id; load(); }
-        },
-          h('td', { class: 'l sym am', text: n.id }),
-          h('td', { class: 'l lb', text: n.cat }),
-          h('td', { class: 'l', style: 'color:#fff', text: n.name }),
-          h('td', { class: 'l sym lb', text: n.sym }),
-          h('td', { class: 'am sym', text: q.price ? fmtPx(q.price) : '-' }),
-          h('td', { class: dirCls(q.chgPct) + ' sym', text: q.chgPct != null ? fmtPct(q.chgPct) : '-' }),
-          h('td', { class: 'l mu', text: n.flow }),
-          h('td', { class: 'l sym ' + (n.status.includes('ALERT') || n.status.includes('RISK') ? 'dn' : 'up'), text: n.status })
-        );
-      }))
-    );
-
+    const wrap = h('div');
     sc.append(
-      h('div', { class: 'tb', style: 'background:#05080f;gap:14px;font-size:10.5px' },
-        h('span', { style: 'color:#ffb000;font-weight:bold', text: '● ENERGY & LNG HUBS' }),
-        h('span', { style: 'color:#ff3b30;font-weight:bold', text: '◎ MARITIME CHOKEPOINTS (HORMUZ / MALACCA / SUEZ / PANAMA)' }),
-        h('span', { style: 'color:#00d26a;font-weight:bold', text: '● GOLD / COPPER MINES (GRASBERG / ESCONDIDA / COMEX)' }),
-        h('span', { style: 'color:#4da3ff;font-weight:bold', text: '● AGRICULTURAL EXPORT CORRIDORS' })
+      h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border)' },
+        h('div', { class: 'k', text: 'CURRENCY PAIR' }), h('div', { class: 'v am sym', text: `${base}/${quote}  •  SPOT: ${fmtNum(spot, dp)} (${q.mode || 'LIVE'})` }),
+        h('div', { class: 'k', text: 'INTEREST DIFFERENTIAL' }), h('div', { class: 'v lb', text: `${base} ${rB.toFixed(2)}% vs ${quote} ${rQ.toFixed(2)}%  (Spread: ${(rQ - rB >= 0 ? '+' : '') + (rQ - rB).toFixed(2)}%)` }),
+        h('div', { class: 'k', text: 'CIP IMPLIED CURVE' }), h('div', { class: 'v ' + (rQ >= rB ? 'up' : 'dn') + ' sym', text: `${rQ >= rB ? 'FORWARD PREMIUM' : 'FORWARD DISCOUNT'} • 1Y OUTRIGHT: ${fmtNum(rows[7].fwd, dp)}` })
       ),
-      svg,
-      inspector,
-      tbl
+      wrap
     );
-  }
 
+    function renderCurveAndTable() {
+      wrap.textContent = '';
+      const amt = parseFloat(nInp.value) || 0;
+      const W = 520, H = 120, pad = 28;
+      const vals = rows.map(r => r.fwd);
+      const min = Math.min(...vals, spot), max = Math.max(...vals, spot);
+      const span = (max - min) || (spot * 0.001);
+      const ptsSvg = rows.map((r, i) => {
+        const x = pad + (i / (rows.length - 1)) * (W - 2 * pad);
+        const y = H - 20 - ((r.fwd - min) / span) * (H - 36);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+
+      const ns = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(ns, 'svg');
+      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+      svg.style.cssText = 'width:100%;height:125px;background:#040404;border-bottom:1px solid var(--border);display:block';
+      const poly = document.createElementNS(ns, 'polyline');
+      poly.setAttribute('fill', 'none');
+      poly.setAttribute('stroke', '#ffb000');
+      poly.setAttribute('stroke-width', '2');
+      poly.setAttribute('points', ptsSvg);
+      svg.append(poly);
+      rows.forEach((r, i) => {
+        const x = pad + (i / (rows.length - 1)) * (W - 2 * pad);
+        const y = H - 20 - ((r.fwd - min) / span) * (H - 36);
+        const c = document.createElementNS(ns, 'circle');
+        c.setAttribute('cx', x); c.setAttribute('cy', y); c.setAttribute('r', '3'); c.setAttribute('fill', '#4da3ff');
+        const tx = document.createElementNS(ns, 'text');
+        tx.setAttribute('x', x); tx.setAttribute('y', H - 5); tx.setAttribute('text-anchor', 'middle');
+        tx.setAttribute('fill', '#8a8a8a'); tx.setAttribute('font-size', '9');
+        tx.textContent = r.tn;
+        svg.append(c, tx);
+      });
+
+      wrap.append(
+        svg,
+        h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Tenor', 'Years', 'Bid Fwd', 'Ask Fwd', 'Fwd Pts', 'Implied Yield', 'Hedging Cost/Benefit'].map(x => h('th', { text: x })))),
+          h('tbody', null, rows.map(r => {
+            const sprd = isLarge ? (quote === 'IDR' ? 12 : 0.03) : 0.0003;
+            const deltaAmt = (r.fwd - spot) * amt;
+            return h('tr', { class: 'row' },
+              h('td', { class: 'l sym lb', text: r.tn }),
+              h('td', { class: 'mu', text: r.yr.toFixed(2) + 'y' }),
+              h('td', { class: 'am', text: fmtNum(r.fwd - sprd / 2, dp) }),
+              h('td', { class: 'am sym', text: fmtNum(r.fwd + sprd / 2, dp) }),
+              h('td', { class: (r.pts >= 0 ? 'up' : 'dn') + ' sym', text: (r.pts >= 0 ? '+' : '') + fmtNum(r.pts, 1) }),
+              h('td', { class: r.annCarry >= 0 ? 'up' : 'dn', text: fmtPct(r.annCarry) }),
+              h('td', { class: deltaAmt >= 0 ? 'up' : 'dn', text: `${deltaAmt >= 0 ? '+' : '-'}${fmtVol(Math.abs(deltaAmt))} ${quote}` })
+            );
+          }))
+        )
+      );
+    }
+    renderCurveAndTable();
+  }
   load();
 }
+
+export function mountFUT(body, ctx) {
+  body.classList.add('fill');
+  const tb = h('div', { class: 'tb' });
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  const CURVES = [
+    { sym: 'CL=F', name: 'WTI Crude Oil (NYMEX)', unit: '$/bbl', slope: -0.042, shape: 'BACKWARDATION' },
+    { sym: 'BZ=F', name: 'Brent Crude Oil (ICE)', unit: '$/bbl', slope: -0.038, shape: 'BACKWARDATION' },
+    { sym: 'GC=F', name: 'COMEX Gold Futures', unit: '$/oz', slope: 0.046, shape: 'CONTANGO' },
+    { sym: 'NG=F', name: 'Henry Hub NatGas', unit: '$/MMBtu', slope: 0.145, shape: 'SEASONAL CONTANGO' },
+    { sym: 'HG=F', name: 'COMEX Copper', unit: '$/lb', slope: 0.031, shape: 'CONTANGO' },
+    { sym: 'BTCUSDT', name: 'CME/Binance BTC Futures', unit: '$', slope: 0.092, shape: 'CONTANGO' }
+  ];
+  let active = CURVES.find(c => c.sym === ctx.symbol) ? ctx.symbol : 'CL=F';
+
+  async function load() {
+    tb.textContent = '';
+    tb.append(
+      h('span', { class: 'lbl', text: 'FUT TERM STRUCTURE:' }),
+      ...CURVES.map(c => h('button', { class: active === c.sym ? 'on' : '', text: c.sym.replace('=F', ''), onclick: () => { active = c.sym; load(); } })),
+      h('button', { text: 'BMAP <GO>', onclick: () => ctx.run(`${active} BMAP`) })
+    );
+    const env = await get('quote', { symbols: CURVES.map(c => c.sym).join(',') }, 6000);
+    ctx.status(env);
+    sc.textContent = '';
+    const qMap = {};
+    if (env.ok && Array.isArray(env.data)) env.data.forEach(q => { if (q && q.symbol) qMap[q.symbol] = q; });
+    const cfg = CURVES.find(c => c.sym === active) || CURVES[0];
+    const q = qMap[active] || {};
+    const fallbacks = { 'CL=F': 70.5, 'BZ=F': 74.2, 'GC=F': 2685, 'NG=F': 2.85, 'HG=F': 4.35, BTCUSDT: 89500 };
+    const front = q.price || fallbacks[active] || 100;
+
+    const months = ['M1 (FRONT)', 'M2', 'M3', 'M4', 'M5', 'M6', 'M8', 'M10', 'M12 (+1Y)'];
+    const tenors = [1, 2, 3, 4, 5, 6, 8, 10, 12];
+    const pts = tenors.map((m, i) => {
+      const yrs = (m - 1) / 12;
+      const wave = active === 'NG=F' ? Math.sin(m * 0.55) * 0.04 : Math.sin(m * 0.25) * 0.002;
+      const px = front * (1 + cfg.slope * yrs + wave);
+      const spread = px - front;
+      const roll = ((px - front) / front) * 100;
+      return { lbl: months[i], m, px, spread, roll, oi: Math.round(185000 / Math.pow(m, 0.72)) };
+    });
+
+    const W = 520, H = 135, pad = 34;
+    const vals = pts.map(p => p.px);
+    const min = Math.min(...vals), max = Math.max(...vals), span = (max - min) || 1;
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.style.cssText = 'width:100%;height:135px;background:#040404;border-bottom:1px solid var(--border);display:block';
+    const poly = document.createElementNS(ns, 'polyline');
+    poly.setAttribute('fill', 'none');
+    poly.setAttribute('stroke', cfg.slope < 0 ? '#00d26a' : '#ffb000');
+    poly.setAttribute('stroke-width', '2.2');
+    poly.setAttribute('points', pts.map((p, i) => {
+      const x = pad + (i / (pts.length - 1)) * (W - 2 * pad);
+      const y = H - 22 - ((p.px - min) / span) * (H - 42);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' '));
+    svg.append(poly);
+    pts.forEach((p, i) => {
+      const x = pad + (i / (pts.length - 1)) * (W - 2 * pad);
+      const y = H - 22 - ((p.px - min) / span) * (H - 42);
+      const dot = document.createElementNS(ns, 'circle');
+      dot.setAttribute('cx', x); dot.setAttribute('cy', y); dot.setAttribute('r', '3.2'); dot.setAttribute('fill', '#4da3ff');
+      const lbl = document.createElementNS(ns, 'text');
+      lbl.setAttribute('x', x); lbl.setAttribute('y', H - 6); lbl.setAttribute('text-anchor', 'middle');
+      lbl.setAttribute('fill', '#8a8a8a'); lbl.setAttribute('font-size', '9');
+      lbl.textContent = `M${p.m}`;
+      svg.append(dot, lbl);
+    });
+
+    sc.append(
+      h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border)' },
+        h('div', { class: 'k', text: 'CONTRACT' }), h('div', { class: 'v am sym', text: `${cfg.name} (${cfg.sym})  •  FRONT: ${fmtPx(front)} ${cfg.unit}` }),
+        h('div', { class: 'k', text: 'CURVE REGIME' }), h('div', { class: 'v ' + (cfg.slope < 0 ? 'up' : 'am') + ' sym', text: `${cfg.shape}  (M1-M12 SPREAD: ${fmtChg(pts[pts.length - 1].spread)} / ${fmtPct(pts[pts.length - 1].roll)})` })
+      ),
+      svg,
+      h('table', { class: 't' },
+        h('thead', null, h('tr', null, ['Delivery', 'Contract Px', 'Spread vs M1', 'Basis %', 'Est Open Int'].map(x => h('th', { text: x })))),
+        h('tbody', null, pts.map(p => h('tr', { class: 'row' },
+          h('td', { class: 'l sym lb', text: p.lbl }),
+          h('td', { class: 'am sym', text: fmtPx(p.px) }),
+          h('td', { class: dirCls(p.spread), text: fmtChg(p.spread) }),
+          h('td', { class: dirCls(p.roll), text: fmtPct(p.roll) }),
+          h('td', { class: 'mu', text: fmtVol(p.oi) })
+        )))
+      )
+    );
+  }
+  load();
+}
+

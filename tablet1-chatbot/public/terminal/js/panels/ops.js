@@ -1137,4 +1137,53 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
   sync();
 }
 
+export function mountBLP(body, ctx, opts = {}) {
+  body.classList.add('fill');
+  const workspaces = opts.workspaces || {};
+  const names = Object.keys(workspaces);
+  const tb = h('div', { class: 'tb' },
+    h('span', { class: 'lbl', text: `BLP - BLOOMBERG LAUNCHPAD WORKSPACE MANAGER (${names.length} PRESETS)` }),
+    h('button', { class: 'on', text: 'SAVE CURRENT DESK TO BROWSER', onclick: () => {
+      const cur = LS.get('bbg_active_panes_v4', []);
+      LS.set('bbg_custom_launchpad_v1', cur);
+      render();
+    } })
+  );
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  function render() {
+    ctx.status({ source: 'launchpad-blp', ts: Date.now(), mode: 'LIVE' });
+    sc.textContent = '';
+    const saved = LS.get('bbg_custom_launchpad_v1', null);
+    const cards = h('div', { class: 'split2', style: 'padding:6px' });
+
+    const makeCard = (title, panesList, badge) => h('div', { style: 'border:1px solid var(--border);background:#060606;padding:6px 8px;display:flex;flex-direction:column;gap:4px' },
+      h('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:6px' },
+        h('span', { class: 'am sym', text: title }),
+        h('span', { class: 'badge LIVE', text: badge })
+      ),
+      h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:3px;font-size:11px' },
+        panesList.map((p, idx) => h('div', { style: 'border:1px solid #1d1d1d;padding:2px 5px;background:#0a0a0a' },
+          h('span', { class: 'mu', text: `${idx + 1}-BBG ` }),
+          h('span', { class: 'lb sym', text: `${p.symbol} ${p.fn}` })
+        ))
+      ),
+      h('button', { class: 'on', style: 'margin-top:2px', text: `LAUNCH "${title}" <GO>`, onclick: () => {
+        if (typeof opts.onLaunch === 'function') opts.onLaunch(title, panesList);
+      } })
+    );
+
+    if (Array.isArray(saved) && saved.length === 4) {
+      cards.append(makeCard('CUSTOM SAVED DESK', saved, 'SAVED'));
+    }
+    for (const k of names) {
+      cards.append(makeCard(k, workspaces[k], 'PRESET'));
+    }
+    sc.append(cards);
+  }
+  render();
+}
+
+
 
