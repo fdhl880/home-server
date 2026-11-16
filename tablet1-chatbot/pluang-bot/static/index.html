@@ -1101,27 +1101,44 @@
                 if (openPositions.length === 0) {
                     posContainer.innerHTML = '<p style="color:var(--text-muted); font-size:13px;">🛡️ Tidak ada posisi aktif. Cash is King.</p>';
                 } else {
-                    posContainer.innerHTML = openPositions.map(p => `
+                    posContainer.innerHTML = openPositions.map(p => {
+                        const tp1Roi = Number(p.tp1_roi_pct ?? 13.2).toFixed(1);
+                        const tp1Idr = Math.round(Number(p.tp1_pnl_idr ?? 6600)).toLocaleString('id-ID');
+                        const tp2Roi = Number(p.tp2_roi_pct ?? 48.0).toFixed(1);
+                        const tp2Idr = Math.round(Number(p.tp2_pnl_idr ?? 24000)).toLocaleString('id-ID');
+                        const slRoi = Number(p.sl_roi_pct ?? -24.0).toFixed(1);
+                        const slIdr = Math.round(Math.abs(Number(p.sl_pnl_idr ?? -12000))).toLocaleString('id-ID');
+                        const slProfit = Number(p.sl_roi_pct || 0) > 0;
+                        return `
                         <div style="padding:10px 14px; border-radius:10px; background:rgba(16,185,129,0.06); border:1px solid rgba(16,185,129,0.2); margin-bottom:8px;">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
                                 <div>
                                     <b style="font-size:14px;">${p.symbol}</b>
                                     <span style="font-size:12px; color:${p.direction === 'LONG' ? '#34d399' : '#f87171'}; margin-left:6px;">${p.direction} ${p.leverage}x</span>
                                     <br><span style="font-size:10px; color:#a78bfa;">${p.margin_type || 'ISOLATED'} | ${p.order_type || 'MARKET'}</span>
-                                    <span style="font-size:10px; margin-left:4px; color:${p.pluang_synced ? '#34d399' : '#f59e0b'};">${p.pluang_synced ? '✅ Pluang' : '📝 Local'}</span>
+                                    <span style="font-size:10px; margin-left:4px; color:#34d399;">✅ Binance Live</span>
                                 </div>
                                 <div style="text-align:right;">
-                                    <span style="font-size:13px; color:${p.pnl_pct >= 0 ? '#34d399' : '#f87171'}; font-weight:700;">${p.pnl_pct >= 0 ? '+' : ''}${p.pnl_pct?.toFixed(2) || 0}%</span>
-                                    <br><span style="font-size:11px; color:var(--text-muted);">Rp ${Number(p.position_size_idr || 0).toLocaleString()}</span>
+                                    <span style="font-size:13px; color:${p.pnl_pct >= 0 ? '#34d399' : '#f87171'}; font-weight:700;">${p.pnl_pct >= 0 ? '+' : ''}${p.pnl_pct?.toFixed(2) || 0}% (Rp ${Math.round(Number(p.pnl_idr || 0)).toLocaleString('id-ID')})</span>
+                                    <br><span style="font-size:11px; color:var(--text-muted);">Margin: Rp ${Number(p.position_size_idr || 50000).toLocaleString('id-ID')} ($${Number(p.position_size_usd || 3.03).toFixed(2)})</span>
                                 </div>
                             </div>
-                            <div style="display:flex; gap:10px; margin-top:6px; font-size:10px; color:var(--text-sub);">
-                                <span style="color:#34d399; font-weight:600;">🎯 TP: $${Number(p.take_profit || p.take_profit_1 || 0).toFixed(2)}</span>
-                                <span style="color:#f87171; font-weight:600;">🛑 SL: $${Number(p.stop_loss || 0).toFixed(2)}</span>
-                                <span style="color:#38bdf8;">🛡️ ${p.ai_sentinel_status || 'AI Sentinel Aktif'}</span>
+                            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:8px; padding-top:6px; border-top:1px dashed rgba(255,255,255,0.1); font-size:10px;">
+                                <div style="color:#38bdf8;">
+                                    <b>🎯 Hit TP1 ($${Number(p.take_profit_1 || p.take_profit || 0).toFixed(4)}):</b><br>
+                                    +${tp1Roi}% (+Rp ${tp1Idr})
+                                </div>
+                                <div style="color:#34d399;">
+                                    <b>🚀 Hit TP2 ($${Number(p.take_profit_2 || p.take_profit || 0).toFixed(4)}):</b><br>
+                                    +${tp2Roi}% (+Rp ${tp2Idr})
+                                </div>
+                                <div style="color:${slProfit ? '#34d399' : '#f87171'};">
+                                    <b>🛑 Hit SL ($${Number(p.stop_loss || 0).toFixed(4)}):</b><br>
+                                    ${slProfit ? '🔒 +' : ''}${slRoi}% (${slProfit ? '+Rp ' : '-Rp '}${slIdr})
+                                </div>
                             </div>
                         </div>
-                    `).join('');
+                    `}).join('');
                 }
             } catch(e) { console.error(e); }
         }

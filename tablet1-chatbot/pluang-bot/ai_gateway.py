@@ -343,8 +343,10 @@ class AIGateway:
             "chat_url": "https://api.groq.com/openai/v1/chat/completions",
             "models_url": "https://api.groq.com/openai/v1/models",
             "default_models": [
+                "llama-3.3-70b-versatile",
+                "qwen/qwen3-32b",
+                "deepseek-r1-distill-llama-70b",
                 "openai/gpt-oss-120b",
-                "qwen/qwen3.8-27b",
                 "openai/gpt-oss-20b",
             ],
             "tpd_limit": DEFAULT_GROQ_TPD_LIMIT,
@@ -438,12 +440,16 @@ class AIGateway:
                 if raw:
                     for part in raw.split(","):
                         clean = part.strip().strip('"').strip("'")
+                        if p == "gemini" and clean.startswith("AQ."):
+                            continue
                         if clean and clean not in collected:
                             collected.append(clean)
             # Also check numbered keys like GROQ_API_KEY_1, GROQ_API_KEY_2, etc.
             base_env = cfg["env_keys"][-1]
             for idx in range(1, 10):
                 numbered = os.environ.get(f"{base_env}_{idx}", "").strip().strip('"').strip("'")
+                if p == "gemini" and numbered.startswith("AQ."):
+                    continue
                 if numbered and numbered not in collected:
                     collected.append(numbered)
             pool[p] = collected
@@ -901,3 +907,142 @@ class AIGateway:
         with self._lock:
             self._ensure_utc_day_current()
             return json.loads(json.dumps(self.ledger))
+
+    def call_text(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        max_tokens: int = 1200,
+        temperature: float = 0.1,
+        is_json: bool = True,
+    ) -> str:
+        """
+        General-purpose multi-key token-aware AI call for pipeline.py & multi_agent_committee.py.
+        Strips <think>...</think> tags when is_json=True and rotates across all configured keys/models.
+        """
+        routes = self._build_candidate_routes(estimated_tokens=max(400, min(max_tokens, 1500)))
+        if not routes:
+            raise RuntimeError("ALL_AI_FAILED:0:No active AI routes available in AIGateway")
+
+        eff_sys = system_prompt or "You are an institutional quantitative trading strategist."
+        if is_json and "json" not in (eff_sys.lower() + (prompt or "").lower()):
+            eff_sys = f"{eff_sys}\nRespond strictly in valid JSON format."
+
+        last_err = "No route succeeded"
+        tried: List[str] = []
+        for provider, model, api_key in routes:
+            if not self.is_bucket_available(provider, model, api_key, estimated_tokens=600):
+                continue
+            tried.append(f"{provider}/{model}")
+            try:
+                if is_json:
+                    status_code, raw_text, resp_headers, tokens_used = self._invoke_provider_http(
+                        provider=provider,
+                        model=model,
+                        api_key=api_key,
+                        system_prompt=eff_sys,
+                        user_prompt=prompt,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                else:
+                    # Plain text / non-JSON call
+                    url = (
+                        self.PROVIDER_CONFIGS["gemini"]["chat_url_template"].format(model=model)
+                        if provider == "gemini"
+                        else self.PROVIDER_CONFIGS[provider]["chat_url"]
+                    )
+                    headers = {
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "User-Agent": MANDATORY_USER_AGENT,
+                    }
+                    payload = {
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": eff_sys},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                    }
+                    resp = self.session.post(url, headers=headers, json=payload, timeout=18.0)
+                    status_code = resp.status_code
+                    resp_headers = dict(getattr(resp, "headers", {}) or {})
+                    if status_code >= 400:
+                        raw_text, tokens_used = resp.text, 0
+                    else:
+                        data = resp.json()
+                        choices = data.get("choices", [])
+                        raw_text = choices[0].get("message", {}).get("content", "") if choices else ""
+                        tokens_used = int((data.get("usage") or {}).get("total_tokens", 400))
+            except Exception as exc:
+                self.mark_bucket_error(provider, model, api_key, 503, str(exc))
+                last_err = f"{provider}/{model}: {exc}"
+                continue
+
+            if status_code >= 400:
+                err_class = self.mark_bucket_error(provider, model, api_key, status_code, raw_text, resp_headers)
+                last_err = f"{err_class} ({status_code}) on {provider}/{model}"
+                continue
+
+            self.update_from_headers_and_usage(provider, model, api_key, resp_headers, tokens_used)
+            out = strip_reasoning_tags(raw_text) if is_json else re.sub(r"<think>.*?</think>", "", str(raw_text or ""), flags=re.DOTALL).strip()
+            if out:
+                print(f"[AI GATEWAY OK] {provider}/{model} ({tokens_used} tok) ✅", flush=True)
+                return out
+            last_err = f"Empty output from {provider}/{model}"
+
+        raise RuntimeError(f"ALL_AI_FAILED:{len(tried)}:{' > '.join(tried)}:LAST_ERROR:{last_err[:200]}")
+
+
+_GLOBAL_GATEWAY: Optional[AIGateway] = None
+_GLOBAL_LOCK = threading.RLock()
+
+
+def get_global_gateway() -> AIGateway:
+    global _GLOBAL_GATEWAY
+    with _GLOBAL_LOCK:
+        if _GLOBAL_GATEWAY is None:
+            _GLOBAL_GATEWAY = AIGateway(discover_groq_models=True, persist_ledger=True)
+        return _GLOBAL_GATEWAY
+
+
+def call_ai(
+    prompt: str,
+    system_prompt: str = "",
+    max_tokens: int = 1500,
+    temperature: float = 0.1,
+    is_json: bool = True,
+) -> str:
+    """
+    Module-level AI caller exported for pipeline.py & multi_agent_committee.py.
+    """
+    gw = get_global_gateway()
+    return gw.call_text(
+        prompt=prompt,
+        system_prompt=system_prompt,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        is_json=is_json,
+    )
+
+
+def get_gateway_status() -> Dict[str, Any]:
+    """
+    Return live telemetry of all configured API keys, models, and remaining token budgets.
+    """
+    gw = get_global_gateway()
+    summary = gw.get_budget_summary()
+    routes = gw._build_candidate_routes(estimated_tokens=600)
+    key_counts = {p: len(k) for p, k in gw.provider_keys.items() if k}
+    return {
+        "utc_date": summary.get("utc_date"),
+        "total_calls_today": summary.get("total_calls_today", 0),
+        "total_tokens_today": summary.get("total_tokens_today", 0),
+        "active_routes_count": len(routes),
+        "configured_keys_per_provider": key_counts,
+        "models_per_provider": {p: gw.provider_models.get(p, []) for p in key_counts},
+        "buckets": summary.get("buckets", {}),
+    }
+
