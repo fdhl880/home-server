@@ -289,16 +289,25 @@ def record_position(signal: dict):
         print(f"[POSITION] ⚠️ Max concurrent positions ({max_concurrent}) reached. Skipping.", flush=True)
         return None
     
+    entry_px_init = float(signal.get("entry_price") or 0)
+    dir_init = str(signal.get("direction", "LONG")).upper()
+    d_sign_init = -1.0 if dir_init == "SHORT" else 1.0
+    sl_dist_init = abs(entry_px_init - sl) / entry_px_init if (entry_px_init > 0 and sl > 0) else 0.012
+    tp1_init = float(signal.get("take_profit_1") or 0)
+    if tp1_init <= 0 and entry_px_init > 0:
+        tp1_init = round(entry_px_init * (1.0 + d_sign_init * 0.55 * sl_dist_init), 6)
+    tp2_init = float(signal.get("take_profit_2") or tp or tp1_init)
+
     pos = {
         "id": f"POS_{signal.get('symbol', 'UNK')}_{int(time.time())}",
         "symbol": signal.get("symbol", ""),
         "binance_pair": signal.get("binance_pair", ""),
-        "direction": signal.get("direction", "LONG"),
-        "entry_price": signal.get("entry_price", 0),
-        "entry_price_idr": convert_usd_to_idr(signal.get("entry_price", 0)),
-        "take_profit": tp,
-        "take_profit_1": tp,  # alias for backward compat
-        "take_profit_2": tp,  # alias for backward compat
+        "direction": dir_init,
+        "entry_price": entry_px_init,
+        "entry_price_idr": convert_usd_to_idr(entry_px_init),
+        "take_profit": tp2_init,
+        "take_profit_1": tp1_init,
+        "take_profit_2": tp2_init,
         "stop_loss": sl,
         "init_stop_loss": sl,
         "leverage": leverage,
@@ -1719,10 +1728,11 @@ def run_full_scan_cycle():
             print(f"[COMMITTEE VETO] {sym}: Pipeline lolos tapi 9-Agent Committee mem-veto: {pm_dec}", flush=True)
             status = "REJECTED_BY_COMMITTEE"
 
-        # BTC TREND DUMP FILTER (Blueprint T3.1):
-        # Batalkan sinyal LONG altcoin jika tren BTC sedang dump tajam
+        # BIDIRECTIONAL BTC GUARD (Blueprint T3.1):
+        # 1. Batalkan sinyal LONG altcoin jika BTC sedang dump tajam
+        # 2. Batalkan sinyal SHORT altcoin jika BTC sedang pump tajam (anti short-squeeze)
         candidate_dir = com_dir if com_dir in ("LONG", "SHORT") else fc.get("direction", "NONE")
-        if is_trade_approved and candidate_dir == "LONG" and sym not in ("BTC-USD", "BTCUSDT"):
+        if is_trade_approved and candidate_dir in ("LONG", "SHORT") and sym not in ("BTC-USD", "BTCUSDT"):
             try:
                 from market_data import get_market_indicators_fast
                 btc_data = get_market_indicators_fast("BTCUSDT")
@@ -1732,12 +1742,22 @@ def run_full_scan_cycle():
                     btc_e20 = float(btc_data.get("ema_20") or 0.0)
                     btc_e9 = float(btc_data.get("ema_9") or 0.0)
                     btc_chg4h = float(btc_data.get("change_4h_pct") or 0.0)
-                    if btc_rsi < 40.0 or (btc_p < btc_e20 and btc_e9 < btc_e20 and btc_chg4h < -1.5):
+                    if candidate_dir == "LONG" and (btc_rsi < 40.0 or (btc_p < btc_e20 and btc_e9 < btc_e20 and btc_chg4h < -1.5)):
                         is_trade_approved = False
                         status = "REJECTED_BTC_DUMP"
                         print(f"[BTC GUARD] 🛡️ Altcoin LONG di {sym} DIBATALKAN: BTC sedang dump (RSI: {btc_rsi:.1f}, 4h: {btc_chg4h:+.2f}%)", flush=True)
+                    elif candidate_dir == "SHORT" and (btc_rsi > 62.0 or (btc_p > btc_e20 and btc_e9 > btc_e20 and btc_chg4h > 1.5)):
+                        is_trade_approved = False
+                        status = "REJECTED_BTC_PUMP"
+                        print(f"[BTC GUARD] 🛡️ Altcoin SHORT di {sym} DIBATALKAN: BTC sedang pump kuat (RSI: {btc_rsi:.1f}, 4h: {btc_chg4h:+.2f}%)", flush=True)
             except Exception as btc_err:
                 print(f"[BTC GUARD] ⚠️ Error evaluating BTC trend: {btc_err}", flush=True)
+
+        _plan_sig = (res.get("layer3_plan") or {}) if isinstance(res, dict) else {}
+        _entry_sig = float(fc.get("entry_price") or _plan_sig.get("entry_price") or 0)
+        _sl_sig = float(fc.get("stop_loss") or _plan_sig.get("stop_loss") or 0)
+        _tp1_sig = float(fc.get("take_profit_1") or _plan_sig.get("take_profit_1") or 0)
+        _tp2_sig = float(fc.get("take_profit_2") or fc.get("take_profit") or _plan_sig.get("take_profit_2") or _plan_sig.get("take_profit") or _tp1_sig or 0)
 
         sig_entry = {
             "symbol": sym,
@@ -1746,10 +1766,18 @@ def run_full_scan_cycle():
             "tier": tier,
             "status": "APPROVED" if is_trade_approved else status,
             "confidence": max(conf, com_conf),
+            "confidence_pct": max(conf, com_conf),
             "direction": com_dir if com_dir in ("LONG", "SHORT") else fc.get("direction", "NONE"),
             "setup": setup,
+            "setup_name": setup,
+            "entry_price": _entry_sig,
+            "stop_loss": _sl_sig,
+            "take_profit": _tp2_sig,
+            "take_profit_1": _tp1_sig,
+            "take_profit_2": _tp2_sig,
             "committee_approved": com_approved,
             "time": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
+            "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
             "opportunity_score": item.get("opportunity_score", 0)
         }
 
@@ -1824,9 +1852,18 @@ def run_full_scan_cycle():
 
                 pos_idr = pos.get('position_size_idr', budget_allocated)
                 pos_usd = pos.get('position_size_usd', round(pos_idr / 16500.0, 2))
-                tp_val = exec_plan.get("take_profit_2") or exec_plan.get("take_profit_1", 0)
-                sl_val = exec_plan.get("stop_loss", 0)
+                tp1_val = float(exec_plan.get("take_profit_1") or pos.get("take_profit_1") or 0)
+                tp_val = float(exec_plan.get("take_profit_2") or exec_plan.get("take_profit") or tp1_val or 0)
+                sl_val = float(exec_plan.get("stop_loss") or pos.get("stop_loss") or 0)
+                ent_val = float(pos.get("entry_price") or exec_plan.get("entry_price") or 0)
                 lev_val = 20
+                d_s = -1.0 if final_dir == "SHORT" else 1.0
+                tp1_roi = round(d_s * ((tp1_val - ent_val) / ent_val) * lev_val * 100.0, 2) if (ent_val > 0 and tp1_val > 0) else 13.2
+                tp2_roi = round(d_s * ((tp_val - ent_val) / ent_val) * lev_val * 100.0, 2) if (ent_val > 0 and tp_val > 0) else 48.0
+                sl_roi = round(d_s * ((sl_val - ent_val) / ent_val) * lev_val * 100.0, 2) if (ent_val > 0 and sl_val > 0) else -24.0
+                tp1_pnl_idr = int(round((tp1_roi / 100.0) * pos_idr))
+                tp2_pnl_idr = int(round((tp2_roi / 100.0) * pos_idr))
+                sl_pnl_idr = int(round((sl_roi / 100.0) * pos_idr))
 
                 bull_note = com_res.get("bull_researcher", {}).get("argument", "")[:120] if com_res else ""
                 bear_note = com_res.get("bear_researcher", {}).get("argument", "")[:120] if com_res else ""
@@ -1858,20 +1895,21 @@ def run_full_scan_cycle():
                 ) if _tp_p else f"⏱️ <b>Est. Waktu TP:</b> {_eta_label}"
 
                 msg = (
-                    f"🚨 <b>PYROFUEL // 9-AGENT COMMITTEE TRADE EXECUTED!</b>\n\n"
+                    f"🚨 <b>PYROFUEL // SNIPER HYBRID MATH+AI TRADE EXECUTED!</b>\n\n"
                     f"💎 <b>Aset:</b> <code>{pair}</code> ({name})\n"
-                    f"🎯 <b>Arah:</b> <b>{final_dir}</b> (Keyakinan: <b>{exec_plan['confidence_score']}%</b>)\n"
+                    f"🎯 <b>Arah:</b> <b>{final_dir}</b> (Hybrid Confidence: <b>{exec_plan['confidence_score']}%</b>)\n"
                     f"────────────────────────\n"
-                    f"⚙️ <b>Parameters (Kelly Criterion + VaR):</b>\n"
+                    f"⚙️ <b>Parameters & Prediksi ROI/PnL:</b>\n"
                     f"   📊 Leverage: <b>{lev_val}x ISOLATED (Fixed)</b>\n"
-                    f"   💰 Modal: <b>${pos_usd:.2f} USDT</b> (~Rp {pos_idr:,})\n"
-                    f"   📍 Entry: ${exec_plan.get('entry_price', 0):,.4f}\n"
-                    f"   🎯 Take Profit: ${tp_val:,.4f}\n"
-                    f"   🛑 Stop Loss: ${sl_val:,.4f}\n"
+                    f"   💰 Modal Margin: <b>${pos_usd:.2f} USDT</b> (~Rp {pos_idr:,})\n"
+                    f"   📍 Entry: ${ent_val:,.4f}\n"
+                    f"   🎯 Hit TP1 Lock (+0.55R @ ${tp1_val:,.4f}): <b>+{tp1_roi:.1f}% ROI (+Rp {tp1_pnl_idr:,})</b>\n"
+                    f"   🚀 Hit Full TP2 (@ ${tp_val:,.4f}): <b>+{tp2_roi:.1f}% ROI (+Rp {tp2_pnl_idr:,})</b>\n"
+                    f"   🛑 Hit Stop Loss (@ ${sl_val:,.4f}): <b>{sl_roi:.1f}% ROI (-Rp {abs(sl_pnl_idr):,})</b>\n"
                     f"────────────────────────\n"
                     f"{eta_section}\n"
                     f"────────────────────────\n"
-                    f"🏛️ <b>Kolaborasi Sidang Multi-Agent:</b>\n"
+                    f"🏛️ <b>Kolaborasi Matematika + Multi-Agent AI:</b>\n"
                     f"   🟢 <i>Bull Case:</i> {bull_note}\n"
                     f"   🔴 <i>Bear Risk:</i> {bear_note}\n"
                     f"   👑 <i>Konsensus:</i> {com_res.get('portfolio_manager',{}).get('decision','') if com_res else 'Approved'}\n"

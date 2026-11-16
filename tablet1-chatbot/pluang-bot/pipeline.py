@@ -1947,6 +1947,26 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 except Exception:
                     pass
 
+                # Gate 13: Hybrid Math x AI x First-Passage Time Sniper Veto
+                if final_call.get("status") == "APPROVED":
+                    _tp_pred_check = plan_result.get("tp_time_prediction") or {}
+                    _p_tp1_sl = float(_tp_pred_check.get("p_hit_tp1_before_sl_pct", 80.0) or 80.0)
+                    _pref_dir = str(mp.get("preferred_direction", "")).upper()
+                    _fc_dir = str(final_call.get("direction", "")).upper()
+                    _obi20 = float(mp.get("obi_weighted_20", 0.0) or 0.0)
+                    _veto_reasons = []
+                    if p_math_pct < 60.0:
+                        _veto_reasons.append(f"P_Math {p_math_pct:.1f}% < 60% (bukti matematika belum cukup kuat)")
+                    if s_hybrid_pct < 68.0:
+                        _veto_reasons.append(f"S_Hybrid {s_hybrid_pct:.1f}% < 68% (kolaborasi Math+AI di bawah ambang Sniper)")
+                    if _p_tp1_sl < 70.0:
+                        _veto_reasons.append(f"First-Passage P(TP1<SL) {_p_tp1_sl:.1f}% < 70%")
+                    if _pref_dir in ("LONG", "SHORT") and _fc_dir in ("LONG", "SHORT") and _pref_dir != _fc_dir and abs(_obi20) > 0.15:
+                        _veto_reasons.append(f"Konflik arah AI ({_fc_dir}) vs Matematika+OFI_20 ({_pref_dir}, OFI={_obi20:+.2f})")
+                    if _veto_reasons:
+                        final_call["status"] = "REJECTED"
+                        final_call["final_reason"] = f"{final_call.get('final_reason', '')} [SNIPER MATH VETO: {'; '.join(_veto_reasons)}]"
+
                 mp["p_ai_pct"] = round(p_ai_pct, 2)
                 mp["s_hybrid_pct"] = round(s_hybrid_pct, 2)
                 final_call["math_score_pct"] = p_math_pct
