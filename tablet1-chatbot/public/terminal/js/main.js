@@ -2,12 +2,12 @@ import { $, h, fmtTime, LS } from './util.js';
 import { get, net, startHub } from './api.js';
 import { dev } from './dev-adapter.js';
 
-import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261116c';
-import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261116c';
-import { mountOB, mountTRADES, mountFUND } from './panels/micro.js?v=20261116c';
-import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT } from './panels/equities.js?v=20261116c';
-import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS } from './panels/quant.js?v=20261116c';
-import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261116c';
+import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261116d';
+import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261116d';
+import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261116d';
+import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261116d';
+import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR } from './panels/quant.js?v=20261116d';
+import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261116d';
 
 import { panels as newsPanels } from '../panels/news/index.js';
 import { panels as macroPanels } from '../panels/macro/index.js';
@@ -70,6 +70,11 @@ export const CATALOG = [
   { code: 'TRADES', cat: 'MICRO', title: 'Time & Sales Tape', desc: 'Live Aggregated Trade Stream with Whale Print Filter', mount: mountTRADES },
   { code: 'TAS', cat: 'MICRO', title: 'Time & Sales', desc: 'Real-Time Tick-by-Tick Trade Recap', mount: mountTRADES },
   { code: 'FUND', cat: 'CRYPTO', title: 'Perpetual Funding & Basis', desc: 'Binance Futures Mark vs Index Price, Basis % & Annualized Funding', mount: mountFUND },
+  { code: 'VAP', cat: 'MICRO', title: 'Volume-at-Price Profile', desc: 'Horizontal Volume Profile with Point of Control (POC), VAH & VAL 70% Value Area', mount: mountVAP },
+  { code: 'MKTP', cat: 'MICRO', title: 'Market Profile (TPO)', desc: 'Institutional Market Profile Value Area & Buy/Sell Delta Nodes', mount: mountVAP },
+  { code: 'LIQ', cat: 'CRYPTO', title: 'Liquidation Heatmap & OI Magnet', desc: '10x/20x/50x/100x Leverage Liquidation Clusters & Short Squeeze / Long Cascade Pools', mount: mountLIQ },
+  { code: 'OMST', cat: 'DERIV', title: 'Options Most Active & Sweeps', desc: 'Unusual Institutional Options Block & Multi-Exchange Sweep Flow Tape', mount: mountOMST },
+  { code: 'GEX', cat: 'DERIV', title: 'Dealer Gamma Exposure (GEX)', desc: 'Dealer Gamma Exposure by Strike, Call/Put Walls & Zero-Gamma Flip Level', mount: mountOMST },
 
   // Equities & Fundamentals
   { code: 'DES', cat: 'EQUITY', title: 'Security Description', desc: 'Institutional Asset Profile, Snapshot Stats, 52W Range & Filings', mount: mountDES },
@@ -88,6 +93,12 @@ export const CATALOG = [
   { code: 'RV', cat: 'EQUITY', title: 'Relative Value Peers', desc: 'Sector Peer Group Comparison vs Group Mean', mount: mountRV },
   { code: 'EQS', cat: 'EQUITY', title: 'Equity & Crypto Screener', desc: 'Multi-Factor Market Screener with Momentum & Volume Sorting', mount: mountEQS },
   { code: 'MEMB', cat: 'INDEX', title: 'Index Members & Weights', desc: 'Constituent Weights & Point Impact for S&P 500, Dow 30 & Crypto', mount: mountMEMB },
+  { code: 'MA', cat: 'EQUITY', title: 'Mergers & Acquisitions (M&A)', desc: 'Global M&A Deal Monitor, EV/EBITDA Multiples & Merger Arbitrage IRR Spreads', mount: mountMA },
+  { code: 'IPO', cat: 'EQUITY', title: 'Equity Offerings & IPO Pipeline', desc: 'Global IPO Syndicate Pipeline, Pre-IPO Unicorns & Secondary Offerings', mount: mountIPO },
+  { code: 'EVTS', cat: 'EQUITY', title: 'Corporate Events Calendar', desc: 'Earnings Calls, Investor Days & Corporate Catalyst Schedule', mount: mountIPO },
+  { code: 'CACS', cat: 'EQUITY', title: 'Corporate Actions Schedule', desc: 'Dividends, Share Buybacks, Splits & Governance Actions', mount: mountIPO },
+  { code: 'ESG', cat: 'EQUITY', title: 'ESG Sustainability Scorecard', desc: 'Environmental, Social & Governance Pillar Scores & Carbon Intensity', mount: mountESG },
+  { code: 'GUID', cat: 'EQUITY', title: 'Management Guidance vs Street', desc: 'Corporate Management Guidance Range vs Wall Street Consensus', mount: mountESG },
   { code: 'CN', cat: 'NEWS', title: 'Company / Security News', desc: 'Security-Filtered Real-Time Financial News Wire', mount: (b, c) => mountCN(b, c, { mode: 'CN' }) },
   { code: 'NH', cat: 'NEWS', title: 'News Headlines', desc: 'Chronological Security & Market Headlines', mount: (b, c) => mountCN(b, c, { mode: 'CN' }) },
   { code: 'NSE', cat: 'NEWS', title: 'News Search Engine', desc: 'Keyword Search Across Global Financial News Wires', mount: (b, c) => mountCN(b, c, { mode: 'NSE' }) },
@@ -127,6 +138,16 @@ export const CATALOG = [
   { code: 'WCDS', cat: 'FIXED INC', title: 'World Sovereign CDS Monitor', desc: '5Y Sovereign Credit Default Swaps Spreads & Implied Default Probability Matrix', mount: mountWCDS },
   { code: 'CDS', cat: 'FIXED INC', title: 'Credit Default Swaps & Default Prob', desc: 'Sovereign 5Y CDS Spreads & Cumulative Default Probabilities', mount: mountWCDS },
   { code: 'BTST', cat: 'QUANT', title: 'Strategy Backtester', desc: 'Quantitative Strategy Backtester (SMA Cross, RSI Reversion, Breakout) & Equity Curve Diagram', mount: mountBTST },
+  { code: 'OVDV', cat: 'DERIV', title: 'Volatility Surface & 25Δ Skew', desc: '3D Implied Volatility Surface (10Δ–90Δ × 1W–1Y) & 25Δ Risk Reversal / Butterfly Smile', mount: mountOVDV },
+  { code: 'RRG', cat: 'QUANT', title: 'Relative Rotation Graph (RRG)', desc: '4-Quadrant JdK RS-Ratio vs RS-Momentum Sector Rotation Trails (Leading/Weakening/Lagging/Improving)', mount: mountRRG },
+  { code: 'SEAG', cat: 'QUANT', title: 'Seasonality Heatmap Matrix', desc: 'Historical Monthly Return Heatmap (Jan–Dec) & Multi-Year Hit Rate', mount: mountSEAG },
+  { code: 'DOTS', cat: 'FIXED INC', title: 'FOMC Dot Plot & Central Banks', desc: 'FOMC SEP Participant Dot Plot Distribution & Global Central Bank Policy Matrix', mount: mountDOTS },
+  { code: 'FED', cat: 'FIXED INC', title: 'Federal Reserve Policy Desk', desc: 'FOMC Dot Plot, Implied OIS Path & Central Bank Rate Matrix', mount: mountDOTS },
+  { code: 'FSTA', cat: 'QUANT', title: 'Factor Style Attribution', desc: 'Barra / Fama-French 6-Factor Style Loadings & Return Attribution', mount: mountFSTA },
+  { code: 'TCA', cat: 'EXECUTION', title: 'Transaction Cost Analysis', desc: 'Institutional Implementation Shortfall, VWAP/TWAP Slippage & Fill Quality Audit', mount: mountFSTA },
+  { code: 'CRPR', cat: 'FIXED INC', title: 'Credit Rating Profile', desc: 'S&P, Moody\'s, Fitch Credit Ratings, Altman Z-Score & Merton Distance-to-Default', mount: mountCRPR },
+  { code: 'RATD', cat: 'FIXED INC', title: 'Credit Rating Scales & Agency', desc: 'Multi-Agency Rating Matrix & Structural Default Probability', mount: mountCRPR },
+  { code: 'FIW', cat: 'FIXED INC', title: 'Fixed Income Worksheet', desc: 'Senior Corporate Bond Curve, G-Spread OAS & Modified Duration Worksheet', mount: mountCRPR },
 
   // Operations, Portfolio, Risk, AI & System
   { code: 'BOT', cat: 'AI ENGINE', title: 'Pyrofuel 28-Pillar AI Bot', desc: 'Live Binance Futures Auto-Trader Telemetry, Active Positions & 5-Layer Signals', mount: mountBOT },

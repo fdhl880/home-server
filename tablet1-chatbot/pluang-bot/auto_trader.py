@@ -1133,15 +1133,19 @@ def check_wallet_and_position_guard():
     open_pos = [p for p in positions if p.get("status") == "OPEN"]
     
     bn_client = get_binance_client()
-    avail_usdt = 100.0
-    total_usdt = 100.0
+    avail_usdt = float(state.get("binance_available_balance_usdt", 1.78))
+    total_usdt = float(state.get("binance_wallet_balance_usdt", 1.78))
     
     if bn_client:
         try:
             bal = bn_client.get_balance()
-            if isinstance(bal, dict):
+            if isinstance(bal, dict) and not bal.get("isError") and "total_wallet_balance" in bal:
                 avail_usdt = float(bal.get("available_balance", 0))
                 total_usdt = float(bal.get("total_wallet_balance", 0))
+                state["binance_wallet_balance_usdt"] = round(total_usdt, 4)
+                state["binance_available_balance_usdt"] = round(avail_usdt, 4)
+                state["binance_unrealized_pnl_usdt"] = round(float(bal.get("cross_unrealized_pnl", 0)), 4)
+                save_state()
             
             # Live sync active positions directly from Binance Futures
             live_pos = bn_client.get_positions()
@@ -1993,18 +1997,26 @@ def start_loop():
     print(f"[*] Quick Screen: Every 60 sec | Full AI: Every 5 min", flush=True)
     print(f"{'='*70}", flush=True)
     
+    load_state()
     bn_client = get_binance_client()
     if bn_client:
         try:
             bal = bn_client.get_balance()
-            usdt_bal = bal.get("total_wallet_balance", 0) if isinstance(bal, dict) else 0
-            print(f"[*] ✅ Binance Futures Engine LIVE! Wallet balance: ${usdt_bal:.2f} USDT", flush=True)
+            if isinstance(bal, dict) and not bal.get("isError") and "total_wallet_balance" in bal:
+                usdt_bal = float(bal.get("total_wallet_balance", 0))
+                avail_bal = float(bal.get("available_balance", usdt_bal))
+                state["binance_wallet_balance_usdt"] = round(usdt_bal, 4)
+                state["binance_available_balance_usdt"] = round(avail_bal, 4)
+                save_state()
+                print(f"[*] ✅ Binance Futures Engine LIVE! Wallet balance: ${usdt_bal:.2f} USDT (Available: ${avail_bal:.2f})", flush=True)
+            else:
+                usdt_bal = float(state.get("binance_wallet_balance_usdt", 1.78))
+                print(f"[*] ✅ Binance Futures Engine Initialized (Cached Wallet: ${usdt_bal:.2f} USDT)", flush=True)
         except Exception as e:
             print(f"[*] ⚠️ Binance Futures check warning: {e}", flush=True)
     else:
         print(f"[*] ⚠️ Binance Futures not configured in .env", flush=True)
 
-    load_state()
     last_full_scan = 0
     last_quick_scan = 0
     was_in_all_in_mode = False

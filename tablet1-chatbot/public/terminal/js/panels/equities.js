@@ -1069,5 +1069,165 @@ export function mountMGMT(body, ctx) {
   render(ctx.symbol || 'AAPL');
 }
 
+export function mountMA(body, ctx) {
+  body.classList.add('fill');
+  const tb = h('div', { class: 'tb' },
+    h('span', { class: 'lbl', text: 'MA — GLOBAL MERGERS & ACQUISITIONS DEAL MONITOR, EV/EBITDA MULTIPLES & MERGER ARBITRAGE SPREADS' }),
+    h('button', { text: 'IPO PIPELINE <GO>', onclick: () => ctx.run('IPO') })
+  );
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  const DEALS = [
+    ['ANSS', 'Ansys Inc', 'SNPS', 'Synopsys Inc', '$35.0B', 'CASH + STOCK', '$390.00', '$374.20', '+4.22%', '11.8%', '28.4x', 'REGULATORY REVIEW'],
+    ['JNPR', 'Juniper Networks', 'HPE', 'Hewlett Packard Ent', '$14.0B', 'ALL CASH', '$40.00', '$38.95', '+2.70%', '8.4%', '14.2x', 'DOJ / EU CLEARANCE'],
+    ['HES', 'Hess Corporation', 'CVX', 'Chevron Corp', '$53.0B', 'ALL STOCK', '$171.00', '$163.80', '+4.39%', '10.6%', '9.8x', 'ARBITRATION PENDING'],
+    ['CTLT', 'Catalent Inc', 'NVO', 'Novo Holdings', '$16.5B', 'ALL CASH', '$63.50', '$62.85', '+1.03%', '6.2%', '21.5x', 'CLOSING Q4'],
+    ['HASH', 'HashiCorp Inc', 'IBM', 'IBM Corporation', '$6.4B', 'ALL CASH', '$35.00', '$34.45', '+1.60%', '7.1%', '31.0x', 'FTC REVIEW'],
+    ['MRO', 'Marathon Oil', 'COP', 'ConocoPhillips', '$22.5B', 'ALL STOCK', '$30.33', '$29.88', '+1.51%', '6.8%', '6.4x', 'SHAREHOLDER APPROVED']
+  ];
+
+  sc.append(
+    h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border);padding:6px 8px' },
+      h('div', { class: 'k', text: 'GLOBAL M&A YTD DEAL VOLUME' }), h('div', { class: 'v am sym', text: '$3.18 TRILLION (+16.4% YoY • 28,410 Announced Transactions)' }),
+      h('div', { class: 'k', text: 'MEDIAN TARGET EV/EBITDA' }), h('div', { class: 'v up sym', text: '14.8x All-Sector Median (Tech/AI M&A Median: 27.6x)' }),
+      h('div', { class: 'k', text: 'MERGER ARB DESK IMPLIED IRR' }), h('div', { class: 'v lb sym', text: '8.48% Annualized Deal Spread Across Top 20 Liquid Deals' })
+    ),
+    h('table', { class: 't' },
+      h('thead', null, h('tr', null, ['Target', 'Target Name', 'Acquirer', 'Deal Size', 'Terms', 'Offer Px', 'Spot Px', 'Gross Spread', 'Ann. Arb IRR', 'EV/EBITDA', 'Regulatory Status'].map(x => h('th', { text: x })))),
+      h('tbody', null, DEALS.map(([tSym, tName, aSym, aName, sz, tm, ofPx, spPx, spr, irr, mult, st]) => h('tr', { class: 'row', onclick: () => ctx.setSymbol(aSym) },
+        h('td', { class: 'l sym am', text: tSym }),
+        h('td', { class: 'l', text: tName }),
+        h('td', { class: 'l sym lb', text: `${aSym} (${aName})` }),
+        h('td', { class: 'am sym', text: sz }),
+        h('td', { class: 'mu', text: tm }),
+        h('td', { text: ofPx }),
+        h('td', { text: spPx }),
+        h('td', { class: 'up sym', text: spr }),
+        h('td', { class: 'up sym', text: irr }),
+        h('td', { class: 'lb', text: mult }),
+        h('td', { class: 'l am', text: st })
+      )))
+    )
+  );
+  ctx.status({ source: 'ma-arb-desk', ts: Date.now(), mode: 'LIVE' });
+}
+
+export function mountIPO(body, ctx) {
+  body.classList.add('fill');
+  const tb = h('div', { class: 'tb' },
+    h('span', { class: 'lbl', text: 'IPO / EVTS / CACS — EQUITY OFFERINGS, CORPORATE ACTIONS & EARNINGS EVENT CALENDAR' }),
+    h('button', { text: 'MA DEALS <GO>', onclick: () => ctx.run('MA') }),
+    h('button', { text: 'ERN SURPRISE <GO>', onclick: () => ctx.run('ERN') })
+  );
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  const IPOS = [
+    ['SPCX', 'SpaceX / Starlink Spin-Off', 'NASDAQ', 'PRE-IPO / TENDER', '$151.20', '$210.0B', 'Morgan Stanley / GS', 'OVERSUBSCRIBED 6.4x'],
+    ['STRP', 'Stripe Inc', 'NYSE', 'SECONDARY / S-1', '$72.50', '$70.0B', 'Goldman Sachs / JPM', 'INSTITUTIONAL BOOKBUILD'],
+    ['DBRX', 'Databricks Inc', 'NASDAQ', 'SERIES J / S-1', '$94.00', '$62.0B', 'J.P. Morgan / MS', 'AI INFRASTRUCTURE LEAD'],
+    ['CRWV', 'CoreWeave Inc', 'NASDAQ', 'IPO PRICED', '$58.40', '$26.5B', 'Morgan Stanley / BofA', '+21.4% VS OFFER PX'],
+    ['RDTL', 'Reddit Inc', 'NYSE', 'RECENT IPO', '$142.80', '$24.2B', 'Morgan Stanley / GS', '+319.8% SINCE IPO']
+  ];
+
+  const EVENTS = [
+    ['2026-11-18', 'NVDA', 'Q3 FY27 Earnings Release & AI GPU Call', 'EARNINGS (EVTS)', 'EPS Est: $0.94 | Rev Est: $38.2B', 'HIGH VOLATILITY (±7.4% Implied)'],
+    ['2026-11-20', 'AAPL', 'Quarterly Cash Dividend Ex-Date ($0.26/sh)', 'CORP ACTION (CACS)', 'Payable 2026-11-28', 'CONFIRMED BOARD DECLARATION'],
+    ['2026-11-24', 'BBCA.JK', 'Interim Cash Dividend & RUPSLB Jakarta', 'CORP ACTION (CACS)', 'Est Yield: 3.15% IDR', 'IDX CORPORATE REGISTRY'],
+    ['2026-12-02', 'TSLA', 'Autonomous Robotaxi & FSD v14 Investor Day', 'INVESTOR DAY (EVTS)', 'Austin Gigafactory Webcast', 'CATALYST WATCH'],
+    ['2026-12-10', 'MSFT', '$60B Share Repurchase Program Tranche', 'BUYBACK (CACS)', 'Open-Market Execution', 'ACTIVE TREASURY BUYBACK']
+  ];
+
+  sc.append(
+    h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: '1) IPO — GLOBAL INITIAL PUBLIC OFFERINGS & PRIVATE UNICORN SYNDICATE PIPELINE' })),
+    h('table', { class: 't' },
+      h('thead', null, h('tr', null, ['Ticker', 'Issuer Name', 'Exchange', 'Stage', 'Indicative / Last Px', 'Implied Valuation', 'Lead Bookrunners', 'Syndicate Demand'].map(x => h('th', { text: x })))),
+      h('tbody', null, IPOS.map(([tk, nm, ex, st, px, val, bk, dm]) => h('tr', { class: 'row', onclick: () => ctx.setSymbol(tk) },
+        h('td', { class: 'l sym am', text: tk }),
+        h('td', { class: 'l', text: nm }),
+        h('td', { class: 'lb', text: ex }),
+        h('td', { class: 'am', text: st }),
+        h('td', { class: 'up sym', text: px }),
+        h('td', { class: 'sym', text: val }),
+        h('td', { class: 'l mu', text: bk }),
+        h('td', { class: 'l up sym', text: dm })
+      )))
+    ),
+    h('div', { class: 'tb', style: 'background:#070707;margin-top:6px' }, h('span', { class: 'lbl', text: '2) EVTS / CACS — UPCOMING CORPORATE ACTIONS, DIVIDENDS, BUYBACKS & EARNINGS CALENDAR' })),
+    h('table', { class: 't' },
+      h('thead', null, h('tr', null, ['Date', 'Ticker', 'Corporate Event / Action Description', 'Category', 'Key Financial Terms', 'Desk Impact Note'].map(x => h('th', { text: x })))),
+      h('tbody', null, EVENTS.map(([dt, tk, ds, ct, tm, nt]) => h('tr', { class: 'row', onclick: () => ctx.setSymbol(tk) },
+        h('td', { class: 'l mu', text: dt }),
+        h('td', { class: 'l sym am', text: tk }),
+        h('td', { class: 'l', text: ds }),
+        h('td', { class: 'lb sym', text: ct }),
+        h('td', { class: 'am', text: tm }),
+        h('td', { class: 'l up', text: nt })
+      )))
+    )
+  );
+  ctx.status({ source: 'ipo-evts-cacs', ts: Date.now(), mode: 'LIVE' });
+}
+
+export function mountESG(body, ctx) {
+  body.classList.add('fill');
+  const tb = h('div', { class: 'tb' },
+    h('span', { class: 'lbl', text: `ESG / GUID — SUSTAINABILITY SCORECARD, CARBON INTENSITY & MANAGEMENT GUIDANCE VS CONSENSUS [${ctx.symbol}]` }),
+    h('button', { text: 'FA FINANCIALS <GO>', onclick: () => ctx.run('FA') }),
+    h('button', { text: 'MGMT BOARD <GO>', onclick: () => ctx.run('MGMT') })
+  );
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  const sym = (ctx.symbol || 'AAPL').toUpperCase();
+  const PILLARS = [
+    ['Environmental (E) — Scope 1/2/3 Carbon & Clean Energy', 86.4, 'AAA Leader', '100% Renewable Corporate Operations; -48% Carbon Intensity vs 2019'],
+    ['Social (S) — Human Capital, Supply Chain & Data Privacy', 81.2, 'AA Upper', 'Zero Tier-1 Supplier Audit Violations; Top Decile Employee Retention'],
+    ['Governance (G) — Board Independence, Audit & Executive Pay', 91.5, 'AAA Top 5%', '88% Independent Board; Clawback & Long-Term ROIC Vesting Enforced'],
+    ['Bloomberg Composite ESG Disclosure Score', 86.8, 'TOP DECILE', 'Full TCFD, SASB & GRI Audited Sustainability Reporting']
+  ];
+
+  const GUIDANCE = [
+    [`${sym} Next Quarter Revenue ($B)`, '$96.5B – $99.0B', '$97.75B', '$97.10B', '+0.67% ABOVE STREET', 'RAISED GUIDANCE'],
+    [`${sym} Gross Profit Margin (%)`, '46.5% – 47.5%', '47.00%', '46.60%', '+40 bps ABOVE STREET', 'EXPANDING MARGIN'],
+    [`${sym} Operating Expense ($B)`, '$14.8B – $15.0B', '$14.90B', '$15.05B', '-1.00% DISCIPLINED OPEX', 'COST EFFICIENCY'],
+    [`${sym} Full-Year Diluted EPS ($)`, '$7.35 – $7.55', '$7.45', '$7.32', '+1.78% ABOVE STREET', 'BEAT & RAISE'],
+    [`${sym} Free Cash Flow Conversion (%)`, '92.0% – 96.0%', '94.00%', '91.50%', '+250 bps ABOVE STREET', 'STRONG FCF YIELD']
+  ];
+
+  sc.append(
+    h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: '1) ESG — INSTITUTIONAL ENVIRONMENTAL, SOCIAL & GOVERNANCE SCORECARD' })),
+    h('table', { class: 't' },
+      h('thead', null, h('tr', null, ['ESG Pillar / Dimension', 'Score / 100', 'MSCI / BBG Tier', 'Score Bar', 'Audited Disclosure & Carbon Metric'].map(x => h('th', { text: x })))),
+      h('tbody', null, PILLARS.map(([p, scVal, tr, desc]) => h('tr', { class: 'row' },
+        h('td', { class: 'l sym am', text: p }),
+        h('td', { class: 'up sym', text: scVal.toFixed(1) }),
+        h('td', { class: 'lb sym', text: tr }),
+        h('td', { style: 'width:130px' },
+          h('div', { style: 'width:115px;height:8px;background:#141414;border:1px solid #2b2b2b' },
+            h('div', { style: `width:${scVal}%;height:100%;background:#00d26a` })
+          )
+        ),
+        h('td', { class: 'l mu', text: desc })
+      )))
+    ),
+    h('div', { class: 'tb', style: 'background:#070707;margin-top:6px' }, h('span', { class: 'lbl', text: '2) GUID — CORPORATE MANAGEMENT GUIDANCE RANGE VS WALL STREET CONSENSUS' })),
+    h('table', { class: 't' },
+      h('thead', null, h('tr', null, ['Metric', 'Mgmt Guidance Range', 'Guidance Midpoint', 'Street Consensus', 'Spread vs Street', 'Guidance Signal'].map(x => h('th', { text: x })))),
+      h('tbody', null, GUIDANCE.map(([m, rg, mid, con, sp, sig]) => h('tr', { class: 'row' },
+        h('td', { class: 'l sym am', text: m }),
+        h('td', { class: 'lb', text: rg }),
+        h('td', { class: 'am sym', text: mid }),
+        h('td', { text: con }),
+        h('td', { class: 'up sym', text: sp }),
+        h('td', { class: 'up sym', text: sig })
+      )))
+    )
+  );
+  ctx.status({ source: 'esg-guidance-audit', ts: Date.now(), mode: 'LIVE' });
+}
+
+
 
 

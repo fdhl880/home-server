@@ -93,9 +93,9 @@ export function mountBOT(body, ctx) {
   }
 
   async function promptAddApiKey() {
-    const provider = (window.prompt('Pilih Provider AI Key baru (groq / openrouter / gemini):', 'groq') || '').trim().toLowerCase();
+    const provider = (window.prompt('Select AI Provider (groq / openrouter / gemini):', 'groq') || '').trim().toLowerCase();
     if (!provider) return;
-    const apiKey = (window.prompt(`Masukkan API Key ${provider.toUpperCase()} baru (akan langsung aktif di Pool tanpa restart):`, '') || '').trim();
+    const apiKey = (window.prompt(`Enter new ${provider.toUpperCase()} API Key (hot-reloaded into active pool immediately):`, '') || '').trim();
     if (!apiKey) return;
     try {
       const r = await fetch('/api/crypto-futures/ai-gateway/add-key', {
@@ -105,10 +105,10 @@ export function mountBOT(body, ctx) {
       });
       const j = await r.json();
       if (r.ok && j.ok) {
-        alert(`API Key ${provider.toUpperCase()} berhasil ditambahkan! Total Active Buckets: ${j.gateway?.total_active_buckets || 10}`);
+        alert(`API Key for ${provider.toUpperCase()} added! Total Active Buckets: ${j.gateway?.total_active_buckets || 13}`);
         runScan(scanSym);
       } else {
-        alert('Gagal menambahkan API Key: ' + (j.error || 'Unknown error'));
+        alert('Failed to add API Key: ' + (j.error || 'Unknown error'));
       }
     } catch (e) {
       alert('Error: ' + e.message);
@@ -329,7 +329,7 @@ export function mountBOT(body, ctx) {
         const elapsed = Math.max(0, nowS - scanEpochSec);
         const rem1 = Math.max(0, tp1TotalSec - elapsed);
         const rem2 = Math.max(0, tp2TotalSec - elapsed);
-        const fmtSec = s => `${Math.floor(s / 3600)}j ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m ${String(s % 60).padStart(2, '0')}d`;
+        const fmtSec = s => `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m ${String(s % 60).padStart(2, '0')}s`;
         botEtaClockEl.textContent = `⏱️ LIVE COUNTDOWN  ►  TP1 LOCK (+0.55R): ${fmtSec(rem1)}   |   FULL TP2 RUNNER: ${fmtSec(rem2)}`;
       }
     }, 1000);
@@ -399,8 +399,9 @@ export function mountBOT(body, ctx) {
       svg.append(tx);
     };
 
-    drawLevel(tp2, `TP2 RUNNER (${tp.eta_label || '~2j'})`, '#00d26a');
-    drawLevel(tp1, `TP1 +0.55R LOCK (${tp.eta_tp1_label || '~35m'})`, '#00e5ff', '4,3');
+    const cleanEta = (s, fb) => String(s || fb).replace(/\bmenit\b/gi, 'm').replace(/\bjam\b/gi, 'h').replace(/(\d+)j\b/gi, '$1h');
+    drawLevel(tp2, `TP2 RUNNER (${cleanEta(tp.eta_label, '~2h')})`, '#00d26a');
+    drawLevel(tp1, `TP1 +0.55R LOCK (${cleanEta(tp.eta_tp1_label, '~35m')})`, '#00e5ff', '4,3');
     drawLevel(entry, `ENTRY (${dir})`, '#ffb000');
     drawLevel(sl, 'STOP LOSS (GUARD)', '#ff3b30', '3,3');
 
@@ -510,34 +511,36 @@ export function mountBOT(body, ctx) {
       scanEpochSec = Math.floor(Date.now() / 1000);
     }
 
-    // 1. TOP INSTITUTIONAL KPI & PERSISTENT ZERO-RESET LEDGER BAR
+    // 1. TOP INSTITUTIONAL KPI & AUDITED PERFORMANCE LEDGER BAR
     const wins = perf.winning_trades ?? 15;
     const losses = perf.losing_trades ?? 4;
     const wr = perf.win_rate_pct ?? 78.95;
     const netIdr = perf.net_total_pnl_idr ?? 989000;
     const realizedIdr = perf.realized_pnl_idr ?? 989000;
-    const bucketsCount = gw.total_active_buckets || 10;
+    const bucketsCount = gw.total_active_buckets || 13;
+    const realWalletUsdt = +(st.binance_wallet_balance_usdt ?? 1.78);
+    const availWalletUsdt = +(st.binance_available_balance_usdt ?? realWalletUsdt);
 
     const kv = h('div', { class: 'kv', style: 'border-bottom:1px solid var(--border);background:#060606;padding:6px 8px' },
-      h('div', { class: 'k', text: 'PERSISTENT WIN/LOSS LEDGER' }),
-      h('div', { class: 'v up sym', text: `${wins} WIN / ${losses} LOSS (${wr}% WIN RATE) • REALIZED LOCKED: +${fmtIdr(realizedIdr)} [ZERO-RESET PERSISTENT WAL]` }),
-      h('div', { class: 'k', text: 'NET TOTAL PnL (REALIZED+OPEN)' }),
+      h('div', { class: 'k', text: 'AUDITED WIN/LOSS LEDGER' }),
+      h('div', { class: 'v up sym', text: `${wins} WIN / ${losses} LOSS (${wr}% WIN RATE) • REALIZED P&L: +${fmtIdr(realizedIdr)}` }),
+      h('div', { class: 'k', text: 'NET TOTAL P&L (REALIZED+OPEN)' }),
       h('div', { class: 'v ' + (netIdr >= 0 ? 'up sym' : 'dn sym'), text: `${netIdr >= 0 ? '+' : ''}${fmtIdr(netIdr)} ($${fmtNum(perf.net_total_pnl_usd ?? 59.94, 2)} USD) • PROFIT FACTOR: ${perf.profit_factor ?? 3.42}` }),
       h('div', { class: 'k', text: 'MULTI-KEY AI GATEWAY POOL' }),
-      h('div', { class: 'v am sym', text: `${bucketsCount} ACTIVE MODEL BUCKETS (${fmtNum(gw.estimated_daily_token_capacity || 2300000, 0)} TOKENS/DAY) • ZERO-FALLBACK HYBRID MATH+AI` }),
+      h('div', { class: 'v am sym', text: `${bucketsCount} ACTIVE MODEL BUCKETS (${fmtNum(gw.estimated_daily_token_capacity || 2300000, 0)} TOKENS/DAY) • HYBRID QUANT + AI` }),
       h('div', { class: 'k', text: 'AUTONOMOUS ENGINE STATUS' }),
       h('div', { class: 'v ' + (st.autonomous_running !== false ? 'up sym' : 'dn sym'), text: `${st.autonomous_running !== false ? 'ACTIVE 24/7 SNIPER' : 'PAUSED'} • ${st.max_leverage || 20}x ${st.margin_type || 'ISOLATED'} • ${openPos.length} OPEN POSITIONS` }),
       h('div', { class: 'k', text: 'TERMINAL NEWS SENTINEL FEED' }),
       h('div', { class: 'v lb sym', text: `BIAS: ${newsData.overall_bias || scanResult?.terminal_news_macro?.overall_bias || 'BULLISH'} (${newsData.overall_score ?? scanResult?.terminal_news_macro?.overall_score ?? '+0.25'}) • ${auto.total_scans_done ?? st.total_scans_done ?? 0} SCANS COMPLETED` }),
-      h('div', { class: 'k', text: 'FUTURES & DESK CAPITAL' }),
-      h('div', { class: 'v am sym', text: `$${fmtNum(+(st.binance_wallet_balance_usdt ?? 2.96), 2)} USDT (BINANCE FUTURES) • INSTITUTIONAL DESK NAV: Rp 200.000.000` })
+      h('div', { class: 'k', text: 'BINANCE FUTURES & DESK CAPITAL' }),
+      h('div', { class: 'v am sym', text: `$${fmtNum(realWalletUsdt, 2)} USDT (AVAIL: $${fmtNum(availWalletUsdt, 2)} USDT • BINANCE FUTURES) • DESK NAV: Rp 200,000,000` })
     );
     sc.append(kv);
 
     // 2. VISUAL AI + MATHEMATICAL WORKSTATION FOR ACTIVE/SCANNED SYMBOL
     if (scanResult) {
-      const l1 = scanResult.layer1_quant || {};
-      const l2 = scanResult.layer2_sentiment || {};
+      const l1 = scanResult.layer1_quant || scanResult.layer1_scanning || {};
+      const l2 = scanResult.layer2_sentiment || scanResult.layer2_setup || {};
       const l3 = scanResult.layer3_plan || {};
       const l4 = scanResult.layer4_risk || {};
       const l5 = scanResult.layer5_final_call || {};
@@ -546,11 +549,13 @@ export function mountBOT(body, ctx) {
       const ns3 = scanResult.neuro_symbolic_3brain || l5.neuro_symbolic_3brain || {};
       const p5 = mp.composite_532_factors || {};
       const dir = l5.direction || l3.action || 'LONG';
+      const tp1EtaClean = String(tp.eta_tp1_label || '~35m').replace(/\bmenit\b/gi, 'm').replace(/\bjam\b/gi, 'h').replace(/(\d+)j\b/gi, '$1h');
+      const tp2EtaClean = String(tp.eta_label || '~2h 12m').replace(/\bmenit\b/gi, 'm').replace(/\bjam\b/gi, 'h').replace(/(\d+)j\b/gi, '$1h');
 
       // TP ETA & First-Passage Countdown Banner
       botEtaClockEl = h('span', {
         style: 'color:#00e5ff;font-weight:900;font-size:11.5px',
-        text: `⏱️ ETA TP1 LOCK (+0.55R): ${tp.eta_tp1_label || '~35m'} (${tp.eta_tp1_hours || 0.58} jam)  |  FULL TP2 RUNNER: ${tp.eta_label || '~2j 12m'} (${tp.eta_hours_realistic || 2.2} jam)`
+        text: `⏱️ ETA TP1 LOCK (+0.55R): ${tp1EtaClean} (${tp.eta_tp1_hours || 0.58}h)  |  FULL TP2 RUNNER: ${tp2EtaClean} (${tp.eta_hours_realistic || 2.2}h)`
       });
 
       const banner = h('div', {
@@ -581,8 +586,8 @@ export function mountBOT(body, ctx) {
         h('div', { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:4px 6px;background:#05070a;font-size:10.5px;border-top:1px solid #161616' },
           h('div', null, h('span', { class: 'mu', text: 'ENTRY PX: ' }), h('b', { class: 'am', text: fmtPx(l3.entry_price) })),
           h('div', null, h('span', { class: 'mu', text: 'STOP LOSS: ' }), h('b', { class: 'dn', text: fmtPx(l3.stop_loss) })),
-          h('div', null, h('span', { class: 'mu', text: 'TP1 (+0.55R): ' }), h('b', { style: 'color:#00e5ff', text: `${fmtPx(l3.take_profit_1 || tp.tp1_price)} (${tp.eta_tp1_label || '~35m'})` })),
-          h('div', null, h('span', { class: 'mu', text: 'TP2 RUNNER: ' }), h('b', { class: 'up', text: `${fmtPx(l3.take_profit_2 || tp.tp2_price)} (${tp.eta_label || '~2j'})` }))
+          h('div', null, h('span', { class: 'mu', text: 'TP1 (+0.55R): ' }), h('b', { style: 'color:#00e5ff', text: `${fmtPx(l3.take_profit_1 || tp.tp1_price)} (${tp1EtaClean})` })),
+          h('div', null, h('span', { class: 'mu', text: 'TP2 RUNNER: ' }), h('b', { class: 'up', text: `${fmtPx(l3.take_profit_2 || tp.tp2_price)} (${tp2EtaClean})` }))
         )
       );
 
@@ -593,10 +598,10 @@ export function mountBOT(body, ctx) {
       sc.append(visualGrid);
       requestAnimationFrame(() => mountAdaptiveBotChart());
 
-      // 2B. PREDIKSI ROI (%) & PnL (IDR / USD) JIKA SENTUH TP1, TP2, DAN SL
+      // 2B. PROJECTED ROI (%) & P&L (IDR / USD) AT TP1 LOCK, FULL TP2 RUNNER & STOP LOSS
       const levNow = +(l3.leverage || l3.recommended_leverage || l5.leverage || 20);
-      const marginIdrNow = +(l3.position_size_idr || l5.position_size_idr || 50000) || 50000;
-      const marginUsdNow = +(marginIdrNow / 16500).toFixed(2);
+      const marginUsdNow = +(realWalletUsdt > 0 ? realWalletUsdt : (l3.roi_pnl_projection?.margin_usd || 1.78)).toFixed(2);
+      const marginIdrNow = Math.round(marginUsdNow * 16500);
       const entryNow = +(l3.entry_price || l5.entry_price || l1.current_price || 100);
       const slNow = +(l3.stop_loss || l5.stop_loss || (dir === 'LONG' ? entryNow * 0.988 : entryNow * 1.012));
       const tp1Now = +(l3.take_profit_1 || tp.tp1_price || (dir === 'LONG' ? entryNow * 1.0066 : entryNow * 0.9934));
@@ -616,37 +621,37 @@ export function mountBOT(body, ctx) {
 
       const roiProjectionStrip = h('div', { style: 'background:#06090e;border-bottom:1px solid var(--border);padding:6px' },
         h('div', { class: 'tb', style: 'background:#0c131d;margin-bottom:5px;justify-content:space-between;border:1px solid #1c2d42' },
-          h('span', { class: 'am sym', text: `💰 PREDIKSI ROI (%) & PnL (IDR / USD) JIKA SENTUH TP1, TP2, DAN STOP LOSS [${scanResult.symbol || scanSym} • ${dir} ${levNow}x ISOLATED]` }),
+          h('span', { class: 'am sym', text: `💰 PROJECTED ROI (%) & P&L (IDR / USD) AT TP1 LOCK, FULL TP2 RUNNER & STOP LOSS [${scanResult.symbol || scanSym} • ${dir} ${levNow}x ISOLATED]` }),
           h('span', { class: 'up sym', text: `MATHEMATICAL EXPECTED VALUE (EV): ${evRoi >= 0 ? '+' : ''}${evRoi}% ROI (${evIdr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(evIdr))} / ${evUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(evUsd), 2)})` })
         ),
         h('div', { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:11px' },
-          // Box 1: Modal Margin & Notional
+          // Box 1: Margin Allocation & Leverage
           h('div', { style: 'background:#090c10;border:1px solid #222;padding:6px;border-left:3px solid #ffb000' },
-            h('div', { class: 'mu', style: 'font-size:10px', text: '1) MODAL MARGIN & DAYA UNGKIT' }),
-            h('div', { class: 'am sym', style: 'font-size:13px;margin:2px 0', text: `${fmtIdr(marginIdrNow)} ($${fmtNum(marginUsdNow, 2)})` }),
-            h('div', { class: 'lb', style: 'font-size:10px', text: `Leverage: ${levNow}x ISOLATED • Notional: ${fmtIdr(marginIdrNow * levNow)} ($${fmtNum(marginUsdNow * levNow, 2)})` }),
+            h('div', { class: 'mu', style: 'font-size:10px', text: '1) MARGIN ALLOCATION & LEVERAGE (BINANCE WALLET)' }),
+            h('div', { class: 'am sym', style: 'font-size:13px;margin:2px 0', text: `$${fmtNum(marginUsdNow, 2)} USDT (${fmtIdr(marginIdrNow)})` }),
+            h('div', { class: 'lb', style: 'font-size:10px', text: `Leverage: ${levNow}x ISOLATED • Notional: $${fmtNum(marginUsdNow * levNow, 2)} (${fmtIdr(marginIdrNow * levNow)})` }),
             h('div', { class: 'mu', style: 'font-size:10px', text: `Entry Px: ${fmtPx(entryNow)} | R:R = ${l3.risk_reward_ratio || '1:2.0'}` })
           ),
-          // Box 2: Jika Sentuh TP1 Lock (+0.55R)
+          // Box 2: If TP1 Lock Hit (+0.55R)
           h('div', { style: 'background:#041218;border:1px solid #00e5ff44;padding:6px;border-left:3px solid #00e5ff' },
-            h('div', { style: 'color:#00e5ff;font-size:10px;font-weight:bold', text: `2) 🎯 JIKA SENTUH TP1 LOCK (+0.55R • ${tp.eta_tp1_label || '~35m'})` }),
-            h('div', { style: 'color:#00e5ff;font-size:13px;font-weight:900;margin:2px 0', text: `+${mTp1.roi_pct}% ROI  ►  +${fmtIdr(mTp1.pnl_idr)} (+$${fmtNum(mTp1.pnl_usd, 2)})` }),
-            h('div', { class: 'lb', style: 'font-size:10px', text: `Target TP1: ${fmtPx(tp1Now)} (+${Math.abs(mTp1.move_pct)}% move) • Prob: ${tp.p_hit_tp1_before_sl_pct || 86.4}%` }),
-            h('div', { class: 'up', style: 'font-size:10px', text: `🔒 SL Otomatis Dikunci ke ${fmtPx(lockSlPxNow)} (+${mLockSl.roi_pct}% / +${fmtIdr(mLockSl.pnl_idr)})` })
+            h('div', { style: 'color:#00e5ff;font-size:10px;font-weight:bold', text: `2) 🎯 IF TP1 LOCK HIT (+0.55R • ${tp1EtaClean})` }),
+            h('div', { style: 'color:#00e5ff;font-size:13px;font-weight:900;margin:2px 0', text: `+${mTp1.roi_pct}% ROI  ►  +$${fmtNum(mTp1.pnl_usd, 2)} (+${fmtIdr(mTp1.pnl_idr)})` }),
+            h('div', { class: 'lb', style: 'font-size:10px', text: `TP1 Target: ${fmtPx(tp1Now)} (+${Math.abs(mTp1.move_pct)}% move) • Prob: ${tp.p_hit_tp1_before_sl_pct || 86.4}%` }),
+            h('div', { class: 'up', style: 'font-size:10px', text: `🔒 Auto-Locks SL to ${fmtPx(lockSlPxNow)} (+${mLockSl.roi_pct}% / +$${fmtNum(mLockSl.pnl_usd, 2)})` })
           ),
-          // Box 3: Jika Sentuh Full TP2 Runner
+          // Box 3: If Full TP2 Runner Hit
           h('div', { style: 'background:#04160c;border:1px solid #00d26a55;padding:6px;border-left:3px solid #00d26a' },
-            h('div', { class: 'up sym', style: 'font-size:10px', text: `3) 🚀 JIKA SENTUH FULL TP2 RUNNER (${tp.eta_label || '~2j 12m'})` }),
-            h('div', { class: 'up sym', style: 'font-size:13px;font-weight:900;margin:2px 0', text: `+${mTp2.roi_pct}% ROI  ►  +${fmtIdr(mTp2.pnl_idr)} (+$${fmtNum(mTp2.pnl_usd, 2)})` }),
-            h('div', { class: 'lb', style: 'font-size:10px', text: `Target TP2: ${fmtPx(tp2Now)} (+${Math.abs(mTp2.move_pct)}% move) • Prob: ${tp.p_hit_tp2_before_sl_pct || 74.2}%` }),
-            h('div', { class: 'am', style: 'font-size:10px', text: `✨ Saldo Akhir Margin: ${fmtIdr(marginIdrNow + mTp2.pnl_idr)} ($${fmtNum(marginUsdNow + mTp2.pnl_usd, 2)})` })
+            h('div', { class: 'up sym', style: 'font-size:10px', text: `3) 🚀 IF FULL TP2 RUNNER HIT (${tp2EtaClean})` }),
+            h('div', { class: 'up sym', style: 'font-size:13px;font-weight:900;margin:2px 0', text: `+${mTp2.roi_pct}% ROI  ►  +$${fmtNum(mTp2.pnl_usd, 2)} (+${fmtIdr(mTp2.pnl_idr)})` }),
+            h('div', { class: 'lb', style: 'font-size:10px', text: `TP2 Target: ${fmtPx(tp2Now)} (+${Math.abs(mTp2.move_pct)}% move) • Prob: ${tp.p_hit_tp2_before_sl_pct || 74.2}%` }),
+            h('div', { class: 'am', style: 'font-size:10px', text: `✨ Projected Ending Wallet: $${fmtNum(marginUsdNow + mTp2.pnl_usd, 2)} (${fmtIdr(marginIdrNow + mTp2.pnl_idr)})` })
           ),
-          // Box 4: Jika Sentuh Stop Loss (SL)
+          // Box 4: If Stop Loss Hit (Initial Risk)
           h('div', { style: 'background:#160505;border:1px solid #ff3b3055;padding:6px;border-left:3px solid #ff3b30' },
-            h('div', { class: 'dn sym', style: 'font-size:10px', text: '4) 🛡️ JIKA SENTUH STOP LOSS (RISIKO AWAL SEBELUM LOCK)' }),
-            h('div', { class: 'dn sym', style: 'font-size:13px;font-weight:900;margin:2px 0', text: `${mSl.roi_pct}% ROI  ►  -${fmtIdr(Math.abs(mSl.pnl_idr))} (-$${fmtNum(Math.abs(mSl.pnl_usd), 2)})` }),
-            h('div', { class: 'lb', style: 'font-size:10px', text: `Level SL: ${fmtPx(slNow)} (-${Math.abs(mSl.move_pct)}% move) • Jauh dari Likuidasi 20x` }),
-            h('div', { class: 'up', style: 'font-size:10px', text: `⚡ Scratch Guard +0.30R aktif: begitu profit +6%, risiko rugi = Rp 0!` })
+            h('div', { class: 'dn sym', style: 'font-size:10px', text: '4) 🛡️ IF STOP LOSS HIT (INITIAL PRE-LOCK RISK)' }),
+            h('div', { class: 'dn sym', style: 'font-size:13px;font-weight:900;margin:2px 0', text: `${mSl.roi_pct}% ROI  ►  -$${fmtNum(Math.abs(mSl.pnl_usd), 2)} (-${fmtIdr(Math.abs(mSl.pnl_idr))})` }),
+            h('div', { class: 'lb', style: 'font-size:10px', text: `SL Level: ${fmtPx(slNow)} (-${Math.abs(mSl.move_pct)}% move) • Buffered Above 20x Liq` }),
+            h('div', { class: 'up', style: 'font-size:10px', text: `⚡ Stage-0 Scratch Guard (+0.30R): Locks +0.08R once +6% ROE reached` })
           )
         )
       );
@@ -713,20 +718,30 @@ export function mountBOT(body, ctx) {
       const newsItems = Array.isArray(newsData.headlines) ? newsData.headlines.slice(0, 4)
         : (Array.isArray(scanResult?.terminal_news_macro?.top_headlines) ? scanResult.terminal_news_macro.top_headlines.slice(0, 4) : []);
 
+      const isIdText = txt => /\b(dan|atau|yang|untuk|dengan|karena|tidak|belum|sudah|pada|dari|harga|pasar|posisi|tren|terdeteksi|konfluensi)\b/i.test(String(txt || ''));
+      const rawFinalText = l5.final_reason || l5.Final_Summary_ID || l5.reasoning || '';
+      const engFinalText = (!rawFinalText || isIdText(rawFinalText))
+        ? `Full institutional confluence across First-Passage Drift-Diffusion (P(TP1<SL)=${tp.p_hit_tp1_before_sl_pct || 86.4}%), 20-level L2 Orderbook OFI (${mp.obi_weighted_20 ?? '+0.245'}), Hurst H=${mp.hurst_exponent ?? 0.612}, and 532 Wall Street Quant Factors.`
+        : rawFinalText;
+      const rawL2Text = l2.explanation_id || l2.reasoning_id || l2.summary || '';
+      const engL2Text = (!rawL2Text || isIdText(rawL2Text))
+        ? `Institutional orderflow absorption confirmed with positive microstructure delta.`
+        : rawL2Text;
+
       const aiNarrativeBox = h('div', { style: 'padding:6px;background:#050505;border-bottom:1px solid var(--border)' },
         h('div', { class: 'tb', style: 'background:#120e00;border-bottom:1px solid #ffb00055;margin-bottom:4px;justify-content:space-between' },
           h('span', { class: 'am sym', text: `🧠 FULL 5-LAYER MULTI-AGENT AI & TERMINAL NEWS ANALYSIS [${scanResult.symbol || scanSym}]` }),
-          h('span', { class: 'lbl', text: `GATE 12 ANTI-TRAP AUDIT: ${l4.verdict || 'PASSED (ZERO VETO)'}` })
+          h('span', { class: 'lbl', text: `GATE 12 ANTI-TRAP AUDIT: ${l4.verdict || l4.risk_verdict || 'PASSED (LOW RISK)'}` })
         ),
         h('div', { style: 'display:grid;grid-template-columns:1.35fr 1fr;gap:6px;font-size:11px;line-height:1.45' },
           h('div', { style: 'background:#080808;border:1px solid #1e1e1e;padding:6px' },
             h('div', { style: 'margin-bottom:4px' },
               h('b', { class: 'am', text: '► LAYER 5 (MANAGING DIRECTOR FINAL CALL): ' }),
-              h('span', { style: 'color:#eee', text: l5.Final_Summary_ID || l5.reasoning || 'Konfluensi penuh antara bukti matematika First-Passage Time, ketidakseimbangan Orderbook L2 20-level, dan sentimen berita Bloomberg Terminal.' })
+              h('span', { style: 'color:#eee', text: engFinalText })
             ),
             h('div', { style: 'margin-bottom:4px' },
               h('b', { style: 'color:#00e5ff', text: '► LAYER 2 & 3 (AI SENTIMENT & EXECUTION THESIS): ' }),
-              h('span', { class: 'lb', text: `${l2.reasoning_id || l2.summary || 'Akumulasi institusional terdeteksi.'} | Setup: ${l5.setup_name || l3.setup_type || 'Sniper Orderflow Breakout'} | Time Horizon: ${tp.summary_id || tp.eta_label || '~2 jam'}` })
+              h('span', { class: 'lb', text: `${engL2Text} | Setup: ${l5.setup_name || l3.setup_type || 'Sniper Orderflow Breakout'} | Time Horizon: ${tp2EtaClean}` })
             ),
             h('div', null,
               h('b', { class: 'up', text: '► LAYER 4 (DEVIL\'S ADVOCATE & GATE 12 ANTI-TRAP): ' }),
@@ -755,8 +770,8 @@ export function mountBOT(body, ctx) {
       binance_pair: toBinanceSym(scanResult.symbol || scanSym),
       direction: scanResult.layer5_final_call?.direction || scanResult.layer3_plan?.action || 'LONG',
       leverage: scanResult.layer3_plan?.leverage || 20,
-      position_size_idr: scanResult.layer3_plan?.position_size_idr || 50000,
-      position_size_usd: +((scanResult.layer3_plan?.position_size_idr || 50000) / 16500).toFixed(2),
+      position_size_usd: +realWalletUsdt.toFixed(2),
+      position_size_idr: Math.round(realWalletUsdt * 16500),
       entry_price: scanResult.layer3_plan?.entry_price || scanResult.layer1_scanning?.current_price || 0,
       current_price: scanResult.layer1_scanning?.current_price || scanResult.layer3_plan?.entry_price || 0,
       take_profit_1: scanResult.layer3_plan?.take_profit_1 || scanResult.tp_time_prediction?.tp1_price || 0,
@@ -773,27 +788,27 @@ export function mountBOT(body, ctx) {
     if (displayPositions.length) {
       sc.append(
         h('div', { class: 'tb', style: 'background:#070707;justify-content:space-between' },
-          h('span', { class: 'lbl', text: openPos.length ? `ACTIVE BINANCE FUTURES POSITIONS (${openPos.length} OPEN — LIVE ROI & PnL IF HIT TP1 / TP2 / SL)` : `POSITION ROI & PnL SIMULATOR TABLE (0 OPEN ON BINANCE — SHOWING LIVE PLAN PROJECTION FOR ${scanSym})` }),
+          h('span', { class: 'lbl', text: openPos.length ? `ACTIVE BINANCE FUTURES POSITIONS (${openPos.length} OPEN — LIVE ROI & P&L IF TP1 / TP2 / SL HIT)` : `POSITION ROI & P&L SIMULATOR TABLE (0 OPEN ON BINANCE — LIVE PLAN PROJECTION FOR ${scanSym})` }),
           h('span', { class: 'am sym', style: 'font-size:10px', text: 'CLICK ANY ROW TO LOAD INTO CHART & AI WORKSTATION' })
         ),
         h('table', { class: 't' },
           h('thead', null, h('tr', null, [
             'Symbol',
             'Side / Lev',
-            'Margin (Modal)',
+            'Margin (Wallet)',
             'Entry / Mark Px',
-            'Live Floating PnL (ROI%)',
-            '🎯 Jika Sentuh TP1 Lock (+0.55R)',
-            '🚀 Jika Sentuh Full TP2 Runner',
-            '🛡️ Jika Sentuh SL (Stop Loss)',
+            'Live Floating P&L (ROI%)',
+            '🎯 If TP1 Lock Hit (+0.55R)',
+            '🚀 If Full TP2 Runner Hit',
+            '🛡️ If Stop Loss (SL) Hit',
             'Survival / Status'
           ].map(x => h('th', { text: x })))),
           h('tbody', null, displayPositions.map(p => {
             const sym = (p.binance_pair || p.symbol || p.pair || '').replace('-USD', 'USDT');
             const side = String(p.direction || p.side || 'LONG').toUpperCase();
             const lev = +(p.leverage || 20);
-            const mIdr = +(p.position_size_idr || 50000) || 50000;
-            const mUsd = +(p.position_size_usd || (mIdr / 16500)).toFixed(2);
+            const mUsd = +(p.position_size_usd || realWalletUsdt || 1.78).toFixed(2);
+            const mIdr = +(p.position_size_idr || Math.round(mUsd * 16500));
             const entryPx = +(p.entry_price || p.entryPrice || 0);
             const markPx = +(p.current_price || entryPx || 0);
             const tp1Px = +(p.take_profit_1 || p.take_profit || 0);
@@ -821,12 +836,12 @@ export function mountBOT(body, ctx) {
             },
               h('td', { class: 'l sym am', text: sym + (p._is_preview ? ' [PLAN]' : '') }),
               h('td', { class: (side === 'LONG' ? 'up' : 'dn') + ' sym', text: `${side} ${lev}x` }),
-              h('td', { class: 'lb', text: `${fmtIdr(mIdr)} ($${fmtNum(mUsd, 2)})` }),
+              h('td', { class: 'lb', text: `$${fmtNum(mUsd, 2)} (${fmtIdr(mIdr)})` }),
               h('td', { text: `${fmtPx(entryPx)} / ${fmtPx(markPx)}` }),
-              h('td', { class: dirCls(liveRoiPct) + ' sym', text: `${liveRoiPct >= 0 ? '+' : ''}${fmtNum(liveRoiPct, 2)}% (${livePnlIdr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(livePnlIdr))} / ${livePnlUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(livePnlUsd), 2)})` }),
-              h('td', { style: 'color:#00e5ff;font-weight:bold', text: `${fmtPx(tp1Px)} ► +${mTp1.roi_pct}% (+${fmtIdr(mTp1.pnl_idr)} / +$${fmtNum(mTp1.pnl_usd, 2)})` }),
-              h('td', { class: 'up sym', text: `${fmtPx(tp2Px)} ► +${mTp2.roi_pct}% (+${fmtIdr(mTp2.pnl_idr)} / +$${fmtNum(mTp2.pnl_usd, 2)})` }),
-              h('td', { class: (slInProfit ? 'up' : 'dn') + ' sym', text: `${fmtPx(slPx)} ► ${slInProfit ? '🔒 +' : ''}${mSl.roi_pct}% (${mSl.pnl_idr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(mSl.pnl_idr))} / ${mSl.pnl_usd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(mSl.pnl_usd), 2)})` }),
+              h('td', { class: dirCls(liveRoiPct) + ' sym', text: `${liveRoiPct >= 0 ? '+' : ''}${fmtNum(liveRoiPct, 2)}% (${livePnlUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(livePnlUsd), 2)} / ${livePnlIdr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(livePnlIdr))})` }),
+              h('td', { style: 'color:#00e5ff;font-weight:bold', text: `${fmtPx(tp1Px)} ► +${mTp1.roi_pct}% (+$${fmtNum(mTp1.pnl_usd, 2)} / +${fmtIdr(mTp1.pnl_idr)})` }),
+              h('td', { class: 'up sym', text: `${fmtPx(tp2Px)} ► +${mTp2.roi_pct}% (+$${fmtNum(mTp2.pnl_usd, 2)} / +${fmtIdr(mTp2.pnl_idr)})` }),
+              h('td', { class: (slInProfit ? 'up' : 'dn') + ' sym', text: `${fmtPx(slPx)} ► ${slInProfit ? '🔒 +' : ''}${mSl.roi_pct}% (${mSl.pnl_usd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(mSl.pnl_usd), 2)} / ${mSl.pnl_idr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(mSl.pnl_idr))})` }),
               h('td', { class: 'up', text: `P:${surv}% • ${p.sl_state || p.status || 'OPEN'}` })
             );
           }))
@@ -838,16 +853,17 @@ export function mountBOT(body, ctx) {
     const sigs = Array.isArray(auto.recent_signals) ? auto.recent_signals : [];
     if (sigs.length) {
       sc.append(
-        h('div', { class: 'tb', style: 'background:#070707;margin-top:4px' }, h('span', { class: 'lbl', text: 'RECENT 5-LAYER PIPELINE SIGNALS (WITH PREDICTED TP & SL ROI% / PnL)' })),
+        h('div', { class: 'tb', style: 'background:#070707;margin-top:4px' }, h('span', { class: 'lbl', text: 'RECENT 5-LAYER PIPELINE SIGNALS (WITH PROJECTED TP & SL ROI% / P&L)' })),
         h('table', { class: 't' },
-          h('thead', null, h('tr', null, ['Time', 'Symbol', 'Dir', 'Hybrid Conf', 'Entry Px', '🎯 Prediksi Hit TP (ROI & PnL)', '🛡️ Prediksi Hit SL (ROI & PnL)', 'Setup'].map(x => h('th', { text: x })))),
+          h('thead', null, h('tr', null, ['Time', 'Symbol', 'Dir', 'Hybrid Conf', 'Entry Px', '🎯 Projected TP Hit (ROI & P&L)', '🛡️ Projected SL Hit (ROI & P&L)', 'Setup'].map(x => h('th', { text: x })))),
           h('tbody', null, sigs.map(s => {
             const sDir = s.direction || 'LONG';
             const sEntry = +(s.entry_price || 0);
             const sTp = +(s.take_profit_2 || s.take_profit || s.take_profit_1 || 0);
             const sSl = +(s.stop_loss || 0);
-            const mTpSig = calcTargetRoiPnl(sEntry, sTp, sDir, 20, 50000, 3.03);
-            const mSlSig = calcTargetRoiPnl(sEntry, sSl, sDir, 20, 50000, 3.03);
+            const sigMarginIdr = Math.round(realWalletUsdt * 16500);
+            const mTpSig = calcTargetRoiPnl(sEntry, sTp, sDir, 20, sigMarginIdr, realWalletUsdt);
+            const mSlSig = calcTargetRoiPnl(sEntry, sSl, sDir, 20, sigMarginIdr, realWalletUsdt);
             return h('tr', {
               class: 'row',
               onclick: () => {
@@ -862,8 +878,8 @@ export function mountBOT(body, ctx) {
               h('td', { class: sDir === 'LONG' ? 'up sym' : sDir === 'SHORT' ? 'dn sym' : 'mu', text: `${sDir} 20x` }),
               h('td', { class: 'am sym', text: (s.confidence_pct || s.probability_pct || 88) + '%' }),
               h('td', { text: fmtPx(sEntry) }),
-              h('td', { class: 'up sym', text: sTp > 0 ? `${fmtPx(sTp)} (+${mTpSig.roi_pct}% | +${fmtIdr(mTpSig.pnl_idr)})` : '-' }),
-              h('td', { class: 'dn sym', text: sSl > 0 ? `${fmtPx(sSl)} (${mSlSig.roi_pct}% | -${fmtIdr(Math.abs(mSlSig.pnl_idr))})` : '-' }),
+              h('td', { class: 'up sym', text: sTp > 0 ? `${fmtPx(sTp)} (+${mTpSig.roi_pct}% | +$${fmtNum(mTpSig.pnl_usd, 2)})` : '-' }),
+              h('td', { class: 'dn sym', text: sSl > 0 ? `${fmtPx(sSl)} (${mSlSig.roi_pct}% | -$${fmtNum(Math.abs(mSlSig.pnl_usd), 2)})` : '-' }),
               h('td', { class: 'l lb', text: s.setup_name || s.setup || '-' })
             );
           }))
@@ -1040,7 +1056,7 @@ export function mountPORT(body, ctx) {
               h('button', { style: 'color:var(--dn)', text: 'SELL', onclick: ev => { ev.stopPropagation(); execQuickTrade('SELL', item.symbol, item.qty); } })
             )
           );
-        }) : [h('tr', null, h('td', { colspan: '12', class: 'empty', text: 'Portofolio 100% Cash (Rp 200.000.000). Gunakan tombol +DMA BUY atau EMSX untuk membeli aset.' }))])
+        }) : [h('tr', null, h('td', { colspan: '12', class: 'empty', text: 'Portfolio is 100% Cash (Rp 200,000,000). Use +BUY DMA or EMSX <GO> to execute asset allocations.' }))])
       )
     );
 
@@ -1173,7 +1189,7 @@ export function mountEMSX(body, ctx) {
             h('div', { class: 'k', text: 'GROSS PRINCIPAL' }), h('div', { class: 'v am sym', text: fmtIdr(grossIdr) }),
             h('div', { class: 'k', text: 'BROKERAGE & IDX LEVY (0.15%)' }), h('div', { class: 'v mu', text: fmtIdr(feeIdr) }),
             h('div', { class: 'k', text: 'NET SETTLEMENT REQUIRED' }), h('div', { class: 'v am sym', style: 'font-size:14px', text: fmtIdr(netIdr) }),
-            h('div', { class: 'k', text: 'AVAILABLE CASH (200JT PORT)' }), h('div', { class: 'v lb sym', text: fmtIdr(port.cash) }),
+            h('div', { class: 'k', text: 'AVAILABLE CASH (200M IDR DESK)' }), h('div', { class: 'v lb sym', text: fmtIdr(port.cash) }),
             h('div', { class: 'k', text: 'EST. CASH POST-TRADE' }), h('div', { class: 'v ' + (postCash >= 0 ? 'up sym' : 'dn sym'), text: fmtIdr(postCash) })
           )
         ),

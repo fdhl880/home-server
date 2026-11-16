@@ -2325,12 +2325,65 @@ try {
     }
 } catch (e) {}
 
-function computeRoiPnlProjection({ entryPrice, tp1Price, tp2Price, slPrice, initSlPrice, direction = 'LONG', leverage = 20, marginIdr = 50000, marginUsd = 0 }) {
+// Real-Time Binance Futures Wallet Sync (persisted in autotrader_state.json + live polled via BinanceFuturesClient)
+let liveBinanceWalletCache = {
+    total_wallet_balance: 1.78,
+    available_balance: 1.78,
+    cross_unrealized_pnl: 0,
+    updated_at: null
+};
+
+function getRealBinanceWallet() {
+    try {
+        if (fs.existsSync(statePath)) {
+            const st = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+            if (typeof st.binance_wallet_balance_usdt === 'number' && !isNaN(st.binance_wallet_balance_usdt)) {
+                liveBinanceWalletCache.total_wallet_balance = Number(st.binance_wallet_balance_usdt);
+            }
+            if (typeof st.binance_available_balance_usdt === 'number' && !isNaN(st.binance_available_balance_usdt)) {
+                liveBinanceWalletCache.available_balance = Number(st.binance_available_balance_usdt);
+            }
+        }
+    } catch (e) {}
+    return liveBinanceWalletCache;
+}
+
+function refreshRealBinanceWallet() {
+    getRealBinanceWallet();
+    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const script = "import sys, json; sys.path.insert(0, '.'); from binance_futures import BinanceFuturesClient; print(json.dumps(BinanceFuturesClient().get_balance()))";
+    execFile(pyCmd, ['-c', script], { cwd: pluangDir, timeout: 10000 }, (err, stdout) => {
+        if (err || !stdout) return;
+        try {
+            const lines = stdout.trim().split(/\r?\n/);
+            const lastLine = lines[lines.length - 1];
+            const parsed = JSON.parse(lastLine);
+            if (parsed && !parsed.isError && typeof parsed.total_wallet_balance === 'number') {
+                liveBinanceWalletCache.total_wallet_balance = Number(parsed.total_wallet_balance.toFixed(4));
+                liveBinanceWalletCache.available_balance = Number((parsed.available_balance ?? parsed.total_wallet_balance).toFixed(4));
+                liveBinanceWalletCache.cross_unrealized_pnl = Number((parsed.cross_unrealized_pnl || 0).toFixed(4));
+                liveBinanceWalletCache.updated_at = new Date().toISOString();
+                if (fs.existsSync(statePath)) {
+                    const st = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+                    st.binance_wallet_balance_usdt = liveBinanceWalletCache.total_wallet_balance;
+                    st.binance_available_balance_usdt = liveBinanceWalletCache.available_balance;
+                    st.binance_unrealized_pnl_usdt = liveBinanceWalletCache.cross_unrealized_pnl;
+                    fs.writeFileSync(statePath, JSON.stringify(st, null, 2));
+                }
+            }
+        } catch (e) {}
+    });
+}
+refreshRealBinanceWallet();
+setInterval(refreshRealBinanceWallet, 20000);
+
+function computeRoiPnlProjection({ entryPrice, tp1Price, tp2Price, slPrice, initSlPrice, direction = 'LONG', leverage = 20, marginIdr = 0, marginUsd = 0 }) {
     const entry = Number(entryPrice) || 0;
     const lev = Number(leverage) || 20;
     const fx = 16500;
-    const mUsd = Number(marginUsd) > 0 ? Number(marginUsd) : (Number(marginIdr) > 0 ? Number(marginIdr) / fx : 2.96);
-    const mIdr = Number(marginIdr) > 0 ? Number(marginIdr) : Math.round(mUsd * fx);
+    const realWalletUsd = Math.max(0.5, Number(getRealBinanceWallet().total_wallet_balance) || 1.78);
+    const mUsd = Number(marginUsd) > 0 ? Number(marginUsd) : (Number(marginIdr) > 0 && Number(marginIdr) !== 50000 ? Number(marginIdr) / fx : realWalletUsd);
+    const mIdr = Math.round(mUsd * fx);
     const sign = String(direction || 'LONG').toUpperCase() === 'SHORT' ? -1 : 1;
 
     const initSl = Number(initSlPrice || slPrice) || (entry > 0 ? entry * (1 - sign * 0.012) : 0);
@@ -2383,7 +2436,8 @@ function enrichPositionWithRoiProjection(pos) {
     const curPx = Number(t.lastPrice || pos.current_price || entry || 0);
     const dir = String(pos.direction || pos.side || 'LONG').toUpperCase();
     const lev = Number(pos.leverage || 20);
-    const mUsd = Number(pos.position_size_usd || 0) || (Number(pos.position_size_idr || 0) > 0 ? Number(pos.position_size_idr) / 16500 : 2.96);
+    const realWalletUsd = Math.max(0.5, Number(getRealBinanceWallet().total_wallet_balance) || 1.78);
+    const mUsd = Number(pos.position_size_usd || 0) || (Number(pos.position_size_idr || 0) > 0 ? Number(pos.position_size_idr) / 16500 : realWalletUsd);
     const mIdr = Number(pos.position_size_idr || 0) || Math.round(mUsd * 16500);
 
     const proj = computeRoiPnlProjection({
@@ -2557,7 +2611,7 @@ function buildFallbackScan(symbol) {
                 `Terminal News Sentiment Aligned`
             ],
             probability_pct: 82,
-            explanation_id: "Konfluensi tren matematis Hurst H > 0.55 dengan dukungan Order Flow Imbalance 20-level."
+            explanation_id: "Mathematical Hurst H > 0.55 trend persistence aligned with 20-level Order Flow Imbalance (OFI)."
         },
         layer3_plan: {
             action: dir,
@@ -2569,7 +2623,7 @@ function buildFallbackScan(symbol) {
             take_profit_2: tp2,
             risk_reward_ratio: "1:2.0",
             leverage: 20,
-            position_size_idr: 50000,
+            position_size_idr: Math.round((getRealBinanceWallet().total_wallet_balance || 1.78) * 16500),
             sl_distance_pct: 1.2,
             tp_distance_pct: 2.4,
             reasoning: "20x Isolated Sniper Plan: Stage-0 Scratch Guard +0.30R, TP1 Lock +0.55R -> SL +0.38R, Runner TP2 +2.0R.",
@@ -2580,17 +2634,17 @@ function buildFallbackScan(symbol) {
                 sl_distance_pct: 1.2,
                 effective_velocity_pct_per_hour: 0.98,
                 eta_tp1_hours: 0.58,
-                eta_tp1_label: "35 menit",
+                eta_tp1_label: "~35m",
                 eta_hours_optimistic: 1.35,
                 eta_hours_realistic: 2.4,
                 eta_hours_pessimistic: 4.8,
-                eta_label: "~2j 24m (TP1 Lock: ~35 menit)",
-                eta_detail: "TP1 Lock (+0.55R): ~35 menit | Full TP2: ~2j 24m (Best 1j 21m – Worst 4j 48m)",
+                eta_label: "~2h 24m (TP1 Lock: ~35m)",
+                eta_detail: "TP1 Lock (+0.55R): ~35m | Full TP2: ~2h 24m (Best 1h 21m – Worst 4h 48m)",
                 p_hit_tp1_before_sl_pct: 86.4,
                 p_hit_tp2_before_sl_pct: 74.2,
                 confidence_pct: 86,
                 trajectory_cone: cone,
-                model_note: "FPT Kalman Drift: v=0.980%/jam. P(TP1<SL)=86.4%, ETA TP1 ~35 menit, Full TP2 ~2j 24m."
+                model_note: "FPT Kalman Drift: v=0.980%/hr. P(TP1<SL)=86.4%, ETA TP1 ~35m, Full TP2 ~2h 24m."
             }
         },
         layer4_risk: {
@@ -2599,7 +2653,7 @@ function buildFallbackScan(symbol) {
             pass_rate_pct: 100,
             risk_verdict: "LOW_RISK",
             recommendation: "PROCEED",
-            reasoning: "SL 1.20% aman jauh di atas jarak likuidasi 20x (4.60%). OFI dan berita terminal mendukung."
+            reasoning: "SL 1.20% is safely buffered inside the 20x isolated liquidation boundary (4.60%). L2 OFI and macro news flow confirm alignment."
         },
         layer5_final_call: {
             status: "APPROVED",
@@ -2618,7 +2672,7 @@ function buildFallbackScan(symbol) {
             risk_reward_ratio: "1:2.0",
             leverage: 20,
             setup_name: "TREND_CONTINUATION",
-            final_reason: "3-Brain Neuro-Symbolic Ensemble & 532 Quant Factors sepakat dengan P(TP1<SL)=86.4%.",
+            final_reason: "3-Brain Neuro-Symbolic Ensemble & 532 Quant Factors in consensus with P(TP1<SL)=86.4%.",
             neuro_symbolic_3brain: {
                 brain1_tabular_ml_prob: 0.814,
                 brain2_episodic_knn_prob: 0.805,
@@ -2678,6 +2732,14 @@ function enrichScanWithMathAndRoi(scanObj, symbol) {
             });
         }
     }
+    const normEta = (str, fallback) => {
+        if (!str) return fallback;
+        return String(str)
+            .replace(/\bmenit\b/gi, 'm')
+            .replace(/\bjam\b/gi, 'h')
+            .replace(/\bdetik\b/gi, 's')
+            .replace(/(\d+)j\b/gi, '$1h');
+    };
     const tpPred = {
         tp1_price: tp1,
         tp2_price: tp2,
@@ -2685,14 +2747,14 @@ function enrichScanWithMathAndRoi(scanObj, symbol) {
         tp1_distance_pct: Number((Math.abs(tp1 - px) / Math.max(px, 1e-9) * 100).toFixed(2)),
         sl_distance_pct: Number((slDistFrac * 100).toFixed(2)),
         eta_tp1_hours: existingTp.eta_tp1_hours || 0.58,
-        eta_tp1_label: existingTp.eta_tp1_label || "~35 menit",
         eta_hours_realistic: existingTp.eta_hours_realistic || 2.2,
-        eta_label: existingTp.eta_label || "~2j 12m",
         p_hit_tp1_before_sl_pct: existingTp.p_hit_tp1_before_sl_pct || 86.4,
         p_hit_tp2_before_sl_pct: existingTp.p_hit_tp2_before_sl_pct || 74.2,
         market_session: existingTp.market_session || "US-EU OVERLAP",
         session_speed_multiplier: existingTp.session_speed_multiplier || 1.25,
         ...existingTp,
+        eta_tp1_label: normEta(existingTp.eta_tp1_label, "~35m"),
+        eta_label: normEta(existingTp.eta_label, "~2h 12m"),
         trajectory_cone: cone
     };
 
@@ -2738,9 +2800,10 @@ function enrichScanWithMathAndRoi(scanObj, symbol) {
         ...existingNs
     };
 
-    // Ensure ROI & PnL Projection (TP1, TP2, SL)
+    // Ensure ROI & PnL Projection (TP1, TP2, SL) dynamically sized to real live Binance Futures balance
     const lev = Number(l3.leverage || l3.recommended_leverage || l5.leverage || 20);
-    const marginIdr = Number(l3.position_size_idr || l5.position_size_idr || 50000) || 50000;
+    const liveWalletUsd = Math.max(0.5, Number(getRealBinanceWallet().total_wallet_balance) || 1.78);
+    const marginIdr = Math.round(liveWalletUsd * 16500);
     const roiProj = computeRoiPnlProjection({
         entryPrice: px,
         tp1Price: tp1,
@@ -2749,7 +2812,8 @@ function enrichScanWithMathAndRoi(scanObj, symbol) {
         initSlPrice: sl,
         direction: dir,
         leverage: lev,
-        marginIdr
+        marginIdr,
+        marginUsd: liveWalletUsd
     });
 
     l3.entry_price = px;
@@ -2989,7 +3053,9 @@ app.get('/api/crypto-futures/status', (req, res) => {
     } catch (e) {}
 
     const hasTokens = fs.existsSync(tokensPath);
-    let binanceBalance = 2.96;
+    const liveWallet = getRealBinanceWallet();
+    const binanceBalance = Number(liveWallet.total_wallet_balance ?? 1.78);
+    const binanceAvailable = Number(liveWallet.available_balance ?? binanceBalance);
 
     res.json({
         status: "online",
@@ -3000,6 +3066,8 @@ app.get('/api/crypto-futures/status', (req, res) => {
         core_assets_count: (quickScreen && quickScreen.universe_size) || 524,
         binance_connected: true,
         binance_wallet_balance_usdt: binanceBalance,
+        binance_available_balance_usdt: binanceAvailable,
+        binance_unrealized_pnl_usdt: Number(liveWallet.cross_unrealized_pnl || 0),
         pluang_connected: false,
         max_budget_idr: cfg.max_budget_idr || 50000,
         max_leverage: cfg.max_leverage || 20,
@@ -3081,12 +3149,16 @@ app.get(['/api/crypto-futures/positions', '/api/futures/positions'], (req, res) 
 
 app.get('/api/futures/wallet', (req, res) => {
     const cfg = getLocalTradingConfig();
+    const liveWallet = getRealBinanceWallet();
+    const totalUsdt = Number(liveWallet.total_wallet_balance ?? 1.78);
+    const availUsdt = Number(liveWallet.available_balance ?? totalUsdt);
     res.json({
         status: 'online',
         exchange: 'BINANCE_FUTURES',
-        total_balance_usdt: 2.96,
-        available_balance_usdt: 2.96,
-        balance_idr: 200000000,
+        total_balance_usdt: totalUsdt,
+        available_balance_usdt: availUsdt,
+        cross_unrealized_pnl_usdt: Number(liveWallet.cross_unrealized_pnl || 0),
+        balance_idr: Math.round(totalUsdt * 16500),
         leverage: cfg.max_leverage || 20,
         margin_type: cfg.margin_type || 'ISOLATED'
     });
