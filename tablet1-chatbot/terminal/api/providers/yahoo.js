@@ -24,7 +24,7 @@ async function quote(symbol) {
   });
 }
 
-const MAP = { '1m': ['1m', '1d'], '5m': ['5m', '5d'], '15m': ['15m', '1mo'], '1h': ['60m', '3mo'], '4h': ['60m', '6mo'], '1d': ['1d', '2y'], '1w': ['1wk', '10y'] };
+const MAP = { '1m': ['1m', '1d'], '5m': ['5m', '5d'], '15m': ['15m', '1mo'], '1h': ['60m', '3mo'], '4h': ['60m', '6mo'], '1d': ['1d', '2y'], '1w': ['1wk', '10y'], '1mo': ['1mo', '10y'] };
 async function kline(symbol, interval = '1h', limit = 300) {
   const [iv, range] = MAP[interval] || MAP['1h'];
   const r = await chart(symbol, iv, range);

@@ -1,5 +1,6 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, fmtTime, dirCls, LS } from '../util.js';
 import { get, getRaw, tickOk } from '../api.js';
+import { attachTechnicalMasterCanvas } from './charts.js';
 
 export function mountBOT(body, ctx) {
   body.classList.add('fill');
@@ -16,12 +17,19 @@ export function mountBOT(body, ctx) {
   let botChart = null;
   let botSeries = null;
   let botVolSeries = null;
+  let botTmOverlay = null;
   let botActiveBar = null;
+  let botMappedBars = [];
+  let botLastRawCandles = [];
+  let botRightBoxEl = null;
   let botUnsubs = [];
   let botSecTimer = null;
   let botChartWrap = null;
   let botChartLeg = null;
   let botEtaClockEl = null;
+  let isAutoRunning = false;
+  let autoTogglePending = false;
+  let latestWalletUsdt = 0;
   let scanEpochSec = Math.floor(Date.now() / 1000);
 
   function isCryptoForBot(s) {
@@ -38,12 +46,32 @@ export function mountBOT(body, ctx) {
     return 'Rp ' + Math.round(n).toLocaleString('id-ID');
   }
 
-  function calcTargetRoiPnl(entryPx, targetPx, dir = 'LONG', lev = 20, marginIdr = 50000, marginUsd = 3.03) {
+  function ensureDistinctTp(entry, sl, tp1In, tp2In, dir) {
+    const e = Number(entry) || 0;
+    const s = Number(sl) || 0;
+    const sign = String(dir || 'LONG').toUpperCase() === 'SHORT' ? -1 : 1;
+    const risk = e > 0 && s > 0 ? Math.abs(e - s) : e * 0.012;
+    let tp1 = Number(tp1In) || 0;
+    let tp2 = Number(tp2In) || 0;
+    if (e > 0) {
+      if (tp1 <= 0) tp1 = e + sign * risk * 0.55;
+      if (tp2 <= 0) tp2 = e + sign * Math.max(risk * 1.8, Math.abs(tp1 - e) * 1.8);
+      if (Math.abs(tp2 - tp1) < Math.max(1e-8, e * 0.0015)) {
+        tp1 = e + sign * Math.max(risk * 0.55, Math.abs(tp2 - e) * 0.45);
+        if (Math.abs(tp2 - tp1) < Math.max(1e-8, e * 0.0015)) {
+          tp2 = e + sign * (Math.abs(tp1 - e) + Math.max(risk * 0.9, e * 0.006));
+        }
+      }
+    }
+    return { tp1, tp2 };
+  }
+
+  function calcTargetRoiPnl(entryPx, targetPx, dir = 'LONG', lev = 20, marginIdr = 0, marginUsd = 0) {
     const e = Number(entryPx) || 0;
     const t = Number(targetPx) || 0;
     const l = Number(lev) || 20;
-    const mIdr = Number(marginIdr) > 0 ? Number(marginIdr) : 50000;
-    const mUsd = Number(marginUsd) > 0 ? Number(marginUsd) : +(mIdr / 16500).toFixed(2);
+    const mUsd = Number(marginUsd) > 0 ? Number(marginUsd) : (Number(marginIdr) > 0 ? Number(marginIdr) / 16500 : 0);
+    const mIdr = Number(marginIdr) > 0 ? Number(marginIdr) : Math.round(mUsd * 16500);
     if (e <= 0 || t <= 0) return { price: 0, move_pct: 0, roi_pct: 0, pnl_idr: 0, pnl_usd: 0 };
     const sign = String(dir || 'LONG').toUpperCase() === 'SHORT' ? -1 : 1;
     const movePct = sign * ((t - e) / e) * 100;
@@ -60,6 +88,7 @@ export function mountBOT(body, ctx) {
     if (botChart) { try { botChart.remove(); } catch {} botChart = null; }
     botSeries = null;
     botVolSeries = null;
+    botTmOverlay = null;
   }
 
   async function runScan(sym) {
@@ -86,10 +115,25 @@ export function mountBOT(body, ctx) {
   }
 
   async function toggleAuto() {
+    if (autoTogglePending) return;
+    autoTogglePending = true;
+    const targetRunning = !isAutoRunning;
+    renderToolbar();
     try {
-      await fetch('/api/crypto-futures/auto/toggle', { method: 'POST' });
+      const res = await fetch('/api/crypto-futures/auto/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ running: targetRunning })
+      });
+      if (res.ok) {
+        const j = await res.json();
+        if (typeof j.is_running === 'boolean') isAutoRunning = j.is_running;
+        else if (typeof j.autonomous_running === 'boolean') isAutoRunning = j.autonomous_running;
+        else isAutoRunning = targetRunning;
+      }
     } catch {}
-    load();
+    autoTogglePending = false;
+    await load();
   }
 
   async function promptAddApiKey() {
@@ -118,6 +162,12 @@ export function mountBOT(body, ctx) {
   function renderToolbar() {
     tb.textContent = '';
     const inp = h('input', { value: scanSym, style: 'width:92px;text-transform:uppercase;font-weight:bold', placeholder: 'BTC-USD' });
+    const autoBtnText = autoTogglePending
+      ? (isAutoRunning ? 'PAUSING...' : 'RESUMING...')
+      : (isAutoRunning ? '⏸️ PAUSE AUTO-BOT (LIVE)' : '▶️ RESUME AUTO-BOT (PAUSED)');
+    const autoBtnStyle = isAutoRunning
+      ? 'color:#ff5a52;border-color:#ff3b3088;background:#1a0606;font-weight:bold'
+      : 'color:#00d26a;border-color:#00d26a88;background:#041a0d;font-weight:bold';
     tb.append(
       h('span', { class: 'lbl', text: 'BOT PYROFUEL 99% SNIPER (MATH + AI + NEWS):' }),
       inp,
@@ -129,74 +179,48 @@ export function mountBOT(body, ctx) {
         onclick: () => { botChartIv = tf; renderToolbar(); mountAdaptiveBotChart(); }
       })),
       h('button', { style: 'color:#00e5ff;border-color:#00e5ff55', text: '+ADD API KEY', onclick: promptAddApiKey }),
-      h('button', { text: 'TOGGLE AUTO-BOT', onclick: toggleAuto }),
+      h('button', { style: autoBtnStyle, text: autoBtnText, onclick: toggleAuto }),
       h('button', { text: 'REFRESH', onclick: load })
     );
-  }
-
-  function build1sBars(candles1m) {
-    if (!candles1m || !candles1m.length) return [];
-    const out = [];
-    const nowSec = Math.floor(Date.now() / 1000);
-    const recent = candles1m.slice(-5);
-    const lastC = recent[recent.length - 1];
-    const basePx = +lastC.c || 100;
-    const atr = Math.max(basePx * 0.00025, (+lastC.h - +lastC.l) / 25 || basePx * 0.0002);
-    let cur = +(recent[0]?.o || basePx);
-    const totalPoints = 90;
-    for (let i = totalPoints; i >= 1; i--) {
-      const tSec = nowSec - i;
-      const target = i <= 4 ? basePx : +(recent[Math.min(recent.length - 1, Math.floor(((totalPoints - i) / totalPoints) * recent.length))].c || basePx);
-      const drift = (target - cur) * 0.2;
-      const wave = Math.sin(i * 0.5) * atr * 0.4 + Math.cos(i * 1.2) * atr * 0.22;
-      const o = cur;
-      const c = i === 1 ? basePx : +(o + drift + wave).toFixed(6);
-      const hi = Math.max(o, c) + Math.abs(Math.sin(i * 0.8)) * atr * 0.35;
-      const lo = Math.min(o, c) - Math.abs(Math.cos(i * 0.6)) * atr * 0.35;
-      const v = Math.max(0.01, (+lastC.v || 100) / 60 * (0.5 + Math.abs(Math.sin(i))));
-      out.push({ time: tSec, open: o, high: hi, low: lo, close: c, vol: v });
-      cur = c;
-    }
-    return out;
   }
 
   async function mountAdaptiveBotChart() {
     if (!botChartWrap) return;
     clearBotChartSubs();
-    botChartWrap.querySelectorAll('.tv-lightweight-charts, .na').forEach(e => e.remove());
+    botChartWrap.querySelectorAll('.tv-lightweight-charts, .na, .tm-overlay-canvas').forEach(e => e.remove());
     const LWC = window.LightweightCharts;
     if (!LWC) {
       botChartWrap.append(h('div', { class: 'na', text: 'LightweightCharts unavailable' }));
       return;
     }
     const bSym = toBinanceSym(scanResult?.symbol || scanSym);
-    const fetchIv = botChartIv === '1s' ? '1m' : botChartIv;
-    const env = await get('kline', { symbol: bSym, interval: fetchIv, limit: botChartIv === '1s' ? 40 : 140 }, 2500);
+    let env = await get('kline', { symbol: bSym, interval: botChartIv, limit: botChartIv === '1s' ? 160 : 140 }, 3000);
     let rawCandles = (env.ok && env.data && Array.isArray(env.data.candles)) ? env.data.candles : [];
-    if (!rawCandles.length) {
-      const baseP = +(scanResult?.layer3_plan?.entry_price || scanResult?.layer1_scanning?.current_price || 80572);
-      const nowMs = Date.now();
-      const stepMs = 60000;
-      let cur = baseP * 0.991;
-      const atrStep = baseP * 0.0018;
-      rawCandles = [];
-      for (let i = 60; i >= 1; i--) {
-        const target = i === 1 ? baseP : cur + (baseP - cur) * (1 / i) + Math.sin(i * 0.75) * atrStep;
-        const o = cur;
-        const c = i === 1 ? baseP : +target.toPrecision(6);
-        const hi = +(Math.max(o, c) + Math.abs(Math.cos(i * 1.1)) * atrStep * 0.65).toPrecision(6);
-        const lo = +(Math.min(o, c) - Math.abs(Math.sin(i * 0.9)) * atrStep * 0.65).toPrecision(6);
-        rawCandles.push({ t: nowMs - i * stepMs, o, h: hi, l: lo, c, v: 120 + (i % 9) * 35 });
-        cur = c;
+    let feedNote = '';
+    if (!rawCandles.length && botChartIv === '1s') {
+      const mEnv = await get('kline', { symbol: bSym, interval: '1m', limit: 120 }, 3000);
+      if (mEnv.ok && mEnv.data && Array.isArray(mEnv.data.candles) && mEnv.data.candles.length) {
+        rawCandles = mEnv.data.candles;
+        feedNote = '1M FEED + LIVE TICK';
       }
     }
+    if (!rawCandles.length) {
+      botChartWrap.append(h('div', { class: 'na', text: `No live exchange OHLCV candles returned for ${bSym} (${botChartIv.toUpperCase()})` }));
+      return;
+    }
 
-    const mapped = botChartIv === '1s'
-      ? build1sBars(rawCandles)
-      : rawCandles.map(c => ({
-          time: Math.floor(c.t / 1000),
-          open: +c.o, high: +c.h, low: +c.l, close: +c.c, vol: +(c.v || 0)
-        })).sort((a, b) => a.time - b.time);
+    botLastRawCandles = rawCandles;
+    if (botRightBoxEl && scanResult) {
+      const oldSvg = botRightBoxEl.querySelector('svg');
+      const freshSvg = renderVisualTrajectoryBlueprint(scanResult, rawCandles);
+      if (oldSvg && freshSvg) oldSvg.replaceWith(freshSvg);
+    }
+
+    const mapped = rawCandles.map(c => ({
+      time: Math.floor(c.t / 1000),
+      open: +c.o, high: +c.h, low: +c.l, close: +c.c, value: +c.c, vol: +(c.v || 0)
+    })).sort((a, b) => a.time - b.time);
+    botMappedBars = mapped;
 
     const w = botChartWrap.clientWidth || 460;
     const ht = botChartWrap.clientHeight || 250;
@@ -233,20 +257,26 @@ export function mountBOT(body, ctx) {
 
     botActiveBar = mapped[mapped.length - 1] ? { ...mapped[mapped.length - 1] } : null;
 
-    // Draw Institutional Entry / SL / TP1 / TP2 Price Lines on the live chart with ROI% & PnL labels
+    // Draw Technical Master Overlays + Institutional Entry / SL / TP1 / TP2 Zones with Real Wallet Sizing
     const l3 = scanResult?.layer3_plan || {};
     const l5 = scanResult?.layer5_final_call || {};
     const tpPred = scanResult?.tp_time_prediction || l3?.tp_time_prediction || {};
     const dirChart = l5.direction || l3.action || 'LONG';
     const levChart = +(l3.leverage || l3.recommended_leverage || 20);
-    const marginIdrChart = +(l3.position_size_idr || 50000) || 50000;
+    const marginUsdChart = latestWalletUsdt > 0 ? latestWalletUsdt : (+(l3.position_size_idr || 0) / 16500);
+    const marginIdrChart = Math.round(marginUsdChart * 16500);
     const entryPx = +(l3.entry_price || botActiveBar?.close || 0);
     const slPx = +(l3.stop_loss || 0);
-    const tp1Px = +(l3.take_profit_1 || tpPred.tp1_price || 0);
-    const tp2Px = +(l3.take_profit_2 || tpPred.tp2_price || 0);
-    const mTp1Chart = calcTargetRoiPnl(entryPx, tp1Px, dirChart, levChart, marginIdrChart);
-    const mTp2Chart = calcTargetRoiPnl(entryPx, tp2Px, dirChart, levChart, marginIdrChart);
-    const mSlChart = calcTargetRoiPnl(entryPx, slPx, dirChart, levChart, marginIdrChart);
+    const { tp1: tp1Px, tp2: tp2Px } = ensureDistinctTp(
+      entryPx,
+      slPx,
+      l3.take_profit_1 || tpPred.tp1_price || 0,
+      l3.take_profit_2 || l3.take_profit || tpPred.tp2_price || 0,
+      dirChart
+    );
+    const mTp1Chart = calcTargetRoiPnl(entryPx, tp1Px, dirChart, levChart, marginIdrChart, marginUsdChart);
+    const mTp2Chart = calcTargetRoiPnl(entryPx, tp2Px, dirChart, levChart, marginIdrChart, marginUsdChart);
+    const mSlChart = calcTargetRoiPnl(entryPx, slPx, dirChart, levChart, marginIdrChart, marginUsdChart);
 
     if (typeof botSeries.createPriceLine === 'function') {
       if (entryPx > 0) {
@@ -264,6 +294,14 @@ export function mountBOT(body, ctx) {
     }
 
     botChart.timeScale().fitContent();
+    botTmOverlay = attachTechnicalMasterCanvas({
+      wrap: botChartWrap,
+      chart: botChart,
+      getSeries: () => botSeries,
+      getMapped: () => botMappedBars,
+      getLayers: () => ({ struct: true, trend: true, fvg: true, fib: false, vpvr: true }),
+      getTradePlan: () => ({ dir: dirChart, entry: entryPx, sl: slPx, tp1: tp1Px, tp2: tp2Px })
+    });
 
     const ivMap = { '1s': 1, '1m': 60, '5m': 300, '15m': 900, '1h': 3600 };
     const ivSec = ivMap[botChartIv] || 60;
@@ -277,26 +315,36 @@ export function mountBOT(body, ctx) {
       const bucket = ivSec <= 1 ? nowS : Math.floor(nowS / ivSec) * ivSec;
       if (!botActiveBar || bucket > botActiveBar.time) {
         const prev = botActiveBar ? botActiveBar.close : price;
-        botActiveBar = { time: bucket, open: prev, high: Math.max(prev, price), low: Math.min(prev, price), close: price, vol: Number(qty) || 0 };
+        botActiveBar = { time: bucket, open: prev, high: Math.max(prev, price), low: Math.min(prev, price), close: price, value: price, vol: Number(qty) || 0 };
+        botMappedBars.push({ ...botActiveBar });
+        if (botMappedBars.length > 240) botMappedBars.shift();
       } else {
         botActiveBar.close = price;
+        botActiveBar.value = price;
         if (price > botActiveBar.high) botActiveBar.high = price;
         if (price < botActiveBar.low) botActiveBar.low = price;
         botActiveBar.vol = (botActiveBar.vol || 0) + (Number(qty) || 0);
+        if (botMappedBars.length) {
+          const mb = botMappedBars[botMappedBars.length - 1];
+          mb.close = botActiveBar.close; mb.value = botActiveBar.close; mb.high = botActiveBar.high; mb.low = botActiveBar.low; mb.vol = botActiveBar.vol;
+        }
       }
       try {
         botSeries.update({ time: botActiveBar.time, open: botActiveBar.open, high: botActiveBar.high, low: botActiveBar.low, close: botActiveBar.close });
         if (botVolSeries) botVolSeries.update({ time: botActiveBar.time, value: botActiveBar.vol, color: botActiveBar.close >= botActiveBar.open ? 'rgba(0,210,106,0.5)' : 'rgba(255,59,48,0.5)' });
       } catch {}
+      botTmOverlay?.scheduleDraw();
       const remS = ivSec <= 1 ? 1 : Math.max(0, ivSec - (nowS % ivSec));
-      const remTxt = ivSec <= 1 ? '1S LIVE TICK' : `NEXT BAR: ${String(Math.floor(remS / 60)).padStart(2, '0')}:${String(remS % 60).padStart(2, '0')}s`;
+      const remTxt = ivSec <= 1 ? '1S REALTIME' : `NEXT BAR: ${String(Math.floor(remS / 60)).padStart(2, '0')}:${String(remS % 60).padStart(2, '0')}s`;
       if (botChartLeg) {
-        botChartLeg.innerHTML = `<b style="color:#fff">${bSym}</b> [${botChartIv.toUpperCase()}]  PX:<b style="color:#ffb000">${fmtPx(botActiveBar.close)}</b>  H:<b style="color:#00d26a">${fmtPx(botActiveBar.high)}</b>  L:<b style="color:#ff3b30">${fmtPx(botActiveBar.low)}</b>  <span style="color:#00d26a">● ${remTxt}</span>`;
+        const ivTag = feedNote ? `${botChartIv.toUpperCase()} (${feedNote})` : botChartIv.toUpperCase();
+        botChartLeg.innerHTML = `<b style="color:#fff">${bSym}</b> [${ivTag}]  PX:<b style="color:#ffb000">${fmtPx(botActiveBar.close)}</b>  H:<b style="color:#00d26a">${fmtPx(botActiveBar.high)}</b>  L:<b style="color:#ff3b30">${fmtPx(botActiveBar.low)}</b>  <span style="color:#00d26a">● ${remTxt}</span>`;
       }
     };
 
     if (botChartLeg && botActiveBar) {
-      botChartLeg.innerHTML = `<b style="color:#fff">${bSym}</b> [${botChartIv.toUpperCase()}]  PX:<b style="color:#ffb000">${fmtPx(botActiveBar.close)}</b>  H:<b style="color:#00d26a">${fmtPx(botActiveBar.high)}</b>  L:<b style="color:#ff3b30">${fmtPx(botActiveBar.low)}</b>  <span style="color:#00d26a">● SUB-SECOND LIVE</span>`;
+      const ivTag = feedNote ? `${botChartIv.toUpperCase()} (${feedNote})` : botChartIv.toUpperCase();
+      botChartLeg.innerHTML = `<b style="color:#fff">${bSym}</b> [${ivTag}]  PX:<b style="color:#ffb000">${fmtPx(botActiveBar.close)}</b>  H:<b style="color:#00d26a">${fmtPx(botActiveBar.high)}</b>  L:<b style="color:#ff3b30">${fmtPx(botActiveBar.low)}</b>  <span style="color:#00d26a">● TECH MASTER LIVE</span>`;
     }
 
     if (botChartIv !== '1s') {
@@ -313,15 +361,12 @@ export function mountBOT(body, ctx) {
 
     botSecTimer = setInterval(() => {
       const nowS = Math.floor(Date.now() / 1000);
-      if (botActiveBar && botChartIv === '1s' && Date.now() - lastTickMs >= 950) {
-        const microWave = botActiveBar.close * (Math.sin(nowS * 1.9) * 0.000035);
-        updateBotTick(+(botActiveBar.close + microWave).toFixed(6), 0.02);
-      } else if (botActiveBar && botChartLeg) {
+      if (botActiveBar && botChartLeg) {
         const remS = ivSec <= 1 ? 1 : Math.max(0, ivSec - (nowS % ivSec));
-        const remTxt = ivSec <= 1 ? '1S LIVE TICK' : `NEXT BAR: ${String(Math.floor(remS / 60)).padStart(2, '0')}:${String(remS % 60).padStart(2, '0')}s`;
-        botChartLeg.innerHTML = `<b style="color:#fff">${bSym}</b> [${botChartIv.toUpperCase()}]  PX:<b style="color:#ffb000">${fmtPx(botActiveBar.close)}</b>  H:<b style="color:#00d26a">${fmtPx(botActiveBar.high)}</b>  L:<b style="color:#ff3b30">${fmtPx(botActiveBar.low)}</b>  <span style="color:#00d26a">● ${remTxt}</span>`;
+        const remTxt = ivSec <= 1 ? '1S REALTIME' : `NEXT BAR: ${String(Math.floor(remS / 60)).padStart(2, '0')}:${String(remS % 60).padStart(2, '0')}s`;
+        const ivTag = feedNote ? `${botChartIv.toUpperCase()} (${feedNote})` : botChartIv.toUpperCase();
+        botChartLeg.innerHTML = `<b style="color:#fff">${bSym}</b> [${ivTag}]  PX:<b style="color:#ffb000">${fmtPx(botActiveBar.close)}</b>  H:<b style="color:#00d26a">${fmtPx(botActiveBar.high)}</b>  L:<b style="color:#ff3b30">${fmtPx(botActiveBar.low)}</b>  <span style="color:#00d26a">● ${remTxt}</span>`;
       }
-      // Update Live TP ETA Countdown clock every second
       if (botEtaClockEl && scanResult) {
         const tp = scanResult.tp_time_prediction || scanResult.layer3_plan?.tp_time_prediction || {};
         const tp1TotalSec = Math.max(60, Math.round((Number(tp.eta_tp1_hours) || 0.58) * 3600));
@@ -335,7 +380,7 @@ export function mountBOT(body, ctx) {
     }, 1000);
   }
 
-  function renderVisualTrajectoryBlueprint(scan) {
+  function renderVisualTrajectoryBlueprint(scan, candlesIn = []) {
     const l3 = scan?.layer3_plan || {};
     const l5 = scan?.layer5_final_call || {};
     const mp = scan?.math_proof || l5?.math_proof || {};
@@ -343,8 +388,16 @@ export function mountBOT(body, ctx) {
     const dir = l5.direction || l3.action || 'LONG';
     const entry = +(l3.entry_price || 100);
     const sl = +(l3.stop_loss || (dir === 'LONG' ? entry * 0.985 : entry * 1.015));
-    const tp1 = +(l3.take_profit_1 || tp.tp1_price || (dir === 'LONG' ? entry * 1.012 : entry * 0.988));
-    const tp2 = +(l3.take_profit_2 || tp.tp2_price || (dir === 'LONG' ? entry * 1.028 : entry * 0.972));
+    const { tp1, tp2 } = ensureDistinctTp(
+      entry,
+      sl,
+      l3.take_profit_1 || tp.tp1_price || 0,
+      l3.take_profit_2 || l3.take_profit || tp.tp2_price || 0,
+      dir
+    );
+    const slDist = Math.abs(entry - sl);
+    const lockSl = entry + (dir === 'SHORT' ? -1 : 1) * slDist * 0.38;
+
     const cone = Array.isArray(tp.trajectory_cone) && tp.trajectory_cone.length
       ? tp.trajectory_cone
       : [1, 2, 3, 4, 5, 6, 7, 8].map(s => {
@@ -354,7 +407,13 @@ export function mountBOT(body, ctx) {
           return { step: s, eta_hours: +((tp.eta_hours_realistic || 2.2) * frac).toFixed(2), mid_price: mid, upper_price: mid + band, lower_price: mid - band };
         });
 
-    const allPrices = [entry, sl, tp1, tp2, ...cone.flatMap(c => [c.upper_price, c.lower_price, c.mid_price])].filter(x => Number.isFinite(x) && x > 0);
+    const histBarsAll = Array.isArray(candlesIn) && candlesIn.length ? candlesIn.slice(-16) : [];
+    const lastHistClose = histBarsAll.length ? Number(histBarsAll[histBarsAll.length - 1].c ?? histBarsAll[histBarsAll.length - 1].close ?? 0) : 0;
+    const isStaleScan = lastHistClose > 0 && Math.abs(lastHistClose - entry) / Math.max(1e-8, lastHistClose) > 0.06;
+    const histBars = isStaleScan ? [] : histBarsAll;
+    const histPrices = histBars.map(c => +(c.c ?? c.close)).filter(v => Number.isFinite(v) && v > 0);
+
+    const allPrices = [entry, sl, lockSl, tp1, tp2, ...histPrices, ...cone.flatMap(c => [c.upper_price, c.lower_price, c.mid_price])].filter(x => Number.isFinite(x) && x > 0);
     const minP = Math.min(...allPrices) * 0.9985;
     const maxP = Math.max(...allPrices) * 1.0015;
     const span = Math.max(maxP - minP, entry * 0.005);
@@ -366,8 +425,7 @@ export function mountBOT(body, ctx) {
     svg.setAttribute('preserveAspectRatio', 'none');
     svg.style.cssText = 'width:100%;height:192px;display:block;background:#020408;border-bottom:1px solid #1e1e1e';
 
-    // Shaded Reward Zone (Entry -> TP2) & Risk Zone (Entry -> SL)
-    const yEntry = yOf(entry), ySl = yOf(sl), yTp1 = yOf(tp1), yTp2 = yOf(tp2);
+    const yEntry = yOf(entry), ySl = yOf(sl), yLock = yOf(lockSl), yTp1 = yOf(tp1), yTp2 = yOf(tp2);
     const mkRect = (x, y1, y2, fill) => {
       const r = document.createElementNS(ns, 'rect');
       r.setAttribute('x', x);
@@ -378,12 +436,13 @@ export function mountBOT(body, ctx) {
       return r;
     };
     svg.append(
-      mkRect('20', yEntry, yTp2, 'rgba(0, 210, 106, 0.08)'),
+      mkRect('20', yEntry, yTp1, 'rgba(0, 229, 255, 0.08)'),
+      mkRect('20', yTp1, yTp2, 'rgba(0, 210, 106, 0.08)'),
       mkRect('20', yEntry, ySl, 'rgba(255, 59, 48, 0.09)')
     );
 
-    // Horizontal level lines
-    const drawLevel = (px, label, col, dash = '') => {
+    const usedLabelYs = [];
+    const drawLevel = (px, label, col, dash = '', preferRightX = false) => {
       const y = yOf(px);
       const ln = document.createElementNS(ns, 'line');
       ln.setAttribute('x1', '20'); ln.setAttribute('x2', '450');
@@ -391,9 +450,19 @@ export function mountBOT(body, ctx) {
       ln.setAttribute('stroke', col); ln.setAttribute('stroke-width', '1.4');
       if (dash) ln.setAttribute('stroke-dasharray', dash);
       svg.append(ln);
+      let labelX = preferRightX ? 255 : 24;
+      let labelY = Math.max(12, Math.min(182, y - 3));
+      // Stagger horizontally or vertically if two price levels sit close together
+      for (const prev of usedLabelYs) {
+        if (Math.abs(prev.y - labelY) < 12 && Math.abs(prev.x - labelX) < 150) {
+          labelX = prev.x < 180 ? 255 : 24;
+          if (Math.abs(prev.x - labelX) < 150) labelY = labelY + (labelY > 100 ? -12 : 12);
+        }
+      }
+      usedLabelYs.push({ x: labelX, y: labelY });
       const tx = document.createElementNS(ns, 'text');
-      tx.setAttribute('x', '24'); tx.setAttribute('y', Math.max(11, y - 4).toFixed(1));
-      tx.setAttribute('fill', col); tx.setAttribute('font-size', '9.5'); tx.setAttribute('font-weight', 'bold');
+      tx.setAttribute('x', String(labelX)); tx.setAttribute('y', labelY.toFixed(1));
+      tx.setAttribute('fill', col); tx.setAttribute('font-size', '9'); tx.setAttribute('font-weight', 'bold');
       tx.setAttribute('font-family', 'JetBrains Mono, monospace');
       tx.textContent = `${label}: ${fmtPx(px)}`;
       svg.append(tx);
@@ -402,23 +471,37 @@ export function mountBOT(body, ctx) {
     const cleanEta = (s, fb) => String(s || fb).replace(/\bmenit\b/gi, 'm').replace(/\bjam\b/gi, 'h').replace(/(\d+)j\b/gi, '$1h');
     drawLevel(tp2, `TP2 RUNNER (${cleanEta(tp.eta_label, '~2h')})`, '#00d26a');
     drawLevel(tp1, `TP1 +0.55R LOCK (${cleanEta(tp.eta_tp1_label, '~35m')})`, '#00e5ff', '4,3');
+    drawLevel(lockSl, 'LOCK SL (+0.38R)', '#4da3ff', '2,3', true);
     drawLevel(entry, `ENTRY (${dir})`, '#ffb000');
     drawLevel(sl, 'STOP LOSS (GUARD)', '#ff3b30', '3,3');
 
-    // Historical pre-entry path (x: 20 -> 175)
-    const histPts = [];
-    for (let i = 0; i <= 10; i++) {
-      const x = 20 + (i / 10) * 155;
-      const offset = (dir === 'LONG' ? -1 : 1) * Math.abs(tp1 - entry) * (1 - i / 10) * 0.55 + Math.sin(i * 1.3) * Math.abs(entry - sl) * 0.18;
-      const p = i === 10 ? entry : entry + offset;
-      histPts.push(`${x.toFixed(1)},${yOf(p).toFixed(1)}`);
+    // Left Half (x: 20 -> 175): ACTUAL historical exchange candlesticks leading into Entry!
+    if (histBars.length >= 2) {
+      const barSpan = 152 / Math.max(1, histBars.length);
+      histBars.forEach((b, idx) => {
+        const cx = 22 + idx * barSpan + barSpan * 0.4;
+        const o = +(b.o ?? b.open), hi = +(b.h ?? b.high), lo = +(b.l ?? b.low), cl = +(b.c ?? b.close);
+        const up = cl >= o;
+        const wk = document.createElementNS(ns, 'line');
+        wk.setAttribute('x1', cx.toFixed(1)); wk.setAttribute('x2', cx.toFixed(1));
+        wk.setAttribute('y1', yOf(hi).toFixed(1)); wk.setAttribute('y2', yOf(lo).toFixed(1));
+        wk.setAttribute('stroke', up ? '#00d26a' : '#ff3b30'); wk.setAttribute('stroke-width', '1.1');
+        const bd = document.createElementNS(ns, 'rect');
+        const yO = yOf(o), yC = yOf(cl);
+        bd.setAttribute('x', (cx - Math.max(1.5, barSpan * 0.28)).toFixed(1));
+        bd.setAttribute('y', Math.min(yO, yC).toFixed(1));
+        bd.setAttribute('width', Math.max(3, barSpan * 0.56).toFixed(1));
+        bd.setAttribute('height', Math.max(1.5, Math.abs(yC - yO)).toFixed(1));
+        bd.setAttribute('fill', up ? '#00d26a' : '#ff3b30');
+        svg.append(wk, bd);
+      });
+    } else {
+      const waitTxt = document.createElementNS(ns, 'text');
+      waitTxt.setAttribute('x', '95'); waitTxt.setAttribute('y', '18');
+      waitTxt.setAttribute('text-anchor', 'middle'); waitTxt.setAttribute('fill', isStaleScan ? '#ffb000' : '#6e7b8b'); waitTxt.setAttribute('font-size', '8.5');
+      waitTxt.textContent = isStaleScan ? `STALE SCAN (LIVE: ${fmtPx(lastHistClose)}) — CLICK DEEP SCAN` : 'AWAITING LIVE KLINE';
+      svg.append(waitTxt);
     }
-    const histLine = document.createElementNS(ns, 'polyline');
-    histLine.setAttribute('fill', 'none');
-    histLine.setAttribute('stroke', '#ffb000');
-    histLine.setAttribute('stroke-width', '2');
-    histLine.setAttribute('points', histPts.join(' '));
-    svg.append(histLine);
 
     // Monte Carlo / First-Passage Trajectory Cone (x: 175 -> 445)
     const xOfStep = idx => 175 + ((idx + 1) / cone.length) * 270;
@@ -431,7 +514,6 @@ export function mountBOT(body, ctx) {
     conePoly.setAttribute('stroke-width', '1');
     svg.append(conePoly);
 
-    // Expected Drift-Diffusion Trajectory Path
     const midPts = [`175.0,${yEntry.toFixed(1)}`, ...cone.map((c, idx) => `${xOfStep(idx).toFixed(1)},${yOf(c.mid_price).toFixed(1)}`)];
     const midLine = document.createElementNS(ns, 'polyline');
     midLine.setAttribute('fill', 'none');
@@ -441,7 +523,6 @@ export function mountBOT(body, ctx) {
     midLine.setAttribute('points', midPts.join(' '));
     svg.append(midLine);
 
-    // Entry Anchor Dot & Target Dot
     const cEntry = document.createElementNS(ns, 'circle');
     cEntry.setAttribute('cx', '175'); cEntry.setAttribute('cy', yEntry.toFixed(1)); cEntry.setAttribute('r', '4.5');
     cEntry.setAttribute('fill', '#ffb000');
@@ -453,31 +534,58 @@ export function mountBOT(body, ctx) {
     cEnd.setAttribute('fill', '#00d26a');
     svg.append(cEnd);
 
-    // Right Sidebar inside SVG (x: 460 -> 554): 20-Level Orderbook Imbalance Wall Gauge
-    const obi = Number(mp.obi_weighted_20 ?? 0.22);
-    const bidPct = Math.min(92, Math.max(8, Math.round((obi + 1) * 50)));
-    const askPct = 100 - bidPct;
+    // Right Sidebar inside SVG (x: 458 -> 556): Real 12-Level L2 Orderbook Liquidity Bars
+    const obGroup = document.createElementNS(ns, 'g');
     const obTitle = document.createElementNS(ns, 'text');
-    obTitle.setAttribute('x', '507'); obTitle.setAttribute('y', '16');
+    obTitle.setAttribute('x', '507'); obTitle.setAttribute('y', '14');
     obTitle.setAttribute('text-anchor', 'middle'); obTitle.setAttribute('fill', '#ffb000'); obTitle.setAttribute('font-size', '9'); obTitle.setAttribute('font-weight', 'bold');
-    obTitle.textContent = 'L2 OFI-20 WALL';
-    svg.append(obTitle);
+    obTitle.textContent = 'LIVE L2 DEPTH';
+    svg.append(obTitle, obGroup);
 
-    const askH = Math.round((askPct / 100) * 136);
-    const bidH = 136 - askH;
-    const rAsk = document.createElementNS(ns, 'rect');
-    rAsk.setAttribute('x', '478'); rAsk.setAttribute('y', '24'); rAsk.setAttribute('width', '58'); rAsk.setAttribute('height', String(askH));
-    rAsk.setAttribute('fill', 'rgba(255,59,48,0.45)'); rAsk.setAttribute('stroke', '#ff3b30');
-    const rBid = document.createElementNS(ns, 'rect');
-    rBid.setAttribute('x', '478'); rBid.setAttribute('y', String(24 + askH)); rBid.setAttribute('width', '58'); rBid.setAttribute('height', String(bidH));
-    rBid.setAttribute('fill', 'rgba(0,210,106,0.45)'); rBid.setAttribute('stroke', '#00d26a');
-    svg.append(rAsk, rBid);
+    const bSymDepth = toBinanceSym(scan?.symbol || scanSym);
+    get('depth', { symbol: bSymDepth, limit: 12 }, 2500).then(dEnv => {
+      if (!svg.isConnected) return;
+      obGroup.textContent = '';
+      if (!dEnv.ok || !dEnv.data) {
+        const naT = document.createElementNS(ns, 'text');
+        naT.setAttribute('x', '507'); naT.setAttribute('y', '95'); naT.setAttribute('text-anchor', 'middle');
+        naT.setAttribute('fill', '#777'); naT.setAttribute('font-size', '8.5');
+        naT.textContent = 'DEPTH N/A';
+        obGroup.append(naT);
+        return;
+      }
+      const asks = (dEnv.data.asks || []).slice(0, 6).reverse();
+      const bids = (dEnv.data.bids || []).slice(0, 6);
+      const maxQ = Math.max(...asks.map(x => +(x[1] || 0)), ...bids.map(x => +(x[1] || 0)), 1e-6);
+      const totAsk = asks.reduce((s, x) => s + +(x[1] || 0), 0);
+      const totBid = bids.reduce((s, x) => s + +(x[1] || 0), 0);
+      const totAll = totAsk + totBid || 1;
+      const bidPct = Math.round((totBid / totAll) * 100);
+      const askPct = 100 - bidPct;
 
-    const obLbl = document.createElementNS(ns, 'text');
-    obLbl.setAttribute('x', '507'); obLbl.setAttribute('y', '175');
-    obLbl.setAttribute('text-anchor', 'middle'); obLbl.setAttribute('fill', bidPct >= 50 ? '#00d26a' : '#ff3b30'); obLbl.setAttribute('font-size', '9.5'); obLbl.setAttribute('font-weight', 'bold');
-    obLbl.textContent = `BID ${bidPct}% / ASK ${askPct}%`;
-    svg.append(obLbl);
+      asks.forEach((lv, i) => {
+        const w = Math.max(4, (+lv[1] / maxQ) * 86);
+        const r = document.createElementNS(ns, 'rect');
+        r.setAttribute('x', String(552 - w)); r.setAttribute('y', String(22 + i * 11));
+        r.setAttribute('width', w.toFixed(1)); r.setAttribute('height', '9');
+        r.setAttribute('fill', 'rgba(255,59,48,0.55)');
+        obGroup.append(r);
+      });
+      bids.forEach((lv, i) => {
+        const w = Math.max(4, (+lv[1] / maxQ) * 86);
+        const r = document.createElementNS(ns, 'rect');
+        r.setAttribute('x', String(552 - w)); r.setAttribute('y', String(94 + i * 11));
+        r.setAttribute('width', w.toFixed(1)); r.setAttribute('height', '9');
+        r.setAttribute('fill', 'rgba(0,210,106,0.55)');
+        obGroup.append(r);
+      });
+      const obLbl = document.createElementNS(ns, 'text');
+      obLbl.setAttribute('x', '507'); obLbl.setAttribute('y', '178');
+      obLbl.setAttribute('text-anchor', 'middle'); obLbl.setAttribute('fill', bidPct >= 50 ? '#00d26a' : '#ff3b30');
+      obLbl.setAttribute('font-size', '9'); obLbl.setAttribute('font-weight', 'bold');
+      obLbl.textContent = `B:${bidPct}% / A:${askPct}%`;
+      obGroup.append(obLbl);
+    }).catch(() => {});
 
     return svg;
   }
@@ -506,34 +614,40 @@ export function mountBOT(body, ctx) {
     const gw = (gwRes.ok && gwRes.data) || {};
     const newsData = (newsRes.ok && newsRes.data) || {};
 
+    isAutoRunning = Boolean(st.autonomous_running ?? st.is_running ?? auto.is_running);
+    const realWalletUsdt = Number(st.binance_wallet_balance_usdt ?? 0);
+    const availWalletUsdt = Number(st.binance_available_balance_usdt ?? realWalletUsdt);
+    latestWalletUsdt = realWalletUsdt;
+    renderToolbar();
+
     if (!scanResult && cachedScanRes && cachedScanRes.ok && cachedScanRes.data) {
       scanResult = cachedScanRes.data;
       scanEpochSec = Math.floor(Date.now() / 1000);
     }
 
     // 1. TOP INSTITUTIONAL KPI & AUDITED PERFORMANCE LEDGER BAR
-    const wins = perf.winning_trades ?? 15;
-    const losses = perf.losing_trades ?? 4;
-    const wr = perf.win_rate_pct ?? 78.95;
-    const netIdr = perf.net_total_pnl_idr ?? 989000;
-    const realizedIdr = perf.realized_pnl_idr ?? 989000;
-    const bucketsCount = gw.total_active_buckets || 13;
-    const realWalletUsdt = +(st.binance_wallet_balance_usdt ?? 1.78);
-    const availWalletUsdt = +(st.binance_available_balance_usdt ?? realWalletUsdt);
+    const wins = perf.winning_trades ?? 0;
+    const losses = perf.losing_trades ?? 0;
+    const wr = perf.win_rate_pct ?? 0;
+    const netIdr = perf.net_total_pnl_idr ?? 0;
+    const realizedIdr = perf.realized_pnl_idr ?? 0;
+    const netUsd = perf.net_total_pnl_usd ?? (netIdr / 16500);
+    const pfVal = perf.profit_factor ?? 0;
+    const bucketsCount = gw.total_active_buckets || 0;
 
     const kv = h('div', { class: 'kv', style: 'border-bottom:1px solid var(--border);background:#060606;padding:6px 8px' },
       h('div', { class: 'k', text: 'AUDITED WIN/LOSS LEDGER' }),
-      h('div', { class: 'v up sym', text: `${wins} WIN / ${losses} LOSS (${wr}% WIN RATE) • REALIZED P&L: +${fmtIdr(realizedIdr)}` }),
+      h('div', { class: 'v ' + (wr >= 50 ? 'up sym' : 'am sym'), text: `${wins} WIN / ${losses} LOSS (${wr}% WIN RATE) • REALIZED P&L: ${realizedIdr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(realizedIdr))}` }),
       h('div', { class: 'k', text: 'NET TOTAL P&L (REALIZED+OPEN)' }),
-      h('div', { class: 'v ' + (netIdr >= 0 ? 'up sym' : 'dn sym'), text: `${netIdr >= 0 ? '+' : ''}${fmtIdr(netIdr)} ($${fmtNum(perf.net_total_pnl_usd ?? 59.94, 2)} USD) • PROFIT FACTOR: ${perf.profit_factor ?? 3.42}` }),
+      h('div', { class: 'v ' + (netIdr >= 0 ? 'up sym' : 'dn sym'), text: `${netIdr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(netIdr))} (${netUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(netUsd), 2)} USD) • PROFIT FACTOR: ${pfVal}` }),
       h('div', { class: 'k', text: 'MULTI-KEY AI GATEWAY POOL' }),
-      h('div', { class: 'v am sym', text: `${bucketsCount} ACTIVE MODEL BUCKETS (${fmtNum(gw.estimated_daily_token_capacity || 2300000, 0)} TOKENS/DAY) • HYBRID QUANT + AI` }),
+      h('div', { class: 'v am sym', text: `${bucketsCount} ACTIVE MODEL BUCKETS (${fmtNum(gw.estimated_daily_token_capacity || 0, 0)} TOKENS/DAY) • HYBRID QUANT + AI` }),
       h('div', { class: 'k', text: 'AUTONOMOUS ENGINE STATUS' }),
-      h('div', { class: 'v ' + (st.autonomous_running !== false ? 'up sym' : 'dn sym'), text: `${st.autonomous_running !== false ? 'ACTIVE 24/7 SNIPER' : 'PAUSED'} • ${st.max_leverage || 20}x ${st.margin_type || 'ISOLATED'} • ${openPos.length} OPEN POSITIONS` }),
+      h('div', { class: 'v ' + (isAutoRunning ? 'up sym' : 'dn sym'), text: `${isAutoRunning ? 'ACTIVE 24/7 SNIPER' : 'PAUSED BY USER'} • ${st.max_leverage || 20}x ${st.margin_type || 'ISOLATED'} • ${openPos.length} OPEN POSITIONS` }),
       h('div', { class: 'k', text: 'TERMINAL NEWS SENTINEL FEED' }),
-      h('div', { class: 'v lb sym', text: `BIAS: ${newsData.overall_bias || scanResult?.terminal_news_macro?.overall_bias || 'BULLISH'} (${newsData.overall_score ?? scanResult?.terminal_news_macro?.overall_score ?? '+0.25'}) • ${auto.total_scans_done ?? st.total_scans_done ?? 0} SCANS COMPLETED` }),
-      h('div', { class: 'k', text: 'BINANCE FUTURES & DESK CAPITAL' }),
-      h('div', { class: 'v am sym', text: `$${fmtNum(realWalletUsdt, 2)} USDT (AVAIL: $${fmtNum(availWalletUsdt, 2)} USDT • BINANCE FUTURES) • DESK NAV: Rp 200,000,000` })
+      h('div', { class: 'v lb sym', text: `BIAS: ${newsData.overall_bias || scanResult?.terminal_news_macro?.overall_bias || 'NEUTRAL'} (${newsData.overall_score ?? scanResult?.terminal_news_macro?.overall_score ?? '0.00'}) • ${auto.total_scans_done ?? st.total_scans_done ?? 0} SCANS COMPLETED` }),
+      h('div', { class: 'k', text: 'LIVE BINANCE FUTURES WALLET' }),
+      h('div', { class: 'v am sym', text: `$${fmtNum(realWalletUsdt, 2)} USDT (${fmtIdr(realWalletUsdt * 16500)}) • AVAIL MARGIN: $${fmtNum(availWalletUsdt, 2)} USDT` })
     );
     sc.append(kv);
 
@@ -572,24 +686,38 @@ export function mountBOT(body, ctx) {
       );
       sc.append(banner);
 
-      // Split 2-Column Visual Workstation: Left = Live Sub-Second Candlestick Chart with Entry/SL/TP1/TP2 Lines; Right = SVG Trajectory Cone & Orderbook Blueprint
+      // Split 2-Column Visual Workstation: Left = Live Technical Master Candlestick Chart; Right = Real Candles + Monte Carlo Trajectory & L2 Depth
       botChartWrap = h('div', { style: 'height:245px;position:relative;background:#000;border-right:1px solid var(--border)' });
       botChartLeg = h('div', { style: 'position:absolute;left:6px;top:4px;z-index:4;font-size:10.5px;background:rgba(0,0,0,0.82);padding:2px 6px;border:1px solid #222;pointer-events:none' });
       botChartWrap.append(botChartLeg);
 
+      const levNow = +(l3.leverage || l3.recommended_leverage || l5.leverage || 20);
+      const marginUsdNow = +(realWalletUsdt > 0 ? realWalletUsdt : (+(l3.roi_pnl_projection?.margin_usd || 0))).toFixed(2);
+      const marginIdrNow = Math.round(marginUsdNow * 16500);
+      const entryNow = +(l3.entry_price || l5.entry_price || l1.current_price || 100);
+      const slNow = +(l3.stop_loss || l5.stop_loss || (dir === 'LONG' ? entryNow * 0.988 : entryNow * 1.012));
+      const { tp1: tp1Now, tp2: tp2Now } = ensureDistinctTp(
+        entryNow,
+        slNow,
+        l3.take_profit_1 || tp.tp1_price || 0,
+        l3.take_profit_2 || l3.take_profit || tp.tp2_price || 0,
+        dir
+      );
+
       const rightBlueprintBox = h('div', { style: 'display:flex;flex-direction:column;background:#030508' },
         h('div', { class: 'tb', style: 'background:#080c12;font-size:10px;justify-content:space-between' },
-          h('span', { class: 'lbl', text: 'FIRST-PASSAGE MONTE CARLO TRAJECTORY CONE & L2 OFI-20 WALL' }),
+          h('span', { class: 'lbl', text: 'FIRST-PASSAGE MONTE CARLO TRAJECTORY CONE & LIVE L2 DEPTH' }),
           h('span', { class: 'am sym', text: `SESSION: ${tp.market_session || 'US-EU OVERLAP'} (${tp.session_speed_multiplier || 1.25}x SPEED)` })
         ),
-        renderVisualTrajectoryBlueprint(scanResult),
+        renderVisualTrajectoryBlueprint(scanResult, botLastRawCandles),
         h('div', { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:4px 6px;background:#05070a;font-size:10.5px;border-top:1px solid #161616' },
-          h('div', null, h('span', { class: 'mu', text: 'ENTRY PX: ' }), h('b', { class: 'am', text: fmtPx(l3.entry_price) })),
-          h('div', null, h('span', { class: 'mu', text: 'STOP LOSS: ' }), h('b', { class: 'dn', text: fmtPx(l3.stop_loss) })),
-          h('div', null, h('span', { class: 'mu', text: 'TP1 (+0.55R): ' }), h('b', { style: 'color:#00e5ff', text: `${fmtPx(l3.take_profit_1 || tp.tp1_price)} (${tp1EtaClean})` })),
-          h('div', null, h('span', { class: 'mu', text: 'TP2 RUNNER: ' }), h('b', { class: 'up', text: `${fmtPx(l3.take_profit_2 || tp.tp2_price)} (${tp2EtaClean})` }))
+          h('div', null, h('span', { class: 'mu', text: 'ENTRY PX: ' }), h('b', { class: 'am', text: fmtPx(entryNow) })),
+          h('div', null, h('span', { class: 'mu', text: 'STOP LOSS: ' }), h('b', { class: 'dn', text: fmtPx(slNow) })),
+          h('div', null, h('span', { class: 'mu', text: 'TP1 (+0.55R): ' }), h('b', { style: 'color:#00e5ff', text: `${fmtPx(tp1Now)} (${tp1EtaClean})` })),
+          h('div', null, h('span', { class: 'mu', text: 'TP2 RUNNER: ' }), h('b', { class: 'up', text: `${fmtPx(tp2Now)} (${tp2EtaClean})` }))
         )
       );
+      botRightBoxEl = rightBlueprintBox;
 
       const visualGrid = h('div', { style: 'display:grid;grid-template-columns:1.15fr 1fr;border-bottom:1px solid var(--border)' },
         botChartWrap,
@@ -598,14 +726,7 @@ export function mountBOT(body, ctx) {
       sc.append(visualGrid);
       requestAnimationFrame(() => mountAdaptiveBotChart());
 
-      // 2B. PROJECTED ROI (%) & P&L (IDR / USD) AT TP1 LOCK, FULL TP2 RUNNER & STOP LOSS
-      const levNow = +(l3.leverage || l3.recommended_leverage || l5.leverage || 20);
-      const marginUsdNow = +(realWalletUsdt > 0 ? realWalletUsdt : (l3.roi_pnl_projection?.margin_usd || 1.78)).toFixed(2);
-      const marginIdrNow = Math.round(marginUsdNow * 16500);
-      const entryNow = +(l3.entry_price || l5.entry_price || l1.current_price || 100);
-      const slNow = +(l3.stop_loss || l5.stop_loss || (dir === 'LONG' ? entryNow * 0.988 : entryNow * 1.012));
-      const tp1Now = +(l3.take_profit_1 || tp.tp1_price || (dir === 'LONG' ? entryNow * 1.0066 : entryNow * 0.9934));
-      const tp2Now = +(l3.take_profit_2 || l3.take_profit || tp.tp2_price || (dir === 'LONG' ? entryNow * 1.024 : entryNow * 0.976));
+      // 2B. PROJECTED ROI (%) & P&L (IDR / USD) AT TP1 LOCK, FULL TP2 RUNNER & STOP LOSS (NO FAKE FILLERS)
       const slDistFracNow = entryNow > 0 ? Math.abs(entryNow - slNow) / entryNow : 0.012;
       const lockSlPxNow = entryNow * (1 + (dir === 'SHORT' ? -1 : 1) * 0.38 * slDistFracNow);
 
@@ -764,56 +885,43 @@ export function mountBOT(body, ctx) {
       sc.append(aiNarrativeBox);
     }
 
-    // 5. ACTIVE BINANCE FUTURES POSITIONS + ROI & PnL PROJECTION PER POSITION (TP1 / TP2 / SL)
-    const displayPositions = openPos.length ? openPos : (scanResult ? [{
-      symbol: scanResult.symbol || scanSym,
-      binance_pair: toBinanceSym(scanResult.symbol || scanSym),
-      direction: scanResult.layer5_final_call?.direction || scanResult.layer3_plan?.action || 'LONG',
-      leverage: scanResult.layer3_plan?.leverage || 20,
-      position_size_usd: +realWalletUsdt.toFixed(2),
-      position_size_idr: Math.round(realWalletUsdt * 16500),
-      entry_price: scanResult.layer3_plan?.entry_price || scanResult.layer1_scanning?.current_price || 0,
-      current_price: scanResult.layer1_scanning?.current_price || scanResult.layer3_plan?.entry_price || 0,
-      take_profit_1: scanResult.layer3_plan?.take_profit_1 || scanResult.tp_time_prediction?.tp1_price || 0,
-      take_profit_2: scanResult.layer3_plan?.take_profit_2 || scanResult.layer3_plan?.take_profit || 0,
-      stop_loss: scanResult.layer3_plan?.stop_loss || 0,
-      pnl_pct: 0,
-      pnl_usd: 0,
-      pnl_idr: 0,
-      p_survive_pct: scanResult.tp_time_prediction?.p_hit_tp1_before_sl_pct || 86.4,
-      sl_state: openPos.length ? 'CONFIRMED' : 'SIMULATED PREVIEW',
-      _is_preview: true
-    }] : []);
-
-    if (displayPositions.length) {
+    // 5. ACTIVE BINANCE FUTURES POSITIONS (NO SIMULATED PREVIEW ROWS — LIVE OPEN TRADES ONLY)
+    sc.append(
+      h('div', { class: 'tb', style: 'background:#070707;justify-content:space-between' },
+        h('span', { class: 'lbl', text: `ACTIVE BINANCE FUTURES POSITIONS (${openPos.length} OPEN)` }),
+        h('span', { class: 'am sym', style: 'font-size:10px', text: openPos.length ? 'CLICK ANY ROW TO LOAD INTO CHART & AI WORKSTATION' : 'LIVE EXCHANGE FEED — NO SIMULATED POSITIONS' })
+      )
+    );
+    if (openPos.length) {
       sc.append(
-        h('div', { class: 'tb', style: 'background:#070707;justify-content:space-between' },
-          h('span', { class: 'lbl', text: openPos.length ? `ACTIVE BINANCE FUTURES POSITIONS (${openPos.length} OPEN — LIVE ROI & P&L IF TP1 / TP2 / SL HIT)` : `POSITION ROI & P&L SIMULATOR TABLE (0 OPEN ON BINANCE — LIVE PLAN PROJECTION FOR ${scanSym})` }),
-          h('span', { class: 'am sym', style: 'font-size:10px', text: 'CLICK ANY ROW TO LOAD INTO CHART & AI WORKSTATION' })
-        ),
         h('table', { class: 't' },
           h('thead', null, h('tr', null, [
             'Symbol',
-            'Side / Lev',
-            'Margin (Wallet)',
-            'Entry / Mark Px',
-            'Live Floating P&L (ROI%)',
-            '🎯 If TP1 Lock Hit (+0.55R)',
-            '🚀 If Full TP2 Runner Hit',
-            '🛡️ If Stop Loss (SL) Hit',
-            'Survival / Status'
+            'Side/Lev',
+            'Margin',
+            'Entry / Mark',
+            'Live P&L (ROI%)',
+            'TP1 Lock (+0.55R)',
+            'TP2 Runner',
+            'Stop Loss (SL)',
+            'Status'
           ].map(x => h('th', { text: x })))),
-          h('tbody', null, displayPositions.map(p => {
+          h('tbody', null, openPos.map(p => {
             const sym = (p.binance_pair || p.symbol || p.pair || '').replace('-USD', 'USDT');
             const side = String(p.direction || p.side || 'LONG').toUpperCase();
             const lev = +(p.leverage || 20);
-            const mUsd = +(p.position_size_usd || realWalletUsdt || 1.78).toFixed(2);
+            const mUsd = +(p.position_size_usd || realWalletUsdt || 0).toFixed(2);
             const mIdr = +(p.position_size_idr || Math.round(mUsd * 16500));
             const entryPx = +(p.entry_price || p.entryPrice || 0);
             const markPx = +(p.current_price || entryPx || 0);
-            const tp1Px = +(p.take_profit_1 || p.take_profit || 0);
-            const tp2Px = +(p.take_profit_2 || p.take_profit || tp1Px || 0);
             const slPx = +(p.stop_loss || 0);
+            const { tp1: tp1Px, tp2: tp2Px } = ensureDistinctTp(
+              entryPx,
+              slPx,
+              p.take_profit_1 || p.take_profit || 0,
+              p.take_profit_2 || p.take_profit || 0,
+              side
+            );
 
             const livePnlUsd = +(p.pnl_usd ?? p.unrealizedProfit ?? 0);
             const livePnlIdr = +(p.pnl_idr ?? Math.round(livePnlUsd * 16500));
@@ -823,7 +931,7 @@ export function mountBOT(body, ctx) {
             const mTp2 = calcTargetRoiPnl(entryPx, tp2Px, side, lev, mIdr, mUsd);
             const mSl = calcTargetRoiPnl(entryPx, slPx, side, lev, mIdr, mUsd);
             const slInProfit = mSl.roi_pct > 0;
-            const surv = p.p_survive_pct ?? 86.4;
+            const surv = p.p_survive_pct ?? '-';
 
             return h('tr', {
               class: 'row',
@@ -834,17 +942,26 @@ export function mountBOT(body, ctx) {
                 }
               }
             },
-              h('td', { class: 'l sym am', text: sym + (p._is_preview ? ' [PLAN]' : '') }),
+              h('td', { class: 'l sym am', text: sym }),
               h('td', { class: (side === 'LONG' ? 'up' : 'dn') + ' sym', text: `${side} ${lev}x` }),
               h('td', { class: 'lb', text: `$${fmtNum(mUsd, 2)} (${fmtIdr(mIdr)})` }),
               h('td', { text: `${fmtPx(entryPx)} / ${fmtPx(markPx)}` }),
-              h('td', { class: dirCls(liveRoiPct) + ' sym', text: `${liveRoiPct >= 0 ? '+' : ''}${fmtNum(liveRoiPct, 2)}% (${livePnlUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(livePnlUsd), 2)} / ${livePnlIdr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(livePnlIdr))})` }),
-              h('td', { style: 'color:#00e5ff;font-weight:bold', text: `${fmtPx(tp1Px)} ► +${mTp1.roi_pct}% (+$${fmtNum(mTp1.pnl_usd, 2)} / +${fmtIdr(mTp1.pnl_idr)})` }),
-              h('td', { class: 'up sym', text: `${fmtPx(tp2Px)} ► +${mTp2.roi_pct}% (+$${fmtNum(mTp2.pnl_usd, 2)} / +${fmtIdr(mTp2.pnl_idr)})` }),
-              h('td', { class: (slInProfit ? 'up' : 'dn') + ' sym', text: `${fmtPx(slPx)} ► ${slInProfit ? '🔒 +' : ''}${mSl.roi_pct}% (${mSl.pnl_usd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(mSl.pnl_usd), 2)} / ${mSl.pnl_idr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(mSl.pnl_idr))})` }),
-              h('td', { class: 'up', text: `P:${surv}% • ${p.sl_state || p.status || 'OPEN'}` })
+              h('td', { class: dirCls(liveRoiPct) + ' sym', text: `${liveRoiPct >= 0 ? '+' : ''}${fmtNum(liveRoiPct, 2)}% (${livePnlUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(livePnlUsd), 2)})` }),
+              h('td', { style: 'color:#00e5ff;font-weight:bold', text: `${fmtPx(tp1Px)} ► +${mTp1.roi_pct}% (+$${fmtNum(mTp1.pnl_usd, 2)})` }),
+              h('td', { class: 'up sym', text: `${fmtPx(tp2Px)} ► +${mTp2.roi_pct}% (+$${fmtNum(mTp2.pnl_usd, 2)})` }),
+              h('td', { class: (slInProfit ? 'up' : 'dn') + ' sym', text: `${fmtPx(slPx)} ► ${slInProfit ? '+' : ''}${mSl.roi_pct}% (${mSl.pnl_usd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(mSl.pnl_usd), 2)})` }),
+              h('td', { class: 'up', text: `${p.sl_state || p.status || 'OPEN'}${surv !== '-' ? ' • P:' + surv + '%' : ''}` })
             );
           }))
+        )
+      );
+    } else {
+      sc.append(
+        h('div', {
+          style: 'padding:8px 10px;background:#040609;border-bottom:1px solid var(--border);font-size:11px;color:#99aabb;display:flex;justify-content:space-between'
+        },
+          h('span', { text: 'No open positions on Binance Futures (0 OPEN — Standing by on real-time scanner).' }),
+          h('span', { class: 'am sym', text: `WALLET READY: $${fmtNum(realWalletUsdt, 2)} USDT (${fmtIdr(realWalletUsdt * 16500)})` })
         )
       );
     }
@@ -853,16 +970,23 @@ export function mountBOT(body, ctx) {
     const sigs = Array.isArray(auto.recent_signals) ? auto.recent_signals : [];
     if (sigs.length) {
       sc.append(
-        h('div', { class: 'tb', style: 'background:#070707;margin-top:4px' }, h('span', { class: 'lbl', text: 'RECENT 5-LAYER PIPELINE SIGNALS (WITH PROJECTED TP & SL ROI% / P&L)' })),
+        h('div', { class: 'tb', style: 'background:#070707;margin-top:4px' }, h('span', { class: 'lbl', text: 'RECENT 5-LAYER PIPELINE SIGNALS (WITH PROJECTED TP1 / TP2 / SL ROI%)' })),
         h('table', { class: 't' },
-          h('thead', null, h('tr', null, ['Time', 'Symbol', 'Dir', 'Hybrid Conf', 'Entry Px', '🎯 Projected TP Hit (ROI & P&L)', '🛡️ Projected SL Hit (ROI & P&L)', 'Setup'].map(x => h('th', { text: x })))),
+          h('thead', null, h('tr', null, ['Time', 'Symbol', 'Dir', 'Hybrid Conf', 'Entry Px', 'TP1 Lock', 'TP2 Runner', 'Stop Loss', 'Setup'].map(x => h('th', { text: x })))),
           h('tbody', null, sigs.map(s => {
             const sDir = s.direction || 'LONG';
             const sEntry = +(s.entry_price || 0);
-            const sTp = +(s.take_profit_2 || s.take_profit || s.take_profit_1 || 0);
             const sSl = +(s.stop_loss || 0);
+            const { tp1: sTp1, tp2: sTp2 } = ensureDistinctTp(
+              sEntry,
+              sSl,
+              s.take_profit_1 || 0,
+              s.take_profit_2 || s.take_profit || 0,
+              sDir
+            );
             const sigMarginIdr = Math.round(realWalletUsdt * 16500);
-            const mTpSig = calcTargetRoiPnl(sEntry, sTp, sDir, 20, sigMarginIdr, realWalletUsdt);
+            const mTp1Sig = calcTargetRoiPnl(sEntry, sTp1, sDir, 20, sigMarginIdr, realWalletUsdt);
+            const mTp2Sig = calcTargetRoiPnl(sEntry, sTp2, sDir, 20, sigMarginIdr, realWalletUsdt);
             const mSlSig = calcTargetRoiPnl(sEntry, sSl, sDir, 20, sigMarginIdr, realWalletUsdt);
             return h('tr', {
               class: 'row',
@@ -876,9 +1000,10 @@ export function mountBOT(body, ctx) {
               h('td', { class: 'l mu', text: s.timestamp || s.time || '-' }),
               h('td', { class: 'l sym am', text: s.symbol || '-' }),
               h('td', { class: sDir === 'LONG' ? 'up sym' : sDir === 'SHORT' ? 'dn sym' : 'mu', text: `${sDir} 20x` }),
-              h('td', { class: 'am sym', text: (s.confidence_pct || s.probability_pct || 88) + '%' }),
+              h('td', { class: 'am sym', text: (s.confidence_pct || s.probability_pct || 0) + '%' }),
               h('td', { text: fmtPx(sEntry) }),
-              h('td', { class: 'up sym', text: sTp > 0 ? `${fmtPx(sTp)} (+${mTpSig.roi_pct}% | +$${fmtNum(mTpSig.pnl_usd, 2)})` : '-' }),
+              h('td', { style: 'color:#00e5ff;font-weight:bold', text: sTp1 > 0 ? `${fmtPx(sTp1)} (+${mTp1Sig.roi_pct}%)` : '-' }),
+              h('td', { class: 'up sym', text: sTp2 > 0 ? `${fmtPx(sTp2)} (+${mTp2Sig.roi_pct}% | +$${fmtNum(mTp2Sig.pnl_usd, 2)})` : '-' }),
               h('td', { class: 'dn sym', text: sSl > 0 ? `${fmtPx(sSl)} (${mSlSig.roi_pct}% | -$${fmtNum(Math.abs(mSlSig.pnl_usd), 2)})` : '-' }),
               h('td', { class: 'l lb', text: s.setup_name || s.setup || '-' })
             );
@@ -932,12 +1057,12 @@ export function mountPORT(body, ctx) {
     return 'Rp ' + Math.round(n).toLocaleString('id-ID');
   }
 
-  function calcTargetRoiPnl(entryPx, targetPx, dir = 'LONG', lev = 20, marginIdr = 50000, marginUsd = 3.03) {
+  function calcTargetRoiPnl(entryPx, targetPx, dir = 'LONG', lev = 20, marginIdr = 0, marginUsd = 0) {
     const e = Number(entryPx) || 0;
     const t = Number(targetPx) || 0;
     const l = Number(lev) || 20;
-    const mIdr = Number(marginIdr) > 0 ? Number(marginIdr) : 50000;
-    const mUsd = Number(marginUsd) > 0 ? Number(marginUsd) : +(mIdr / 16500).toFixed(2);
+    const mUsd = Number(marginUsd) > 0 ? Number(marginUsd) : (Number(marginIdr) > 0 ? Number(marginIdr) / 16500 : 0);
+    const mIdr = Number(marginIdr) > 0 ? Number(marginIdr) : Math.round(mUsd * 16500);
     if (e <= 0 || t <= 0) return { price: 0, move_pct: 0, roi_pct: 0, pnl_idr: 0, pnl_usd: 0 };
     const sign = String(dir || 'LONG').toUpperCase() === 'SHORT' ? -1 : 1;
     const movePct = sign * ((t - e) / e) * 100;

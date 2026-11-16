@@ -603,102 +603,59 @@ export function mountCN(body, ctx, { mode = 'CN' } = {}) {
 
 export function mountANR(body, ctx) {
   body.classList.add('fill');
-  const tb = h('div', { class: 'tb' }, h('span', { class: 'lbl', text: `90) Actions  91) Alert  |  ANR - Analyst Recommendations & Consensus Target Price [${ctx.symbol}]` }));
+  const tb = h('div', { class: 'tb' },
+    h('span', { class: 'lbl', text: `ANR — SELL-SIDE CONSENSUS STATUS & LIVE QUANT VALUATION BENCHMARKS [${ctx.symbol}]` }),
+    h('button', { text: 'FA FINANCIALS <GO>', onclick: () => ctx.run('FA') }),
+    h('button', { text: 'ERN SEC EPS <GO>', onclick: () => ctx.run('ERN') }),
+    h('button', { text: 'DCF MODEL <GO>', onclick: () => ctx.run('DCF') })
+  );
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
   async function load() {
-    const [qEnv, klEnv] = await Promise.all([
+    const [qEnv, klEnv, fEnv] = await Promise.all([
       get('quote', { symbols: ctx.symbol }, 3000),
-      get('kline', { symbol: ctx.symbol, interval: '1d', limit: 90 }, 5000)
+      get('kline', { symbol: ctx.symbol, interval: '1d', limit: 252 }, 5000),
+      get('fundamentals', { symbol: ctx.symbol }, 5000)
     ]);
     ctx.status(qEnv.ok ? qEnv : klEnv);
     sc.textContent = '';
+
     const q = (qEnv.ok && Array.isArray(qEnv.data) && qEnv.data[0]) || {};
     const c = (klEnv.ok && klEnv.data && klEnv.data.candles) || [];
-    const spot = q.price || (c.length ? c[c.length - 1].c : 100);
-    const mom = c.length >= 20 ? (spot - c[0].c) / c[0].c : 0.08;
-    const bullBias = Math.max(-0.15, Math.min(0.30, mom * 0.4 + 0.14));
+    const ed = (fEnv.ok && fEnv.data) || {};
+    const sec = ed.edgar || ed;
+    const fin = sec.financials || ed.financials || {};
+    const spot = Number(q.price || (c.length ? c[c.length - 1].c : 0));
 
-    const brokers = [
-      ['Goldman Sachs', 'David Kostin / Global Research', 1.18, 'BUY'],
-      ['Morgan Stanley', 'Michael Wilson / Institutional Equity', 1.14, 'OVERWEIGHT'],
-      ['J.P. Morgan', 'Dubravko Lakos-Bujas / Quant & Macro', 1.21, 'OVERWEIGHT'],
-      ['Bank of America', 'Savita Subramanian / Global Research', 1.16, 'BUY'],
-      ['Citigroup', 'Scott Chronert / Global Markets', 1.11, 'BUY'],
-      ['Barclays Capital', 'Venu Krishna / Equity Research', 1.09, 'OVERWEIGHT'],
-      ['UBS Investment Bank', 'Jonathan Golub / Global Strategy', 1.04, 'NEUTRAL'],
-      ['Bernstein Research', 'Stacy Rasgon / Institutional Coverage', 1.24, 'OUTPERFORM'],
-      ['Jefferies LLC', 'Desh Peramunetilleke / Global Quant', 1.12, 'BUY'],
-      ['HSBC Global Research', 'Max Kettner / Multi-Asset', 0.96, 'HOLD'],
-      ['Deutsche Bank', 'Binky Chadha / Global Strategy', 1.15, 'BUY'],
-      ['Wells Fargo Securities', 'Christopher Harvey / Equity', 0.92, 'UNDERWEIGHT']
-    ].map(([firm, analyst, mult, baseRec], idx) => {
-      const adjMult = mult + bullBias * 0.25;
-      const tp = +(spot * adjMult).toFixed(spot > 50 ? 2 : 4);
-      const retPct = ((tp - spot) / spot) * 100;
-      const rec = retPct > 6 ? baseRec : retPct > -3 ? 'HOLD' : 'SELL';
-      const dt = new Date(Date.now() - idx * 3 * 86400000).toISOString().slice(0, 10);
-      return { firm, analyst, rec, tp, retPct, dt };
-    });
+    if (!spot) {
+      sc.append(h('div', { class: 'na', text: `N/A — Live market quote unavailable for ${ctx.symbol}` }));
+      return;
+    }
 
-    const buys = brokers.filter(b => /BUY|OVERWEIGHT|OUTPERFORM/.test(b.rec)).length;
-    const holds = brokers.filter(b => /HOLD|NEUTRAL/.test(b.rec)).length;
-    const sells = brokers.length - buys - holds;
-    const avgTp = brokers.reduce((s, b) => s + b.tp, 0) / brokers.length;
-    const avgRet = ((avgTp - spot) / spot) * 100;
-    const rating5 = ((buys * 5 + holds * 3 + sells * 1) / brokers.length).toFixed(2);
+    const hi52 = c.length ? Math.max(...c.map(x => +x.h)) : spot;
+    const lo52 = c.length ? Math.min(...c.map(x => +x.l)) : spot;
+    const sma20 = c.length >= 20 ? c.slice(-20).reduce((s, x) => s + +x.c, 0) / 20 : null;
+    const sma50 = c.length >= 50 ? c.slice(-50).reduce((s, x) => s + +x.c, 0) / 50 : null;
+    const ret30 = c.length >= 22 ? ((spot - c[c.length - 22].c) / c[c.length - 22].c) * 100 : null;
+    const ret90 = c.length >= 65 ? ((spot - c[c.length - 65].c) / c[c.length - 65].c) * 100 : null;
+    const latestVal = arr => (Array.isArray(arr) && arr.length ? arr[0].val : null);
+    const epsTtm = latestVal(fin.eps);
+    const peRatio = (epsTtm && epsTtm > 0) ? (spot / epsTtm) : null;
 
-    const buyPct = (buys / brokers.length) * 100;
-    const holdPct = (holds / brokers.length) * 100;
-    const sellPct = (sells / brokers.length) * 100;
-
-    // Consensus Rating Distribution Diagram + HUD
     sc.append(
-      h('div', { style: 'display:grid;grid-template-columns:1.1fr 1fr;gap:8px;padding:6px;border-bottom:1px solid var(--border);background:#050505' },
-        h('div', { class: 'kv', style: 'border:1px solid var(--border);background:#090909;padding:6px' },
-          h('div', { class: 'k', text: 'BLOOMBERG CONSENSUS RATING (1-5)' }),
-          h('div', { class: 'v up sym', style: 'font-size:14px', text: `${rating5} / 5.00  (${buys >= 8 ? 'STRONG BUY' : buys >= 5 ? 'MODERATE BUY' : 'HOLD'})` }),
-          h('div', { class: 'k', text: '12M CONSENSUS TARGET PRICE' }),
-          h('div', { class: 'v am sym', style: 'font-size:14px', text: `${fmtPx(avgTp)}  (${fmtPct(avgRet)} Implied Return)` }),
-          h('div', { class: 'k', text: 'CURRENT MARKET PRICE' }),
-          h('div', { class: 'v lb sym', text: fmtPx(spot) }),
-          h('div', { class: 'k', text: 'HIGH / LOW TARGET RANGE' }),
-          h('div', { class: 'v', text: `HI: ${fmtPx(Math.max(...brokers.map(b => b.tp)))}  /  LO: ${fmtPx(Math.min(...brokers.map(b => b.tp)))}` })
-        ),
-        h('div', { style: 'border:1px solid var(--border);background:#090909;padding:8px;display:flex;flex-direction:column;justify-content:center;gap:6px' },
-          h('div', { class: 'lbl', style: 'font-weight:bold', text: 'ANALYST RATING DISTRIBUTION DIAGRAM' }),
-          h('div', { style: 'display:flex;align-items:center;gap:6px' },
-            h('span', { class: 'up sym', style: 'width:58px', text: `BUY (${buys})` }),
-            h('div', { style: 'flex:1;height:12px;background:#151515;border:1px solid #222' }, h('div', { style: `width:${buyPct.toFixed(1)}%;height:100%;background:var(--up)` })),
-            h('span', { class: 'up', style: 'width:42px;text-align:right', text: buyPct.toFixed(0) + '%' })
-          ),
-          h('div', { style: 'display:flex;align-items:center;gap:6px' },
-            h('span', { class: 'am sym', style: 'width:58px', text: `HOLD (${holds})` }),
-            h('div', { style: 'flex:1;height:12px;background:#151515;border:1px solid #222' }, h('div', { style: `width:${holdPct.toFixed(1)}%;height:100%;background:var(--amber)` })),
-            h('span', { class: 'am', style: 'width:42px;text-align:right', text: holdPct.toFixed(0) + '%' })
-          ),
-          h('div', { style: 'display:flex;align-items:center;gap:6px' },
-            h('span', { class: 'dn sym', style: 'width:58px', text: `SELL (${sells})` }),
-            h('div', { style: 'flex:1;height:12px;background:#151515;border:1px solid #222' }, h('div', { style: `width:${sellPct.toFixed(1)}%;height:100%;background:var(--dn)` })),
-            h('span', { class: 'dn', style: 'width:42px;text-align:right', text: sellPct.toFixed(0) + '%' })
-          )
-        )
+      h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border);padding:8px' },
+        h('div', { class: 'k', text: 'WALL ST IBES / SELL-SIDE RATINGS' }),
+        h('div', { class: 'v dn sym', text: 'N/A — Institutional Analyst Ratings & Broker Target Prices Require Licensed IBES / FactSet / Bloomberg ANR Feed' }),
+        h('div', { class: 'k', text: 'LIVE SPOT & 52W RANGE' }),
+        h('div', { class: 'v am sym', text: `${fmtPx(spot)}  •  Range Low: ${fmtPx(lo52)} / High: ${fmtPx(hi52)} (${(((spot - lo52) / Math.max(1e-9, hi52 - lo52)) * 100).toFixed(1)}% percentile)` }),
+        h('div', { class: 'k', text: 'MOVING AVERAGE TREND STATE' }),
+        h('div', { class: 'v lb sym', text: `SMA20: ${sma20 ? fmtPx(sma20) + ' (' + (spot >= sma20 ? 'ABOVE' : 'BELOW') + ')' : 'N/A'}  •  SMA50: ${sma50 ? fmtPx(sma50) + ' (' + (spot >= sma50 ? 'ABOVE' : 'BELOW') + ')' : 'N/A'}` }),
+        h('div', { class: 'k', text: 'TRAILING RETURNS & SEC GAAP P/E' }),
+        h('div', { class: 'v sym ' + ((ret30 ?? 0) >= 0 ? 'up' : 'dn'), text: `1M: ${ret30 != null ? fmtPct(ret30) : 'N/A'}  •  3M: ${ret90 != null ? fmtPct(ret90) : 'N/A'}  •  SEC GAAP P/E: ${peRatio ? peRatio.toFixed(1) + 'x' : 'N/A'}` })
       ),
-      h('table', { class: 't' },
-        h('thead', null, h('tr', null, ['Institution / Firm', 'Lead Analyst / Desk', 'Recommendation', '12M Target Px', 'Implied Return', 'Report Date'].map(x => h('th', { text: x })))),
-        h('tbody', null, brokers.map(b => {
-          const isBuy = /BUY|OVERWEIGHT|OUTPERFORM/.test(b.rec);
-          const isSell = /SELL|UNDERWEIGHT/.test(b.rec);
-          return h('tr', { class: 'row' },
-            h('td', { class: 'l sym am', text: b.firm }),
-            h('td', { class: 'l lb', text: b.analyst }),
-            h('td', { class: 'l sym ' + (isBuy ? 'up' : isSell ? 'dn' : 'am'), text: b.rec }),
-            h('td', { class: 'am sym', text: fmtPx(b.tp) }),
-            h('td', { class: dirCls(b.retPct) + ' sym', text: fmtPct(b.retPct) }),
-            h('td', { class: 'mu', text: b.dt })
-          );
-        }))
+      h('div', { class: 'na', style: 'margin:10px;padding:12px' },
+        `Live Sell-Side Consensus Targets (Goldman, Morgan Stanley, JPM, etc.) are NOT fabricated when an institutional research feed is absent. Inspect fundamental intrinsic value in DCF <GO>, audited SEC GAAP income in FA <GO>, or real SEC 10-Q EPS in ERN <GO>.`
       )
     );
   }
@@ -707,85 +664,97 @@ export function mountANR(body, ctx) {
 
 export function mountERN(body, ctx) {
   body.classList.add('fill');
-  const tb = h('div', { class: 'tb' }, h('span', { class: 'lbl', text: `90) Actions  91) Guidance  |  ERN / EE - Earnings & Consensus Estimates Workbench [${ctx.symbol}]` }));
+  const tb = h('div', { class: 'tb' },
+    h('span', { class: 'lbl', text: `ERN — REAL SEC EDGAR 10-Q/10-K QUARTERLY EPS & REVENUE REPORTS [${ctx.symbol}]` }),
+    h('button', { text: 'FA STATEMENTS <GO>', onclick: () => ctx.run('FA') }),
+    h('button', { text: 'FILINGS <GO>', onclick: () => ctx.run('CN') })
+  );
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
   async function load() {
+    sc.textContent = '';
+    sc.append(h('div', { class: 'na', text: `Fetching SEC EDGAR XBRL quarterly EPS & revenue filings for ${ctx.symbol}...` }));
     const [fEnv, qEnv] = await Promise.all([
       get('fundamentals', { symbol: ctx.symbol }, 15000),
       get('quote', { symbols: ctx.symbol }, 3000)
     ]);
     ctx.status(fEnv.ok ? fEnv : qEnv);
     sc.textContent = '';
-    const q = (qEnv.ok && qEnv.data && qEnv.data[0]) || {};
-    const px = q.price || 150;
-    const baseEps = +(px / 24).toFixed(2);
 
-    const quarters = [
-      ['Q1 FY25', +(baseEps * 0.21).toFixed(2), +(baseEps * 0.23).toFixed(2), '2025-04-28'],
-      ['Q2 FY25', +(baseEps * 0.23).toFixed(2), +(baseEps * 0.25).toFixed(2), '2025-07-29'],
-      ['Q3 FY25', +(baseEps * 0.24).toFixed(2), +(baseEps * 0.24).toFixed(2), '2025-10-30'],
-      ['Q4 FY25', +(baseEps * 0.27).toFixed(2), +(baseEps * 0.30).toFixed(2), '2026-01-29'],
-      ['Q1 FY26', +(baseEps * 0.26).toFixed(2), +(baseEps * 0.28).toFixed(2), '2026-04-30'],
-      ['Q2 FY26', +(baseEps * 0.28).toFixed(2), +(baseEps * 0.31).toFixed(2), '2026-07-30'],
-      ['Q3 FY26', +(baseEps * 0.30).toFixed(2), +(baseEps * 0.33).toFixed(2), '2026-10-29'],
-      ['Q4 FY26 (E)', +(baseEps * 0.34).toFixed(2), null, '2027-01-28 (EST)']
-    ];
+    const ed = (fEnv.ok && fEnv.data) || {};
+    const sec = ed.edgar || ed;
+    const fin = sec.financials || ed.financials || {};
+    const q = (qEnv.ok && Array.isArray(qEnv.data) && qEnv.data[0]) || {};
+    const spot = Number(q.price || 0);
 
-    // Visual Quarterly Estimate vs Actual Bar Diagram
+    const epsQ = Array.isArray(fin.epsQuarterly) ? fin.epsQuarterly : [];
+    const revQ = Array.isArray(fin.revQuarterly) ? fin.revQuarterly : [];
+    if (!epsQ.length) {
+      sc.append(h('div', { class: 'na', text: `N/A — SEC EDGAR 10-Q/10-K Quarterly GAAP EPS Filings Unavailable for ${ctx.symbol}. Switch to a SEC-registered US Equity (e.g. AAPL, NVDA, MSFT, TSLA, JPM). Wall Street IBES analyst consensus estimates also require a licensed estimate feed.` }));
+      return;
+    }
+
+    const chronological = [...epsQ].reverse(); // oldest -> newest
+    const revByDate = new Map(revQ.map(r => [r.end, r.val]));
+    const last4Sum = epsQ.slice(0, 4).reduce((s, x) => s + (x.val || 0), 0);
+    const trailingPe = (spot > 0 && last4Sum > 0) ? (spot / last4Sum) : null;
+
+    // SVG Real Reported SEC 10-Q/10-K GAAP EPS Bars
     const ns = 'http://www.w3.org/2000/svg';
     const svg = document.createElementNS(ns, 'svg');
     svg.setAttribute('viewBox', '0 0 680 140');
     svg.setAttribute('preserveAspectRatio', 'none');
     svg.style.cssText = 'width:100%;height:140px;display:block;background:#000;border-bottom:1px solid var(--border)';
-    const maxV = Math.max(...quarters.map(x => Math.max(x[1], x[2] || 0)), 1) * 1.18;
-    quarters.forEach(([qtr, est, act], i) => {
-      const x = 35 + i * 78;
-      const hEst = (est / maxV) * 100;
-      const rEst = document.createElementNS(ns, 'rect');
-      rEst.setAttribute('x', x); rEst.setAttribute('y', (115 - hEst).toFixed(1));
-      rEst.setAttribute('width', '22'); rEst.setAttribute('height', hEst.toFixed(1));
-      rEst.setAttribute('fill', '#4da3ff');
-      svg.append(rEst);
+    const maxV = Math.max(...chronological.map(x => Math.abs(x.val || 0)), 0.01) * 1.25;
+    const barSlot = 620 / Math.max(1, chronological.length);
+    chronological.forEach((item, i) => {
+      const x = 32 + i * barSlot + barSlot * 0.18;
+      const w = Math.max(12, barSlot * 0.64);
+      const val = Number(item.val || 0);
+      const hBar = (Math.abs(val) / maxV) * 92;
+      const rAct = document.createElementNS(ns, 'rect');
+      rAct.setAttribute('x', x.toFixed(1));
+      rAct.setAttribute('y', (110 - hBar).toFixed(1));
+      rAct.setAttribute('width', w.toFixed(1));
+      rAct.setAttribute('height', Math.max(2, hBar).toFixed(1));
+      rAct.setAttribute('fill', val >= 0 ? '#00d26a' : '#ff3b30');
+      svg.append(rAct);
 
-      if (act != null) {
-        const hAct = (act / maxV) * 100;
-        const rAct = document.createElementNS(ns, 'rect');
-        rAct.setAttribute('x', x + 24); rAct.setAttribute('y', (115 - hAct).toFixed(1));
-        rAct.setAttribute('width', '22'); rAct.setAttribute('height', hAct.toFixed(1));
-        rAct.setAttribute('fill', act >= est ? '#00d26a' : '#ff3b30');
-        svg.append(rAct);
-      }
+      const vt = document.createElementNS(ns, 'text');
+      vt.setAttribute('x', (x + w / 2).toFixed(1)); vt.setAttribute('y', Math.max(12, 105 - hBar).toFixed(1));
+      vt.setAttribute('text-anchor', 'middle'); vt.setAttribute('fill', '#e0e0e0'); vt.setAttribute('font-size', '9');
+      vt.textContent = '$' + val.toFixed(2);
+      svg.append(vt);
 
       const tx = document.createElementNS(ns, 'text');
-      tx.setAttribute('x', x + 22); tx.setAttribute('y', '132');
-      tx.setAttribute('text-anchor', 'middle'); tx.setAttribute('fill', '#ffb000'); tx.setAttribute('font-size', '9.5');
-      tx.textContent = qtr;
+      tx.setAttribute('x', (x + w / 2).toFixed(1)); tx.setAttribute('y', '131');
+      tx.setAttribute('text-anchor', 'middle'); tx.setAttribute('fill', '#ffb000'); tx.setAttribute('font-size', '9');
+      tx.textContent = `${item.fp || 'Q'}'${String(item.fy || item.end?.slice(0, 4)).slice(-2)}`;
       svg.append(tx);
     });
 
     sc.append(
       h('div', { class: 'tb', style: 'background:#070707;gap:14px' },
-        h('span', { style: 'color:#4da3ff;font-weight:bold', text: '■ CONSENSUS ESTIMATE EPS' }),
-        h('span', { style: 'color:#00d26a;font-weight:bold', text: '■ ACTUAL EPS (BEAT)' }),
-        h('span', { style: 'color:#ff3b30;font-weight:bold', text: '■ ACTUAL EPS (MISS)' }),
-        h('span', { class: 'am sym', text: `IMPLIED FORWARD P/E: ~22.4x` })
+        h('span', { style: 'color:#00d26a;font-weight:bold', text: `■ REPORTED GAAP EPS (SEC XBRL ${ed.entityName || ctx.symbol})` }),
+        h('span', { class: 'am sym', text: `TTM EPS: $${last4Sum.toFixed(2)}  •  TRAILING P/E: ${trailingPe ? trailingPe.toFixed(2) + 'x' : 'N/A'}` }),
+        h('span', { class: 'mu', text: 'Note: Wall Street consensus estimates (Est.) require licensed IBES feed' })
       ),
       svg,
       h('table', { class: 't' },
-        h('thead', null, h('tr', null, ['Period', 'Release Date', 'Consensus EPS Est', 'Actual Reported EPS', 'Surprise ($)', 'Surprise (%)', 'Verdict'].map(x => h('th', { text: x })))),
-        h('tbody', null, [...quarters].reverse().map(([qtr, est, act, dt]) => {
-          const diff = act != null ? act - est : null;
-          const pct = (diff != null && est) ? (diff / est) * 100 : null;
+        h('thead', null, h('tr', null, ['Fiscal Period', 'Period End', 'Filed Date', 'Form', 'Reported GAAP EPS', 'Quarterly Revenue', 'QoQ EPS Δ %'].map(x => h('th', { text: x })))),
+        h('tbody', null, epsQ.map((row, idx) => {
+          const prev = epsQ[idx + 1];
+          const qoq = (prev && prev.val) ? ((row.val - prev.val) / Math.abs(prev.val)) * 100 : null;
+          const qRev = revByDate.get(row.end);
           return h('tr', { class: 'row' },
-            h('td', { class: 'l sym am', text: qtr }),
-            h('td', { class: 'l lb', text: dt }),
-            h('td', { text: '$' + fmtNum(est, 2) }),
-            h('td', { class: 'am sym', text: act != null ? '$' + fmtNum(act, 2) : 'UPCOMING' }),
-            h('td', { class: diff != null ? dirCls(diff) : 'mu', text: diff != null ? (diff >= 0 ? '+$' : '-$') + fmtNum(Math.abs(diff), 2) : '-' }),
-            h('td', { class: pct != null ? dirCls(pct) + ' sym' : 'mu', text: pct != null ? fmtPct(pct) : '-' }),
-            h('td', { class: act == null ? 'lb' : act >= est ? 'up sym' : 'dn sym', text: act == null ? 'SCHEDULED' : act > est ? 'BEAT ESTIMATE' : act === est ? 'IN-LINE' : 'MISSED' })
+            h('td', { class: 'l sym am', text: `${row.fp || ''} FY${row.fy || ''}`.trim() }),
+            h('td', { class: 'l lb', text: row.end || '-' }),
+            h('td', { class: 'l mu', text: row.filed || '-' }),
+            h('td', { class: 'lb', text: row.form || '10-Q' }),
+            h('td', { class: dirCls(row.val) + ' sym', text: '$' + fmtNum(row.val, 2) }),
+            h('td', { class: 'am', text: qRev != null ? '$' + fmtVol(qRev) : '-' }),
+            h('td', { class: qoq != null ? dirCls(qoq) + ' sym' : 'mu', text: qoq != null ? fmtPct(qoq) : '-' })
           );
         }))
       )
@@ -797,435 +766,197 @@ export function mountERN(body, ctx) {
 export function mountSPLC(body, ctx) {
   body.classList.add('fill');
   const tb = h('div', { class: 'tb' },
-    h('span', { class: 'lbl', text: `90) Actions  91) Map  |  SPLC - Multi-Tier Supply Chain & Revenue Exposure [${ctx.symbol}]:` }),
-    ...['NVDA', 'AAPL', 'TSLA', 'SPCX', 'BTCUSDT', 'BBCA.JK', 'CL=F'].map(s =>
+    h('span', { class: 'lbl', text: `SPLC — ECOSYSTEM PEER MATRIX & SUPPLY CHAIN FEED STATUS [${ctx.symbol}]:` }),
+    ...['NVDA', 'AAPL', 'TSLA', 'BTCUSDT', 'BBCA.JK'].map(s =>
       h('button', { class: ctx.symbol === s ? 'on' : '', text: s, onclick: () => ctx.setSymbol(s) })
     )
   );
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
-  const CHAINS = {
-    SEMI: {
-      suppliers: [['TSM', 'Taiwan Semiconductor', '26.4%', '3nm/4nm Foundry & CoWoS Packaging'], ['ASML', 'ASML Holding NV', '12.1%', 'High-NA EUV Lithography Systems'], ['MU', 'Micron Technology', '9.8%', 'HBM3E High-Bandwidth Memory'], ['AVGO', 'Broadcom Inc', '7.9%', 'Custom SerDes & PCIe Switch Silicon']],
-      customers: [['MSFT', 'Microsoft Corp', '19.2%', 'Azure AI Hyperscale Clusters'], ['META', 'Meta Platforms', '13.8%', 'Llama Training Infrastructure'], ['AMZN', 'Amazon Web Services', '11.9%', 'AWS EC2 P5 GPU Clusters'], ['GOOGL', 'Alphabet Inc', '10.6%', 'Google Cloud AI Compute']],
-      geo: [['UNITED STATES', 47], ['TAIWAN / APAC', 26], ['CHINA / HK', 15], ['EMEA / EUROPE', 12]]
-    },
-    EV_SPACE: {
-      suppliers: [['ALB', 'Albemarle Corp', '16.5%', 'Battery-Grade Lithium Carbonate'], ['NVDA', 'NVIDIA Corp', '11.2%', 'FSD & Starlink AI Compute'], ['TSM', 'Taiwan Semiconductor', '9.4%', 'Custom Dojo / Avionics ASICs'], ['HG=F', 'Global Copper Cathode', '8.1%', 'Stator Windings & Harness']],
-      customers: [['NASA', 'US Gov / DoD / NASA', '28.4%', 'Artemis, NSSL & Starshield Contracts'], ['MSFT', 'Microsoft Azure', '11.5%', 'Starlink Backhaul & Cloud'], ['AMZN', 'Enterprise Logistics', '8.2%', 'Commercial Fleet & Payload'], ['UBER', 'Global Mobility Fleet', '6.8%', 'Autonomous EV Network']],
-      geo: [['NORTH AMERICA', 52], ['APAC / CHINA', 24], ['EUROPE / EMEA', 17], ['REST OF WORLD', 7]]
-    },
-    CRYPTO: {
-      suppliers: [['TSM', 'TSMC ASIC Foundry', '31.0%', '3nm SHA-256 Mining Silicon'], ['NG=F', 'North American NatGas/Hydro', '24.5%', 'Baseload Datacenter Power (MW)'], ['NVDA', 'NVIDIA Corp', '14.2%', 'HPC & ZK-Proof Accelerators'], ['COIN', 'Coinbase Custody', '9.8%', 'Prime Institutional Settlement']],
-      customers: [['BLK', 'BlackRock IBIT ETF', '24.6%', 'Spot ETF Institutional Custody'], ['MSTR', 'Strategy (MicroStrategy)', '16.2%', 'Corporate Treasury Reserve'], ['FID', 'Fidelity FBTC Trust', '11.4%', 'Wealth Management Allocation'], ['CME', 'CME Group Futures', '9.5%', 'Regulated Basis & Hedging']],
-      geo: [['NORTH AMERICA', 46], ['APAC (SG/HK/JP)', 28], ['EUROPE / ZUG', 18], ['INDONESIA / EM', 8]]
-    },
-    IDX: {
-      suppliers: [['BI-7DRR', 'Bank Indonesia Liquidity', '34.0%', 'IDR Interbank & SRBI Funding'], ['TLKM.JK', 'Telkom Indonesia', '12.4%', 'National Fiber & Cloud Backbone'], ['MSFT', 'Microsoft Enterprise', '7.8%', 'Core Banking AI & Security'], ['NVDA', 'NVIDIA Enterprise', '5.2%', 'Fraud Detection & Risk GPU']],
-      customers: [['ASII.JK', 'Astra International', '14.5%', 'Corporate Syndicated Working Capital'], ['ADRO.JK', 'Alamtri / Adaro Energy', '11.2%', 'Commodity Trade Finance'], ['AMMN.JK', 'Amman Mineral', '9.6%', 'Smelter CapEx Project Financing'], ['GOTO.JK', 'GoTo Digital Ecosystem', '8.4%', 'QRIS & Consumer Digital Payroll']],
-      geo: [['INDONESIA (DOMESTIC)', 82], ['SINGAPORE / ASEAN', 11], ['EAST ASIA', 5], ['US / EUROPE', 2]]
-    }
+  const SECTOR_ECOSYSTEMS = {
+    SEMI: ['NVDA', 'TSM', 'ASML', 'MU', 'AVGO', 'MSFT', 'AMZN', 'META', 'GOOGL'],
+    CRYPTO: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'COIN', 'MSTR', 'MARA', 'NVDA'],
+    AUTO_SPACE: ['TSLA', 'NVDA', 'ALB', 'PANW', 'MSFT', 'AMZN'],
+    IDX: ['BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK', 'ADRO.JK']
   };
 
-  const s = ctx.symbol;
-  const data = /TSLA|SPCX|SPACEX/.test(s) ? CHAINS.EV_SPACE
-    : /USDT|BTC|ETH|SOL/.test(s) ? CHAINS.CRYPTO
-    : /\.JK|JKSE/.test(s) ? CHAINS.IDX
-    : CHAINS.SEMI;
+  async function load() {
+    const s = ctx.symbol || 'AAPL';
+    const peers = /TSLA|SPCX/i.test(s) ? SECTOR_ECOSYSTEMS.AUTO_SPACE
+      : /USDT|BTC|ETH|SOL/i.test(s) ? SECTOR_ECOSYSTEMS.CRYPTO
+      : /\.JK|JKSE/i.test(s) ? SECTOR_ECOSYSTEMS.IDX
+      : SECTOR_ECOSYSTEMS.SEMI;
 
-  ctx.status({ source: 'splc-network', ts: Date.now(), mode: 'LIVE' });
+    const qEnv = await get('quote', { symbols: peers.join(',') }, 5000);
+    ctx.status(qEnv);
+    sc.textContent = '';
+    const rows = (qEnv.ok && Array.isArray(qEnv.data)) ? qEnv.data : [];
 
-  // Interactive SVG Supply Chain Network Diagram
-  const ns = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('viewBox', '0 0 700 185');
-  svg.setAttribute('preserveAspectRatio', 'none');
-  svg.style.cssText = 'width:100%;height:185px;display:block;background:#020202;border-bottom:1px solid var(--border)';
-
-  const drawNode = (x, y, w, hBox, col, title, sub, clickSym) => {
-    const g = document.createElementNS(ns, 'g');
-    if (clickSym) {
-      g.style.cursor = 'pointer';
-      g.onclick = () => ctx.setSymbol(clickSym);
-    }
-    const r = document.createElementNS(ns, 'rect');
-    r.setAttribute('x', x); r.setAttribute('y', y); r.setAttribute('width', w); r.setAttribute('height', hBox);
-    r.setAttribute('fill', '#0a0a0a'); r.setAttribute('stroke', col); r.setAttribute('stroke-width', '1.5');
-    const t1 = document.createElementNS(ns, 'text');
-    t1.setAttribute('x', x + w / 2); t1.setAttribute('y', y + 14); t1.setAttribute('text-anchor', 'middle');
-    t1.setAttribute('fill', col); t1.setAttribute('font-size', '10.5'); t1.setAttribute('font-weight', 'bold');
-    t1.textContent = title;
-    const t2 = document.createElementNS(ns, 'text');
-    t2.setAttribute('x', x + w / 2); t2.setAttribute('y', y + 26); t2.setAttribute('text-anchor', 'middle');
-    t2.setAttribute('fill', '#aaa'); t2.setAttribute('font-size', '9');
-    t2.textContent = sub;
-    g.append(r, t1, t2);
-    svg.append(g);
-  };
-
-  data.suppliers.forEach(([sym, , exp], i) => {
-    const y = 10 + i * 42;
-    const ln = document.createElementNS(ns, 'line');
-    ln.setAttribute('x1', '175'); ln.setAttribute('y1', y + 16); ln.setAttribute('x2', '275'); ln.setAttribute('y2', '92');
-    ln.setAttribute('stroke', '#4da3ff'); ln.setAttribute('stroke-dasharray', '3,2');
-    svg.append(ln);
-    drawNode(15, y, 160, 32, '#4da3ff', `${sym} (SUPPLIER)`, `COGS Share: ${exp}`, sym);
-  });
-
-  drawNode(275, 68, 150, 48, '#ffb000', `${ctx.symbol} (CENTER)`, 'SPLC CORE VALUE CHAIN', null);
-
-  data.customers.forEach(([sym, , rev], i) => {
-    const y = 10 + i * 42;
-    const ln = document.createElementNS(ns, 'line');
-    ln.setAttribute('x1', '425'); ln.setAttribute('y1', '92'); ln.setAttribute('x2', '525'); ln.setAttribute('y2', y + 16);
-    ln.setAttribute('stroke', '#00d26a'); ln.setAttribute('stroke-dasharray', '3,2');
-    svg.append(ln);
-    drawNode(525, y, 160, 32, '#00d26a', `${sym} (CUSTOMER)`, `Rev Share: ${rev}`, sym);
-  });
-
-  const geoStrip = h('div', { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:6px 8px;background:#070707;border-bottom:1px solid var(--border)' },
-    ...data.geo.map(([reg, pct]) => h('div', null,
-      h('div', { style: 'display:flex;justify-content:space-between;font-size:10px' },
-        h('span', { class: 'lb sym', text: reg }),
-        h('span', { class: 'am sym', text: pct + '% REV' })
+    sc.append(
+      h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border);padding:8px' },
+        h('div', { class: 'k', text: 'PROPRIETARY SPLC % COGS / REV FEED' }),
+        h('div', { class: 'v dn sym', text: 'N/A — Exact Customer/Supplier % Cost & Revenue Allocations Require Paid Bloomberg SPLC Transcript Extraction Feed' }),
+        h('div', { class: 'k', text: 'ECOSYSTEM PEER PRICING' }),
+        h('div', { class: 'v am sym', text: `Live Exchange Quotes for ${peers.length} Ecosystem Peers (Click any row to inspect ticker)` })
       ),
-      h('div', { style: 'height:7px;background:#161616;border:1px solid #333;margin-top:2px' },
-        h('div', { style: `width:${pct}%;height:100%;background:var(--amber)` })
-      )
-    ))
-  );
-
-  sc.append(
-    svg,
-    geoStrip,
-    h('div', { class: 'split2', style: 'padding:6px' },
-      h('div', null,
-        h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'UPSTREAM SUPPLIERS (CLICK TO INSPECT)' })),
-        h('table', { class: 't' },
-          h('thead', null, h('tr', null, ['Ticker', 'Supplier Name', 'Cost Share', 'Component'].map(x => h('th', { text: x })))),
-          h('tbody', null, data.suppliers.map(([s, n, sh, desc]) => h('tr', { class: 'row', onclick: () => ctx.setSymbol(s) },
-            h('td', { class: 'l sym lb', text: s }),
-            h('td', { class: 'l', text: n }),
-            h('td', { class: 'am sym', text: sh }),
-            h('td', { class: 'l mu', text: desc })
-          )))
-        )
-      ),
-      h('div', null,
-        h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'DOWNSTREAM CUSTOMERS (CLICK TO INSPECT)' })),
-        h('table', { class: 't' },
-          h('thead', null, h('tr', null, ['Ticker', 'Customer Name', 'Rev Share', 'Segment'].map(x => h('th', { text: x })))),
-          h('tbody', null, data.customers.map(([s, n, sh, desc]) => h('tr', { class: 'row', onclick: () => ctx.setSymbol(s) },
-            h('td', { class: 'l sym up', text: s }),
-            h('td', { class: 'l', text: n }),
-            h('td', { class: 'am sym', text: sh }),
-            h('td', { class: 'l mu', text: desc })
-          )))
-        )
-      )
-    )
-  );
+      rows.length ? h('table', { class: 't' },
+        h('thead', null, h('tr', null, ['Ticker', 'Name / Contract', 'Live Last Px', '24h / Day Chg %', '24h / Day Volume', 'Ecosystem Link'].map(x => h('th', { text: x })))),
+        h('tbody', null, rows.map(r => h('tr', { class: 'row', onclick: () => ctx.setSymbol(r.symbol) },
+          h('td', { class: 'l sym am', text: r.symbol }),
+          h('td', { class: 'l', text: r.name || r.symbol }),
+          h('td', { class: 'am sym', text: fmtPx(r.price) }),
+          h('td', { class: dirCls(r.changePct) + ' sym', text: fmtPct(r.changePct) }),
+          h('td', { class: 'lb', text: fmtVol(r.volume) }),
+          h('td', { class: 'l mu', text: 'Click to pivot terminal' })
+        )))
+      ) : h('div', { class: 'na', text: 'No live quotes returned for sector ecosystem' })
+    );
+  }
+  load();
 }
 
 export function mountHDS(body, ctx) {
   body.classList.add('fill');
-  const tb = h('div', { class: 'tb' }, h('span', { class: 'lbl', text: `90) Actions  91) 13F Filings  |  HDS / OWN - Institutional Holders & Ownership Matrix [${ctx.symbol}]` }));
+  const tb = h('div', { class: 'tb' },
+    h('span', { class: 'lbl', text: `HDS / OWN — SHARE FLOAT STRUCTURE & SEC 13F/13D REGISTRY [${ctx.symbol}]` }),
+    h('button', { text: 'CN SEC FILINGS <GO>', onclick: () => ctx.run('CN') }),
+    h('button', { text: 'DES OVERVIEW <GO>', onclick: () => ctx.run('DES') })
+  );
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
-  const holders = [
-    ['The Vanguard Group, Inc.', '13F-HR', 8.92, '+1.4%', 'INDEX / PASSIVE'],
-    ['BlackRock Institutional Trust', '13F-HR', 7.45, '+2.1%', 'ETF / ALADDIN'],
-    ['State Street Global Advisors', '13F-HR', 4.18, '+0.6%', 'SPDR INDEX'],
-    ['Fidelity Management & Research', '13F-HR', 3.64, '+3.8%', 'ACTIVE GROWTH'],
-    ['Geode Capital Management', '13F-HR', 2.15, '+1.9%', 'QUANT INDEX'],
-    ['Norges Bank Investment Mgmt', '13F-HR', 1.48, '+4.2%', 'SOVEREIGN WEALTH'],
-    ['T. Rowe Price Associates', '13F-HR', 1.32, '-1.1%', 'ACTIVE EQUITY'],
-    ['Morgan Stanley Investment Mgmt', '13F-HR', 1.24, '+0.9%', 'INSTITUTIONAL'],
-    ['Goldman Sachs Asset Management', '13F-HR', 1.11, '+5.4%', 'MULTI-STRATEGY'],
-    ['Citadel Advisors LLC', '13F-HR', 0.88, '+12.6%', 'QUANT HEDGE FUND']
-  ];
+  async function load() {
+    const [fEnv, qEnv] = await Promise.all([
+      get('fundamentals', { symbol: ctx.symbol }, 8000),
+      get('quote', { symbols: ctx.symbol }, 3000)
+    ]);
+    ctx.status(fEnv.ok ? fEnv : qEnv);
+    sc.textContent = '';
 
-  ctx.status({ source: '13f-ownership', ts: Date.now(), mode: 'LIVE' });
-  sc.append(
-    h('div', { style: 'padding:6px 8px;background:#050505;border-bottom:1px solid var(--border)' },
-      h('div', { style: 'display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px' },
-        h('span', { style: 'color:#ffb000;font-weight:bold', text: '■ INSTITUTIONAL (13F): 68.4%' }),
-        h('span', { style: 'color:#4da3ff;font-weight:bold', text: '■ ETF / SOVEREIGN: 18.2%' }),
-        h('span', { style: 'color:#00d26a;font-weight:bold', text: '■ INSIDER / STRATEGIC: 5.1%' }),
-        h('span', { style: 'color:#888;font-weight:bold', text: '■ PUBLIC FLOAT: 8.3%' })
+    const ed = (fEnv.ok && fEnv.data) || {};
+    const sec = ed.edgar || ed;
+    const fin = sec.financials || ed.financials || {};
+    const q = (qEnv.ok && Array.isArray(qEnv.data) && qEnv.data[0]) || {};
+    const latestVal = arr => (Array.isArray(arr) && arr.length ? arr[0].val : null);
+    const shares = fin.shares ? (Array.isArray(fin.shares) ? latestVal(fin.shares) : fin.shares) : null;
+    const mktCap = (shares && q.price) ? shares * q.price : null;
+    const ownershipFilings = (sec.filings || ed.filings || []).filter(f => /13F|13D|13G|DEF 14A|4\b/i.test(f.form || ''));
+
+    sc.append(
+      h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border);padding:8px' },
+        h('div', { class: 'k', text: 'PARSED 13F HOLDER TABLE FEED' }),
+        h('div', { class: 'v dn sym', text: 'N/A — Parsed Fund-by-Fund Institutional Holdings (13F-HR Aggregator) Feed Not Connected (requires paid SEC 13F index vendor)' }),
+        h('div', { class: 'k', text: 'SEC EDGAR ENTITY / CIK' }),
+        h('div', { class: 'v am sym', text: sec.cik ? `${sec.entityName || ctx.symbol} (CIK ${sec.cik})` : `Non-SEC Instrument (${ctx.symbol})` }),
+        h('div', { class: 'k', text: 'REPORTED WEIGHTED SHARES & MKT CAP' }),
+        h('div', { class: 'v lb sym', text: shares ? `${fmtVol(shares)} shares  •  Implied Mkt Cap: ${mktCap ? '$' + fmtVol(mktCap) : 'N/A'}` : 'N/A' })
       ),
-      h('div', { style: 'display:flex;height:10px;width:100%;border:1px solid #222' },
-        h('div', { style: 'width:68.4%;background:#ffb000' }),
-        h('div', { style: 'width:18.2%;background:#4da3ff' }),
-        h('div', { style: 'width:5.1%;background:#00d26a' }),
-        h('div', { style: 'width:8.3%;background:#555' })
-      )
-    ),
-    h('table', { class: 't' },
-      h('thead', null, h('tr', null, ['#', 'Institution / Holder Name', 'Filing Source', '% Shares Out', 'QoQ Position Chg', 'Mandate Style'].map(x => h('th', { text: x })))),
-      h('tbody', null, holders.map(([name, src, pct, chg, style], i) => h('tr', { class: 'row' },
-        h('td', { class: 'l mu', text: String(i + 1) }),
-        h('td', { class: 'l sym am', text: name }),
-        h('td', { class: 'l lb', text: src }),
-        h('td', { class: 'am sym', text: pct.toFixed(2) + '%' }),
-        h('td', { class: chg.startsWith('+') ? 'up sym' : 'dn sym', text: chg }),
-        h('td', { class: 'l mu', text: style })
-      )))
-    )
-  );
+      sec.cik ? h('div', { style: 'padding:8px 10px;border-bottom:1px solid var(--border);background:#070a0f' },
+        h('a', {
+          href: `https://www.sec.gov/edgar/browse/?CIK=${sec.cik}`,
+          target: '_blank',
+          style: 'color:#00e5ff;font-weight:bold;text-decoration:underline',
+          text: `↗ OPEN OFFICIAL SEC EDGAR REGISTRY FOR ${sec.entityName || ctx.symbol} (13D / 13G / DEF 14A / FORM 4)`
+        })
+      ) : null,
+      ownershipFilings.length ? h('table', { class: 't' },
+        h('thead', null, h('tr', null, ['Form Type', 'Filed Date', 'Primary SEC Document', 'Direct EDGAR Link'].map(x => h('th', { text: x })))),
+        h('tbody', null, ownershipFilings.slice(0, 12).map(fl => h('tr', { class: 'row' },
+          h('td', { class: 'l sym am', text: fl.form }),
+          h('td', { class: 'lb', text: fl.filingDate }),
+          h('td', { class: 'l', text: fl.primaryDocDescription || fl.form }),
+          h('td', { class: 'l' }, fl.url ? h('a', { href: fl.url, target: '_blank', style: 'color:#00d26a', text: 'SEC DOC ↗' }) : '-')
+        )))
+      ) : h('div', { class: 'na', text: 'No parsed 13F aggregator connected. Real SEC EDGAR company filings are available in CN <GO>.' })
+    );
+  }
+  load();
 }
-
-const MGMT_ROSTER = {
-  AAPL: [
-    ['Timothy D. Cook', 'Chief Executive Officer & Director', 65, '2011–Present', '$74.6M', '3,280,180', '8/10'],
-    ['Kevan Parekh', 'SVP & Chief Financial Officer', 52, '2025–Present', '$22.5M', '41,200', '9/10'],
-    ['Arthur D. Levinson', 'Chairman of the Board (Independent)', 75, '2000–Present', '$0.5M', '4,142,000', '9/10'],
-    ['Craig Federighi', 'SVP, Software Engineering', 56, '2012–Present', '$27.2M', '481,500', '9/10'],
-    ['Johny Srouji', 'SVP, Hardware Technologies', 61, '2015–Present', '$26.9M', '194,200', '9/10'],
-    ['Deirdre O\'Brien', 'SVP, Retail & People', 59, '2019–Present', '$27.1M', '136,570', '8/10']
-  ],
-  NVDA: [
-    ['Jen-Hsun (Jensen) Huang', 'Founder, President & CEO', 62, '1993–Present', '$49.9M', '858,200,000', '10/10'],
-    ['Colette M. Kress', 'EVP & Chief Financial Officer', 58, '2013–Present', '$21.7M', '3,088,000', '9/10'],
-    ['Jay Puri', 'EVP, Worldwide Field Operations', 70, '2005–Present', '$18.4M', '3,940,000', '9/10'],
-    ['Debora Shoquist', 'EVP, Operations', 70, '2007–Present', '$17.6M', '4,115,000', '9/10'],
-    ['Tim Teter', 'EVP, General Counsel & Secretary', 58, '2017–Present', '$14.2M', '1,820,000', '9/10'],
-    ['Robert K. Burgess', 'Lead Independent Director', 67, '2011–Present', '$0.4M', '1,910,000', '9/10']
-  ],
-  TSLA: [
-    ['Elon R. Musk', 'Technoking, CEO & Director', 54, '2008–Present', '$0.0M (Perf Opts)', '411,062,000', '8/10'],
-    ['Vaibhav Taneja', 'Chief Financial Officer', 47, '2023–Present', '$139.5M', '106,000', '8/10'],
-    ['Tom Zhu', 'SVP, Automotive Operations', 45, '2023–Present', '$12.8M', '69,500', '9/10'],
-    ['Robyn M. Denholm', 'Chair of the Board (Independent)', 62, '2014–Present', '$1.2M', '85,000', '7/10'],
-    ['Kimbal Musk', 'Director (Board Member)', 53, '2004–Present', '$0.3M', '1,463,000', '7/10']
-  ],
-  MSFT: [
-    ['Satya Nadella', 'Chairman & Chief Executive Officer', 58, '2014–Present', '$79.1M', '874,000', '10/10'],
-    ['Amy E. Hood', 'EVP & Chief Financial Officer', 53, '2013–Present', '$25.9M', '512,000', '10/10'],
-    ['Bradford L. Smith', 'Vice Chair & President', 66, '2015–Present', '$23.4M', '570,000', '9/10'],
-    ['Judson Althoff', 'EVP & Chief Commercial Officer', 52, '2013–Present', '$21.2M', '141,000', '9/10'],
-    ['Sandra E. Peterson', 'Lead Independent Director', 66, '2015–Present', '$0.4M', '24,000', '9/10']
-  ],
-  SPCX: [
-    ['Elon R. Musk', 'Founder, CEO & Chief Engineer', 54, '2002–Present', 'Private Equity', '~42.0% Voting', '10/10'],
-    ['Gwynne Shotwell', 'President & Chief Operating Officer', 62, '2002–Present', 'Private Equity', '~0.8% Equity', '10/10'],
-    ['Bret Johnsen', 'Chief Financial Officer', 56, '2011–Present', 'Private Equity', 'Strategic Opts', '9/10'],
-    ['Tom Ochinero', 'SVP, Commercial Business (Starlink/Launch)', 48, '2014–Present', 'Executive Comp', 'RSU Vested', '9/10'],
-    ['Mark Juncosa', 'VP, Vehicle Engineering', 46, '2004–Present', 'Executive Comp', 'RSU Vested', '9/10']
-  ],
-  BTCUSDT: [
-    ['Satoshi Nakamoto', 'Protocol Architect (Genesis Block)', '-', '2009', '0.00 BTC Spent', '~1,096,000 BTC', 'DECENTRALIZED'],
-    ['Bitcoin Core Maintainers', 'Protocol Reference Implementation', '-', 'Ongoing', 'Grant Funded', 'Open Source', '9/10'],
-    ['Michael J. Saylor (MSTR)', 'Largest Corporate Treasury Proxy', 60, '2020–Present', 'Corporate Equity', '>499,000 BTC', 'INSTITUTIONAL'],
-    ['Larry Fink (BlackRock IBIT)', 'Spot ETF Custody Sponsor', 72, '2024–Present', '0.25% Fee', '>560,000 BTC', 'REGULATED']
-  ]
-};
 
 export function mountMGMT(body, ctx) {
   body.classList.add('fill');
-  const tb = h('div', { class: 'tb' });
+  const tb = h('div', { class: 'tb' },
+    h('span', { class: 'lbl', text: `MGMT — GOVERNANCE FILINGS & SEC PROXY REGISTRY [${ctx.symbol}]` }),
+    h('button', { text: 'HDS OWNERSHIP <GO>', onclick: () => ctx.run('HDS') }),
+    h('button', { text: 'CN SEC FILINGS <GO>', onclick: () => ctx.run('CN') })
+  );
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
-  function render(sym) {
-    tb.textContent = '';
-    tb.append(
-      h('span', { class: 'lbl', text: `MGMT - EXECUTIVE MANAGEMENT & BOARD ROSTER [${sym}]:` }),
-      ...['AAPL', 'NVDA', 'TSLA', 'MSFT', 'SPCX', 'BTCUSDT'].map(s => h('button', { class: sym === s ? 'on' : '', text: s, onclick: () => ctx.setSymbol(s) })),
-      h('button', { text: 'HDS 13F <GO>', onclick: () => ctx.run(`${sym} HDS`) })
-    );
+  async function load() {
+    const fEnv = await get('fundamentals', { symbol: ctx.symbol }, 8000);
+    ctx.status(fEnv);
     sc.textContent = '';
-    const key = sym.replace(/\.P$/, '').replace(/-USD$/, 'USDT');
-    const roster = MGMT_ROSTER[key] || MGMT_ROSTER[sym] || [
-      [`${sym} Chief Executive Officer`, 'Chief Executive Officer & Director', 54, '2020–Present', '$14.8M', '1,240,000', '8/10'],
-      [`${sym} Chief Financial Officer`, 'EVP & Chief Financial Officer', 49, '2021–Present', '$7.2M', '310,000', '9/10'],
-      [`${sym} Chief Operating Officer`, 'President & COO', 51, '2019–Present', '$8.1M', '415,000', '8/10'],
-      [`${sym} Lead Director`, 'Independent Board Chair', 63, '2017–Present', '$0.4M', '95,000', '9/10'],
-      [`${sym} Audit Committee Chair`, 'Independent Audit Director', 61, '2018–Present', '$0.3M', '62,000', '9/10']
-    ];
-    ctx.status({ source: 'mgmt-proxy-def14a', ts: Date.now(), mode: 'LIVE' });
+
+    const ed = (fEnv.ok && fEnv.data) || {};
+    const sec = ed.edgar || ed;
+    const proxyFilings = (sec.filings || ed.filings || []).filter(f => /DEF 14A|PRE 14A|10-K|8-K/i.test(f.form || ''));
+
     sc.append(
-      h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border)' },
-        h('div', { class: 'k', text: 'FILING BASIS' }), h('div', { class: 'v am sym', text: 'SEC DEF 14A PROXY / FORM 4 INSIDER REGISTRY' }),
-        h('div', { class: 'k', text: 'ISS GOVERNANCE QUALITY' }), h('div', { class: 'v up sym', text: 'DECILES: AUDIT 1 | BOARD 2 | COMP 2 | SHAREHOLDER RIGHTS 1' }),
-        h('div', { class: 'k', text: 'INSIDER ALIGNMENT' }), h('div', { class: 'v lb', text: `${roster[0][0]} (${roster[0][1]}) • Avg C-Suite Tenure: 8.4 yrs` })
+      h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border);padding:8px' },
+        h('div', { class: 'k', text: 'PARSED EXEC COMP / FORM 4 TABLE' }),
+        h('div', { class: 'v dn sym', text: 'N/A — Parsed DEF 14A Executive Compensation & Insider Ownership Feed Not Connected' }),
+        h('div', { class: 'k', text: 'SEC EDGAR ISSUER IDENTITY' }),
+        h('div', { class: 'v am sym', text: sec.cik ? `${sec.entityName || ctx.symbol} (CIK ${sec.cik} • ${sec.sicDescription || ed.profile?.sicDescription || 'SEC Registrant'})` : `Not a SEC EDGAR Corporate Issuer (${ctx.symbol})` })
       ),
-      h('table', { class: 't' },
-        h('thead', null, h('tr', null, ['Executive / Director', 'Title & Committee Role', 'Age', 'Tenure', 'Total Comp (FY)', 'Beneficial Shares', 'Score'].map(x => h('th', { text: x })))),
-        h('tbody', null, roster.map(([name, title, age, ten, comp, sh, gov]) => h('tr', { class: 'row' },
-          h('td', { class: 'l sym am', text: name }),
-          h('td', { class: 'l lb', text: title }),
-          h('td', { class: 'mu', text: String(age) }),
-          h('td', { text: ten }),
-          h('td', { class: 'up sym', text: comp }),
-          h('td', { class: 'am', text: sh }),
-          h('td', { class: 'lb sym', text: gov })
+      proxyFilings.length ? h('table', { class: 't' },
+        h('thead', null, h('tr', null, ['SEC Form', 'Filing Date', 'Report Date', 'Document Description', 'Official Link'].map(x => h('th', { text: x })))),
+        h('tbody', null, proxyFilings.slice(0, 15).map(fl => h('tr', { class: 'row' },
+          h('td', { class: 'l sym am', text: fl.form }),
+          h('td', { class: 'lb', text: fl.filingDate }),
+          h('td', { class: 'mu', text: fl.reportDate || '-' }),
+          h('td', { class: 'l', text: fl.primaryDocDescription || 'Official Proxy / Governance Filing' }),
+          h('td', { class: 'l' }, fl.url ? h('a', { href: fl.url, target: '_blank', style: 'color:#00e5ff', text: 'OPEN SEC ↗' }) : '-')
         )))
-      )
+      ) : h('div', { class: 'na', text: `N/A — No live parsed proxy/insider feed for ${ctx.symbol}. Synthetic CEO compensation rows have been permanently removed.` })
     );
   }
-  render(ctx.symbol || 'AAPL');
+  load();
+}
+
+function mountUnavailableInstitutionalModule(body, ctx, code, title, explanation, navActions) {
+  body.classList.add('fill');
+  const tb = h('div', { class: 'tb' },
+    h('span', { class: 'lbl', text: `${code} — ${title} [${ctx.symbol}]` }),
+    ...navActions.map(([lbl, cmd]) => h('button', { text: `${lbl} <GO>`, onclick: () => ctx.run(cmd) }))
+  );
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+  ctx.status({ source: 'feed-audit', ts: Date.now(), mode: 'N/A' });
+  sc.append(
+    h('div', { class: 'na', style: 'margin:14px;padding:16px;text-align:left;line-height:1.6' },
+      h('div', { class: 'am sym', style: 'font-size:13px;margin-bottom:6px', text: `${code}: LIVE INSTITUTIONAL FEED NOT CONNECTED (N/A)` }),
+      h('div', { style: 'color:#ccc', text: explanation })
+    )
+  );
 }
 
 export function mountMA(body, ctx) {
-  body.classList.add('fill');
-  const tb = h('div', { class: 'tb' },
-    h('span', { class: 'lbl', text: 'MA — GLOBAL MERGERS & ACQUISITIONS DEAL MONITOR, EV/EBITDA MULTIPLES & MERGER ARBITRAGE SPREADS' }),
-    h('button', { text: 'IPO PIPELINE <GO>', onclick: () => ctx.run('IPO') })
+  mountUnavailableInstitutionalModule(
+    body, ctx, 'MA',
+    'MERGERS & ACQUISITIONS ARBITRAGE DESK',
+    'Hardcoded M&A deal spreads and fabricated offer prices have been removed. Live Merger Arbitrage spreads and EV/EBITDA deal comparables require an institutional Capital IQ / Dealogic / Bloomberg MA data subscription.',
+    [['FA SEC DATA', 'FA'], ['TOP NEWS', 'TOP'], ['COMP CHART', 'COMP']]
   );
-  const sc = h('div', { class: 'pb' });
-  body.append(tb, sc);
-
-  const DEALS = [
-    ['ANSS', 'Ansys Inc', 'SNPS', 'Synopsys Inc', '$35.0B', 'CASH + STOCK', '$390.00', '$374.20', '+4.22%', '11.8%', '28.4x', 'REGULATORY REVIEW'],
-    ['JNPR', 'Juniper Networks', 'HPE', 'Hewlett Packard Ent', '$14.0B', 'ALL CASH', '$40.00', '$38.95', '+2.70%', '8.4%', '14.2x', 'DOJ / EU CLEARANCE'],
-    ['HES', 'Hess Corporation', 'CVX', 'Chevron Corp', '$53.0B', 'ALL STOCK', '$171.00', '$163.80', '+4.39%', '10.6%', '9.8x', 'ARBITRATION PENDING'],
-    ['CTLT', 'Catalent Inc', 'NVO', 'Novo Holdings', '$16.5B', 'ALL CASH', '$63.50', '$62.85', '+1.03%', '6.2%', '21.5x', 'CLOSING Q4'],
-    ['HASH', 'HashiCorp Inc', 'IBM', 'IBM Corporation', '$6.4B', 'ALL CASH', '$35.00', '$34.45', '+1.60%', '7.1%', '31.0x', 'FTC REVIEW'],
-    ['MRO', 'Marathon Oil', 'COP', 'ConocoPhillips', '$22.5B', 'ALL STOCK', '$30.33', '$29.88', '+1.51%', '6.8%', '6.4x', 'SHAREHOLDER APPROVED']
-  ];
-
-  sc.append(
-    h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border);padding:6px 8px' },
-      h('div', { class: 'k', text: 'GLOBAL M&A YTD DEAL VOLUME' }), h('div', { class: 'v am sym', text: '$3.18 TRILLION (+16.4% YoY • 28,410 Announced Transactions)' }),
-      h('div', { class: 'k', text: 'MEDIAN TARGET EV/EBITDA' }), h('div', { class: 'v up sym', text: '14.8x All-Sector Median (Tech/AI M&A Median: 27.6x)' }),
-      h('div', { class: 'k', text: 'MERGER ARB DESK IMPLIED IRR' }), h('div', { class: 'v lb sym', text: '8.48% Annualized Deal Spread Across Top 20 Liquid Deals' })
-    ),
-    h('table', { class: 't' },
-      h('thead', null, h('tr', null, ['Target', 'Target Name', 'Acquirer', 'Deal Size', 'Terms', 'Offer Px', 'Spot Px', 'Gross Spread', 'Ann. Arb IRR', 'EV/EBITDA', 'Regulatory Status'].map(x => h('th', { text: x })))),
-      h('tbody', null, DEALS.map(([tSym, tName, aSym, aName, sz, tm, ofPx, spPx, spr, irr, mult, st]) => h('tr', { class: 'row', onclick: () => ctx.setSymbol(aSym) },
-        h('td', { class: 'l sym am', text: tSym }),
-        h('td', { class: 'l', text: tName }),
-        h('td', { class: 'l sym lb', text: `${aSym} (${aName})` }),
-        h('td', { class: 'am sym', text: sz }),
-        h('td', { class: 'mu', text: tm }),
-        h('td', { text: ofPx }),
-        h('td', { text: spPx }),
-        h('td', { class: 'up sym', text: spr }),
-        h('td', { class: 'up sym', text: irr }),
-        h('td', { class: 'lb', text: mult }),
-        h('td', { class: 'l am', text: st })
-      )))
-    )
-  );
-  ctx.status({ source: 'ma-arb-desk', ts: Date.now(), mode: 'LIVE' });
 }
 
 export function mountIPO(body, ctx) {
-  body.classList.add('fill');
-  const tb = h('div', { class: 'tb' },
-    h('span', { class: 'lbl', text: 'IPO / EVTS / CACS — EQUITY OFFERINGS, CORPORATE ACTIONS & EARNINGS EVENT CALENDAR' }),
-    h('button', { text: 'MA DEALS <GO>', onclick: () => ctx.run('MA') }),
-    h('button', { text: 'ERN SURPRISE <GO>', onclick: () => ctx.run('ERN') })
+  mountUnavailableInstitutionalModule(
+    body, ctx, 'IPO / EVTS',
+    'EQUITY OFFERINGS & CORPORATE EVENTS CALENDAR',
+    'Fabricated pre-IPO syndicate bookbuilding valuations and static dividend dates have been removed. Live S-1 syndicate pipelines and ex-dividend corporate action feeds require an institutional IPO / CACS vendor license. Real SEC EDGAR 10-K/10-Q/8-K/S-1 filings are available in CN <GO>.',
+    [['CN SEC FILINGS', 'CN'], ['ERN SEC EPS', 'ERN'], ['TOP NEWS', 'TOP']]
   );
-  const sc = h('div', { class: 'pb' });
-  body.append(tb, sc);
-
-  const IPOS = [
-    ['SPCX', 'SpaceX / Starlink Spin-Off', 'NASDAQ', 'PRE-IPO / TENDER', '$151.20', '$210.0B', 'Morgan Stanley / GS', 'OVERSUBSCRIBED 6.4x'],
-    ['STRP', 'Stripe Inc', 'NYSE', 'SECONDARY / S-1', '$72.50', '$70.0B', 'Goldman Sachs / JPM', 'INSTITUTIONAL BOOKBUILD'],
-    ['DBRX', 'Databricks Inc', 'NASDAQ', 'SERIES J / S-1', '$94.00', '$62.0B', 'J.P. Morgan / MS', 'AI INFRASTRUCTURE LEAD'],
-    ['CRWV', 'CoreWeave Inc', 'NASDAQ', 'IPO PRICED', '$58.40', '$26.5B', 'Morgan Stanley / BofA', '+21.4% VS OFFER PX'],
-    ['RDTL', 'Reddit Inc', 'NYSE', 'RECENT IPO', '$142.80', '$24.2B', 'Morgan Stanley / GS', '+319.8% SINCE IPO']
-  ];
-
-  const EVENTS = [
-    ['2026-11-18', 'NVDA', 'Q3 FY27 Earnings Release & AI GPU Call', 'EARNINGS (EVTS)', 'EPS Est: $0.94 | Rev Est: $38.2B', 'HIGH VOLATILITY (±7.4% Implied)'],
-    ['2026-11-20', 'AAPL', 'Quarterly Cash Dividend Ex-Date ($0.26/sh)', 'CORP ACTION (CACS)', 'Payable 2026-11-28', 'CONFIRMED BOARD DECLARATION'],
-    ['2026-11-24', 'BBCA.JK', 'Interim Cash Dividend & RUPSLB Jakarta', 'CORP ACTION (CACS)', 'Est Yield: 3.15% IDR', 'IDX CORPORATE REGISTRY'],
-    ['2026-12-02', 'TSLA', 'Autonomous Robotaxi & FSD v14 Investor Day', 'INVESTOR DAY (EVTS)', 'Austin Gigafactory Webcast', 'CATALYST WATCH'],
-    ['2026-12-10', 'MSFT', '$60B Share Repurchase Program Tranche', 'BUYBACK (CACS)', 'Open-Market Execution', 'ACTIVE TREASURY BUYBACK']
-  ];
-
-  sc.append(
-    h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: '1) IPO — GLOBAL INITIAL PUBLIC OFFERINGS & PRIVATE UNICORN SYNDICATE PIPELINE' })),
-    h('table', { class: 't' },
-      h('thead', null, h('tr', null, ['Ticker', 'Issuer Name', 'Exchange', 'Stage', 'Indicative / Last Px', 'Implied Valuation', 'Lead Bookrunners', 'Syndicate Demand'].map(x => h('th', { text: x })))),
-      h('tbody', null, IPOS.map(([tk, nm, ex, st, px, val, bk, dm]) => h('tr', { class: 'row', onclick: () => ctx.setSymbol(tk) },
-        h('td', { class: 'l sym am', text: tk }),
-        h('td', { class: 'l', text: nm }),
-        h('td', { class: 'lb', text: ex }),
-        h('td', { class: 'am', text: st }),
-        h('td', { class: 'up sym', text: px }),
-        h('td', { class: 'sym', text: val }),
-        h('td', { class: 'l mu', text: bk }),
-        h('td', { class: 'l up sym', text: dm })
-      )))
-    ),
-    h('div', { class: 'tb', style: 'background:#070707;margin-top:6px' }, h('span', { class: 'lbl', text: '2) EVTS / CACS — UPCOMING CORPORATE ACTIONS, DIVIDENDS, BUYBACKS & EARNINGS CALENDAR' })),
-    h('table', { class: 't' },
-      h('thead', null, h('tr', null, ['Date', 'Ticker', 'Corporate Event / Action Description', 'Category', 'Key Financial Terms', 'Desk Impact Note'].map(x => h('th', { text: x })))),
-      h('tbody', null, EVENTS.map(([dt, tk, ds, ct, tm, nt]) => h('tr', { class: 'row', onclick: () => ctx.setSymbol(tk) },
-        h('td', { class: 'l mu', text: dt }),
-        h('td', { class: 'l sym am', text: tk }),
-        h('td', { class: 'l', text: ds }),
-        h('td', { class: 'lb sym', text: ct }),
-        h('td', { class: 'am', text: tm }),
-        h('td', { class: 'l up', text: nt })
-      )))
-    )
-  );
-  ctx.status({ source: 'ipo-evts-cacs', ts: Date.now(), mode: 'LIVE' });
 }
 
 export function mountESG(body, ctx) {
-  body.classList.add('fill');
-  const tb = h('div', { class: 'tb' },
-    h('span', { class: 'lbl', text: `ESG / GUID — SUSTAINABILITY SCORECARD, CARBON INTENSITY & MANAGEMENT GUIDANCE VS CONSENSUS [${ctx.symbol}]` }),
-    h('button', { text: 'FA FINANCIALS <GO>', onclick: () => ctx.run('FA') }),
-    h('button', { text: 'MGMT BOARD <GO>', onclick: () => ctx.run('MGMT') })
+  mountUnavailableInstitutionalModule(
+    body, ctx, 'ESG / GUID',
+    'SUSTAINABILITY SCORECARD & MANAGEMENT GUIDANCE',
+    'Fabricated MSCI ESG scores and synthetic street guidance spreads have been removed. Live Sustainalytics/MSCI ESG ratings and IBES corporate guidance consensus require licensed institutional feeds. Live audited SEC income & balance sheet items remain available in FA <GO>.',
+    [['FA FINANCIALS', 'FA'], ['DCF VALUATION', 'DCF'], ['CRPR ALTMAN Z', 'CRPR']]
   );
-  const sc = h('div', { class: 'pb' });
-  body.append(tb, sc);
-
-  const sym = (ctx.symbol || 'AAPL').toUpperCase();
-  const PILLARS = [
-    ['Environmental (E) — Scope 1/2/3 Carbon & Clean Energy', 86.4, 'AAA Leader', '100% Renewable Corporate Operations; -48% Carbon Intensity vs 2019'],
-    ['Social (S) — Human Capital, Supply Chain & Data Privacy', 81.2, 'AA Upper', 'Zero Tier-1 Supplier Audit Violations; Top Decile Employee Retention'],
-    ['Governance (G) — Board Independence, Audit & Executive Pay', 91.5, 'AAA Top 5%', '88% Independent Board; Clawback & Long-Term ROIC Vesting Enforced'],
-    ['Bloomberg Composite ESG Disclosure Score', 86.8, 'TOP DECILE', 'Full TCFD, SASB & GRI Audited Sustainability Reporting']
-  ];
-
-  const GUIDANCE = [
-    [`${sym} Next Quarter Revenue ($B)`, '$96.5B – $99.0B', '$97.75B', '$97.10B', '+0.67% ABOVE STREET', 'RAISED GUIDANCE'],
-    [`${sym} Gross Profit Margin (%)`, '46.5% – 47.5%', '47.00%', '46.60%', '+40 bps ABOVE STREET', 'EXPANDING MARGIN'],
-    [`${sym} Operating Expense ($B)`, '$14.8B – $15.0B', '$14.90B', '$15.05B', '-1.00% DISCIPLINED OPEX', 'COST EFFICIENCY'],
-    [`${sym} Full-Year Diluted EPS ($)`, '$7.35 – $7.55', '$7.45', '$7.32', '+1.78% ABOVE STREET', 'BEAT & RAISE'],
-    [`${sym} Free Cash Flow Conversion (%)`, '92.0% – 96.0%', '94.00%', '91.50%', '+250 bps ABOVE STREET', 'STRONG FCF YIELD']
-  ];
-
-  sc.append(
-    h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: '1) ESG — INSTITUTIONAL ENVIRONMENTAL, SOCIAL & GOVERNANCE SCORECARD' })),
-    h('table', { class: 't' },
-      h('thead', null, h('tr', null, ['ESG Pillar / Dimension', 'Score / 100', 'MSCI / BBG Tier', 'Score Bar', 'Audited Disclosure & Carbon Metric'].map(x => h('th', { text: x })))),
-      h('tbody', null, PILLARS.map(([p, scVal, tr, desc]) => h('tr', { class: 'row' },
-        h('td', { class: 'l sym am', text: p }),
-        h('td', { class: 'up sym', text: scVal.toFixed(1) }),
-        h('td', { class: 'lb sym', text: tr }),
-        h('td', { style: 'width:130px' },
-          h('div', { style: 'width:115px;height:8px;background:#141414;border:1px solid #2b2b2b' },
-            h('div', { style: `width:${scVal}%;height:100%;background:#00d26a` })
-          )
-        ),
-        h('td', { class: 'l mu', text: desc })
-      )))
-    ),
-    h('div', { class: 'tb', style: 'background:#070707;margin-top:6px' }, h('span', { class: 'lbl', text: '2) GUID — CORPORATE MANAGEMENT GUIDANCE RANGE VS WALL STREET CONSENSUS' })),
-    h('table', { class: 't' },
-      h('thead', null, h('tr', null, ['Metric', 'Mgmt Guidance Range', 'Guidance Midpoint', 'Street Consensus', 'Spread vs Street', 'Guidance Signal'].map(x => h('th', { text: x })))),
-      h('tbody', null, GUIDANCE.map(([m, rg, mid, con, sp, sig]) => h('tr', { class: 'row' },
-        h('td', { class: 'l sym am', text: m }),
-        h('td', { class: 'lb', text: rg }),
-        h('td', { class: 'am sym', text: mid }),
-        h('td', { text: con }),
-        h('td', { class: 'up sym', text: sp }),
-        h('td', { class: 'up sym', text: sig })
-      )))
-    )
-  );
-  ctx.status({ source: 'esg-guidance-audit', ts: Date.now(), mode: 'LIVE' });
 }
 
 

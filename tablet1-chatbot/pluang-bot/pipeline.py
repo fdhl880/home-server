@@ -1231,7 +1231,8 @@ def layer2_setup_hunter(symbol: str, scan_data: dict):
 # ===========================================================================
 def predict_tp_time(current_price: float, take_profit: float,
                     stop_loss: float, setup_name: str,
-                    scan_data: dict, market_data: dict) -> dict:
+                    scan_data: dict, market_data: dict,
+                    tp1_price: float = 0.0) -> dict:
     """
     First-Passage Time (FPT) & Kalman Velocity Engine:
     Calculates exact ETA to TP1 (+0.55R Profit Lock) and Full TP2, First-Passage
@@ -1239,12 +1240,15 @@ def predict_tp_time(current_price: float, take_profit: float,
     """
     import math as _m
     if not current_price or not take_profit or current_price <= 0:
-        return {"eta_label": "N/A", "eta_tp1_label": "N/A", "model_note": "Data tidak cukup"}
+        return {"eta_label": "N/A", "eta_tp1_label": "N/A", "model_note": "Insufficient data"}
 
     direction = "LONG" if take_profit >= current_price else "SHORT"
     tp_dist_pct = abs(take_profit - current_price) / current_price * 100.0
     sl_dist_pct = abs(stop_loss - current_price) / current_price * 100.0 if stop_loss else max(tp_dist_pct * 0.5, 0.8)
-    tp1_dist_pct = min(tp_dist_pct, max(0.35, sl_dist_pct * 0.55))  # Sniper +0.55R profit-lock distance
+    if tp1_price and tp1_price > 0:
+        tp1_dist_pct = abs(tp1_price - current_price) / current_price * 100.0
+    else:
+        tp1_dist_pct = min(tp_dist_pct, max(0.35, sl_dist_pct * 0.55))  # Sniper +0.55R profit-lock distance
 
     # 1. Baseline ATR velocity — net directional drift per hour
     atr_pct = float(scan_data.get("atr_pct") or market_data.get("atr_pct") or 1.4)
@@ -1302,14 +1306,14 @@ def predict_tp_time(current_price: float, take_profit: float,
     def _fmt_exact(h: float) -> str:
         total_min = max(3, int(round(h * 60)))
         if total_min < 60:
-            return f"{total_min} menit"
+            return f"{total_min}m"
         hrs = total_min // 60
         mins = total_min % 60
         if hrs < 24:
-            return f"{hrs}j {mins}m" if mins > 0 else f"{hrs} jam"
+            return f"{hrs}h {mins}m" if mins > 0 else f"{hrs}h"
         days = hrs // 24
         rem_h = hrs % 24
-        return f"{days}h {rem_h}j"
+        return f"{days}d {rem_h}h"
 
     # 6. First-Passage Probability P(tau_TP < tau_SL) via Drift-Diffusion Peclet formula
     p_math = float(mp.get("p_math_pct", 68.0) or 68.0) / 100.0
@@ -1336,7 +1340,7 @@ def predict_tp_time(current_price: float, take_profit: float,
             "lower_price": round(drift_px * (1.0 - band_pct), 6),
         })
 
-    tp1_price = round(
+    resolved_tp1 = round(tp1_price, 6) if (tp1_price and tp1_price > 0) else round(
         current_price * (1.0 + tp1_dist_pct / 100.0 if direction == "LONG" else 1.0 - tp1_dist_pct / 100.0),
         6
     )
@@ -1344,7 +1348,9 @@ def predict_tp_time(current_price: float, take_profit: float,
     return {
         "tp_distance_pct": round(tp_dist_pct, 2),
         "tp1_distance_pct": round(tp1_dist_pct, 2),
-        "tp1_lock_price": tp1_price,
+        "tp1_price": resolved_tp1,
+        "tp1_lock_price": resolved_tp1,
+        "tp2_price": round(take_profit, 6),
         "sl_distance_pct": round(sl_dist_pct, 2),
         "atr_per_hour_pct": round(atr_velocity, 3),
         "effective_velocity_pct_per_hour": round(velocity, 3),
@@ -1437,11 +1443,20 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
         else:
             raise
 
-    # Normalize TPs
-    tp = result.get("take_profit") or result.get("take_profit_2") or result.get("take_profit_1") or 0
-    result["take_profit"] = tp
-    result["take_profit_1"] = tp
-    result["take_profit_2"] = tp
+    # Normalize TPs while preserving distinct TP1 Lock (+0.55R) and TP2 Runner targets
+    tp2 = float(result.get("take_profit_2") or result.get("take_profit") or 0)
+    tp1 = float(result.get("take_profit_1") or 0)
+    ent_px = float(result.get("entry_price") or current_price or 0)
+    sl_px_cur = float(result.get("stop_loss") or sl_safe or 0)
+    dir_sign = -1.0 if direction == "SHORT" else 1.0
+    sl_delta = abs(ent_px - sl_px_cur) if (ent_px > 0 and sl_px_cur > 0) else (ent_px * 0.012)
+    if tp2 <= 0 and tp1 > 0:
+        tp2 = tp1
+    if ent_px > 0 and tp2 > 0 and (tp1 <= 0 or abs(tp2 - tp1) < max(1e-8, ent_px * 0.0015)):
+        tp1 = round(ent_px + dir_sign * 0.55 * sl_delta, 6)
+    result["take_profit"] = round(tp2, 6) if tp2 > 0 else 0
+    result["take_profit_1"] = round(tp1, 6) if tp1 > 0 else 0
+    result["take_profit_2"] = round(tp2, 6) if tp2 > 0 else 0
 
     if not result.get("order_type"):
         result["order_type"] = "MARKET"
@@ -1468,10 +1483,12 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
     if ai_tp and current_price > 0 and ai_sl and ai_sl != current_price:
         ai_rrr = abs(ai_tp - current_price) / abs(current_price - result["stop_loss"]) if abs(current_price - result["stop_loss"]) > 0 else 0
         if ai_rrr < 1.3:
-            print(f"[TP SAFETY] {symbol}: AI RRR {ai_rrr:.2f} too low → forcing TP to {tp_safe:.6f}", flush=True)
+            print(f"[TP SAFETY] {symbol}: AI RRR {ai_rrr:.2f} too low → forcing TP2 to {tp_safe:.6f}", flush=True)
+            sl_d_safe = abs(current_price - result["stop_loss"])
+            d_sgn = -1.0 if direction == "SHORT" else 1.0
             result["take_profit"] = tp_safe
-            result["take_profit_1"] = tp_safe
             result["take_profit_2"] = tp_safe
+            result["take_profit_1"] = round(current_price + d_sgn * 0.55 * sl_d_safe, 6)
 
     if result.get("position_size_idr") is None or result.get("position_size_idr") < 0:
         result["position_size_idr"] = 0
@@ -1488,7 +1505,8 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
                 stop_loss=final_sl,
                 setup_name=setup_result.get("setup_name", ""),
                 scan_data=scan_data,
-                market_data=market_data
+                market_data=market_data,
+                tp1_price=float(result.get("take_profit_1") or 0.0)
             )
             result["tp_time_prediction"] = tp_eta
     except Exception as _e:
@@ -1643,10 +1661,17 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
             raise
 
     if result:
-        tp_val = result.get("take_profit") or result.get("take_profit_2") or result.get("take_profit_1") or plan_result.get("take_profit") or 0
-        result["take_profit"] = tp_val
-        result["take_profit_1"] = tp_val
-        result["take_profit_2"] = tp_val
+        tp_val2 = float(result.get("take_profit_2") or result.get("take_profit") or plan_result.get("take_profit_2") or plan_result.get("take_profit") or 0)
+        ent_f = float(result.get("entry_price") or entry or 0)
+        sl_f = float(result.get("stop_loss") or sl or 0)
+        d_sgn_f = -1.0 if str(result.get("direction") or direction).upper() == "SHORT" else 1.0
+        sl_del_f = abs(ent_f - sl_f) if (ent_f > 0 and sl_f > 0) else (ent_f * 0.012)
+        tp_val1 = float(result.get("take_profit_1") or plan_result.get("take_profit_1") or 0)
+        if ent_f > 0 and tp_val2 > 0 and (tp_val1 <= 0 or abs(tp_val2 - tp_val1) < max(1e-8, ent_f * 0.0015)):
+            tp_val1 = round(ent_f + d_sgn_f * 0.55 * sl_del_f, 6)
+        result["take_profit"] = round(tp_val2, 6) if tp_val2 > 0 else 0
+        result["take_profit_1"] = round(tp_val1, 6) if tp_val1 > 0 else 0
+        result["take_profit_2"] = round(tp_val2, 6) if tp_val2 > 0 else 0
         if not result.get("order_type"):
             result["order_type"] = plan_result.get("order_type", "MARKET")
         if not result.get("limit_price"):
@@ -1671,11 +1696,18 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
     current_min_confidence = cfg.get("min_confidence_score", 45)
     current_min_rrr = cfg.get("min_risk_reward_ratio", 1.5)
 
-    # Preserve AI-governed parameters
-    tp_val = result.get("take_profit") or plan_result.get("take_profit") or plan_result.get("take_profit_2", 0)
-    result["take_profit"] = tp_val
-    result["take_profit_1"] = tp_val
-    result["take_profit_2"] = tp_val
+    # Preserve AI-governed parameters and distinct TP1 Lock / TP2 Runner levels
+    tp_val2 = float(result.get("take_profit_2") or result.get("take_profit") or plan_result.get("take_profit_2") or plan_result.get("take_profit") or 0)
+    tp_val1 = float(result.get("take_profit_1") or plan_result.get("take_profit_1") or 0)
+    ent_g = float(result.get("entry_price") or plan_result.get("entry_price") or 0)
+    sl_g = float(result.get("stop_loss") or plan_result.get("stop_loss") or 0)
+    d_sgn_g = -1.0 if str(result.get("direction") or "").upper() == "SHORT" else 1.0
+    sl_del_g = abs(ent_g - sl_g) if (ent_g > 0 and sl_g > 0) else (ent_g * 0.012)
+    if ent_g > 0 and tp_val2 > 0 and (tp_val1 <= 0 or abs(tp_val2 - tp_val1) < max(1e-8, ent_g * 0.0015)):
+        tp_val1 = round(ent_g + d_sgn_g * 0.55 * sl_del_g, 6)
+    result["take_profit"] = round(tp_val2, 6) if tp_val2 > 0 else 0
+    result["take_profit_1"] = round(tp_val1, 6) if tp_val1 > 0 else 0
+    result["take_profit_2"] = round(tp_val2, 6) if tp_val2 > 0 else 0
     result["order_type"] = result.get("order_type") or plan_result.get("order_type", "MARKET")
     result["limit_price"] = result.get("limit_price") or plan_result.get("limit_price", result.get("entry_price", 0))
     # ENFORCE FIXED 20x LEVERAGE — always, no exceptions
@@ -1843,7 +1875,7 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
             sim_sl = round(px_now * (1.0 - d_sign * sl_d), 6)
             sim_tp1 = round(px_now * (1.0 + d_sign * tp1_d), 6)
             sim_tp2 = round(px_now * (1.0 + d_sign * tp2_d), 6)
-            sim_tp_pred = predict_tp_time(px_now, sim_tp2, sim_sl, pref_dir, market_data, tp1_price=sim_tp1)
+            sim_tp_pred = predict_tp_time(px_now, sim_tp2, sim_sl, "QUANT_OBSERVATION_MODE", scan_summary, market_data, tp1_price=sim_tp1)
             plan_result = {
                 "action": pref_dir,
                 "order_type": "MARKET",
@@ -1855,12 +1887,12 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 "risk_reward_ratio": "1:2.0",
                 "recommended_leverage": FIXED_LEVERAGE,
                 "leverage": FIXED_LEVERAGE,
-                "position_size_idr": 50000,
+                "position_size_idr": 0,
                 "tp_time_prediction": sim_tp_pred,
-                "reasoning": "Simulasi Kuantitatif First-Passage Time (Mode Wait/Observasi — menunggu konfluensi penuh)."
+                "reasoning": "First-Passage Drift-Diffusion Quant Observation Mode (waiting for full confluence)."
             }
             risk_result = {"total_score": 6, "max_score": 8, "pass_rate_pct": 75, "critical_failures": [],
-                           "verdict": "WAIT_CONFLUENCE", "recommendation": "WAIT", "reasoning": "Menunggu konfirmasi breakout sebelum eksekusi."}
+                           "verdict": "WAIT_CONFLUENCE", "recommendation": "WAIT", "reasoning": "Waiting for full multi-agent breakout confirmation."}
             final_call = {
                 "status": "REJECTED",
                 "confidence_score": int(round(float(mp_fallback.get("p_math_pct", 68.0)))),
@@ -1873,8 +1905,8 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 "stop_loss": sim_sl,
                 "risk_reward_ratio": "1:2.0",
                 "leverage": FIXED_LEVERAGE,
-                "position_size_idr": 50000,
-                "final_reason": setup_result.get("reasoning") or setup_result.get("explanation_id") or "Pasar belum memenuhi ambang Sniper — dana diamankan sambil memantau level kuantitatif.",
+                "position_size_idr": 0,
+                "final_reason": setup_result.get("reasoning") or setup_result.get("explanation_id") or "No Sniper confluence yet — capital stays protected in USDT cash.",
                 "checklist_passed": 6,
                 "checklist_total": 8,
                 "tp_time_prediction": sim_tp_pred,
@@ -1997,18 +2029,31 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 }
                 final_call["tp_time_prediction"] = plan_result.get("tp_time_prediction")
 
-                # Compute ROI (%) & PnL (USD & IDR) Projection if trade hits TP1, TP2, or SL
+                # Compute ROI (%) & PnL (USD & IDR) Projection sized against live Binance Futures wallet
                 _entry_px = float(plan_result.get("entry_price") or final_call.get("entry_price") or market_data.get("current_price") or 0)
                 _sl_px = float(plan_result.get("stop_loss") or final_call.get("stop_loss") or 0)
+                _tp2_px = float(plan_result.get("take_profit_2") or plan_result.get("take_profit") or final_call.get("take_profit_2") or final_call.get("take_profit") or 0)
                 _tp1_px = float(plan_result.get("take_profit_1") or final_call.get("take_profit_1") or 0)
-                _tp2_px = float(plan_result.get("take_profit_2") or plan_result.get("take_profit") or final_call.get("take_profit") or _tp1_px or 0)
                 _dir_str = str(final_call.get("direction") if final_call.get("direction") in ("LONG", "SHORT") else plan_result.get("action", "LONG")).upper()
                 _d_sign = -1.0 if _dir_str == "SHORT" else 1.0
+                _sl_d_abs = abs(_entry_px - _sl_px) if (_entry_px > 0 and _sl_px > 0) else (_entry_px * 0.012)
+                if _entry_px > 0 and _tp2_px > 0 and (_tp1_px <= 0 or abs(_tp2_px - _tp1_px) < max(1e-8, _entry_px * 0.0015)):
+                    _tp1_px = round(_entry_px + _d_sign * 0.55 * _sl_d_abs, 6)
                 _lev = float(plan_result.get("leverage") or final_call.get("leverage") or FIXED_LEVERAGE or 20)
-                _margin_idr = float(plan_result.get("position_size_idr") or final_call.get("position_size_idr") or 50000)
+                _wallet_usd = 0.0
+                try:
+                    _st_file = os.path.join(RESULTS_DIR, "autotrader_state.json")
+                    if os.path.exists(_st_file):
+                        with open(_st_file, "r", encoding="utf-8") as _sf:
+                            _wallet_usd = float(json.load(_sf).get("binance_wallet_balance_usdt", 0) or 0)
+                except Exception:
+                    pass
+                _margin_idr = float(plan_result.get("position_size_idr") or final_call.get("position_size_idr") or 0)
                 if _margin_idr <= 0:
-                    _margin_idr = 50000.0
-                _margin_usd = round(_margin_idr / 16500.0, 2)
+                    _margin_usd = round(_wallet_usd if _wallet_usd > 0 else 50.0, 2)
+                    _margin_idr = round(_margin_usd * 16500.0)
+                else:
+                    _margin_usd = round(_margin_idr / 16500.0, 2)
 
                 def _proj_target(t_px: float):
                     if _entry_px <= 0 or t_px <= 0:

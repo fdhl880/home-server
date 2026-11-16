@@ -60,6 +60,28 @@ function extractAnnualSeries(usGaap, tags, unitKey = 'USD') {
   return [];
 }
 
+function extractQuarterlySeries(usGaap, tags, unitKey = 'USD') {
+  if (!usGaap) return [];
+  for (const tag of tags) {
+    const node = usGaap[tag];
+    if (!node || !node.units) continue;
+    const units = node.units[unitKey] || Object.values(node.units)[0];
+    if (!Array.isArray(units)) continue;
+    const qtr = units.filter(x => (x.form === '10-Q' || x.form === '10-K') && x.frame && /^CY\d{4}Q[1-4]$/.test(x.frame));
+    const byFrame = new Map();
+    for (const item of qtr) {
+      if (item.val == null) continue;
+      const prev = byFrame.get(item.frame);
+      if (!prev || String(item.filed) >= String(prev.filed)) {
+        byFrame.set(item.frame, { frame: item.frame, val: +item.val, end: item.end, filed: item.filed, form: item.form });
+      }
+    }
+    const arr = [...byFrame.values()].sort((a, b) => String(a.frame).localeCompare(String(b.frame))).slice(-10);
+    if (arr.length >= 2) return arr;
+  }
+  return [];
+}
+
 async function secFundamentals(symbol) {
   const clean = String(symbol).toUpperCase().replace(/\..*$/, '');
   const map = await getCikMap();
@@ -124,7 +146,10 @@ async function secFundamentals(symbol) {
   const curLiab = extractAnnualSeries(gaap, ['LiabilitiesCurrent']);
   const ocf = extractAnnualSeries(gaap, ['NetCashProvidedByUsedInOperatingActivities']);
   const capex = extractAnnualSeries(gaap, ['PaymentsToAcquirePropertyPlantAndEquipment']);
+  const interestExp = extractAnnualSeries(gaap, ['InterestExpense', 'InterestExpenseDebt']);
   const shares = extractAnnualSeries(dei || gaap, ['EntityCommonStockSharesOutstanding', 'CommonStockSharesOutstanding'], 'shares');
+  const epsQuarterly = extractQuarterlySeries(gaap, ['EarningsPerShareDiluted', 'EarningsPerShareBasic'], 'USD/shares');
+  const revQuarterly = extractQuarterlySeries(gaap, ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'SalesRevenueNet'], 'USD');
 
   return {
     cik: entry.cik,
@@ -151,7 +176,10 @@ async function secFundamentals(symbol) {
       curLiab,
       ocf,
       capex,
+      interestExp,
       shares,
+      epsQuarterly,
+      revQuarterly,
     },
   };
 }
@@ -321,5 +349,50 @@ async function derivativesMatrix(limit = 30) {
   });
 }
 
-module.exports = { fundamentals, derivativesMatrix };
+async function derivativesIntel(symbol = 'BTCUSDT') {
+  const agg = require('../aggregator');
+  const { providerSym } = agg.resolveProviderSym(symbol);
+  const pair = providerSym.replace(/\.P$/, '').toUpperCase();
+  if (!pair.endsWith('USDT')) return null;
+
+  return U.cached(`bn:derivIntel:${pair}`, 8000, async () => {
+    const [oiRes, premRes, lsGlobal, lsTop, depthRes] = await Promise.allSettled([
+      U.getJson(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${pair}`, { provider: 'binance-futures', mode: 'LIVE', timeout: 6000 }),
+      U.getJson(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${pair}`, { provider: 'binance-futures', mode: 'LIVE', timeout: 6000 }),
+      U.getJson(`https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${pair}&period=1h&limit=5`, { provider: 'binance-futures', mode: 'LIVE', timeout: 6000 }),
+      U.getJson(`https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=${pair}&period=1h&limit=5`, { provider: 'binance-futures', mode: 'LIVE', timeout: 6000 }),
+      U.getJson(`https://fapi.binance.com/fapi/v1/depth?symbol=${pair}&limit=50`, { provider: 'binance-futures', mode: 'LIVE', timeout: 6000 }),
+    ]);
+
+    const oi = oiRes.status === 'fulfilled' ? +oiRes.value.openInterest || 0 : 0;
+    const prem = premRes.status === 'fulfilled' ? premRes.value : {};
+    const markPrice = +prem.markPrice || 0;
+    const indexPrice = +prem.indexPrice || 0;
+    const fundingRate = +prem.lastFundingRate || 0;
+    const oiUsd = oi * markPrice;
+    const gLatest = lsGlobal.status === 'fulfilled' && Array.isArray(lsGlobal.value) && lsGlobal.value.length ? lsGlobal.value[lsGlobal.value.length - 1] : null;
+    const tLatest = lsTop.status === 'fulfilled' && Array.isArray(lsTop.value) && lsTop.value.length ? lsTop.value[lsTop.value.length - 1] : null;
+    const dep = depthRes.status === 'fulfilled' ? depthRes.value : null;
+
+    return {
+      symbol: pair + '.P',
+      markPrice,
+      indexPrice,
+      fundingRate,
+      openInterestContracts: oi,
+      openInterestUsd: oiUsd,
+      globalLongAccountPct: gLatest ? +(+gLatest.longAccount * 100).toFixed(2) : null,
+      globalShortAccountPct: gLatest ? +(+gLatest.shortAccount * 100).toFixed(2) : null,
+      globalLongShortRatio: gLatest ? +gLatest.longShortRatio : null,
+      topTraderLongPct: tLatest ? +(+tLatest.longAccount * 100).toFixed(2) : null,
+      topTraderShortPct: tLatest ? +(+tLatest.shortAccount * 100).toFixed(2) : null,
+      topTraderRatio: tLatest ? +tLatest.longShortRatio : null,
+      bids: dep && Array.isArray(dep.bids) ? dep.bids.slice(0, 20).map(x => [+x[0], +x[1]]) : [],
+      asks: dep && Array.isArray(dep.asks) ? dep.asks.slice(0, 20).map(x => [+x[0], +x[1]]) : [],
+      ts: Date.now(),
+    };
+  });
+}
+
+module.exports = { fundamentals, derivativesMatrix, derivativesIntel };
 

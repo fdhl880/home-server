@@ -100,11 +100,570 @@ function dedupeByTime(arr) {
   return [...m.values()].sort((a, b) => a.time - b.time);
 }
 
+/**
+ * Computes institutional Technical Master overlays strictly from real OHLCV bars:
+ * - Fractal Market Structure (HH/HL/LH/LL) + BOS/CHoCH breaks
+ * - OLS Linear Regression Channel (+/- 1.5 sigma) & Swing Trendlines
+ * - Unmitigated 3-bar Fair Value Gaps (FVG) & Supply/Demand Order Blocks
+ * - Auto-Fibonacci Retracement + 0.618 Golden Pocket
+ * - Visible-range Volume Profile (VPVR) + POC / VAH / VAL
+ */
+export function computeTechnicalMasterSignals(mapped, visibleFromIdx = 0, visibleToIdx = null) {
+  const n = mapped ? mapped.length : 0;
+  if (n < 6) {
+    return { bias: 'NEUTRAL', swings: [], breaks: [], reg: null, trendlines: [], fvgs: [], obs: [], fib: null, vpvr: null };
+  }
+  const endIdx = visibleToIdx != null ? Math.min(n - 1, Math.max(4, Math.floor(visibleToIdx))) : n - 1;
+  const startIdx = Math.max(0, Math.min(endIdx - 4, Math.floor(visibleFromIdx || 0)));
+
+  // True Range ATR(14) for spacing/displacement filters
+  let atrSum = 0, atrCnt = 0;
+  for (let i = Math.max(1, n - 30); i < n; i++) {
+    const tr = Math.max(
+      mapped[i].high - mapped[i].low,
+      Math.abs(mapped[i].high - mapped[i - 1].close),
+      Math.abs(mapped[i].low - mapped[i - 1].close)
+    );
+    atrSum += tr;
+    atrCnt++;
+  }
+  const atr = atrCnt ? (atrSum / atrCnt) : Math.max(1e-8, mapped[n - 1].close * 0.003);
+
+  // 1. Fractal Swings (left/right window = 3)
+  const k = Math.max(2, Math.min(4, Math.floor(n / 28)));
+  const rawHighs = [];
+  const rawLows = [];
+  for (let i = k; i < n - Math.max(1, Math.floor(k / 2)); i++) {
+    let isH = true, isL = true;
+    const rightBound = Math.min(n - 1, i + k);
+    for (let j = i - k; j <= rightBound; j++) {
+      if (j === i) continue;
+      if (mapped[j].high >= mapped[i].high) isH = false;
+      if (mapped[j].low <= mapped[i].low) isL = false;
+    }
+    if (isH) rawHighs.push({ idx: i, time: mapped[i].time, price: mapped[i].high, type: 'H' });
+    if (isL) rawLows.push({ idx: i, time: mapped[i].time, price: mapped[i].low, type: 'L' });
+  }
+
+  // Classify HH/LH & HL/LL (throttled spacing >= 7 bars so structural labels never crowd)
+  const filterSpaced = (arr) => {
+    const res = [];
+    for (const p of arr) {
+      if (!res.length || p.idx - res[res.length - 1].idx >= 7) res.push(p);
+      else {
+        const last = res[res.length - 1];
+        if ((p.type === 'H' && p.price > last.price) || (p.type === 'L' && p.price < last.price)) {
+          res[res.length - 1] = p;
+        }
+      }
+    }
+    return res;
+  };
+  const swingHighs = filterSpaced(rawHighs);
+  const swingLows = filterSpaced(rawLows);
+  const labeledHighs = swingHighs.map((s, i) => ({
+    ...s,
+    tag: i === 0 ? 'SH' : (s.price > swingHighs[i - 1].price ? 'HH' : 'LH')
+  }));
+  const labeledLows = swingLows.map((s, i) => ({
+    ...s,
+    tag: i === 0 ? 'SL' : (s.price > swingLows[i - 1].price ? 'HL' : 'LL')
+  }));
+  const swings = [...labeledHighs, ...labeledLows].sort((a, b) => a.idx - b.idx);
+
+  // Market Structure Breaks (BOS / CHoCH)
+  let bias = 'NEUTRAL';
+  if (labeledHighs.length >= 2 && labeledLows.length >= 2) {
+    const lh = labeledHighs[labeledHighs.length - 1];
+    const ll = labeledLows[labeledLows.length - 1];
+    if (lh.tag === 'HH' && ll.tag === 'HL') bias = 'BULLISH';
+    else if (lh.tag === 'LH' && ll.tag === 'LL') bias = 'BEARISH';
+  }
+  const breaks = [];
+  let trendDir = 0; // 1 bull, -1 bear
+  let activeHigh = swingHighs.length ? swingHighs[0] : null;
+  let activeLow = swingLows.length ? swingLows[0] : null;
+  const hMap = new Map(swingHighs.map(x => [x.idx, x]));
+  const lMap = new Map(swingLows.map(x => [x.idx, x]));
+  for (let i = 1; i < n; i++) {
+    if (activeHigh && mapped[i].close > activeHigh.price && i > activeHigh.idx) {
+      const kind = trendDir === -1 ? 'CHoCH' : 'BOS';
+      breaks.push({ kind, dir: 'BULL', fromIdx: activeHigh.idx, toIdx: i, price: activeHigh.price });
+      trendDir = 1;
+      activeHigh = null;
+    } else if (activeLow && mapped[i].close < activeLow.price && i > activeLow.idx) {
+      const kind = trendDir === 1 ? 'CHoCH' : 'BOS';
+      breaks.push({ kind, dir: 'BEAR', fromIdx: activeLow.idx, toIdx: i, price: activeLow.price });
+      trendDir = -1;
+      activeLow = null;
+    }
+    if (hMap.has(i)) activeHigh = hMap.get(i);
+    if (lMap.has(i)) activeLow = lMap.get(i);
+  }
+  const recentBreaks = breaks.slice(-3);
+  if (trendDir === 1 && bias === 'NEUTRAL') bias = 'BULLISH';
+  if (trendDir === -1 && bias === 'NEUTRAL') bias = 'BEARISH';
+
+  // 2. OLS Linear Regression Channel (+/- 1.5 sigma) over recent window + Pivot Trendlines
+  const regLen = Math.min(80, n);
+  const regStart = n - regLen;
+  let sumX = 0, sumY = 0, sumXX = 0, sumXY = 0;
+  for (let i = 0; i < regLen; i++) {
+    const y = mapped[regStart + i].close;
+    sumX += i; sumY += y; sumXX += i * i; sumXY += i * y;
+  }
+  const denom = regLen * sumXX - sumX * sumX || 1;
+  const slope = (regLen * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / regLen;
+  let sqErr = 0;
+  for (let i = 0; i < regLen; i++) {
+    const est = slope * i + intercept;
+    sqErr += (mapped[regStart + i].close - est) ** 2;
+  }
+  const sigma = Math.sqrt(sqErr / Math.max(1, regLen));
+  const reg = {
+    startIdx: regStart,
+    endIdx: n - 1,
+    yStart: intercept,
+    yEnd: slope * (regLen - 1) + intercept,
+    sigma15: sigma * 1.5
+  };
+
+  const trendlines = [];
+  if (swingHighs.length >= 2) {
+    const p1 = swingHighs[swingHighs.length - 2];
+    const p2 = swingHighs[swingHighs.length - 1];
+    if (p2.idx > p1.idx) {
+      const slp = (p2.price - p1.price) / (p2.idx - p1.idx);
+      const yEnd = p2.price + slp * (n + 6 - p2.idx);
+      trendlines.push({ x1: p1.idx, y1: p1.price, x2: n + 6, y2: yEnd, kind: 'RES' });
+    }
+  }
+  if (swingLows.length >= 2) {
+    const p1 = swingLows[swingLows.length - 2];
+    const p2 = swingLows[swingLows.length - 1];
+    if (p2.idx > p1.idx) {
+      const slp = (p2.price - p1.price) / (p2.idx - p1.idx);
+      const yEnd = p2.price + slp * (n + 6 - p2.idx);
+      trendlines.push({ x1: p1.idx, y1: p1.price, x2: n + 6, y2: yEnd, kind: 'SUP' });
+    }
+  }
+
+  // 3. Fair Value Gaps (unmitigated 3-candle imbalances) & Supply/Demand Order Blocks
+  const fvgs = [];
+  for (let i = 2; i < n; i++) {
+    const c0 = mapped[i - 2], c2 = mapped[i];
+    if (c2.low > c0.high && (c2.low - c0.high) > atr * 0.12) {
+      let mitigated = false;
+      for (let j = i + 1; j < n; j++) {
+        if (mapped[j].low <= c0.high) { mitigated = true; break; }
+      }
+      if (!mitigated) fvgs.push({ dir: 'BULL', startIdx: i - 1, top: c2.low, bot: c0.high });
+    } else if (c2.high < c0.low && (c0.low - c2.high) > atr * 0.12) {
+      let mitigated = false;
+      for (let j = i + 1; j < n; j++) {
+        if (mapped[j].high >= c0.low) { mitigated = true; break; }
+      }
+      if (!mitigated) fvgs.push({ dir: 'BEAR', startIdx: i - 1, top: c0.low, bot: c2.high });
+    }
+  }
+  const obs = [];
+  for (let i = n - 3; i >= 2; i--) {
+    const prev = mapped[i], imp = mapped[i + 1];
+    const bodyPrev = Math.abs(prev.close - prev.open);
+    const bodyImp = Math.abs(imp.close - imp.open);
+    if (prev.close < prev.open && imp.close > imp.open && bodyImp > Math.max(atr * 0.9, bodyPrev * 1.4)) {
+      let broken = false;
+      for (let j = i + 2; j < n; j++) { if (mapped[j].close < prev.low) { broken = true; break; } }
+      if (!broken) { obs.push({ dir: 'BULL', startIdx: i, top: prev.high, bot: prev.low }); break; }
+    }
+  }
+  for (let i = n - 3; i >= 2; i--) {
+    const prev = mapped[i], imp = mapped[i + 1];
+    const bodyPrev = Math.abs(prev.close - prev.open);
+    const bodyImp = Math.abs(imp.close - imp.open);
+    if (prev.close > prev.open && imp.close < imp.open && bodyImp > Math.max(atr * 0.9, bodyPrev * 1.4)) {
+      let broken = false;
+      for (let j = i + 2; j < n; j++) { if (mapped[j].close > prev.high) { broken = true; break; } }
+      if (!broken) { obs.push({ dir: 'BEAR', startIdx: i, top: prev.high, bot: prev.low }); break; }
+    }
+  }
+
+  // 4. Auto-Fibonacci Retracement & 0.618 Golden Pocket
+  const fibWinStart = Math.max(0, n - Math.min(120, n));
+  let maxH = -Infinity, minL = Infinity, maxIdx = fibWinStart, minIdx = fibWinStart;
+  for (let i = fibWinStart; i < n; i++) {
+    if (mapped[i].high > maxH) { maxH = mapped[i].high; maxIdx = i; }
+    if (mapped[i].low < minL) { minL = mapped[i].low; minIdx = i; }
+  }
+  let fib = null;
+  if (maxH > minL) {
+    const up = minIdx <= maxIdx;
+    const rng = maxH - minL;
+    const ratios = [0, 0.236, 0.382, 0.5, 0.618, 0.65, 0.786, 1.0];
+    const levels = ratios.map(r => ({
+      ratio: r,
+      price: up ? (maxH - rng * r) : (minL + rng * r)
+    }));
+    fib = { up, maxH, minL, anchorIdx: Math.max(fibWinStart, Math.min(minIdx, maxIdx)), levels };
+  }
+
+  // 5. Visible-Range Volume Profile (VPVR) + POC / VAH / VAL
+  const slice = mapped.slice(startIdx, endIdx + 1);
+  let vpvr = null;
+  if (slice.length >= 4) {
+    const lo = Math.min(...slice.map(x => x.low));
+    const hi = Math.max(...slice.map(x => x.high));
+    const bins = 26;
+    if (hi > lo) {
+      const step = (hi - lo) / bins;
+      const buckets = Array.from({ length: bins }, (_, idx) => ({
+        idx,
+        mid: lo + (idx + 0.5) * step,
+        bot: lo + idx * step,
+        top: lo + (idx + 1) * step,
+        buyVol: 0,
+        sellVol: 0,
+        totVol: 0
+      }));
+      let totalVol = 0;
+      for (const b of slice) {
+        const typ = (b.high + b.low + b.close) / 3;
+        const bIdx = Math.min(bins - 1, Math.max(0, Math.floor((typ - lo) / step)));
+        const v = Math.max(0, b.vol || 0);
+        if (b.close >= b.open) buckets[bIdx].buyVol += v;
+        else buckets[bIdx].sellVol += v;
+        buckets[bIdx].totVol += v;
+        totalVol += v;
+      }
+      if (totalVol > 0) {
+        let pocIdx = 0;
+        for (let i = 1; i < bins; i++) {
+          if (buckets[i].totVol > buckets[pocIdx].totVol) pocIdx = i;
+        }
+        // Value Area 70% expansion outward from POC
+        let vaVol = buckets[pocIdx].totVol;
+        let loI = pocIdx, hiI = pocIdx;
+        while (vaVol < totalVol * 0.7 && (loI > 0 || hiI < bins - 1)) {
+          const downV = loI > 0 ? buckets[loI - 1].totVol : -1;
+          const upV = hiI < bins - 1 ? buckets[hiI + 1].totVol : -1;
+          if (upV >= downV && hiI < bins - 1) { hiI++; vaVol += upV; }
+          else if (loI > 0) { loI--; vaVol += downV; }
+          else break;
+        }
+        vpvr = {
+          buckets,
+          maxBinVol: Math.max(...buckets.map(x => x.totVol), 1e-9),
+          pocPrice: buckets[pocIdx].mid,
+          vahPrice: buckets[hiI].top,
+          valPrice: buckets[loI].bot
+        };
+      }
+    }
+  }
+
+  return { bias, atr, swings: swings.slice(-14), breaks: recentBreaks, reg, trendlines, fvgs: fvgs.slice(-4), obs: obs.slice(0, 2), fib, vpvr };
+}
+
+/**
+ * Attaches an HTML5 `<canvas>` overlay strictly aligned to LightweightCharts' timeScale & priceScale.
+ */
+export function attachTechnicalMasterCanvas({ wrap, chart, getSeries, getMapped, getLayers, getTradePlan }) {
+  wrap.querySelectorAll('.tm-overlay-canvas').forEach(e => e.remove());
+  const cvs = document.createElement('canvas');
+  cvs.className = 'tm-overlay-canvas';
+  cvs.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:2';
+  wrap.appendChild(cvs);
+
+  let rafPending = false;
+  let lastSignals = null;
+
+  const draw = () => {
+    rafPending = false;
+    const mainSeries = getSeries();
+    const mapped = getMapped();
+    if (!chart || !mainSeries || !mapped || mapped.length < 4) return;
+    const w = wrap.clientWidth || 0;
+    const hPx = wrap.clientHeight || 0;
+    if (w < 40 || hPx < 40) return;
+
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (cvs.width !== Math.floor(w * dpr) || cvs.height !== Math.floor(hPx * dpr)) {
+      cvs.width = Math.floor(w * dpr);
+      cvs.height = Math.floor(hPx * dpr);
+    }
+    const ctx2d = cvs.getContext('2d');
+    if (!ctx2d) return;
+    ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx2d.clearRect(0, 0, w, hPx);
+
+    // Clip to plot area excluding right price axis (~66px) & bottom time axis (~26px)
+    const plotW = Math.max(40, w - 66);
+    const plotH = Math.max(40, hPx - 26);
+
+    const ts = chart.timeScale();
+    const visRange = typeof ts.getVisibleLogicalRange === 'function' ? ts.getVisibleLogicalRange() : null;
+    const visFrom = visRange ? Math.max(0, Math.floor(visRange.from)) : 0;
+    const visTo = visRange ? Math.min(mapped.length - 1, Math.ceil(visRange.to)) : mapped.length - 1;
+    const sig = computeTechnicalMasterSignals(mapped, visFrom, visTo);
+    lastSignals = sig;
+    const layers = getLayers ? getLayers() : { struct: true, trend: true, fvg: true, fib: true, vpvr: true };
+    const plan = getTradePlan ? getTradePlan() : null;
+
+    const xOfIdx = (idx) => {
+      if (typeof ts.logicalToCoordinate === 'function') {
+        const lx = ts.logicalToCoordinate(idx);
+        if (lx != null && Number.isFinite(lx)) return lx;
+      }
+      const cIdx = Math.max(0, Math.min(mapped.length - 1, Math.round(idx)));
+      const tx = ts.timeToCoordinate(mapped[cIdx].time);
+      return (tx != null && Number.isFinite(tx)) ? tx : null;
+    };
+    const yOfPx = (p) => {
+      if (p == null || !Number.isFinite(p)) return null;
+      const py = mainSeries.priceToCoordinate(p);
+      return (py != null && Number.isFinite(py)) ? py : null;
+    };
+    const placedPillBoxes = [];
+    const drawPill = (text, x, y, bg, fg, border, allowCollision = false) => {
+      ctx2d.font = 'bold 9.5px JetBrains Mono, monospace';
+      const tw = ctx2d.measureText(text).width + 8;
+      const px = Math.max(2, Math.min(plotW - tw - 2, x));
+      const py = Math.max(10, Math.min(plotH - 6, y));
+      const box = { l: px, r: px + tw + 2, t: py - 10, b: py + 5 };
+      if (!allowCollision) {
+        const collides = placedPillBoxes.some(b => !(box.r < b.l || box.l > b.r || box.b < b.t || box.t > b.b));
+        if (collides) return;
+      }
+      placedPillBoxes.push(box);
+      ctx2d.fillStyle = bg;
+      ctx2d.fillRect(px, py - 9, tw, 13);
+      if (border) {
+        ctx2d.strokeStyle = border;
+        ctx2d.lineWidth = 1;
+        ctx2d.strokeRect(px, py - 9, tw, 13);
+      }
+      ctx2d.fillStyle = fg;
+      ctx2d.fillText(text, px + 4, py + 1);
+    };
+
+    ctx2d.save();
+    ctx2d.beginPath();
+    ctx2d.rect(0, 0, plotW, plotH);
+    ctx2d.clip();
+
+    // A. VPVR Volume Profile + POC / VAH / VAL
+    if (layers.vpvr && sig.vpvr) {
+      const vp = sig.vpvr;
+      const maxBarW = Math.max(28, plotW * 0.14);
+      for (const bk of vp.buckets) {
+        const yTop = yOfPx(bk.top), yBot = yOfPx(bk.bot);
+        if (yTop == null || yBot == null) continue;
+        const bh = Math.max(1.5, Math.abs(yBot - yTop) - 1);
+        const y0 = Math.min(yTop, yBot);
+        const totW = (bk.totVol / vp.maxBinVol) * maxBarW;
+        if (totW < 1) continue;
+        const buyFrac = bk.totVol > 0 ? (bk.buyVol / bk.totVol) : 0.5;
+        const wBuy = totW * buyFrac;
+        const wSell = totW - wBuy;
+        ctx2d.fillStyle = 'rgba(0, 210, 106, 0.24)';
+        ctx2d.fillRect(plotW - wBuy, y0, wBuy, bh);
+        ctx2d.fillStyle = 'rgba(255, 176, 0, 0.22)';
+        ctx2d.fillRect(plotW - totW, y0, wSell, bh);
+      }
+      const pocY = yOfPx(vp.pocPrice);
+      if (pocY != null) {
+        ctx2d.save();
+        ctx2d.strokeStyle = 'rgba(255, 176, 0, 0.78)';
+        ctx2d.lineWidth = 1.2;
+        ctx2d.setLineDash([5, 4]);
+        ctx2d.beginPath(); ctx2d.moveTo(0, pocY); ctx2d.lineTo(plotW, pocY); ctx2d.stroke();
+        ctx2d.restore();
+        drawPill(`POC ${fmtPx(vp.pocPrice)}`, plotW - 110, pocY - 2, 'rgba(32,20,0,0.88)', '#ffb000', '#ffb00066');
+      }
+      const vahY = yOfPx(vp.vahPrice), valY = yOfPx(vp.valPrice);
+      for (const [yy, lbl] of [[vahY, 'VAH'], [valY, 'VAL']]) {
+        if (yy == null) continue;
+        ctx2d.save();
+        ctx2d.strokeStyle = 'rgba(0, 229, 255, 0.30)';
+        ctx2d.setLineDash([2, 4]);
+        ctx2d.beginPath(); ctx2d.moveTo(plotW * 0.45, yy); ctx2d.lineTo(plotW, yy); ctx2d.stroke();
+        ctx2d.restore();
+        drawPill(lbl, plotW - 36, yy - 1, 'rgba(0,18,24,0.8)', '#00e5ff', '#00e5ff44');
+      }
+    }
+
+    // B. FVG Fair Value Gaps & Supply/Demand Order Blocks
+    if (layers.fvg) {
+      const xRight = Math.min(plotW, (xOfIdx(mapped.length - 1) ?? plotW - 60) + 38);
+      for (const fvg of sig.fvgs) {
+        const x1 = xOfIdx(fvg.startIdx);
+        const y1 = yOfPx(fvg.top), y2 = yOfPx(fvg.bot);
+        if (x1 == null || y1 == null || y2 == null) continue;
+        const left = Math.max(0, x1);
+        const width = Math.max(12, xRight - left);
+        const top = Math.min(y1, y2), ht = Math.max(4, Math.abs(y2 - y1));
+        const bull = fvg.dir === 'BULL';
+        ctx2d.fillStyle = bull ? 'rgba(0, 210, 106, 0.12)' : 'rgba(255, 59, 48, 0.12)';
+        ctx2d.fillRect(left, top, width, ht);
+        ctx2d.strokeStyle = bull ? 'rgba(0, 210, 106, 0.42)' : 'rgba(255, 59, 48, 0.42)';
+        ctx2d.lineWidth = 1;
+        ctx2d.strokeRect(left, top, width, ht);
+        drawPill(bull ? 'FVG+ DEM' : 'FVG- SUP', left + 3, top + Math.min(11, ht / 2 + 4), 'rgba(0,0,0,0.72)', bull ? '#00d26a' : '#ff5a52');
+      }
+      for (const ob of sig.obs) {
+        const x1 = xOfIdx(ob.startIdx);
+        const y1 = yOfPx(ob.top), y2 = yOfPx(ob.bot);
+        if (x1 == null || y1 == null || y2 == null) continue;
+        const left = Math.max(0, x1);
+        const width = Math.max(16, xRight - left);
+        const top = Math.min(y1, y2), ht = Math.max(5, Math.abs(y2 - y1));
+        const bull = ob.dir === 'BULL';
+        ctx2d.save();
+        ctx2d.fillStyle = bull ? 'rgba(0, 229, 255, 0.09)' : 'rgba(224, 64, 251, 0.09)';
+        ctx2d.fillRect(left, top, width, ht);
+        ctx2d.setLineDash([4, 3]);
+        ctx2d.strokeStyle = bull ? 'rgba(0, 229, 255, 0.55)' : 'rgba(224, 64, 251, 0.55)';
+        ctx2d.strokeRect(left, top, width, ht);
+        ctx2d.restore();
+        drawPill(bull ? 'OB DEMAND' : 'OB SUPPLY', left + 3, top + ht - 2, 'rgba(0,0,0,0.75)', bull ? '#00e5ff' : '#e040fb');
+      }
+    }
+
+    // C. OLS Linear Regression Channel (+/- 1.5 sigma) & Structural Pivot Trendlines
+    if (layers.trend) {
+      if (sig.reg) {
+        const r = sig.reg;
+        const x1 = xOfIdx(r.startIdx), x2 = xOfIdx(r.endIdx);
+        const y1Mid = yOfPx(r.yStart), y2Mid = yOfPx(r.yEnd);
+        const y1Up = yOfPx(r.yStart + r.sigma15), y2Up = yOfPx(r.yEnd + r.sigma15);
+        const y1Lo = yOfPx(r.yStart - r.sigma15), y2Lo = yOfPx(r.yEnd - r.sigma15);
+        if (x1 != null && x2 != null && y1Up != null && y2Up != null && y1Lo != null && y2Lo != null) {
+          ctx2d.fillStyle = 'rgba(0, 229, 255, 0.035)';
+          ctx2d.beginPath();
+          ctx2d.moveTo(x1, y1Up); ctx2d.lineTo(x2, y2Up); ctx2d.lineTo(x2, y2Lo); ctx2d.lineTo(x1, y1Lo);
+          ctx2d.closePath(); ctx2d.fill();
+
+          ctx2d.save();
+          ctx2d.strokeStyle = 'rgba(0, 229, 255, 0.45)';
+          ctx2d.lineWidth = 1.1;
+          ctx2d.beginPath(); ctx2d.moveTo(x1, y1Up); ctx2d.lineTo(x2, y2Up); ctx2d.stroke();
+          ctx2d.beginPath(); ctx2d.moveTo(x1, y1Lo); ctx2d.lineTo(x2, y2Lo); ctx2d.stroke();
+          if (y1Mid != null && y2Mid != null) {
+            ctx2d.strokeStyle = 'rgba(255, 176, 0, 0.45)';
+            ctx2d.setLineDash([4, 4]);
+            ctx2d.beginPath(); ctx2d.moveTo(x1, y1Mid); ctx2d.lineTo(x2, y2Mid); ctx2d.stroke();
+          }
+          ctx2d.restore();
+        }
+      }
+      for (const tl of sig.trendlines) {
+        const x1 = xOfIdx(tl.x1), x2 = xOfIdx(tl.x2);
+        const y1 = yOfPx(tl.y1), y2 = yOfPx(tl.y2);
+        if (x1 == null || x2 == null || y1 == null || y2 == null) continue;
+        ctx2d.save();
+        ctx2d.strokeStyle = tl.kind === 'SUP' ? 'rgba(0, 210, 106, 0.75)' : 'rgba(255, 59, 48, 0.75)';
+        ctx2d.lineWidth = 1.6;
+        ctx2d.beginPath(); ctx2d.moveTo(x1, y1); ctx2d.lineTo(x2, y2); ctx2d.stroke();
+        ctx2d.restore();
+      }
+    }
+
+    // D. Auto-Fibonacci Retracement + 0.618 Golden Pocket
+    if (layers.fib && sig.fib) {
+      const f = sig.fib;
+      const xStart = Math.max(plotW * 0.48, xOfIdx(f.anchorIdx) ?? plotW * 0.55);
+      const y618 = yOfPx(f.levels.find(l => l.ratio === 0.618)?.price);
+      const y65 = yOfPx(f.levels.find(l => l.ratio === 0.65)?.price);
+      if (y618 != null && y65 != null) {
+        ctx2d.fillStyle = 'rgba(255, 176, 0, 0.10)';
+        ctx2d.fillRect(xStart, Math.min(y618, y65), plotW - xStart, Math.max(3, Math.abs(y65 - y618)));
+      }
+      for (const lv of f.levels) {
+        if (lv.ratio === 0.65) continue;
+        const yy = yOfPx(lv.price);
+        if (yy == null) continue;
+        const isGolden = lv.ratio === 0.618;
+        ctx2d.save();
+        ctx2d.strokeStyle = isGolden ? 'rgba(255, 214, 0, 0.85)' : 'rgba(138, 160, 190, 0.42)';
+        ctx2d.lineWidth = isGolden ? 1.4 : 1;
+        ctx2d.setLineDash([3, 3]);
+        ctx2d.beginPath(); ctx2d.moveTo(xStart, yy); ctx2d.lineTo(plotW, yy); ctx2d.stroke();
+        ctx2d.restore();
+        const tag = isGolden ? `0.618 GP • ${fmtPx(lv.price)}` : `${lv.ratio.toFixed(3)} • ${fmtPx(lv.price)}`;
+        drawPill(tag, xStart + 4, yy - 2, 'rgba(6,8,12,0.82)', isGolden ? '#ffd600' : '#9eb3cc');
+      }
+    }
+
+    // E. Market Structure Pivots (HH/HL/LH/LL) + BOS / CHoCH
+    if (layers.struct) {
+      for (const br of sig.breaks) {
+        const x1 = xOfIdx(br.fromIdx), x2 = xOfIdx(br.toIdx), yy = yOfPx(br.price);
+        if (x1 == null || x2 == null || yy == null) continue;
+        const bull = br.dir === 'BULL';
+        ctx2d.save();
+        ctx2d.strokeStyle = bull ? '#00d26a' : '#ff3b30';
+        ctx2d.lineWidth = br.kind === 'CHoCH' ? 1.6 : 1.1;
+        ctx2d.setLineDash(br.kind === 'CHoCH' ? [] : [4, 3]);
+        ctx2d.beginPath(); ctx2d.moveTo(x1, yy); ctx2d.lineTo(x2, yy); ctx2d.stroke();
+        ctx2d.restore();
+        drawPill(br.kind, (x1 + x2) / 2 - 14, yy - (bull ? 3 : -10), bull ? 'rgba(0,32,16,0.92)' : 'rgba(38,6,6,0.92)', bull ? '#00d26a' : '#ff5a52', bull ? '#00d26a66' : '#ff3b3066');
+      }
+      for (const sw of sig.swings) {
+        const xx = xOfIdx(sw.idx), yy = yOfPx(sw.price);
+        if (xx == null || yy == null || xx < 6 || xx > plotW - 14) continue;
+        const isHigh = sw.type === 'H';
+        const col = (sw.tag === 'HH' || sw.tag === 'HL') ? '#00d26a' : (sw.tag === 'LH' || sw.tag === 'LL') ? '#ff5a52' : '#ffb000';
+        drawPill(sw.tag, xx - 10, isHigh ? yy - 5 : yy + 14, 'rgba(0,0,0,0.82)', col, col + '55');
+      }
+    }
+
+    // F. Trade Plan Risk / Reward Boxes (used when executing or previewing setup in BOT <GO>)
+    if (plan && plan.entry > 0 && plan.sl > 0 && plan.tp1 > 0) {
+      const boxStart = Math.max(plotW * 0.62, (xOfIdx(mapped.length - 10) ?? plotW * 0.68));
+      const boxW = Math.max(40, plotW - boxStart);
+      const yEnt = yOfPx(plan.entry), ySl = yOfPx(plan.sl), yTp1 = yOfPx(plan.tp1);
+      const yTp2 = plan.tp2 > 0 ? yOfPx(plan.tp2) : null;
+      if (yEnt != null && ySl != null) {
+        ctx2d.fillStyle = 'rgba(255, 59, 48, 0.14)';
+        ctx2d.fillRect(boxStart, Math.min(yEnt, ySl), boxW, Math.max(2, Math.abs(ySl - yEnt)));
+        drawPill(`SL RISK ${fmtPx(plan.sl)}`, boxStart + 4, ySl + (plan.sl < plan.entry ? 11 : -3), 'rgba(38,6,6,0.9)', '#ff5a52', '#ff3b30', true);
+      }
+      if (yEnt != null && yTp1 != null) {
+        ctx2d.fillStyle = 'rgba(0, 229, 255, 0.12)';
+        ctx2d.fillRect(boxStart, Math.min(yEnt, yTp1), boxW, Math.max(2, Math.abs(yTp1 - yEnt)));
+        drawPill(`TP1 LOCK ${fmtPx(plan.tp1)}`, boxStart + 4, yTp1 - 2, 'rgba(0,22,28,0.9)', '#00e5ff', '#00e5ff', true);
+      }
+      if (yTp1 != null && yTp2 != null && Math.abs(yTp2 - yTp1) > 4) {
+        ctx2d.fillStyle = 'rgba(0, 210, 106, 0.11)';
+        ctx2d.fillRect(boxStart, Math.min(yTp1, yTp2), boxW, Math.max(2, Math.abs(yTp2 - yTp1)));
+        drawPill(`TP2 RUNNER ${fmtPx(plan.tp2)}`, boxStart + 4, yTp2 - 2, 'rgba(0,28,12,0.9)', '#00d26a', '#00d26a', true);
+      }
+    }
+
+    ctx2d.restore();
+  };
+
+  const scheduleDraw = () => {
+    if (!rafPending) {
+      rafPending = true;
+      requestAnimationFrame(draw);
+    }
+  };
+
+  try {
+    chart.timeScale().subscribeVisibleLogicalRangeChange(scheduleDraw);
+  } catch {}
+  scheduleDraw();
+  return { scheduleDraw, getLastSignals: () => lastSignals, canvas: cvs };
+}
+
 export function mountGP(body, ctx, { intraday = false } = {}) {
   body.classList.add('fill');
   let iv = intraday ? '1m' : '1h';
   let style = 'candle';
   let showSMA = true, showEMA = true, showBB = false, showVWAP = true, showVol = true, oscMode = 'RSI'; // 'RSI' | 'MACD' | 'NONE'
+  let showStruct = true, showTrend = true, showFvg = true, showFib = false, showVpvr = true;
   let unsubs = [];
   let secTimer = null;
   let lastTickTs = Date.now();
@@ -115,45 +674,22 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
   const statStrip = h('div', { class: 'tb', style: 'background:#060606;font-size:11px;gap:10px;border-bottom:1px solid #1e1e1e;padding:2px 6px' });
   const wrap = h('div', { class: 'chart', style: 'flex:1;min-height:140px;position:relative;background:#000' });
   const leg = h('div', { class: 'legend am', style: 'background:rgba(0,0,0,0.78);padding:2px 6px;border:1px solid #222;font-size:11px' });
-  const rtBadge = h('div', { style: 'position:absolute;right:74px;top:6px;z-index:4;font-size:10px;color:#00d26a;background:rgba(0,18,8,0.88);padding:2px 6px;border:1px solid #00d26a66;pointer-events:none;font-family:JetBrains Mono,monospace' }, '● SUB-SECOND LIVE');
+  const rtBadge = h('div', { style: 'position:absolute;right:74px;top:6px;z-index:4;font-size:10px;color:#00d26a;background:rgba(0,18,8,0.88);padding:2px 6px;border:1px solid #00d26a66;pointer-events:none;font-family:JetBrains Mono,monospace' }, '● LIVE FEED');
   const volTag = h('div', { style: 'position:absolute;left:6px;bottom:22%;z-index:3;font-size:10px;color:#4da3ff;background:rgba(0,0,0,0.75);padding:1px 5px;pointer-events:none;border-left:2px solid #ffb000' });
   const oscStrip = h('div', { style: 'height:66px;border-top:1px solid var(--border);position:relative;flex:none;background:#030303' });
   wrap.append(leg, rtBadge, volTag);
   body.append(tb, statStrip, wrap, oscStrip);
 
   let chart = null, mainSeries = null, volSeries = null, volMaSeries = null, smaS = null, emaS = null, bbUpS = null, bbLoS = null, vwapS = null;
+  let tmOverlay = null;
   let lastCandles = [];
+  let mappedBars = [];
   let activeBar = null;
+  let effectiveFeedNote = '';
 
   function ivSeconds(intervalStr) {
     const map = { '1s': 1, '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800 };
     return map[intervalStr] || 60;
-  }
-
-  function build1sCandlesFrom1m(candles1m) {
-    if (!candles1m || !candles1m.length) return [];
-    const out = [];
-    const nowSec = Math.floor(Date.now() / 1000);
-    const recent = candles1m.slice(-6);
-    const totalPoints = 120;
-    const lastC = recent[recent.length - 1];
-    const basePx = +lastC.c || 100;
-    const atr = Math.max(basePx * 0.00025, (+lastC.h - +lastC.l) / 25 || basePx * 0.0002);
-    let cur = +(recent[0]?.o || basePx);
-    for (let i = totalPoints; i >= 1; i--) {
-      const tSec = (nowSec - i) * 1000;
-      const target = i <= 5 ? basePx : +(recent[Math.min(recent.length - 1, Math.floor(((totalPoints - i) / totalPoints) * recent.length))].c || basePx);
-      const drift = (target - cur) * 0.18;
-      const wave = Math.sin(i * 0.45) * atr * 0.45 + Math.cos(i * 1.1) * atr * 0.25;
-      const o = cur;
-      const c = i === 1 ? basePx : +(o + drift + wave).toFixed(6);
-      const hPx = Math.max(o, c) + Math.abs(Math.sin(i * 0.9)) * atr * 0.4;
-      const lPx = Math.min(o, c) - Math.abs(Math.cos(i * 0.7)) * atr * 0.4;
-      const v = Math.max(0.01, (+lastC.v || 100) / 60 * (0.6 + Math.abs(Math.sin(i))));
-      out.push({ t: tSec, o, h: hPx, l: lPx, c, v });
-      cur = c;
-    }
-    return out;
   }
 
   function buildToolbar() {
@@ -167,7 +703,16 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
       tb.append(h('button', { class: t === style ? 'on' : '', text: t.toUpperCase(), onclick: () => { style = t; buildToolbar(); renderChart(lastCandles); } }));
     }
     tb.append(h('span', { class: 'lbl', text: 'OVERLAYS:' }));
-    const stBtn = (lbl, on, toggle) => h('button', { class: on ? 'on' : '', text: lbl, onclick: () => { toggle(); buildToolbar(); renderChart(lastCandles); } });
+    const stBtn = (lbl, on, toggle, repaintOnly = false) => h('button', {
+      class: on ? 'on' : '',
+      text: lbl,
+      onclick: () => {
+        toggle();
+        buildToolbar();
+        if (repaintOnly && tmOverlay) tmOverlay.scheduleDraw();
+        else renderChart(lastCandles);
+      }
+    });
     tb.append(
       stBtn('VOL+MA20', showVol, () => { showVol = !showVol; }),
       stBtn('SMA20', showSMA, () => { showSMA = !showSMA; }),
@@ -175,7 +720,15 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
       stBtn('BB(20,2)', showBB, () => { showBB = !showBB; }),
       stBtn('VWAP', showVWAP, () => { showVWAP = !showVWAP; })
     );
-    tb.append(h('span', { class: 'lbl', text: 'LOWER STUDY:' }));
+    tb.append(h('span', { class: 'lbl', text: 'TECH MASTER:' }));
+    tb.append(
+      stBtn('STRUCT(BOS)', showStruct, () => { showStruct = !showStruct; }, true),
+      stBtn('TREND/CH', showTrend, () => { showTrend = !showTrend; }, true),
+      stBtn('FVG/OB', showFvg, () => { showFvg = !showFvg; }, true),
+      stBtn('FIB 0.618', showFib, () => { showFib = !showFib; }, true),
+      stBtn('VPVR(POC)', showVpvr, () => { showVpvr = !showVpvr; }, true)
+    );
+    tb.append(h('span', { class: 'lbl', text: 'LOWER:' }));
     for (const m of ['RSI', 'MACD', 'NONE']) {
       tb.append(h('button', {
         class: oscMode === m ? 'on' : '',
@@ -275,9 +828,21 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
   }
 
   function renderChart(candles) {
-    if (!candles || !candles.length) return;
     if (chart) { try { chart.remove(); } catch {} chart = null; }
-    wrap.querySelectorAll('.tv-lightweight-charts, .na').forEach(e => e.remove());
+    wrap.querySelectorAll('.tv-lightweight-charts, .na, .tm-overlay-canvas').forEach(e => e.remove());
+    tmOverlay = null;
+    if (!candles || !candles.length) {
+      leg.style.display = 'none';
+      volTag.style.display = 'none';
+      rtBadge.textContent = '● FEED N/A';
+      rtBadge.style.color = '#ff5a52';
+      rtBadge.style.borderColor = '#ff3b3066';
+      wrap.append(h('div', { class: 'na', text: `No historical OHLCV data available for ${ctx.symbol} (${iv.toUpperCase()})` }));
+      return;
+    }
+    leg.style.display = 'block';
+    rtBadge.style.color = '#00d26a';
+    rtBadge.style.borderColor = '#00d26a66';
 
     const LWC = window.LightweightCharts;
     if (!LWC) {
@@ -302,6 +867,7 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
     const mapped = dedupeByTime(candles.map(c => ({
       time: Math.floor(c.t / 1000), open: +c.o, high: +c.h, low: +c.l, close: +c.c, value: +c.c, vol: +(c.v || 0)
     })));
+    mappedBars = mapped;
     const volByTime = new Map(mapped.map(x => [x.time, x.vol]));
     activeBar = mapped.length ? { ...mapped[mapped.length - 1] } : null;
 
@@ -403,6 +969,10 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
     const lastEmaVal = emaArr.length ? emaArr[emaArr.length - 1].value : null;
     const lastVwapVal = vwapArr.length ? vwapArr[vwapArr.length - 1].value : null;
 
+    const tmSummary = computeTechnicalMasterSignals(mapped);
+    const fib618Val = tmSummary.fib ? tmSummary.fib.levels.find(l => l.ratio === 0.618)?.price : null;
+    const pocVal = tmSummary.vpvr ? tmSummary.vpvr.pocPrice : null;
+
     const updateLegend = (bar, barVol) => {
       if (!bar) return;
       const o = bar.open ?? bar.value, hi = bar.high ?? bar.value, lo = bar.low ?? bar.value, cl = bar.close ?? bar.value;
@@ -413,15 +983,19 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
       const nowS = Math.floor(Date.now() / 1000);
       const remSec = ivSec <= 1 ? 1 : Math.max(0, ivSec - (nowS % ivSec));
       const remFmt = ivSec <= 1 ? '1S REALTIME' : `${String(Math.floor(remSec / 60)).padStart(2, '0')}:${String(remSec % 60).padStart(2, '0')}s`;
-      leg.innerHTML = `<b style="color:#fff">${ctx.symbol}</b> [${iv.toUpperCase()}]  O:<b style="color:#ffb000">${fmtPx(o)}</b>  H:<b style="color:#00d26a">${fmtPx(hi)}</b>  L:<b style="color:#ff3b30">${fmtPx(lo)}</b>  C:<b style="color:#ffb000">${fmtPx(cl)}</b> (<span class="${dirCls(chgPct)}">${fmtPct(chgPct)}</span>)  VOL:<b style="color:#00e5ff">${fmtVol(v)}</b>  <span style="color:#00d26a">⏱ ${remFmt}</span>`;
+      const feedLbl = effectiveFeedNote ? `${iv.toUpperCase()} (${effectiveFeedNote})` : iv.toUpperCase();
+      leg.innerHTML = `<b style="color:#fff">${ctx.symbol}</b> [${feedLbl}]  O:<b style="color:#ffb000">${fmtPx(o)}</b>  H:<b style="color:#00d26a">${fmtPx(hi)}</b>  L:<b style="color:#ff3b30">${fmtPx(lo)}</b>  C:<b style="color:#ffb000">${fmtPx(cl)}</b> (<span class="${dirCls(chgPct)}">${fmtPct(chgPct)}</span>)  VOL:<b style="color:#00e5ff">${fmtVol(v)}</b>  <span style="color:#00d26a">⏱ ${remFmt}</span>`;
 
+      const biasCol = tmSummary.bias === 'BULLISH' ? '#00d26a' : tmSummary.bias === 'BEARISH' ? '#ff3b30' : '#ffb000';
       statStrip.innerHTML = '';
       statStrip.append(
         h('span', { class: 'sym am', text: `LAST: ${fmtPx(cl)}` }),
         h('span', { class: dirCls(chg), text: `CHG: ${fmtChg(chg)} (${fmtPct(chgPct)})` }),
-        h('span', { style: 'color:#00d26a;font-weight:bold', text: `NEXT BAR: ${remFmt} • TICKS: ${tickCount}` }),
-        h('span', { class: 'lb', text: `RANGE HI: ${fmtPx(periodHigh)} / LO: ${fmtPx(periodLow)}` }),
-        h('span', { style: 'color:#00e5ff;font-weight:bold', text: `BAR VOL: ${fmtVol(v)} • 24B VOL: ${fmtVol(total24Vol)}` }),
+        h('span', { style: `color:${biasCol};font-weight:bold`, text: `STRUCT: ${tmSummary.bias}` }),
+        pocVal != null ? h('span', { style: 'color:#ffb000;font-weight:bold', text: `POC: ${fmtPx(pocVal)}` }) : null,
+        h('span', { style: 'color:#00e5ff', text: `FVGs: ${tmSummary.fvgs.length}` }),
+        fib618Val != null ? h('span', { style: 'color:#ffd600', text: `GP 0.618: ${fmtPx(fib618Val)}` }) : null,
+        h('span', { style: 'color:#00d26a', text: `NEXT: ${remFmt} • TICKS:${tickCount}` }),
         lastVwapVal != null ? h('span', { style: 'color:#ffd600', text: `VWAP: ${fmtPx(lastVwapVal)}` }) : null,
         lastSmaVal != null ? h('span', { style: 'color:#4da3ff', text: `SMA20: ${fmtPx(lastSmaVal)}` }) : null,
         lastEmaVal != null ? h('span', { style: 'color:#e040fb', text: `EMA50: ${fmtPx(lastEmaVal)}` }) : null
@@ -438,6 +1012,13 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
       if (b) updateLegend(b, vBar ? vBar.value : volByTime.get(param.time));
     });
     chart.timeScale().fitContent();
+    tmOverlay = attachTechnicalMasterCanvas({
+      wrap,
+      chart,
+      getSeries: () => mainSeries,
+      getMapped: () => mappedBars,
+      getLayers: () => ({ struct: showStruct, trend: showTrend, fvg: showFvg, fib: showFib, vpvr: showVpvr })
+    });
     renderOscillator(candles);
   }
 
@@ -460,7 +1041,9 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
         vol: Math.max(0, Number(qty) || 0)
       };
       lastCandles.push({ t: bucketSec * 1000, o: activeBar.open, h: activeBar.high, l: activeBar.low, c: activeBar.close, v: activeBar.vol });
+      mappedBars.push({ ...activeBar, value: activeBar.close });
       if (lastCandles.length > 360) lastCandles.shift();
+      if (mappedBars.length > 360) mappedBars.shift();
     } else {
       activeBar.close = price;
       if (price > activeBar.high) activeBar.high = price;
@@ -473,12 +1056,21 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
         lc.l = activeBar.low;
         lc.v = activeBar.vol;
       }
+      if (mappedBars.length) {
+        const mb = mappedBars[mappedBars.length - 1];
+        mb.close = activeBar.close;
+        mb.value = activeBar.close;
+        mb.high = activeBar.high;
+        mb.low = activeBar.low;
+        mb.vol = activeBar.vol;
+      }
     }
     try {
       if (style === 'candle') mainSeries.update({ time: activeBar.time, open: activeBar.open, high: activeBar.high, low: activeBar.low, close: activeBar.close });
       else mainSeries.update({ time: activeBar.time, value: activeBar.close });
       if (volSeries) volSeries.update({ time: activeBar.time, value: activeBar.vol || 0, color: activeBar.close >= activeBar.open ? 'rgba(0, 210, 106, 0.70)' : 'rgba(255, 59, 48, 0.70)' });
     } catch {}
+    tmOverlay?.scheduleDraw();
     const ivSecNow = ivSeconds(iv);
     const remSec = ivSecNow <= 1 ? 1 : Math.max(0, ivSecNow - (nowSec % ivSecNow));
     const remFmt = ivSecNow <= 1 ? '1S REALTIME' : `${String(Math.floor(remSec / 60)).padStart(2, '0')}:${String(remSec % 60).padStart(2, '0')}s`;
@@ -495,6 +1087,7 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
   const ro = new ResizeObserver(() => {
     if (chart && wrap.clientWidth > 0 && wrap.clientHeight > 0) {
       chart.applyOptions({ width: wrap.clientWidth, height: wrap.clientHeight });
+      tmOverlay?.scheduleDraw();
     }
   });
   ro.observe(wrap);
@@ -502,30 +1095,26 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
 
   async function load() {
     clearSubs();
+    effectiveFeedNote = '';
     leg.textContent = `Loading ${ctx.symbol} (${iv})...`;
-    const fetchIv = iv === '1s' ? '1m' : iv;
-    const env = await get('kline', { symbol: ctx.symbol, interval: fetchIv, limit: iv === '1s' ? 60 : 300 }, 2500);
-    ctx.status(env.ok ? env : { source: 'b-pipe-cache', ts: Date.now(), mode: 'LIVE' });
+    let env = await get('kline', { symbol: ctx.symbol, interval: iv, limit: iv === '1s' ? 180 : 300 }, 3000);
     let srcCandles = (env.ok && env.data && Array.isArray(env.data.candles) && env.data.candles.length) ? env.data.candles : null;
-    if (!srcCandles) {
-      const baseP = /BTC/i.test(ctx.symbol) ? 80572 : /ETH/i.test(ctx.symbol) ? 2650 : /SOL/i.test(ctx.symbol) ? 148.5 : 151.20;
-      const nowMs = Date.now();
-      const stepMs = ivSeconds(fetchIv) * 1000;
-      let cur = baseP * 0.985;
-      const atrStep = baseP * 0.0022;
-      srcCandles = [];
-      for (let i = 90; i >= 1; i--) {
-        const target = i === 1 ? baseP : cur + (baseP - cur) * (1 / i) + Math.sin(i * 0.65) * atrStep;
-        const o = cur;
-        const c = i === 1 ? baseP : +target.toPrecision(6);
-        const hi = +(Math.max(o, c) + Math.abs(Math.cos(i * 1.1)) * atrStep * 0.7).toPrecision(6);
-        const lo = +(Math.min(o, c) - Math.abs(Math.sin(i * 0.85)) * atrStep * 0.7).toPrecision(6);
-        srcCandles.push({ t: nowMs - i * stepMs, o, h: hi, l: lo, c, v: 450 + (i % 11) * 80 });
-        cur = c;
+
+    if (!srcCandles && iv === '1s') {
+      // Non-Binance instruments (equities/FX) only expose >= 1m OHLCV upstream
+      const mEnv = await get('kline', { symbol: ctx.symbol, interval: '1m', limit: 120 }, 3000);
+      if (mEnv.ok && mEnv.data && Array.isArray(mEnv.data.candles) && mEnv.data.candles.length) {
+        env = mEnv;
+        srcCandles = mEnv.data.candles;
+        effectiveFeedNote = '1M EXCHANGE BAR + LIVE TICK';
       }
     }
-    lastCandles = iv === '1s' ? build1sCandlesFrom1m(srcCandles) : srcCandles;
+
+    ctx.status(env.ok ? env : { source: env.source || 'offline', ts: Date.now(), mode: srcCandles ? 'LIVE' : 'DOWN' });
+    lastCandles = srcCandles || [];
     requestAnimationFrame(() => renderChart(lastCandles));
+
+    if (!lastCandles.length) return;
 
     if (iv !== '1s') {
       unsubs.push(ctx.sub(`kline:${ctx.symbol}:${iv}`, k => {
@@ -537,6 +1126,7 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
           else mainSeries.update({ time: t, value: +k.c });
           if (volSeries) volSeries.update({ time: t, value: +(k.v || 0), color: +k.c >= +k.o ? 'rgba(0, 210, 106, 0.70)' : 'rgba(255, 59, 48, 0.70)' });
         } catch {}
+        tmOverlay?.scheduleDraw();
       }));
     }
 
@@ -548,19 +1138,14 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
       if (tk && tk.price) applyLiveTick(+tk.price, 0);
     }));
 
-    // 1-second real-time clock & 1s bar advancer
-    secTimer = setInterval(async () => {
+    // Real-time countdown & status badge (no synthetic price jitter!)
+    secTimer = setInterval(() => {
       if (!activeBar || !mainSeries) return;
       const nowSec = Math.floor(Date.now() / 1000);
       const ivSec = ivSeconds(iv);
       const remSec = ivSec <= 1 ? 1 : Math.max(0, ivSec - (nowSec % ivSec));
       const remFmt = ivSec <= 1 ? '1S REALTIME' : `${String(Math.floor(remSec / 60)).padStart(2, '0')}:${String(remSec % 60).padStart(2, '0')}s`;
-      rtBadge.textContent = `● REALTIME TICK (${new Date().toLocaleTimeString('en-GB')}) | NEXT: ${remFmt}`;
-      if (iv === '1s' && Date.now() - lastTickTs >= 950) {
-        // Poll latest quote or advance 1s bar smoothly so 1S chart never freezes between trades
-        const jitter = activeBar.close * ((Math.sin(nowSec * 1.7) * 0.00004));
-        applyLiveTick(+(activeBar.close + jitter).toFixed(6), 0.05);
-      }
+      rtBadge.textContent = `● LIVE FEED (${new Date(lastTickTs).toLocaleTimeString('en-GB')}) | NEXT: ${remFmt}`;
     }, 1000);
   }
 

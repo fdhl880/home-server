@@ -1145,7 +1145,7 @@ export function mountWCDS(body, ctx) {
 export function mountOVDV(body, ctx) {
   body.classList.add('fill');
   const tb = h('div', { class: 'tb' },
-    h('span', { class: 'lbl', text: `OVDV IMPLIED VOLATILITY SURFACE, 25Δ RISK REVERSAL & SKEW SMILE [${ctx.symbol}]` }),
+    h('span', { class: 'lbl', text: `OVDV REALIZED VOL TERM STRUCTURE & EDGEWORTH SKEW SURFACE [${ctx.symbol}]` }),
     h('button', { text: 'OMON CHAIN <GO>', onclick: () => ctx.run('OMON') }),
     h('button', { text: 'OVME PRICER <GO>', onclick: () => ctx.run('OVME') })
   );
@@ -1153,51 +1153,74 @@ export function mountOVDV(body, ctx) {
   body.append(tb, sc);
 
   async function load() {
-    const env = await get('kline', { symbol: ctx.symbol, interval: '1d', limit: 90 }, 4000);
+    const env = await get('kline', { symbol: ctx.symbol, interval: '1d', limit: 200 }, 5000);
     ctx.status(env);
     sc.textContent = '';
     const c = (env.ok && env.data && env.data.candles) || [];
-    let baseVol = 42.0;
-    if (c.length > 20) {
-      const rets = [];
-      for (let i = 1; i < c.length; i++) rets.push(Math.log(c[i].c / c[i - 1].c));
-      const m = rets.reduce((a, b) => a + b, 0) / rets.length;
-      const v = rets.reduce((a, b) => a + (b - m) ** 2, 0) / (rets.length - 1);
-      baseVol = Math.max(12, Math.min(115, Math.sqrt(v * 252) * 100));
+    if (c.length < 15) {
+      sc.append(h('div', { class: 'na', text: `N/A — Insufficient Historical OHLCV Bars (${c.length}) to Compute Empirical Volatility Surface for ${ctx.symbol}` }));
+      return;
     }
-    const isCrypto = /USDT|BTC|ETH|SOL/i.test(ctx.symbol || '');
-    const skewSign = isCrypto ? 0.65 : -1.15;
+
+    const logRets = [];
+    for (let i = 1; i < c.length; i++) {
+      if (c[i - 1].c > 0 && c[i].c > 0) logRets.push(Math.log(c[i].c / c[i - 1].c));
+    }
+    const hvWindow = (n) => {
+      const sl = logRets.slice(-Math.min(n, logRets.length));
+      if (sl.length < 3) return null;
+      const m = sl.reduce((a, b) => a + b, 0) / sl.length;
+      const v = sl.reduce((a, b) => a + (b - m) ** 2, 0) / (sl.length - 1 || 1);
+      return Math.sqrt(v * 252) * 100;
+    };
+
+    // Empirical mean, std, skewness S, excess kurtosis K over trailing sample
+    const mAll = logRets.reduce((a, b) => a + b, 0) / logRets.length;
+    const sdAll = Math.sqrt(logRets.reduce((a, b) => a + (b - mAll) ** 2, 0) / (logRets.length - 1 || 1)) || 0.01;
+    let m3 = 0, m4 = 0;
+    for (const r of logRets) {
+      const z = (r - mAll) / sdAll;
+      m3 += z ** 3;
+      m4 += z ** 4;
+    }
+    const skew = m3 / logRets.length;
+    const exKurt = Math.max(0, (m4 / logRets.length) - 3);
+    const atm1M = hvWindow(21) || hvWindow(logRets.length) || 25;
+
     const tenors = [
-      { t: '1W (7D)', mul: 1.08, smile: 4.8 },
-      { t: '2W (14D)', mul: 1.04, smile: 4.2 },
-      { t: '1M (30D)', mul: 1.00, smile: 3.6 },
-      { t: '2M (60D)', mul: 0.97, smile: 3.1 },
-      { t: '3M (90D)', mul: 0.95, smile: 2.7 },
-      { t: '6M (180D)', mul: 0.93, smile: 2.3 },
-      { t: '1Y (365D)', mul: 0.91, smile: 2.0 }
+      { t: '1W (5D HV)', hv: hvWindow(5) ?? atm1M, days: 5 },
+      { t: '2W (10D HV)', hv: hvWindow(10) ?? atm1M, days: 10 },
+      { t: '1M (21D HV)', hv: hvWindow(21) ?? atm1M, days: 21 },
+      { t: '2M (42D HV)', hv: hvWindow(42) ?? atm1M, days: 42 },
+      { t: '3M (63D HV)', hv: hvWindow(63) ?? atm1M, days: 63 },
+      { t: '6M (126D HV)', hv: hvWindow(126) ?? atm1M, days: 126 }
     ];
     const deltas = [
-      { lbl: '10Δ PUT (90% Mny)', x: -2 },
-      { lbl: '25Δ PUT (95% Mny)', x: -1 },
-      { lbl: '50Δ ATM (100% Spot)', x: 0 },
-      { lbl: '25Δ CALL (105% Mny)', x: 1 },
-      { lbl: '10Δ CALL (110% Mny)', x: 2 }
+      { lbl: '10Δ PUT (z=-1.3)', z: -1.3 },
+      { lbl: '25Δ PUT (z=-0.7)', z: -0.7 },
+      { lbl: '50Δ ATM (z=0.0)', z: 0.0 },
+      { lbl: '25Δ CALL (z=+0.7)', z: 0.7 },
+      { lbl: '10Δ CALL (z=+1.3)', z: 1.3 }
     ];
+    // Gram-Charlier / Backus-Foresi-Wu empirical skew & smile approximation from real return moments
+    const smileVal = (baseHv, z, days) => {
+      const tScale = Math.sqrt(21 / Math.max(5, days));
+      const skewAdj = (skew / 6) * z * tScale * 100 * 0.12;
+      const kurtAdj = (exKurt / 24) * (z * z) * tScale * 100 * 0.18;
+      return Math.max(4, baseHv + kurtAdj - skewAdj);
+    };
 
-    // SVG Volatility Smile Curves (1W, 1M, 3M, 1Y)
+    const allVals = [];
+    tenors.forEach(tn => deltas.forEach(d => allVals.push(smileVal(tn.hv, d.z, tn.days))));
+    const minIv = Math.min(...allVals) - 2;
+    const maxIv = Math.max(...allVals) + 2;
+
     const ns = 'http://www.w3.org/2000/svg';
     const svg = document.createElementNS(ns, 'svg');
     svg.setAttribute('viewBox', '0 0 680 155');
     svg.setAttribute('preserveAspectRatio', 'none');
     svg.style.cssText = 'width:100%;height:155px;display:block;background:#020408;border-bottom:1px solid var(--border)';
 
-    const allVals = [];
-    tenors.forEach(tn => deltas.forEach(d => {
-      const iv = baseVol * tn.mul + tn.smile * (d.x * d.x * 0.45) + skewSign * d.x * 0.9;
-      allVals.push(iv);
-    }));
-    const minIv = Math.min(...allVals) - 2;
-    const maxIv = Math.max(...allVals) + 2;
     const yOf = v => 136 - ((v - minIv) / Math.max(1, maxIv - minIv)) * 112;
     const xOf = idx => 75 + (idx / (deltas.length - 1)) * 530;
 
@@ -1217,17 +1240,14 @@ export function mountOVDV(body, ctx) {
     });
 
     const curveSpecs = [
-      { idx: 0, col: '#ff3b30', lbl: '1W Tenor' },
-      { idx: 2, col: '#ffb000', lbl: '1M Tenor' },
-      { idx: 4, col: '#00e5ff', lbl: '3M Tenor' },
-      { idx: 6, col: '#00d26a', lbl: '1Y Tenor' }
+      { idx: 0, col: '#ff3b30', lbl: '1W Realized' },
+      { idx: 2, col: '#ffb000', lbl: '1M Realized' },
+      { idx: 4, col: '#00e5ff', lbl: '3M Realized' },
+      { idx: 5, col: '#00d26a', lbl: '6M Realized' }
     ];
     curveSpecs.forEach((cs, cIdx) => {
       const tn = tenors[cs.idx];
-      const pts = deltas.map((d, idx) => {
-        const iv = baseVol * tn.mul + tn.smile * (d.x * d.x * 0.45) + skewSign * d.x * 0.9;
-        return `${xOf(idx).toFixed(1)},${yOf(iv).toFixed(1)}`;
-      });
+      const pts = deltas.map((d, idx) => `${xOf(idx).toFixed(1)},${yOf(smileVal(tn.hv, d.z, tn.days)).toFixed(1)}`);
       const pl = document.createElementNS(ns, 'polyline');
       pl.setAttribute('fill', 'none'); pl.setAttribute('stroke', cs.col); pl.setAttribute('stroke-width', '2');
       pl.setAttribute('points', pts.join(' '));
@@ -1235,18 +1255,21 @@ export function mountOVDV(body, ctx) {
       const leg = document.createElementNS(ns, 'text');
       leg.setAttribute('x', String(80 + cIdx * 135)); leg.setAttribute('y', '13');
       leg.setAttribute('fill', cs.col); leg.setAttribute('font-size', '10'); leg.setAttribute('font-weight', 'bold');
-      leg.textContent = `● ${cs.lbl} Smile`;
+      leg.textContent = `● ${cs.lbl}`;
       svg.append(leg);
     });
 
     sc.append(
-      h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'VOLATILITY SMILE & SKEW ACROSS DELTA BUCKETS (10Δ PUT → 50Δ ATM → 10Δ CALL)' })),
+      h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border);padding:5px 8px' },
+        h('div', { class: 'k', text: 'EMPIRICAL RETURN MOMENTS' }), h('div', { class: 'v am sym', text: `ATM 1M HV: ${atm1M.toFixed(2)}%  •  Sample Skewness (γ1): ${skew.toFixed(3)}  •  Excess Kurtosis (γ2): ${exKurt.toFixed(2)} (${logRets.length} days)` }),
+        h('div', { class: 'k', text: 'SURFACE DATA NOTICE' }), h('div', { class: 'v mu', text: 'Empirical Gram-Charlier vol surface derived from real daily log returns (live OPRA/Deribit listed IV chain requires paid options data feed).' })
+      ),
+      h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'EMPIRICAL VOLATILITY SMILE BY RETURN QUANTILE (10Δ PUT → ATM → 10Δ CALL)' })),
       svg,
-      h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: '3D IMPLIED VOLATILITY SURFACE MATRIX (TENOR × DELTA) + 25Δ RISK REVERSAL & BUTTERFLY' })),
       h('table', { class: 't' },
-        h('thead', null, h('tr', null, ['Tenor', ...deltas.map(d => d.lbl), '25Δ Risk Rev (C-P)', '25Δ Butterfly'].map(x => h('th', { text: x })))),
+        h('thead', null, h('tr', null, ['Window / Tenor', ...deltas.map(d => d.lbl), '25Δ Skew (C-P)', 'Smile Curvature'].map(x => h('th', { text: x })))),
         h('tbody', null, tenors.map(tn => {
-          const vals = deltas.map(d => baseVol * tn.mul + tn.smile * (d.x * d.x * 0.45) + skewSign * d.x * 0.9);
+          const vals = deltas.map(d => smileVal(tn.hv, d.z, tn.days));
           const rr25 = vals[3] - vals[1];
           const bf25 = 0.5 * (vals[3] + vals[1]) - vals[2];
           return h('tr', { class: 'row' },
@@ -1268,154 +1291,245 @@ export function mountOVDV(body, ctx) {
 
 export function mountRRG(body, ctx) {
   body.classList.add('fill');
-  const tb = h('div', { class: 'tb' }, h('span', { class: 'lbl', text: 'RRG RELATIVE ROTATION GRAPH — JdK RS-RATIO vs RS-MOMENTUM 4-QUADRANT SECTOR ROTATION' }));
+  const tb = h('div', { class: 'tb' }, h('span', { class: 'lbl', text: 'RRG RELATIVE ROTATION GRAPH — LIVE JdK RS-RATIO vs RS-MOMENTUM VS S&P 500 (^GSPC)' }));
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
-  const SECTORS = [
-    { sym: 'NVDA', name: 'Semiconductors & AI', rsRatio: 103.8, rsMom: 102.4, trail: [[101.2, 100.8], [102.5, 101.9], [103.8, 102.4]] },
-    { sym: 'BTCUSDT', name: 'Crypto & Digital Assets', rsRatio: 102.9, rsMom: 101.6, trail: [[99.4, 100.9], [101.3, 101.8], [102.9, 101.6]] },
-    { sym: 'SPCX', name: 'Aerospace & Space Tech', rsRatio: 102.1, rsMom: 100.9, trail: [[100.2, 100.4], [101.4, 100.8], [102.1, 100.9]] },
-    { sym: 'JPM', name: 'Global Financials', rsRatio: 101.6, rsMom: 99.1, trail: [[102.4, 101.1], [102.1, 99.8], [101.6, 99.1]] },
-    { sym: 'AAPL', name: 'Mega-Cap Consumer Tech', rsRatio: 100.7, rsMom: 98.8, trail: [[101.8, 100.3], [101.2, 99.4], [100.7, 98.8]] },
-    { sym: 'CL=F', name: 'Energy & Crude Complex', rsRatio: 98.2, rsMom: 98.4, trail: [[99.6, 99.1], [98.9, 98.6], [98.2, 98.4]] },
-    { sym: '^TNX', name: 'Sovereign Fixed Income', rsRatio: 97.4, rsMom: 99.2, trail: [[96.8, 97.9], [97.1, 98.6], [97.4, 99.2]] },
-    { sym: 'GC=F', name: 'Precious Metals (Gold)', rsRatio: 99.1, rsMom: 101.8, trail: [[97.5, 99.8], [98.3, 100.9], [99.1, 101.8]] },
-    { sym: 'BBCA.JK', name: 'IDX Blue-Chip Banking', rsRatio: 99.6, rsMom: 101.1, trail: [[98.4, 99.9], [99.0, 100.6], [99.6, 101.1]] }
+  const UNIVERSE = [
+    { sym: 'NVDA', name: 'Semiconductors & AI' },
+    { sym: 'BTCUSDT', name: 'Crypto & Digital Assets' },
+    { sym: 'AAPL', name: 'Mega-Cap Tech' },
+    { sym: 'JPM', name: 'Global Financials' },
+    { sym: 'XLE', name: 'US Energy Sector ETF' },
+    { sym: 'GC=F', name: 'Precious Metals (Gold)' },
+    { sym: 'CL=F', name: 'WTI Crude Oil' },
+    { sym: 'TLT', name: 'US 20Y+ Treasuries' },
+    { sym: 'BBCA.JK', name: 'IDX Blue-Chip Banking' }
   ];
 
-  const ns = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('viewBox', '0 0 680 230');
-  svg.setAttribute('preserveAspectRatio', 'none');
-  svg.style.cssText = 'width:100%;height:230px;display:block;background:#020408;border-bottom:1px solid var(--border)';
+  async function load() {
+    sc.textContent = '';
+    sc.append(h('div', { class: 'na', text: 'Computing JdK RS-Ratio & RS-Momentum from live daily klines...' }));
+    const syms = [...UNIVERSE];
+    if (ctx.symbol && !syms.some(x => x.sym === ctx.symbol) && ctx.symbol !== '^GSPC') {
+      syms.unshift({ sym: ctx.symbol, name: 'Active Security' });
+    }
+    const [benchEnv, ...assetEnvs] = await Promise.all([
+      get('kline', { symbol: '^GSPC', interval: '1d', limit: 120 }, 5000),
+      ...syms.map(s => get('kline', { symbol: s.sym, interval: '1d', limit: 120 }, 5000))
+    ]);
+    ctx.status(benchEnv.ok ? benchEnv : assetEnvs.find(x => x.ok) || benchEnv);
+    sc.textContent = '';
 
-  // 4 Quadrant backgrounds centered at (340, 115) = (RS-Ratio 100, RS-Mom 100)
-  const quads = [
-    { x: 340, y: 10, w: 320, h: 105, fill: 'rgba(0,210,106,0.08)', lbl: 'LEADING (RS>100, MOM>100)', col: '#00d26a', tx: 650, ty: 24, anchor: 'end' },
-    { x: 340, y: 115, w: 320, h: 105, fill: 'rgba(255,176,0,0.08)', lbl: 'WEAKENING (RS>100, MOM<100)', col: '#ffb000', tx: 650, ty: 212, anchor: 'end' },
-    { x: 20, y: 115, w: 320, h: 105, fill: 'rgba(255,59,48,0.08)', lbl: 'LAGGING (RS<100, MOM<100)', col: '#ff3b30', tx: 28, ty: 212, anchor: 'start' },
-    { x: 20, y: 10, w: 320, h: 105, fill: 'rgba(0,229,255,0.08)', lbl: 'IMPROVING (RS<100, MOM>100)', col: '#00e5ff', tx: 28, ty: 24, anchor: 'start' }
-  ];
-  quads.forEach(q => {
-    const r = document.createElementNS(ns, 'rect');
-    r.setAttribute('x', String(q.x)); r.setAttribute('y', String(q.y));
-    r.setAttribute('width', String(q.w)); r.setAttribute('height', String(q.h));
-    r.setAttribute('fill', q.fill); r.setAttribute('stroke', '#1e1e1e');
-    svg.append(r);
-    const t = document.createElementNS(ns, 'text');
-    t.setAttribute('x', String(q.tx)); t.setAttribute('y', String(q.ty));
-    t.setAttribute('text-anchor', q.anchor); t.setAttribute('fill', q.col); t.setAttribute('font-size', '10'); t.setAttribute('font-weight', 'bold');
-    t.textContent = q.lbl;
-    svg.append(t);
-  });
+    const benchCandles = (benchEnv.ok && benchEnv.data && benchEnv.data.candles) || [];
+    if (benchCandles.length < 25) {
+      sc.append(h('div', { class: 'na', text: 'N/A — Benchmark (^GSPC) daily candles unavailable for RRG computation' }));
+      return;
+    }
+    const benchByDay = new Map(benchCandles.map(c => [new Date(c.t).toISOString().slice(0, 10), +c.c]));
 
-  const xOf = rs => 340 + (rs - 100) * 62;
-  const yOf = mom => 115 - (mom - 100) * 32;
+    const emaArr = (arr, p) => {
+      const k = 2 / (p + 1);
+      const out = [];
+      let prev = arr[0];
+      for (const x of arr) { prev = x * k + prev * (1 - k); out.push(prev); }
+      return out;
+    };
 
-  SECTORS.forEach(s => {
-    const quad = s.rsRatio >= 100 && s.rsMom >= 100 ? 'LEADING' : s.rsRatio >= 100 ? 'WEAKENING' : s.rsMom >= 100 ? 'IMPROVING' : 'LAGGING';
-    const col = quad === 'LEADING' ? '#00d26a' : quad === 'WEAKENING' ? '#ffb000' : quad === 'IMPROVING' ? '#00e5ff' : '#ff3b30';
-    const pts = s.trail.map(([r, m]) => `${xOf(r).toFixed(1)},${yOf(m).toFixed(1)}`).join(' ');
-    const pl = document.createElementNS(ns, 'polyline');
-    pl.setAttribute('fill', 'none'); pl.setAttribute('stroke', col); pl.setAttribute('stroke-width', '2');
-    pl.setAttribute('points', pts);
-    svg.append(pl);
-    const cx = xOf(s.rsRatio), cy = yOf(s.rsMom);
-    const dot = document.createElementNS(ns, 'circle');
-    dot.setAttribute('cx', cx.toFixed(1)); dot.setAttribute('cy', cy.toFixed(1)); dot.setAttribute('r', '4.5');
-    dot.setAttribute('fill', col);
-    svg.append(dot);
-    const tx = document.createElementNS(ns, 'text');
-    tx.setAttribute('x', (cx + 7).toFixed(1)); tx.setAttribute('y', (cy + 3).toFixed(1));
-    tx.setAttribute('fill', col); tx.setAttribute('font-size', '10'); tx.setAttribute('font-weight', 'bold');
-    tx.textContent = s.sym;
-    svg.append(tx);
-  });
+    const computed = [];
+    for (let i = 0; i < syms.length; i++) {
+      const c = (assetEnvs[i]?.ok && assetEnvs[i].data?.candles) || [];
+      const rsSeries = [];
+      let lastBench = benchCandles[benchCandles.length - 1].c;
+      for (const bar of c) {
+        const dKey = new Date(bar.t).toISOString().slice(0, 10);
+        const bp = benchByDay.get(dKey) || lastBench;
+        lastBench = bp;
+        if (bp > 0 && bar.c > 0) rsSeries.push(bar.c / bp);
+      }
+      if (rsSeries.length < 30) continue;
+      const e10 = emaArr(rsSeries, 10);
+      const e26 = emaArr(rsSeries, 26);
+      const rawRatio = rsSeries.map((_, k) => 100 * (e10[k] / (e26[k] || 1)));
+      const slRatio = rawRatio.slice(-30);
+      const mR = slRatio.reduce((a, b) => a + b, 0) / slRatio.length;
+      const sdR = Math.sqrt(slRatio.reduce((a, b) => a + (b - mR) ** 2, 0) / slRatio.length) || 0.25;
+      const rsRatioSeries = rawRatio.map(v => 100 + ((v - mR) / Math.max(0.15, sdR)) * 1.4);
 
-  sc.append(
-    svg,
-    h('table', { class: 't' },
-      h('thead', null, h('tr', null, ['Ticker', 'Asset / Sector Benchmark', 'JdK RS-Ratio', 'JdK RS-Momentum', 'RRG Quadrant', 'Rotation Vector'].map(x => h('th', { text: x })))),
-      h('tbody', null, SECTORS.map(s => {
-        const quad = s.rsRatio >= 100 && s.rsMom >= 100 ? 'LEADING' : s.rsRatio >= 100 ? 'WEAKENING' : s.rsMom >= 100 ? 'IMPROVING' : 'LAGGING';
-        const cls = quad === 'LEADING' ? 'up sym' : quad === 'WEAKENING' ? 'am sym' : quad === 'IMPROVING' ? 'lb sym' : 'dn sym';
-        return h('tr', { class: 'row', onclick: () => ctx.setSymbol(s.sym) },
-          h('td', { class: 'l sym am', text: s.sym }),
-          h('td', { class: 'l', text: s.name }),
-          h('td', { class: s.rsRatio >= 100 ? 'up sym' : 'dn sym', text: s.rsRatio.toFixed(2) }),
-          h('td', { class: s.rsMom >= 100 ? 'up sym' : 'dn sym', text: s.rsMom.toFixed(2) }),
-          h('td', { class: cls, text: quad }),
-          h('td', { class: 'l mu', text: quad === 'LEADING' ? '↗ Outperforming & Accelerating' : quad === 'IMPROVING' ? '⤴ Recovering Into Leadership' : quad === 'WEAKENING' ? '↘ Losing Relative Velocity' : '↙ Underperforming Benchmark' })
-        );
-      }))
-    )
-  );
-  ctx.status({ source: 'jdk-rrg-engine', ts: Date.now(), mode: 'LIVE' });
+      const momRaw = rsRatioSeries.map((v, k) => k >= 5 ? (v - rsRatioSeries[k - 5]) : 0);
+      const slMom = momRaw.slice(-30);
+      const mM = slMom.reduce((a, b) => a + b, 0) / slMom.length;
+      const sdM = Math.sqrt(slMom.reduce((a, b) => a + (b - mM) ** 2, 0) / slMom.length) || 0.25;
+      const rsMomSeries = momRaw.map(v => 100 + ((v - mM) / Math.max(0.15, sdM)) * 1.4);
+
+      const len = rsRatioSeries.length;
+      const idxs = [Math.max(0, len - 11), Math.max(0, len - 6), len - 1];
+      const trail = idxs.map(ix => [+rsRatioSeries[ix].toFixed(2), +rsMomSeries[ix].toFixed(2)]);
+      const rsRatio = trail[trail.length - 1][0];
+      const rsMom = trail[trail.length - 1][1];
+      computed.push({ sym: syms[i].sym, name: syms[i].name, rsRatio, rsMom, trail });
+    }
+
+    if (!computed.length) {
+      sc.append(h('div', { class: 'na', text: 'N/A — Insufficient overlapping daily klines across universe' }));
+      return;
+    }
+
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 680 230');
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.style.cssText = 'width:100%;height:230px;display:block;background:#020408;border-bottom:1px solid var(--border)';
+
+    const quads = [
+      { x: 340, y: 10, w: 320, h: 105, fill: 'rgba(0,210,106,0.08)', lbl: 'LEADING (RS>100, MOM>100)', col: '#00d26a', tx: 650, ty: 24, anchor: 'end' },
+      { x: 340, y: 115, w: 320, h: 105, fill: 'rgba(255,176,0,0.08)', lbl: 'WEAKENING (RS>100, MOM<100)', col: '#ffb000', tx: 650, ty: 212, anchor: 'end' },
+      { x: 20, y: 115, w: 320, h: 105, fill: 'rgba(255,59,48,0.08)', lbl: 'LAGGING (RS<100, MOM<100)', col: '#ff3b30', tx: 28, ty: 212, anchor: 'start' },
+      { x: 20, y: 10, w: 320, h: 105, fill: 'rgba(0,229,255,0.08)', lbl: 'IMPROVING (RS<100, MOM>100)', col: '#00e5ff', tx: 28, ty: 24, anchor: 'start' }
+    ];
+    quads.forEach(q => {
+      const r = document.createElementNS(ns, 'rect');
+      r.setAttribute('x', String(q.x)); r.setAttribute('y', String(q.y));
+      r.setAttribute('width', String(q.w)); r.setAttribute('height', String(q.h));
+      r.setAttribute('fill', q.fill); r.setAttribute('stroke', '#1e1e1e');
+      svg.append(r);
+      const t = document.createElementNS(ns, 'text');
+      t.setAttribute('x', String(q.tx)); t.setAttribute('y', String(q.ty));
+      t.setAttribute('text-anchor', q.anchor); t.setAttribute('fill', q.col); t.setAttribute('font-size', '10'); t.setAttribute('font-weight', 'bold');
+      t.textContent = q.lbl;
+      svg.append(t);
+    });
+
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const xOf = rs => clamp(340 + (rs - 100) * 58, 30, 650);
+    const yOf = mom => clamp(115 - (mom - 100) * 24, 18, 212);
+
+    computed.forEach(s => {
+      const quad = s.rsRatio >= 100 && s.rsMom >= 100 ? 'LEADING' : s.rsRatio >= 100 ? 'WEAKENING' : s.rsMom >= 100 ? 'IMPROVING' : 'LAGGING';
+      const col = quad === 'LEADING' ? '#00d26a' : quad === 'WEAKENING' ? '#ffb000' : quad === 'IMPROVING' ? '#00e5ff' : '#ff3b30';
+      const pts = s.trail.map(([r, m]) => `${xOf(r).toFixed(1)},${yOf(m).toFixed(1)}`).join(' ');
+      const pl = document.createElementNS(ns, 'polyline');
+      pl.setAttribute('fill', 'none'); pl.setAttribute('stroke', col); pl.setAttribute('stroke-width', '2');
+      pl.setAttribute('points', pts);
+      svg.append(pl);
+      const cx = xOf(s.rsRatio), cy = yOf(s.rsMom);
+      const dot = document.createElementNS(ns, 'circle');
+      dot.setAttribute('cx', cx.toFixed(1)); dot.setAttribute('cy', cy.toFixed(1)); dot.setAttribute('r', '4.5');
+      dot.setAttribute('fill', col);
+      svg.append(dot);
+      const tx = document.createElementNS(ns, 'text');
+      tx.setAttribute('x', (cx + 7).toFixed(1)); tx.setAttribute('y', (cy + 3).toFixed(1));
+      tx.setAttribute('fill', col); tx.setAttribute('font-size', '10'); tx.setAttribute('font-weight', 'bold');
+      tx.textContent = s.sym;
+      svg.append(tx);
+    });
+
+    sc.append(
+      svg,
+      h('table', { class: 't' },
+        h('thead', null, h('tr', null, ['Ticker', 'Asset / Sector Benchmark', 'JdK RS-Ratio', 'JdK RS-Momentum', 'RRG Quadrant', 'Live Rotation Vector'].map(x => h('th', { text: x })))),
+        h('tbody', null, computed.map(s => {
+          const quad = s.rsRatio >= 100 && s.rsMom >= 100 ? 'LEADING' : s.rsRatio >= 100 ? 'WEAKENING' : s.rsMom >= 100 ? 'IMPROVING' : 'LAGGING';
+          const cls = quad === 'LEADING' ? 'up sym' : quad === 'WEAKENING' ? 'am sym' : quad === 'IMPROVING' ? 'lb sym' : 'dn sym';
+          return h('tr', { class: 'row', onclick: () => ctx.setSymbol(s.sym) },
+            h('td', { class: 'l sym am', text: s.sym }),
+            h('td', { class: 'l', text: s.name }),
+            h('td', { class: s.rsRatio >= 100 ? 'up sym' : 'dn sym', text: s.rsRatio.toFixed(2) }),
+            h('td', { class: s.rsMom >= 100 ? 'up sym' : 'dn sym', text: s.rsMom.toFixed(2) }),
+            h('td', { class: cls, text: quad }),
+            h('td', { class: 'l mu', text: quad === 'LEADING' ? '↗ Outperforming & Accelerating vs SPX' : quad === 'IMPROVING' ? '⤴ Recovering Into Leadership' : quad === 'WEAKENING' ? '↘ Losing Relative Velocity' : '↙ Underperforming S&P 500' })
+          );
+        }))
+      )
+    );
+  }
+  load();
 }
 
 export function mountSEAG(body, ctx) {
   body.classList.add('fill');
-  const tb = h('div', { class: 'tb' }, h('span', { class: 'lbl', text: `SEAG SEASONALITY & HISTORICAL MONTHLY RETURN HEATMAP MATRIX [${ctx.symbol}]` }));
+  const tb = h('div', { class: 'tb' }, h('span', { class: 'lbl', text: `SEAG HISTORICAL MONTHLY RETURN SEASONALITY MATRIX [${ctx.symbol}]` }));
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const YEARS = [2026, 2025, 2024, 2023, 2022, 2021, 2020];
-  const seed = (ctx.symbol || 'BTC').split('').reduce((a, c) => a + c.charCodeAt(0), 0);
 
-  const matrix = YEARS.map((yr, yIdx) => {
-    const vals = MONTHS.map((m, mIdx) => {
-      if (yr === 2026 && mIdx > 10) return null;
-      const base = Math.sin((seed + yr * 7 + mIdx * 13) * 0.65) * 8.5 + (mIdx === 9 || mIdx === 10 || mIdx === 0 ? 4.2 : mIdx === 8 ? -2.8 : 1.1);
-      return +base.toFixed(2);
+  async function load() {
+    sc.textContent = '';
+    sc.append(h('div', { class: 'na', text: `Fetching multi-year monthly OHLCV history for ${ctx.symbol}...` }));
+    const env = await get('kline', { symbol: ctx.symbol, interval: '1mo', limit: 120 }, 6000);
+    ctx.status(env);
+    sc.textContent = '';
+
+    const candles = (env.ok && env.data && env.data.candles) || [];
+    if (candles.length < 3) {
+      sc.append(h('div', { class: 'na', text: `N/A — Monthly OHLCV history unavailable for ${ctx.symbol}` }));
+      return;
+    }
+
+    const byYear = new Map();
+    for (let i = 0; i < candles.length; i++) {
+      const b = candles[i];
+      const dt = new Date(b.t);
+      const yr = dt.getUTCFullYear();
+      const mo = dt.getUTCMonth();
+      const prevC = i > 0 ? +candles[i - 1].c : +b.o;
+      const retPct = prevC > 0 ? ((+b.c - prevC) / prevC) * 100 : null;
+      if (!byYear.has(yr)) byYear.set(yr, Array(12).fill(null));
+      byYear.get(yr)[mo] = retPct != null ? +retPct.toFixed(2) : null;
+    }
+
+    const years = [...byYear.keys()].sort((a, b) => b - a).slice(0, 8);
+    const matrix = years.map(yr => {
+      const vals = byYear.get(yr);
+      const valid = vals.filter(v => v != null);
+      const ytd = valid.reduce((acc, r) => acc * (1 + r / 100), 1) - 1;
+      return { yr, vals, ytd: +(ytd * 100).toFixed(2) };
     });
-    const valid = vals.filter(v => v != null);
-    const ytd = valid.reduce((acc, r) => acc * (1 + r / 100), 1) - 1;
-    return { yr, vals, ytd: +(ytd * 100).toFixed(2) };
-  });
 
-  const avgByMonth = MONTHS.map((_, mIdx) => {
-    const col = matrix.map(r => r.vals[mIdx]).filter(v => v != null);
-    const mean = col.reduce((a, b) => a + b, 0) / Math.max(1, col.length);
-    const wins = col.filter(v => v > 0).length;
-    return { mean: +mean.toFixed(2), winPct: Math.round((wins / Math.max(1, col.length)) * 100) };
-  });
+    const avgByMonth = MONTHS.map((_, mIdx) => {
+      const col = matrix.map(r => r.vals[mIdx]).filter(v => v != null);
+      if (!col.length) return { mean: null, winPct: null };
+      const mean = col.reduce((a, b) => a + b, 0) / col.length;
+      const wins = col.filter(v => v > 0).length;
+      return { mean: +mean.toFixed(2), winPct: Math.round((wins / col.length) * 100) };
+    });
 
-  sc.append(
-    h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'MONTHLY SEASONALITY HEATMAP (JAN–DEC) & MULTI-YEAR HIT RATE' })),
-    h('table', { class: 't' },
-      h('thead', null, h('tr', null, ['Year', ...MONTHS, 'Full Year'].map(x => h('th', { text: x })))),
-      h('tbody', null, [
-        ...matrix.map(row => h('tr', { class: 'row' },
-          h('td', { class: 'l sym am', text: String(row.yr) }),
-          ...row.vals.map(v => {
-            if (v == null) return h('td', { class: 'mu', text: '-' });
-            const bg = v >= 0 ? `rgba(0,210,106,${Math.min(0.45, Math.abs(v) / 22)})` : `rgba(255,59,48,${Math.min(0.45, Math.abs(v) / 22)})`;
-            return h('td', { class: v >= 0 ? 'up sym' : 'dn sym', style: `background:${bg}`, text: (v >= 0 ? '+' : '') + v.toFixed(1) + '%' });
-          }),
-          h('td', { class: (row.ytd >= 0 ? 'up' : 'dn') + ' sym', text: (row.ytd >= 0 ? '+' : '') + row.ytd.toFixed(1) + '%' })
-        )),
-        h('tr', { style: 'border-top:2px solid #ffb000;background:#0b0b0b' },
-          h('td', { class: 'l sym am', text: 'MEAN %' }),
-          ...avgByMonth.map(a => h('td', { class: (a.mean >= 0 ? 'up' : 'dn') + ' sym', text: (a.mean >= 0 ? '+' : '') + a.mean.toFixed(2) + '%' })),
-          h('td', { class: 'am sym', text: 'AVG' })
-        ),
-        h('tr', { style: 'background:#070707' },
-          h('td', { class: 'l sym lb', text: 'WIN RATE' }),
-          ...avgByMonth.map(a => h('td', { class: a.winPct >= 60 ? 'up sym' : 'mu', text: a.winPct + '%' })),
-          h('td', { class: 'lb sym', text: 'HIT %' })
-        )
-      ])
-    )
-  );
-  ctx.status({ source: 'seasonality-matrix', ts: Date.now(), mode: 'LIVE' });
+    sc.append(
+      h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: `ACTUAL EXCHANGE MONTHLY RETURNS (JAN–DEC • ${candles.length} REAL MONTHLY BARS)` })),
+      h('table', { class: 't' },
+        h('thead', null, h('tr', null, ['Year', ...MONTHS, 'Compounded Yr'].map(x => h('th', { text: x })))),
+        h('tbody', null, [
+          ...matrix.map(row => h('tr', { class: 'row' },
+            h('td', { class: 'l sym am', text: String(row.yr) }),
+            ...row.vals.map(v => {
+              if (v == null) return h('td', { class: 'mu', text: '-' });
+              const bg = v >= 0 ? `rgba(0,210,106,${Math.min(0.45, Math.abs(v) / 22)})` : `rgba(255,59,48,${Math.min(0.45, Math.abs(v) / 22)})`;
+              return h('td', { class: v >= 0 ? 'up sym' : 'dn sym', style: `background:${bg}`, text: (v >= 0 ? '+' : '') + v.toFixed(1) + '%' });
+            }),
+            h('td', { class: (row.ytd >= 0 ? 'up' : 'dn') + ' sym', text: (row.ytd >= 0 ? '+' : '') + row.ytd.toFixed(1) + '%' })
+          )),
+          h('tr', { style: 'border-top:2px solid #ffb000;background:#0b0b0b' },
+            h('td', { class: 'l sym am', text: 'MEAN %' }),
+            ...avgByMonth.map(a => a.mean == null ? h('td', { class: 'mu', text: '-' }) : h('td', { class: (a.mean >= 0 ? 'up' : 'dn') + ' sym', text: (a.mean >= 0 ? '+' : '') + a.mean.toFixed(2) + '%' })),
+            h('td', { class: 'am sym', text: 'AVG' })
+          ),
+          h('tr', { style: 'background:#070707' },
+            h('td', { class: 'l sym lb', text: 'WIN RATE' }),
+            ...avgByMonth.map(a => a.winPct == null ? h('td', { class: 'mu', text: '-' }) : h('td', { class: a.winPct >= 60 ? 'up sym' : 'mu', text: a.winPct + '%' })),
+            h('td', { class: 'lb sym', text: 'HIT %' })
+          )
+        ])
+      )
+    );
+  }
+  load();
 }
 
 export function mountDOTS(body, ctx) {
   body.classList.add('fill');
   const tb = h('div', { class: 'tb' },
-    h('span', { class: 'lbl', text: 'DOTS / FED — FOMC SUMMARY OF ECONOMIC PROJECTIONS DOT PLOT & GLOBAL CENTRAL BANK MATRIX' }),
+    h('span', { class: 'lbl', text: 'DOTS / FED — FOMC SEP REFERENCE DOT PLOT & LIVE FRED US POLICY TELEMETRY' }),
     h('button', { text: 'WIRP PROB <GO>', onclick: () => ctx.run('WIRP') }),
     h('button', { text: 'YCRV CURVE <GO>', onclick: () => ctx.run('YCRV') })
   );
@@ -1423,211 +1537,354 @@ export function mountDOTS(body, ctx) {
   body.append(tb, sc);
 
   const DOT_YEARS = [
-    { yr: '2026 PROJ', median: 3.875, dots: [4.375, 4.125, 4.125, 3.875, 3.875, 3.875, 3.875, 3.875, 3.625, 3.625, 3.625, 3.375] },
-    { yr: '2027 PROJ', median: 3.375, dots: [3.875, 3.625, 3.625, 3.375, 3.375, 3.375, 3.375, 3.125, 3.125, 3.125, 2.875, 2.875] },
-    { yr: '2028 PROJ', median: 3.125, dots: [3.625, 3.375, 3.375, 3.125, 3.125, 3.125, 3.125, 2.875, 2.875, 2.875, 2.625] },
+    { yr: '2026 SEP', median: 3.875, dots: [4.375, 4.125, 4.125, 3.875, 3.875, 3.875, 3.875, 3.875, 3.625, 3.625, 3.625, 3.375] },
+    { yr: '2027 SEP', median: 3.375, dots: [3.875, 3.625, 3.625, 3.375, 3.375, 3.375, 3.375, 3.125, 3.125, 3.125, 2.875, 2.875] },
+    { yr: '2028 SEP', median: 3.125, dots: [3.625, 3.375, 3.375, 3.125, 3.125, 3.125, 3.125, 2.875, 2.875, 2.875, 2.625] },
     { yr: 'LONGER RUN', median: 2.875, dots: [3.375, 3.125, 3.000, 2.875, 2.875, 2.875, 2.875, 2.750, 2.625, 2.500] }
   ];
 
-  const ns = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('viewBox', '0 0 680 155');
-  svg.setAttribute('preserveAspectRatio', 'none');
-  svg.style.cssText = 'width:100%;height:155px;display:block;background:#020408;border-bottom:1px solid var(--border)';
+  async function load() {
+    const [effrEnv, dgs2Env, dgs10Env, t10yieEnv] = await Promise.all([
+      get('macro', { series: 'DFF' }, 4000),
+      get('macro', { series: 'DGS2' }, 4000),
+      get('macro', { series: 'DGS10' }, 4000),
+      get('macro', { series: 'T10YIE' }, 4000)
+    ]);
+    ctx.status(effrEnv.ok ? effrEnv : dgs10Env);
+    sc.textContent = '';
 
-  const yOf = r => 134 - ((r - 2.25) / 2.5) * 112;
-  [2.5, 3.0, 3.5, 4.0, 4.5].forEach(lvl => {
-    const y = yOf(lvl);
-    const ln = document.createElementNS(ns, 'line');
-    ln.setAttribute('x1', '45'); ln.setAttribute('x2', '650'); ln.setAttribute('y1', y.toFixed(1)); ln.setAttribute('y2', y.toFixed(1));
-    ln.setAttribute('stroke', '#191919');
-    svg.append(ln);
-    const tx = document.createElementNS(ns, 'text');
-    tx.setAttribute('x', '40'); tx.setAttribute('y', (y + 3).toFixed(1));
-    tx.setAttribute('text-anchor', 'end'); tx.setAttribute('fill', '#888'); tx.setAttribute('font-size', '9.5');
-    tx.textContent = lvl.toFixed(2) + '%';
-    svg.append(tx);
-  });
+    const lastVal = (env) => {
+      const obs = env.ok && env.data && Array.isArray(env.data.observations) ? env.data.observations : [];
+      return obs.length ? Number(obs[obs.length - 1].v) : null;
+    };
+    const effr = lastVal(effrEnv);
+    const dgs2 = lastVal(dgs2Env);
+    const dgs10 = lastVal(dgs10Env);
+    const breakeven = lastVal(t10yieEnv);
+    const spr2_effrBps = (effr != null && dgs2 != null) ? Math.round((dgs2 - effr) * 100) : null;
 
-  const medPts = [];
-  DOT_YEARS.forEach((col, cIdx) => {
-    const cx = 135 + cIdx * 150;
-    medPts.push(`${cx},${yOf(col.median).toFixed(1)}`);
-    const counts = {};
-    col.dots.forEach(d => { counts[d] = (counts[d] || 0) + 1; });
-    Object.entries(counts).forEach(([rateStr, cnt]) => {
-      const rate = parseFloat(rateStr);
-      for (let i = 0; i < cnt; i++) {
-        const offset = (i - (cnt - 1) / 2) * 11;
-        const c = document.createElementNS(ns, 'circle');
-        c.setAttribute('cx', (cx + offset).toFixed(1));
-        c.setAttribute('cy', yOf(rate).toFixed(1));
-        c.setAttribute('r', '4');
-        c.setAttribute('fill', Math.abs(rate - col.median) < 0.05 ? '#ffb000' : '#00e5ff');
-        svg.append(c);
-      }
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 680 155');
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.style.cssText = 'width:100%;height:155px;display:block;background:#020408;border-bottom:1px solid var(--border)';
+
+    const yOf = r => 134 - ((r - 2.25) / 2.5) * 112;
+    [2.5, 3.0, 3.5, 4.0, 4.5].forEach(lvl => {
+      const y = yOf(lvl);
+      const ln = document.createElementNS(ns, 'line');
+      ln.setAttribute('x1', '45'); ln.setAttribute('x2', '650'); ln.setAttribute('y1', y.toFixed(1)); ln.setAttribute('y2', y.toFixed(1));
+      ln.setAttribute('stroke', '#191919');
+      svg.append(ln);
+      const tx = document.createElementNS(ns, 'text');
+      tx.setAttribute('x', '40'); tx.setAttribute('y', (y + 3).toFixed(1));
+      tx.setAttribute('text-anchor', 'end'); tx.setAttribute('fill', '#888'); tx.setAttribute('font-size', '9.5');
+      tx.textContent = lvl.toFixed(2) + '%';
+      svg.append(tx);
     });
-    const lbl = document.createElementNS(ns, 'text');
-    lbl.setAttribute('x', String(cx)); lbl.setAttribute('y', '149');
-    lbl.setAttribute('text-anchor', 'middle'); lbl.setAttribute('fill', '#ffb000'); lbl.setAttribute('font-size', '10'); lbl.setAttribute('font-weight', 'bold');
-    lbl.textContent = `${col.yr} (Med: ${col.median.toFixed(2)}%)`;
-    svg.append(lbl);
-  });
 
-  const medLine = document.createElementNS(ns, 'polyline');
-  medLine.setAttribute('fill', 'none'); medLine.setAttribute('stroke', '#ffb000'); medLine.setAttribute('stroke-width', '2'); medLine.setAttribute('stroke-dasharray', '4,3');
-  medLine.setAttribute('points', medPts.join(' '));
-  svg.append(medLine);
+    const medPts = [];
+    DOT_YEARS.forEach((col, cIdx) => {
+      const cx = 135 + cIdx * 150;
+      medPts.push(`${cx},${yOf(col.median).toFixed(1)}`);
+      const counts = {};
+      col.dots.forEach(d => { counts[d] = (counts[d] || 0) + 1; });
+      Object.entries(counts).forEach(([rateStr, cnt]) => {
+        const rate = parseFloat(rateStr);
+        for (let i = 0; i < cnt; i++) {
+          const offset = (i - (cnt - 1) / 2) * 11;
+          const c = document.createElementNS(ns, 'circle');
+          c.setAttribute('cx', (cx + offset).toFixed(1));
+          c.setAttribute('cy', yOf(rate).toFixed(1));
+          c.setAttribute('r', '4');
+          c.setAttribute('fill', Math.abs(rate - col.median) < 0.05 ? '#ffb000' : '#00e5ff');
+          svg.append(c);
+        }
+      });
+      const lbl = document.createElementNS(ns, 'text');
+      lbl.setAttribute('x', String(cx)); lbl.setAttribute('y', '149');
+      lbl.setAttribute('text-anchor', 'middle'); lbl.setAttribute('fill', '#ffb000'); lbl.setAttribute('font-size', '10'); lbl.setAttribute('font-weight', 'bold');
+      lbl.textContent = `${col.yr} (Med: ${col.median.toFixed(2)}%)`;
+      svg.append(lbl);
+    });
 
-  const BANKS = [
-    ['Federal Reserve (FOMC)', 'USD', '4.50%', '3.88%', '-50 bps (Easing)', 'Neutral-Dovish', '2.4% CPI'],
-    ['European Central Bank (ECB)', 'EUR', '3.25%', '2.50%', '-75 bps (Easing)', 'Dovish', '1.9% HICP'],
-    ['Bank of Japan (BoJ)', 'JPY', '0.25%', '0.50%', '+25 bps (Hiking)', 'Hawkish Normalization', '2.6% Core CPI'],
-    ['Bank of England (BoE)', 'GBP', '4.75%', '4.00%', '-75 bps (Easing)', 'Gradual Easing', '2.3% CPI'],
-    ['Bank Indonesia (BI)', 'IDR', '6.00%', '5.50%', '-50 bps (Easing)', 'FX-Stability Guided', '1.8% CPI'],
-    ['People\'s Bank of China (PBoC)', 'CNY', '3.10%', '2.85%', '-25 bps (Stimulus)', 'Accommodative', '0.4% CPI']
-  ];
+    const medLine = document.createElementNS(ns, 'polyline');
+    medLine.setAttribute('fill', 'none'); medLine.setAttribute('stroke', '#ffb000'); medLine.setAttribute('stroke-width', '2'); medLine.setAttribute('stroke-dasharray', '4,3');
+    medLine.setAttribute('points', medPts.join(' '));
+    svg.append(medLine);
 
-  sc.append(
-    h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'FOMC PARTICIPANT POLICY RATE ASSESSMENTS (19 FOMC MEMBERS DOT PLOT DISTRIBUTION)' })),
-    svg,
-    h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'GLOBAL CENTRAL BANK MONETARY POLICY & IMPLIED 12M OIS PATH MATRIX' })),
-    h('table', { class: 't' },
-      h('thead', null, h('tr', null, ['Central Bank', 'CCY', 'Current Rate', '1Y Implied Rate', '12M Priced Move', 'Policy Stance', 'Latest Inflation'].map(x => h('th', { text: x })))),
-      h('tbody', null, BANKS.map(([cb, ccy, cur, imp, mv, st, inf]) => h('tr', { class: 'row' },
-        h('td', { class: 'l sym am', text: cb }),
-        h('td', { class: 'lb sym', text: ccy }),
-        h('td', { class: 'am sym', text: cur }),
-        h('td', { class: 'up sym', text: imp }),
-        h('td', { class: mv.startsWith('-') ? 'up sym' : 'dn sym', text: mv }),
-        h('td', { class: 'l lb', text: st }),
-        h('td', { class: 'mu', text: inf })
-      )))
-    )
-  );
-  ctx.status({ source: 'fomc-sep-dots', ts: Date.now(), mode: 'LIVE' });
+    const LIVE_ROWS = [
+      ['Federal Reserve (FOMC / FRED DFF)', 'USD', effr != null ? effr.toFixed(2) + '%' : 'N/A', dgs2 != null ? dgs2.toFixed(2) + '% (2Y UST)' : 'N/A', spr2_effrBps != null ? `${spr2_effrBps >= 0 ? '+' : ''}${spr2_effrBps} bps vs EFFR` : 'N/A', effr != null && dgs2 != null && dgs2 < effr ? 'Easing Priced by 2Y' : 'Tight / Flat Curve', breakeven != null ? `${breakeven.toFixed(2)}% (10Y BE)` : 'N/A'],
+      ['US 10Y Nominal vs Real Yield', 'USD', dgs10 != null ? dgs10.toFixed(2) + '%' : 'N/A', '-', (dgs10 != null && breakeven != null) ? `Real: ${(dgs10 - breakeven).toFixed(2)}%` : '-', 'FRED Treasury Series', breakeven != null ? `${breakeven.toFixed(2)}% Breakeven` : 'N/A'],
+      ['ECB / BoJ / BoE / BI / PBoC OIS', 'G10/EM', 'N/A', 'N/A', 'N/A', 'Requires Foreign OIS Feed', 'See FRED / Macro Tab']
+    ];
+
+    sc.append(
+      h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'FOMC SUMMARY OF ECONOMIC PROJECTIONS (PUBLISHED SEP REFERENCE DOT PLOT)' })),
+      svg,
+      h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'LIVE US FEDERAL RESERVE & TREASURY IMPLIED POLICY MATRIX (FRED REAL DATA)' })),
+      h('table', { class: 't' },
+        h('thead', null, h('tr', null, ['Central Bank / Benchmark', 'CCY', 'Live Policy Rate', '2Y Market Benchmark', 'Implied Spread', 'Market Pricing Signal', '10Y Inflation BE'].map(x => h('th', { text: x })))),
+        h('tbody', null, LIVE_ROWS.map(([cb, ccy, cur, imp, mv, st, inf]) => h('tr', { class: 'row' },
+          h('td', { class: 'l sym am', text: cb }),
+          h('td', { class: 'lb sym', text: ccy }),
+          h('td', { class: 'am sym', text: cur }),
+          h('td', { class: 'up sym', text: imp }),
+          h('td', { class: String(mv).startsWith('-') ? 'up sym' : 'lb sym', text: mv }),
+          h('td', { class: 'l lb', text: st }),
+          h('td', { class: 'mu', text: inf })
+        )))
+      )
+    );
+  }
+  load();
 }
 
 export function mountFSTA(body, ctx) {
   body.classList.add('fill');
   const tb = h('div', { class: 'tb' },
-    h('span', { class: 'lbl', text: `FSTA / TCA — BARRA FAMA-FRENCH FACTOR ATTRIBUTION & TRANSACTION COST ANALYSIS [${ctx.symbol}]` })
+    h('span', { class: 'lbl', text: `FSTA / TCA — LIVE OLS MULTI-FACTOR STYLE REGRESSION & ORDERBOOK LIQUIDITY AUDIT [${ctx.symbol}]` })
   );
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
-  const FACTORS = [
-    ['Market Beta (MKT-RF)', +1.18, +4.25, +5.02, 'High beta sensitivity to global risk-on liquidity'],
-    ['Momentum (UMD 12M-1M)', +0.84, +3.10, +2.60, 'Strong positive cross-sectional trend persistence'],
-    ['Size Factor (SMB)', -0.32, +1.15, -0.37, 'Mega-cap institutional quality tilt'],
-    ['Value vs Growth (HML)', -0.65, -1.80, +1.17, 'Growth / high-ROIC multiple expansion exposure'],
-    ['Quality / Profitability (RMW)', +0.72, +2.45, +1.76, 'Superior operating margin & cash conversion'],
-    ['Low Volatility / Leverage (BAB)', -0.28, +0.90, -0.25, 'Dynamic volatility expansion regime'],
-    ['Idiosyncratic Alpha (ε)', +1.00, +3.85, +3.85, 'Pure security-specific alpha net of 6 factors']
-  ];
+  async function load() {
+    sc.textContent = '';
+    sc.append(h('div', { class: 'na', text: `Running multi-factor OLS regression & L2 liquidity check for ${ctx.symbol}...` }));
+    const [aEnv, mktEnv, qqqEnv, rutEnv, tltEnv, qEnv, dEnv] = await Promise.all([
+      get('kline', { symbol: ctx.symbol, interval: '1d', limit: 100 }, 5000),
+      get('kline', { symbol: '^GSPC', interval: '1d', limit: 100 }, 5000),
+      get('kline', { symbol: '^IXIC', interval: '1d', limit: 100 }, 5000),
+      get('kline', { symbol: '^RUT', interval: '1d', limit: 100 }, 5000),
+      get('kline', { symbol: 'TLT', interval: '1d', limit: 100 }, 5000),
+      get('quote', { symbols: ctx.symbol }, 3000),
+      get('depth', { symbol: ctx.symbol, limit: 20 }, 3000)
+    ]);
+    ctx.status(aEnv.ok ? aEnv : mktEnv);
+    sc.textContent = '';
 
-  const TCA_BENCHMARKS = [
-    ['Arrival Mid-Price Benchmark', '0.85 bps', '+1.42 bps', '98.4%', 'Sub-second L2 queue placement'],
-    ['Interval VWAP (Volume-Weighted)', '0.42 bps', '+1.95 bps', '99.1%', 'Outperformed market VWAP by 1.95 bps'],
-    ['Interval TWAP (Time-Weighted)', '0.60 bps', '+1.68 bps', '98.8%', 'Zero market-impact footprint'],
-    ['Implementation Shortfall (IS)', '1.12 bps', '+1.20 bps', '97.9%', 'Total slippage + fee well inside 3 bps cap']
-  ];
+    const toRetMap = (env) => {
+      const c = (env.ok && env.data && env.data.candles) || [];
+      const m = new Map();
+      for (let i = 1; i < c.length; i++) {
+        if (c[i - 1].c > 0 && c[i].c > 0) {
+          m.set(new Date(c[i].t).toISOString().slice(0, 10), (c[i].c - c[i - 1].c) / c[i - 1].c);
+        }
+      }
+      return m;
+    };
 
-  sc.append(
-    h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: '1) BARRA / FAMA-FRENCH 6-FACTOR STYLE EXPOSURES & RETURN ATTRIBUTION (BPS)' })),
-    h('table', { class: 't' },
-      h('thead', null, h('tr', null, ['Style Factor', 'Factor Loading (β)', 'Factor Return %', 'Active Contrib %', 'Visual Loading', 'Institutional Interpretation'].map(x => h('th', { text: x })))),
-      h('tbody', null, FACTORS.map(([f, b, r, c, desc]) => h('tr', { class: 'row' },
-        h('td', { class: 'l sym am', text: f }),
-        h('td', { class: dirCls(b) + ' sym', text: (b >= 0 ? '+' : '') + b.toFixed(2) }),
-        h('td', { class: dirCls(r), text: (r >= 0 ? '+' : '') + r.toFixed(2) + '%' }),
-        h('td', { class: dirCls(c) + ' sym', text: (c >= 0 ? '+' : '') + c.toFixed(2) + '%' }),
-        h('td', { style: 'width:110px' },
-          h('div', { style: 'width:100px;height:8px;background:#151515;border:1px solid #333' },
-            h('div', { style: `width:${Math.min(100, Math.abs(b) * 65)}%;height:100%;background:${b >= 0 ? '#00d26a' : '#ff3b30'}` })
-          )
-        ),
-        h('td', { class: 'l mu', text: desc })
-      )))
-    ),
-    h('div', { class: 'tb', style: 'background:#070707;margin-top:6px' }, h('span', { class: 'lbl', text: '2) TCA — INSTITUTIONAL TRANSACTION COST ANALYSIS & EXECUTION SHORTFALL AUDIT' })),
-    h('table', { class: 't' },
-      h('thead', null, h('tr', null, ['Execution Benchmark', 'Realized Slippage', 'Alpha vs Benchmark', 'Fill Quality', 'Execution Microstructure Audit'].map(x => h('th', { text: x })))),
-      h('tbody', null, TCA_BENCHMARKS.map(([bm, sl, al, fq, note]) => h('tr', { class: 'row' },
-        h('td', { class: 'l sym lb', text: bm }),
-        h('td', { class: 'am sym', text: sl }),
-        h('td', { class: 'up sym', text: al }),
-        h('td', { class: 'up sym', text: fq }),
-        h('td', { class: 'l mu', text: note })
-      )))
-    )
-  );
-  ctx.status({ source: 'barra-fsta-tca', ts: Date.now(), mode: 'LIVE' });
+    const rA = toRetMap(aEnv), rM = toRetMap(mktEnv), rQ = toRetMap(qqqEnv), rR = toRetMap(rutEnv), rT = toRetMap(tltEnv);
+    const dates = [...rA.keys()].filter(d => rM.has(d));
+    const singleBeta = (yArr, xArr) => {
+      const n = Math.min(yArr.length, xArr.length);
+      if (n < 10) return { beta: 0, factorRetAnn: 0, corr: 0 };
+      const mx = xArr.reduce((a, b) => a + b, 0) / n;
+      const my = yArr.reduce((a, b) => a + b, 0) / n;
+      let cov = 0, vx = 0, vy = 0;
+      for (let i = 0; i < n; i++) {
+        const dx = xArr[i] - mx, dy = yArr[i] - my;
+        cov += dx * dy; vx += dx * dx; vy += dy * dy;
+      }
+      return {
+        beta: vx > 0 ? cov / vx : 0,
+        factorRetAnn: mx * 252 * 100,
+        corr: (vx > 0 && vy > 0) ? cov / Math.sqrt(vx * vy) : 0
+      };
+    };
+
+    const y = dates.map(d => rA.get(d));
+    const xMkt = dates.map(d => rM.get(d));
+    const xTech = dates.filter(d => rQ.has(d)).map(d => rQ.get(d) - rM.get(d));
+    const yTech = dates.filter(d => rQ.has(d)).map(d => rA.get(d));
+    const xSize = dates.filter(d => rR.has(d)).map(d => rR.get(d) - rM.get(d));
+    const ySize = dates.filter(d => rR.has(d)).map(d => rA.get(d));
+    const xDur = dates.filter(d => rT.has(d)).map(d => rT.get(d));
+    const yDur = dates.filter(d => rT.has(d)).map(d => rA.get(d));
+
+    const bMkt = singleBeta(y, xMkt);
+    const bTech = singleBeta(yTech, xTech);
+    const bSize = singleBeta(ySize, xSize);
+    const bDur = singleBeta(yDur, xDur);
+    const assetAnn = y.length ? (y.reduce((a, b) => a + b, 0) / y.length) * 252 * 100 : 0;
+    const idioAlpha = assetAnn - (bMkt.beta * bMkt.factorRetAnn);
+
+    const factors = dates.length >= 12 ? [
+      ['Market Beta (^GSPC MKT)', bMkt.beta, bMkt.factorRetAnn, bMkt.beta * bMkt.factorRetAnn, `R²=${(bMkt.corr ** 2 * 100).toFixed(1)}% vs S&P 500 (${dates.length}d OLS)`],
+      ['Tech / Growth Tilt (^IXIC - ^GSPC)', bTech.beta, bTech.factorRetAnn, bTech.beta * bTech.factorRetAnn, `Correlation: ${bTech.corr.toFixed(2)}`],
+      ['Small-Cap Size Tilt (^RUT - ^GSPC)', bSize.beta, bSize.factorRetAnn, bSize.beta * bSize.factorRetAnn, `Correlation: ${bSize.corr.toFixed(2)}`],
+      ['Rates / Duration Factor (TLT)', bDur.beta, bDur.factorRetAnn, bDur.beta * bDur.factorRetAnn, `Sensitivity to 20Y+ Treasury prices`],
+      ['Idiosyncratic CAPM Alpha (ε)', 1.0, idioAlpha, idioAlpha, `Annualized excess return net of Market Beta`]
+    ] : null;
+
+    // Real Orderbook L2 Spread & Market Impact Audit
+    const depth = (dEnv.ok && dEnv.data && Array.isArray(dEnv.data.bids) && dEnv.data.bids.length) ? dEnv.data : null;
+    const q = (qEnv.ok && Array.isArray(qEnv.data) && qEnv.data[0]) || {};
+    let tcaRows = [];
+    if (depth && depth.asks?.length && depth.bids?.length) {
+      const bestBid = +depth.bids[0][0], bestAsk = +depth.asks[0][0];
+      const mid = (bestBid + bestAsk) / 2;
+      const spreadBps = mid > 0 ? ((bestAsk - bestBid) / mid) * 10000 : 0;
+      const impactForUsd = (usd) => {
+        let rem = usd, cost = 0, qtyTot = 0;
+        for (const [pxS, qS] of depth.asks) {
+          const px = +pxS, lq = +qS, lvUsd = px * lq;
+          const takeUsd = Math.min(rem, lvUsd);
+          cost += takeUsd;
+          qtyTot += takeUsd / px;
+          rem -= takeUsd;
+          if (rem <= 0) break;
+        }
+        const vwap = qtyTot > 0 ? cost / qtyTot : bestAsk;
+        return mid > 0 ? ((vwap - mid) / mid) * 10000 : 0;
+      };
+      tcaRows = [
+        ['Live Top-of-Book Bid-Ask Spread', `${spreadBps.toFixed(2)} bps`, `${fmtPx(bestBid)} / ${fmtPx(bestAsk)}`, 'LIVE EXCHANGE L2', 'Actual current best bid vs ask spread'],
+        ['$10,000 Market Sweep Impact', `+${impactForUsd(10000).toFixed(2)} bps`, fmtPx(mid), 'ORDERBOOK WALK', 'Exact VWAP slippage walking live Ask levels'],
+        ['$50,000 Market Sweep Impact', `+${impactForUsd(50000).toFixed(2)} bps`, fmtPx(mid), 'ORDERBOOK WALK', 'Exact VWAP slippage across top 20 asks'],
+        ['$250,000 Institutional Sweep', `+${impactForUsd(250000).toFixed(2)} bps`, fmtPx(mid), 'ORDERBOOK WALK', 'Deep L2 book liquidity absorption cost']
+      ];
+    } else if (q.bid && q.ask && q.bid > 0 && q.ask > 0) {
+      const mid = (q.bid + q.ask) / 2;
+      const sprBps = ((q.ask - q.bid) / mid) * 10000;
+      tcaRows = [['Quoted Top-of-Book Spread', `${sprBps.toFixed(2)} bps`, `${fmtPx(q.bid)} / ${fmtPx(q.ask)}`, 'LIVE QUOTE', 'Full L2 depth sweep unavailable for equity ticker']];
+    } else {
+      tcaRows = [['Historical Execution Shortfall / FIX TCA', 'N/A', '-', 'UNAVAILABLE', 'No live L2 depth or FIX execution drop-copy feed for this instrument']];
+    }
+
+    sc.append(
+      h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: '1) LIVE OLS EMPIRICAL STYLE FACTOR EXPOSURES & RETURN ATTRIBUTION' })),
+      factors ? h('table', { class: 't' },
+        h('thead', null, h('tr', null, ['Style Factor (Live Proxy)', 'OLS Beta (β)', 'Factor Ann. Ret', 'Active Contrib %', 'Visual Loading', 'Statistical Audit'].map(x => h('th', { text: x })))),
+        h('tbody', null, factors.map(([f, b, r, c, desc]) => h('tr', { class: 'row' },
+          h('td', { class: 'l sym am', text: f }),
+          h('td', { class: dirCls(b) + ' sym', text: (b >= 0 ? '+' : '') + b.toFixed(2) }),
+          h('td', { class: dirCls(r), text: (r >= 0 ? '+' : '') + r.toFixed(2) + '%' }),
+          h('td', { class: dirCls(c) + ' sym', text: (c >= 0 ? '+' : '') + c.toFixed(2) + '%' }),
+          h('td', { style: 'width:110px' },
+            h('div', { style: 'width:100px;height:8px;background:#151515;border:1px solid #333' },
+              h('div', { style: `width:${Math.min(100, Math.abs(b) * 50)}%;height:100%;background:${b >= 0 ? '#00d26a' : '#ff3b30'}` })
+            )
+          ),
+          h('td', { class: 'l mu', text: desc })
+        )))
+      ) : h('div', { class: 'na', text: `N/A — Insufficient overlapping daily bars (${dates.length}) vs ^GSPC` }),
+      h('div', { class: 'tb', style: 'background:#070707;margin-top:6px' }, h('span', { class: 'lbl', text: '2) LIVE L2 ORDERBOOK SPREAD & MARKET IMPACT AUDIT' })),
+      h('table', { class: 't' },
+        h('thead', null, h('tr', null, ['Liquidity Benchmark', 'Measured Cost / Impact', 'Reference Quote', 'Method', 'Orderbook Audit Note'].map(x => h('th', { text: x })))),
+        h('tbody', null, tcaRows.map(([bm, sl, al, fq, note]) => h('tr', { class: 'row' },
+          h('td', { class: 'l sym lb', text: bm }),
+          h('td', { class: 'am sym', text: sl }),
+          h('td', { class: 'lb', text: al }),
+          h('td', { class: fq === 'UNAVAILABLE' ? 'dn' : 'up sym', text: fq }),
+          h('td', { class: 'l mu', text: note })
+        )))
+      )
+    );
+  }
+  load();
 }
 
 export function mountCRPR(body, ctx) {
   body.classList.add('fill');
   const tb = h('div', { class: 'tb' },
-    h('span', { class: 'lbl', text: `CRPR / RATD / FIW — CREDIT RATING PROFILE, ALTMAN Z-SCORE & MERTON DEFAULT MODEL [${ctx.symbol}]` }),
+    h('span', { class: 'lbl', text: `CRPR / DRSK — SEC EDGAR STRUCTURAL ALTMAN Z-SCORE, MERTON DD & TREASURY BENCHMARKS [${ctx.symbol}]` }),
     h('button', { text: 'WCDS SOVEREIGN <GO>', onclick: () => ctx.run('WCDS') }),
     h('button', { text: 'YAS BOND CALC <GO>', onclick: () => ctx.run('YAS') })
   );
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
-  const sym = (ctx.symbol || 'AAPL').toUpperCase();
-  const zScore = 4.82;
-  const mertonDd = 6.45;
-  const pd1y = 0.04;
+  async function load() {
+    sc.textContent = '';
+    sc.append(h('div', { class: 'na', text: `Loading SEC EDGAR balance sheet & Merton structural credit model for ${ctx.symbol}...` }));
+    const [edEnv, qEnv, kEnv, y2Env, y5Env, y10Env, y30Env] = await Promise.all([
+      get('fundamentals', { symbol: ctx.symbol }, 5000),
+      get('quote', { symbols: ctx.symbol }, 3000),
+      get('kline', { symbol: ctx.symbol, interval: '1d', limit: 90 }, 4000),
+      get('macro', { series: 'DGS2' }, 4000),
+      get('macro', { series: 'DGS5' }, 4000),
+      get('macro', { series: 'DGS10' }, 4000),
+      get('macro', { series: 'DGS30' }, 4000)
+    ]);
+    ctx.status(edEnv.ok ? edEnv : y10Env);
+    sc.textContent = '';
 
-  const AGENCIES = [
-    ['S&P Global Ratings', 'AA+ (Investment Grade)', 'STABLE', 'A-1+ Short-Term', '2026-08-14', 'Strong recurring free cash flow & net liquidity cushion'],
-    ['Moody\'s Investors Service', 'Aaa (Prime Grade)', 'STABLE', 'P-1 Short-Term', '2026-07-22', 'Exceptional debt service coverage (EBITDA/Int > 28x)'],
-    ['Fitch Ratings', 'AA+ (High Grade)', 'STABLE', 'F1+ Short-Term', '2026-09-03', 'Disciplined capital allocation & low net leverage'],
-    ['Bloomberg Default Risk (DRSK)', 'IG1 (Top Decile)', 'LOW RISK', `1Y PD: ${pd1y}%`, 'LIVE STRUCTURAL', `Merton Distance-to-Default: ${mertonDd}σ | Altman Z: ${zScore}`]
-  ];
+    const ed = (edEnv.ok && edEnv.data) || {};
+    const sec = ed.edgar || ed;
+    const fin = sec.financials || ed.financials || {};
+    const latestVal = arr => (Array.isArray(arr) && arr.length ? Number(arr[0].val || 0) : Number(arr || 0));
+    const q = (qEnv.ok && Array.isArray(qEnv.data) && qEnv.data[0]) || {};
+    const c = (kEnv.ok && kEnv.data && kEnv.data.candles) || [];
 
-  const BONDS = [
-    [`${sym} 4.10% Sr Notes 2028`, '2Y', '99.64', '4.29%', '+32 bps', '1.86 yrs', 'AA+ / Aaa'],
-    [`${sym} 4.35% Sr Notes 2031`, '5Y', '99.12', '4.54%', '+44 bps', '4.38 yrs', 'AA+ / Aaa'],
-    [`${sym} 4.65% Sr Notes 2036`, '10Y', '98.45', '4.85%', '+57 bps', '7.92 yrs', 'AA+ / Aaa'],
-    [`${sym} 5.10% Sr Debs 2054`, '30Y', '97.80', '5.25%', '+74 bps', '15.40 yrs', 'AA+ / Aaa']
-  ];
+    // Compute annualized equity volatility for Merton Distance-to-Default
+    let eqVol = 0.28;
+    if (c.length >= 15) {
+      const rets = [];
+      for (let i = 1; i < c.length; i++) if (c[i - 1].c > 0) rets.push(Math.log(c[i].c / c[i - 1].c));
+      if (rets.length >= 5) {
+        const m = rets.reduce((a, b) => a + b, 0) / rets.length;
+        eqVol = Math.max(0.10, Math.sqrt(rets.reduce((a, b) => a + (b - m) ** 2, 0) / (rets.length - 1 || 1)) * Math.sqrt(252));
+      }
+    }
 
-  sc.append(
-    h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border);padding:6px 8px' },
-      h('div', { class: 'k', text: 'ALTMAN Z-SCORE (SOLVENCY)' }), h('div', { class: 'v up sym', text: `${zScore} (SAFE ZONE > 2.99 • NEGLIGIBLE BANKRUPTCY RISK)` }),
-      h('div', { class: 'k', text: 'MERTON DISTANCE-TO-DEFAULT' }), h('div', { class: 'v up sym', text: `${mertonDd} σ  •  IMPLIED 1-YEAR DEFAULT PROBABILITY: ${pd1y}%` }),
-      h('div', { class: 'k', text: 'INTEREST COVERAGE / NET DEBT' }), h('div', { class: 'v am sym', text: 'EBITDA / Interest: 31.4x  •  Net Debt / EBITDA: 0.42x' }),
-      h('div', { class: 'k', text: '5Y SENIOR CDS SPREAD' }), h('div', { class: 'v lb sym', text: '34.5 bps (Tightened -1.8 bps Intraday)' })
-    ),
-    h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: '1) CRPR / RATD — OFFICIAL CREDIT RATING AGENCY MATRIX (S&P / MOODY\'S / FITCH / DRSK)' })),
-    h('table', { class: 't' },
-      h('thead', null, h('tr', null, ['Rating Agency', 'Long-Term Rating', 'Outlook', 'Short-Term / Metric', 'Last Review', 'Credit Committee Rationale'].map(x => h('th', { text: x })))),
-      h('tbody', null, AGENCIES.map(([ag, lt, out, st, dt, rat]) => h('tr', { class: 'row' },
-        h('td', { class: 'l sym am', text: ag }),
-        h('td', { class: 'up sym', text: lt }),
-        h('td', { class: 'lb sym', text: out }),
-        h('td', { text: st }),
-        h('td', { class: 'mu', text: dt }),
-        h('td', { class: 'l mu', text: rat })
-      )))
-    ),
-    h('div', { class: 'tb', style: 'background:#070707;margin-top:6px' }, h('span', { class: 'lbl', text: '2) FIW — FIXED INCOME WORKSHEET & SENIOR BOND CAPITAL STRUCTURE CURVE' })),
-    h('table', { class: 't' },
-      h('thead', null, h('tr', null, ['Senior Issue', 'Tenor', 'Clean Px', 'Yield to Maturity', 'G-Spread (OAS)', 'Mod Duration', 'Rating'].map(x => h('th', { text: x })))),
-      h('tbody', null, BONDS.map(([iss, tn, px, ytm, oas, dur, rt]) => h('tr', { class: 'row' },
-        h('td', { class: 'l sym am', text: iss }),
-        h('td', { class: 'lb', text: tn }),
-        h('td', { text: px }),
-        h('td', { class: 'up sym', text: ytm }),
-        h('td', { class: 'am sym', text: oas }),
-        h('td', { class: 'mu', text: dur }),
-        h('td', { class: 'up', text: rt })
-      )))
-    )
-  );
-  ctx.status({ source: 'crpr-merton-fiw', ts: Date.now(), mode: 'LIVE' });
+    const totalAssets = latestVal(fin.assets);
+    const totalLiab = latestVal(fin.liabilities);
+    const equity = latestVal(fin.equity) || Math.max(0, totalAssets - totalLiab);
+    const rev = latestVal(fin.revenue);
+    const ebit = latestVal(fin.operatingIncome) || latestVal(fin.netIncome);
+    const intExp = latestVal(fin.interestExp);
+    const longTermDebt = latestVal(fin.longTermDebt);
+    const currAssets = latestVal(fin.currentAssets);
+    const currLiab = latestVal(fin.currentLiab);
+    const retEarn = latestVal(fin.retainedEarnings);
+    const sharesVal = latestVal(fin.shares);
+    const mktCap = (q.price && sharesVal) ? (q.price * sharesVal) : (equity * 2.5);
+
+    const hasSec = totalAssets > 0;
+    let zScore = null, mertonDd = null, ebitIntCov = null, netDebtAssets = null;
+    if (hasSec) {
+      const wc = currAssets - currLiab;
+      zScore = 1.2 * (wc / totalAssets) + 1.4 * (retEarn / totalAssets) + 3.3 * (ebit / totalAssets) + 0.6 * (totalLiab > 0 ? mktCap / totalLiab : 5) + 1.0 * (rev / totalAssets);
+      const D = Math.max(1, totalLiab);
+      const V = mktCap + D;
+      const assetVol = Math.max(0.05, eqVol * (mktCap / V));
+      mertonDd = (Math.log(V / D) + (0.043 - 0.5 * assetVol * assetVol)) / assetVol;
+      ebitIntCov = intExp > 0 ? (ebit / intExp) : null;
+      netDebtAssets = (longTermDebt - (fin.cash || 0)) / totalAssets;
+    }
+
+    const lastRate = (env) => {
+      const obs = env.ok && env.data && Array.isArray(env.data.observations) ? env.data.observations : [];
+      return obs.length ? Number(obs[obs.length - 1].v) : null;
+    };
+    const UST = [
+      ['US Treasury 2-Year (FRED DGS2)', '2Y', lastRate(y2Env), 'Risk-Free Sovereign Benchmark'],
+      ['US Treasury 5-Year (FRED DGS5)', '5Y', lastRate(y5Env), 'Risk-Free Sovereign Benchmark'],
+      ['US Treasury 10-Year (FRED DGS10)', '10Y', lastRate(y10Env), 'Risk-Free Sovereign Benchmark'],
+      ['US Treasury 30-Year (FRED DGS30)', '30Y', lastRate(y30Env), 'Risk-Free Sovereign Benchmark']
+    ];
+
+    sc.append(
+      hasSec ? h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border);padding:6px 8px' },
+        h('div', { class: 'k', text: 'SEC XBRL ALTMAN Z-SCORE' }), h('div', { class: 'v sym ' + (zScore > 2.99 ? 'up' : zScore > 1.81 ? 'am' : 'dn'), text: `${zScore.toFixed(2)} (${zScore > 2.99 ? 'SAFE ZONE > 2.99' : zScore > 1.81 ? 'GREY ZONE' : 'DISTRESS ZONE'})` }),
+        h('div', { class: 'k', text: 'MERTON DISTANCE-TO-DEFAULT' }), h('div', { class: 'v up sym', text: `${mertonDd.toFixed(2)} σ  •  Realized Eq Vol: ${(eqVol * 100).toFixed(1)}%` }),
+        h('div', { class: 'k', text: 'EBIT INTEREST COVERAGE / LEVERAGE' }), h('div', { class: 'v am sym', text: `EBIT/Int: ${ebitIntCov != null ? ebitIntCov.toFixed(1) + 'x' : 'N/A (Minimal Debt)'}  •  Net Debt/Assets: ${(netDebtAssets * 100).toFixed(1)}%` }),
+        h('div', { class: 'k', text: 'AGENCY RATINGS & TRACE OAS' }), h('div', { class: 'v dn sym', text: 'N/A — S&P / Moody\'s / Fitch Official Ratings & Corporate Bond TRACE Spreads Require Paid Credit License' })
+      ) : h('div', { class: 'na', text: `N/A — No SEC EDGAR XBRL Balance Sheet Available for ${ctx.symbol} (Select a US Equity e.g. AAPL, NVDA, MSFT for Altman Z & Merton DD)` }),
+      h('div', { class: 'tb', style: 'background:#070707;margin-top:6px' }, h('span', { class: 'lbl', text: 'LIVE US TREASURY BENCHMARK CURVE (FRED REAL SOVEREIGN YIELDS — CORPORATE OAS FEED N/A)' })),
+      h('table', { class: 't' },
+        h('thead', null, h('tr', null, ['Benchmark Security', 'Tenor', 'Live Yield %', 'Institutional Role'].map(x => h('th', { text: x })))),
+        h('tbody', null, UST.map(([iss, tn, yld, rl]) => h('tr', { class: 'row' },
+          h('td', { class: 'l sym am', text: iss }),
+          h('td', { class: 'lb', text: tn }),
+          h('td', { class: yld != null ? 'up sym' : 'mu', text: yld != null ? yld.toFixed(2) + '%' : 'N/A' }),
+          h('td', { class: 'l mu', text: rl })
+        )))
+      )
+    );
+  }
+  load();
 }
 
 

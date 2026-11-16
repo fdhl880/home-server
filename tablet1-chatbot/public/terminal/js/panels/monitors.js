@@ -604,12 +604,12 @@ export function mountFUT(body, ctx) {
   body.append(tb, sc);
 
   const CURVES = [
-    { sym: 'CL=F', name: 'WTI Crude Oil (NYMEX)', unit: '$/bbl', slope: -0.042, shape: 'BACKWARDATION' },
-    { sym: 'BZ=F', name: 'Brent Crude Oil (ICE)', unit: '$/bbl', slope: -0.038, shape: 'BACKWARDATION' },
-    { sym: 'GC=F', name: 'COMEX Gold Futures', unit: '$/oz', slope: 0.046, shape: 'CONTANGO' },
-    { sym: 'NG=F', name: 'Henry Hub NatGas', unit: '$/MMBtu', slope: 0.145, shape: 'SEASONAL CONTANGO' },
-    { sym: 'HG=F', name: 'COMEX Copper', unit: '$/lb', slope: 0.031, shape: 'CONTANGO' },
-    { sym: 'BTCUSDT', name: 'CME/Binance BTC Futures', unit: '$', slope: 0.092, shape: 'CONTANGO' }
+    { sym: 'CL=F', name: 'WTI Crude Oil (NYMEX)', unit: '$/bbl', convYield: 0.085, shape: 'CONVENIENCE YIELD / BACKWARDATION' },
+    { sym: 'BZ=F', name: 'Brent Crude Oil (ICE)', unit: '$/bbl', convYield: 0.081, shape: 'CONVENIENCE YIELD / BACKWARDATION' },
+    { sym: 'GC=F', name: 'COMEX Gold Futures', unit: '$/oz', convYield: -0.003, shape: 'COST-OF-CARRY CONTANGO' },
+    { sym: 'NG=F', name: 'Henry Hub NatGas', unit: '$/MMBtu', convYield: -0.095, shape: 'STORAGE CARRY CONTANGO' },
+    { sym: 'HG=F', name: 'COMEX Copper', unit: '$/lb', convYield: 0.012, shape: 'MILD CARRY CONTANGO' },
+    { sym: 'BTCUSDT', name: 'CME/Binance BTC Carry Curve', unit: '$', convYield: -0.045, shape: 'BASIS CARRY CONTANGO' }
   ];
   let active = CURVES.find(c => c.sym === ctx.symbol) ? ctx.symbol : 'CL=F';
 
@@ -620,25 +620,36 @@ export function mountFUT(body, ctx) {
       ...CURVES.map(c => h('button', { class: active === c.sym ? 'on' : '', text: c.sym.replace('=F', ''), onclick: () => { active = c.sym; load(); } })),
       h('button', { text: 'BMAP <GO>', onclick: () => ctx.run(`${active} BMAP`) })
     );
-    const env = await get('quote', { symbols: CURVES.map(c => c.sym).join(',') }, 6000);
+    const [env, rfEnv] = await Promise.all([
+      get('quote', { symbols: CURVES.map(c => c.sym).join(',') }, 6000),
+      get('macro', { series: 'DFF' }, 4000)
+    ]);
     ctx.status(env);
     sc.textContent = '';
     const qMap = {};
     if (env.ok && Array.isArray(env.data)) env.data.forEach(q => { if (q && q.symbol) qMap[q.symbol] = q; });
     const cfg = CURVES.find(c => c.sym === active) || CURVES[0];
     const q = qMap[active] || {};
-    const fallbacks = { 'CL=F': 70.5, 'BZ=F': 74.2, 'GC=F': 2685, 'NG=F': 2.85, 'HG=F': 4.35, BTCUSDT: 89500 };
-    const front = q.price || fallbacks[active] || 100;
+    const front = Number(q.price || 0);
+    if (!front) {
+      sc.append(h('div', { class: 'na', text: `N/A — Live Front Contract Quote Unavailable for ${active}` }));
+      return;
+    }
 
-    const months = ['M1 (FRONT)', 'M2', 'M3', 'M4', 'M5', 'M6', 'M8', 'M10', 'M12 (+1Y)'];
+    const obsList = (rfEnv.ok && rfEnv.data && rfEnv.data.observations) || [];
+    const effrPct = obsList.length ? Number(obsList[obsList.length - 1].v) : 4.33;
+    const rf = effrPct / 100;
+    const netCarry = rf - cfg.convYield;
+
+    const months = ['M1 (LIVE FRONT)', 'M2 (MODEL)', 'M3 (MODEL)', 'M4 (MODEL)', 'M5 (MODEL)', 'M6 (MODEL)', 'M8 (MODEL)', 'M10 (MODEL)', 'M12 (+1Y MODEL)'];
     const tenors = [1, 2, 3, 4, 5, 6, 8, 10, 12];
     const pts = tenors.map((m, i) => {
       const yrs = (m - 1) / 12;
-      const wave = active === 'NG=F' ? Math.sin(m * 0.55) * 0.04 : Math.sin(m * 0.25) * 0.002;
-      const px = front * (1 + cfg.slope * yrs + wave);
+      const px = front * Math.exp(netCarry * yrs);
       const spread = px - front;
       const roll = ((px - front) / front) * 100;
-      return { lbl: months[i], m, px, spread, roll, oi: Math.round(185000 / Math.pow(m, 0.72)) };
+      const annCarryPct = netCarry * 100;
+      return { lbl: months[i], m, px, spread, roll, annCarryPct };
     });
 
     const W = 520, H = 135, pad = 34;
@@ -650,7 +661,7 @@ export function mountFUT(body, ctx) {
     svg.style.cssText = 'width:100%;height:135px;background:#040404;border-bottom:1px solid var(--border);display:block';
     const poly = document.createElementNS(ns, 'polyline');
     poly.setAttribute('fill', 'none');
-    poly.setAttribute('stroke', cfg.slope < 0 ? '#00d26a' : '#ffb000');
+    poly.setAttribute('stroke', netCarry < 0 ? '#00d26a' : '#ffb000');
     poly.setAttribute('stroke-width', '2.2');
     poly.setAttribute('points', pts.map((p, i) => {
       const x = pad + (i / (pts.length - 1)) * (W - 2 * pad);
@@ -672,18 +683,19 @@ export function mountFUT(body, ctx) {
 
     sc.append(
       h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border)' },
-        h('div', { class: 'k', text: 'CONTRACT' }), h('div', { class: 'v am sym', text: `${cfg.name} (${cfg.sym})  •  FRONT: ${fmtPx(front)} ${cfg.unit}` }),
-        h('div', { class: 'k', text: 'CURVE REGIME' }), h('div', { class: 'v ' + (cfg.slope < 0 ? 'up' : 'am') + ' sym', text: `${cfg.shape}  (M1-M12 SPREAD: ${fmtChg(pts[pts.length - 1].spread)} / ${fmtPct(pts[pts.length - 1].roll)})` })
+        h('div', { class: 'k', text: 'LIVE FRONT CONTRACT' }), h('div', { class: 'v am sym', text: `${cfg.name} (${cfg.sym})  •  FRONT: ${fmtPx(front)} ${cfg.unit}` }),
+        h('div', { class: 'k', text: 'COST-OF-CARRY MODEL' }), h('div', { class: 'v ' + (netCarry < 0 ? 'up' : 'am') + ' sym', text: `${cfg.shape} • Risk-Free (FRED EFFR): ${effrPct.toFixed(2)}% • M1-M12 Spread: ${fmtChg(pts[pts.length - 1].spread)} (${fmtPct(pts[pts.length - 1].roll)})` }),
+        h('div', { class: 'k', text: 'DATA SOURCE NOTE' }), h('div', { class: 'v mu', text: 'Front M1 from live feed; M2–M12 show theoretical exponential cost-of-carry F(T)=S·e^((r-y)T). Multi-month CME/ICE delivery settles require paid exchange chain feed.' })
       ),
       svg,
       h('table', { class: 't' },
-        h('thead', null, h('tr', null, ['Delivery', 'Contract Px', 'Spread vs M1', 'Basis %', 'Est Open Int'].map(x => h('th', { text: x })))),
+        h('thead', null, h('tr', null, ['Delivery', 'Contract Px', 'Spread vs M1', 'Basis %', 'Ann. Carry %'].map(x => h('th', { text: x })))),
         h('tbody', null, pts.map(p => h('tr', { class: 'row' },
           h('td', { class: 'l sym lb', text: p.lbl }),
           h('td', { class: 'am sym', text: fmtPx(p.px) }),
           h('td', { class: dirCls(p.spread), text: fmtChg(p.spread) }),
           h('td', { class: dirCls(p.roll), text: fmtPct(p.roll) }),
-          h('td', { class: 'mu', text: fmtVol(p.oi) })
+          h('td', { class: 'mu', text: p.annCarryPct.toFixed(2) + '%' })
         )))
       )
     );

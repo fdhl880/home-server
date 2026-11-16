@@ -277,7 +277,7 @@ export function mountVAP(body, ctx) {
 export function mountLIQ(body, ctx) {
   body.classList.add('fill');
   const tb = h('div', { class: 'tb' },
-    h('span', { class: 'lbl', text: `LIQ LEVERAGE LIQUIDATION HEATMAP & OPEN INTEREST MAGNET CLUSTERS (10x–100x) [${ctx.symbol}]` }),
+    h('span', { class: 'lbl', text: `LIQ LEVERAGE LIQUIDATION RISK MAP & LIVE OPEN INTEREST [${ctx.symbol}]` }),
     h('button', { text: 'BOT SNIPER <GO>', onclick: () => ctx.run('BOT') }),
     h('button', { text: 'FUND BASIS <GO>', onclick: () => ctx.run('FUND') })
   );
@@ -285,51 +285,77 @@ export function mountLIQ(body, ctx) {
   body.append(tb, sc);
 
   async function load() {
-    const qEnv = await get('quote', { symbols: ctx.symbol }, 3000);
-    ctx.status(qEnv);
+    const [qEnv, diEnv, dEnv] = await Promise.all([
+      get('quote', { symbols: ctx.symbol }, 3000),
+      get('derivatives-intel', { symbol: ctx.symbol }, 4000),
+      get('depth', { symbol: ctx.symbol, limit: 20 }, 3000)
+    ]);
+    ctx.status(diEnv.ok ? diEnv : qEnv);
     sc.textContent = '';
-    const q = (qEnv.ok && Array.isArray(qEnv.data) && qEnv.data[0]) || {};
-    const spot = Number(q.price) || (/BTC/i.test(ctx.symbol) ? 89500 : /ETH/i.test(ctx.symbol) ? 2650 : 145);
 
+    const q = (qEnv.ok && Array.isArray(qEnv.data) && qEnv.data[0]) || {};
+    const di = (diEnv.ok && diEnv.data) || null;
+    const spot = Number(di?.markPrice || q.price || 0);
+    if (!spot) {
+      sc.append(h('div', { class: 'na', text: `N/A (${qEnv.error || 'No live price quote'})` }));
+      return;
+    }
+    if (!di || !di.openInterestUsd) {
+      sc.append(h('div', { class: 'na', text: `N/A — Live Binance Futures Open Interest & Positioning Feed Only Available For USDT Perpetual Pairs (current: ${ctx.symbol}). Switch symbol to e.g. BTCUSDT or ETHUSDT.` }));
+      return;
+    }
+
+    const oiUsd = Number(di.openInterestUsd || 0);
+    const oiM = oiUsd / 1e6;
+    const oiContracts = Number(di.openInterestContracts ?? di.openInterestQty ?? 0);
+    const fundingRateVal = Number(di.fundingRate ?? di.lastFundingRate ?? 0);
+    const lsRatio = Number(di.globalLongShortRatio || di.topTraderRatio || 1.0);
+    const longFrac = lsRatio / (1 + lsRatio);
+    const shortFrac = 1 - longFrac;
+    const depthData = (dEnv.ok && dEnv.data) || {};
+    const topBidWall = (depthData.bids || []).reduce((mx, lv) => (+lv[1] * +lv[0] > mx.usd ? { px: +lv[0], usd: +lv[1] * +lv[0] } : mx), { px: 0, usd: 0 });
+    const topAskWall = (depthData.asks || []).reduce((mx, lv) => (+lv[1] * +lv[0] > mx.usd ? { px: +lv[0], usd: +lv[1] * +lv[0] } : mx), { px: 0, usd: 0 });
+
+    // Weight estimated Open Interest across standard isolated margin leverage bands
+    const weights = [
+      { lev: '100x ISOLATED', multUp: 1.009, multDn: 0.991, wt: 0.14 },
+      { lev: '50x ISOLATED', multUp: 1.019, multDn: 0.981, wt: 0.28 },
+      { lev: '25x ISOLATED', multUp: 1.038, multDn: 0.962, wt: 0.25 },
+      { lev: '20x ISOLATED', multUp: 1.048, multDn: 0.952, wt: 0.19 },
+      { lev: '10x ISOLATED', multUp: 1.095, multDn: 0.905, wt: 0.14 }
+    ];
     const tiers = [
-      { lev: '100x ISOLATED', side: 'SHORT LIQ POOL', mult: +1.0085, poolM: 42.8, intensity: 0.78 },
-      { lev: '50x ISOLATED', side: 'SHORT LIQ POOL', mult: +1.0175, poolM: 86.4, intensity: 0.94 },
-      { lev: '25x ISOLATED', side: 'SHORT LIQ POOL', mult: +1.0355, poolM: 64.2, intensity: 0.82 },
-      { lev: '20x ISOLATED', side: 'SHORT LIQ POOL', mult: +1.0450, poolM: 51.0, intensity: 0.71 },
-      { lev: '10x ISOLATED', side: 'SHORT LIQ POOL', mult: +1.0910, poolM: 33.5, intensity: 0.55 },
-      { lev: 'SPOT MARK PX', side: 'CURRENT EQUILIBRIUM', mult: 1.0000, poolM: 0, intensity: 1.00 },
-      { lev: '100x ISOLATED', side: 'LONG LIQ POOL', mult: 0.9915, poolM: 38.6, intensity: 0.74 },
-      { lev: '50x ISOLATED', side: 'LONG LIQ POOL', mult: 0.9825, poolM: 79.5, intensity: 0.91 },
-      { lev: '25x ISOLATED', side: 'LONG LIQ POOL', mult: 0.9645, poolM: 58.9, intensity: 0.79 },
-      { lev: '20x ISOLATED', side: 'LONG LIQ POOL', mult: 0.9550, poolM: 47.2, intensity: 0.68 },
-      { lev: '10x ISOLATED', side: 'LONG LIQ POOL', mult: 0.9090, poolM: 29.4, intensity: 0.51 }
+      ...weights.map(w => ({ lev: w.lev, side: 'SHORT LIQ RISK TIER', mult: w.multUp, poolM: oiM * shortFrac * w.wt, intensity: w.wt * shortFrac * 4.5 })),
+      { lev: 'LIVE MARK PX', side: 'CURRENT EQUILIBRIUM', mult: 1.0, poolM: oiM, intensity: 1.0 },
+      ...weights.map(w => ({ lev: w.lev, side: 'LONG LIQ RISK TIER', mult: w.multDn, poolM: oiM * longFrac * w.wt, intensity: w.wt * longFrac * 4.5 }))
     ];
 
-    const shortTotal = tiers.filter(t => t.side === 'SHORT LIQ POOL').reduce((a, b) => a + b.poolM, 0);
-    const longTotal = tiers.filter(t => t.side === 'LONG LIQ POOL').reduce((a, b) => a + b.poolM, 0);
+    const shortTotal = oiM * shortFrac;
+    const longTotal = oiM * longFrac;
 
     sc.append(
       h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border);padding:6px 8px' },
-        h('div', { class: 'k', text: 'UPPER SHORT LIQUIDATION MAGNET' }), h('div', { class: 'v up sym', text: `$${shortTotal.toFixed(1)}M Cumulative Short Squeeze Fuel (Peak 50x Cluster @ ${fmtPx(spot * 1.0175)})` }),
-        h('div', { class: 'k', text: 'LOWER LONG LIQUIDATION MAGNET' }), h('div', { class: 'v dn sym', text: `$${longTotal.toFixed(1)}M Cumulative Long Cascade Risk (Peak 50x Cluster @ ${fmtPx(spot * 0.9825)})` }),
-        h('div', { class: 'k', text: 'NET LIQUIDATION SKEW BIAS' }), h('div', { class: 'v am sym', text: `${shortTotal >= longTotal ? 'UPPER MAGNET DOMINANT (+Short Squeeze Bias)' : 'LOWER MAGNET DOMINANT (-Long Sweep Risk)'} • Ratio: ${(shortTotal / Math.max(1, longTotal)).toFixed(2)}x` })
+        h('div', { class: 'k', text: 'LIVE BINANCE OPEN INTEREST' }), h('div', { class: 'v am sym', text: `$${fmtNum(oiM, 2)}M USDT (${oiContracts > 0 ? fmtNum(oiContracts, 0) + ' contracts' : di.symbol}) • Mark: ${fmtPx(spot)}` }),
+        h('div', { class: 'k', text: 'ACCOUNT LONG / SHORT RATIO' }), h('div', { class: 'v lb sym', text: `Global L/S: ${lsRatio.toFixed(2)} (${(longFrac * 100).toFixed(1)}% Long / ${(shortFrac * 100).toFixed(1)}% Short) • Funding: ${(fundingRateVal * 100).toFixed(4)}%` }),
+        h('div', { class: 'k', text: 'IMPLIED OI EXPOSURE SPLIT' }), h('div', { class: 'v sym ' + (shortTotal >= longTotal ? 'up' : 'dn'), text: `Short OI: $${shortTotal.toFixed(1)}M vs Long OI: $${longTotal.toFixed(1)}M (Modelled isolated margin distribution — exchange does not publish individual user liquidation prices)` }),
+        h('div', { class: 'k', text: 'LIVE L2 TOP BOOK WALLS' }), h('div', { class: 'v mu', text: `Strongest Bid Wall: ${topBidWall.px ? fmtPx(topBidWall.px) + ' ($' + fmtVol(topBidWall.usd) + ')' : 'N/A'}  •  Strongest Ask Wall: ${topAskWall.px ? fmtPx(topAskWall.px) + ' ($' + fmtVol(topAskWall.usd) + ')' : 'N/A'}` })
       ),
       h('table', { class: 't' },
-        h('thead', null, h('tr', null, ['Leverage Tier', 'Cluster Type', 'Liquidation Trigger Px', 'Distance %', 'Est. Liq Cluster ($M)', 'Heatmap Intensity Bar'].map(x => h('th', { text: x })))),
+        h('thead', null, h('tr', null, ['Leverage Tier', 'Cluster Side', 'Theoretical Trigger Px', 'Distance %', 'Modelled OI Share ($M)', 'Concentration'].map(x => h('th', { text: x })))),
         h('tbody', null, tiers.map(t => {
           const px = spot * t.mult;
           const dist = (t.mult - 1) * 100;
           if (t.side === 'CURRENT EQUILIBRIUM') {
             return h('tr', { style: 'background:#1d1500;font-weight:bold' },
-              h('td', { class: 'l sym am', text: '★ SPOT MARK' }),
-              h('td', { class: 'am sym', text: 'LIVE MARK PRICE' }),
+              h('td', { class: 'l sym am', text: '★ LIVE MARK' }),
+              h('td', { class: 'am sym', text: 'EXCHANGE MARK PRICE' }),
               h('td', { class: 'am sym', text: fmtPx(spot) }),
               h('td', { class: 'am', text: '0.00%' }),
-              h('td', { class: 'mu', text: 'ACTIVE SPREAD' }),
-              h('td', { class: 'l am', text: '━━━━━━━━━━ CURRENT PRICE ANCHOR ━━━━━━━━━━' })
+              h('td', { class: 'am', text: `$${t.poolM.toFixed(1)}M OI` }),
+              h('td', { class: 'l am', text: '━━━━━━━━━━ CURRENT MARK ANCHOR ━━━━━━━━━━' })
             );
           }
-          const isShort = t.side === 'SHORT LIQ POOL';
+          const isShort = t.side === 'SHORT LIQ RISK TIER';
           const col = isShort ? '#00e5ff' : '#ff3b30';
           return h('tr', { class: 'row' },
             h('td', { class: 'l sym am', text: t.lev }),
@@ -339,7 +365,7 @@ export function mountLIQ(body, ctx) {
             h('td', { class: 'am sym', text: `$${t.poolM.toFixed(1)}M` }),
             h('td', { style: 'width:190px' },
               h('div', { style: 'width:175px;height:10px;background:#111;border:1px solid #2a2a2a' },
-                h('div', { style: `width:${Math.round(t.intensity * 100)}%;height:100%;background:linear-gradient(90deg,${col}66,${col})` })
+                h('div', { style: `width:${Math.min(100, Math.round(t.intensity * 100))}%;height:100%;background:linear-gradient(90deg,${col}66,${col})` })
               )
             )
           );
@@ -353,73 +379,84 @@ export function mountLIQ(body, ctx) {
 export function mountOMST(body, ctx) {
   body.classList.add('fill');
   const tb = h('div', { class: 'tb' },
-    h('span', { class: 'lbl', text: `OMST / GEX — UNUSUAL OPTIONS BLOCK SWEEP TAPE & DEALER GAMMA EXPOSURE PROFILE [${ctx.symbol}]` }),
+    h('span', { class: 'lbl', text: `OMST / GEX — ANALYTICAL BLACK-SCHOLES GAMMA GRID & OPTIONS FEED STATUS [${ctx.symbol}]` }),
     h('button', { text: 'OVDV SURFACE <GO>', onclick: () => ctx.run('OVDV') }),
     h('button', { text: 'OVME PRICER <GO>', onclick: () => ctx.run('OVME') })
   );
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
+  function normPdf(x) {
+    return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+  }
+
   async function load() {
-    const qEnv = await get('quote', { symbols: ctx.symbol }, 3000);
+    const [qEnv, kEnv] = await Promise.all([
+      get('quote', { symbols: ctx.symbol }, 3000),
+      get('kline', { symbol: ctx.symbol, interval: '1d', limit: 45 }, 4000)
+    ]);
     ctx.status(qEnv);
     sc.textContent = '';
     const q = (qEnv.ok && Array.isArray(qEnv.data) && qEnv.data[0]) || {};
-    const spot = Number(q.price) || 185;
-    const step = spot > 1000 ? Math.round(spot * 0.01 / 50) * 50 : spot > 50 ? 2.5 : 0.5;
-    const center = Math.round(spot / step) * step;
+    const spot = Number(q.price || 0);
+    if (!spot) {
+      sc.append(h('div', { class: 'na', text: `N/A (${qEnv.error || 'No live spot quote'})` }));
+      return;
+    }
 
-    const gexStrikes = [-3, -2, -1, 0, 1, 2, 3].map(k => {
+    const candles = (kEnv.ok && kEnv.data && kEnv.data.candles) || [];
+    let hv30 = 0.35;
+    if (candles.length >= 10) {
+      const rets = [];
+      for (let i = 1; i < candles.length; i++) {
+        if (candles[i - 1].c > 0 && candles[i].c > 0) rets.push(Math.log(candles[i].c / candles[i - 1].c));
+      }
+      if (rets.length >= 5) {
+        const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+        const vr = rets.reduce((a, b) => a + (b - mean) ** 2, 0) / rets.length;
+        hv30 = Math.max(0.08, Math.sqrt(vr) * Math.sqrt(252));
+      }
+    }
+
+    const T = 30 / 365;
+    const r = 0.043;
+    const step = spot > 1000 ? Math.round((spot * 0.02) / 50) * 50 : spot > 50 ? Math.max(1, Math.round(spot * 0.025)) : +(spot * 0.03).toFixed(2);
+    const center = Math.round(spot / (step || 1)) * (step || 1);
+
+    const gexStrikes = [-4, -3, -2, -1, 0, 1, 2, 3, 4].map(k => {
       const st = +(center + k * step).toFixed(2);
-      const callGex = +(Math.max(0.2, 2.8 - Math.abs(k - 1) * 0.65) * 180).toFixed(1);
-      const putGex = -+(Math.max(0.2, 2.5 - Math.abs(k + 1) * 0.65) * 165).toFixed(1);
-      const netGex = +(callGex + putGex).toFixed(1);
-      return { st, callGex, putGex, netGex };
+      const d1 = (Math.log(spot / st) + (r + 0.5 * hv30 * hv30) * T) / (hv30 * Math.sqrt(T));
+      const gamma = normPdf(d1) / (spot * hv30 * Math.sqrt(T));
+      const d2 = d1 - hv30 * Math.sqrt(T);
+      // Unit 100-contract call & put sensitivity per 1% spot move
+      const unitDollarGamma1Pct = gamma * spot * spot * 0.01;
+      return { st, gamma, unitDollarGamma1Pct, moneyness: ((st - spot) / spot) * 100, d1, d2 };
     });
-
-    const SWEEPS = [
-      ['14:32:18', `${ctx.symbol} ${fmtPx(center + step)} CALL`, '14 DTE', 'SWEEP ASK (AGGRESSIVE BUY)', '1,450 cts', '$2.84M', '38.4%', '+0.44 Δ', 'BULLISH WHALE SWEEP'],
-      ['14:28:04', `${ctx.symbol} ${fmtPx(center + 2 * step)} CALL`, '30 DTE', 'BLOCK PRINT (DARK POOL)', '2,200 cts', '$4.12M', '36.9%', '+0.31 Δ', 'INSTITUTIONAL CALL SPREAD'],
-      ['14:19:45', `${ctx.symbol} ${fmtPx(center - step)} PUT`, '7 DTE', 'SOLD TO OPEN (BID HIT)', '980 cts', '$1.15M', '41.2%', '-0.29 Δ', 'BULLISH PUT FLOOR WRITE'],
-      ['14:11:09', `${ctx.symbol} ${fmtPx(center)} CALL`, '45 DTE', 'MULTI-EXCHANGE SWEEP', '1,820 cts', '$5.06M', '35.5%', '+0.52 Δ', 'HIGH-CONVICTION GAMMA BUY'],
-      ['13:58:52', `${ctx.symbol} ${fmtPx(center - 2 * step)} PUT`, '30 DTE', 'SWEEP ASK (TAIL HEDGE)', '1,100 cts', '$0.94M', '44.8%', '-0.16 Δ', 'PORTFOLIO DOWNSIDE HEDGE']
-    ];
+    const maxGamma = Math.max(...gexStrikes.map(x => x.unitDollarGamma1Pct), 1e-6);
 
     sc.append(
       h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border);padding:6px 8px' },
-        h('div', { class: 'k', text: 'NET DEALER GAMMA REGIME' }), h('div', { class: 'v up sym', text: '+$412.5M POSITIVE GAMMA (DEALERS BUY DIPS / SELL RIPS — LOW VOL PINNING)' }),
-        h('div', { class: 'k', text: 'ZERO-GAMMA FLIP LEVEL' }), h('div', { class: 'v am sym', text: `${fmtPx(center - 0.5 * step)} (Spot is +${(((spot - (center - 0.5 * step)) / spot) * 100).toFixed(2)}% Above Flip)` }),
-        h('div', { class: 'k', text: 'CALL WALL / PUT WALL' }), h('div', { class: 'v lb sym', text: `CALL WALL: ${fmtPx(center + step)}  •  PUT SUPPORT WALL: ${fmtPx(center - step)}` })
+        h('div', { class: 'k', text: 'OPRA / DERIBIT LIVE OPTIONS TAPE' }), h('div', { class: 'v dn sym', text: 'N/A — Institutional OPRA / Deribit Live Options Sweep & Dealer OI Feed Not Connected' }),
+        h('div', { class: 'k', text: 'LIVE UNDERLYING SPOT & 30D REALIZED VOL' }), h('div', { class: 'v am sym', text: `${ctx.symbol}: ${fmtPx(spot)}  •  Realized HV30: ${(hv30 * 100).toFixed(1)}%  •  30 DTE Analytic Grid` }),
+        h('div', { class: 'k', text: 'ANALYTIC METHOD' }), h('div', { class: 'v lb', text: 'Exact Black-Scholes Strike Gamma Density (per 1% move) computed strictly from live spot & OHLCV realized volatility — no fabricated GEX/sweep prints.' })
       ),
-      h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: '1) GEX — DEALER GAMMA EXPOSURE PROFILE BY STRIKE ($M PER 1% MOVE)' })),
+      h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'THEORETICAL BLACK-SCHOLES UNIT GAMMA PROFILE BY STRIKE (30 DTE • σ = LIVE HV30)' })),
       h('table', { class: 't' },
-        h('thead', null, h('tr', null, ['Strike Price', 'Call Gamma ($M)', 'Put Gamma ($M)', 'Net Dealer GEX ($M)', 'Dealer Hedging Flow Profile'].map(x => h('th', { text: x })))),
+        h('thead', null, h('tr', null, ['Strike Price', 'Moneyness %', 'Unit B-S Gamma (Γ)', '$Gamma / 1% Move (100ct)', 'Convexity Concentration'].map(x => h('th', { text: x })))),
         h('tbody', null, gexStrikes.map(r => h('tr', { class: 'row', style: r.st === center ? 'background:#1c1500' : '' },
           h('td', { class: 'l sym am', text: fmtPx(r.st) + (r.st === center ? ' ★ATM' : '') }),
-          h('td', { class: 'up', text: `+$${r.callGex}M` }),
-          h('td', { class: 'dn', text: `-$${Math.abs(r.putGex)}M` }),
-          h('td', { class: (r.netGex >= 0 ? 'up' : 'dn') + ' sym', text: (r.netGex >= 0 ? '+$' : '-$') + Math.abs(r.netGex).toFixed(1) + 'M' }),
-          h('td', { style: 'width:185px' },
-            h('div', { style: 'width:170px;height:9px;background:#141414;border:1px solid #2b2b2b' },
-              h('div', { style: `width:${Math.min(100, Math.abs(r.netGex) / 3.5)}%;height:100%;background:${r.netGex >= 0 ? '#00d26a' : '#ff3b30'}` })
+          h('td', { class: dirCls(r.moneyness), text: (r.moneyness >= 0 ? '+' : '') + r.moneyness.toFixed(2) + '%' }),
+          h('td', { class: 'lb sym', text: r.gamma.toFixed(6) }),
+          h('td', { class: 'up sym', text: '$' + fmtNum(r.unitDollarGamma1Pct * 100, 2) }),
+          h('td', { style: 'width:190px' },
+            h('div', { style: 'width:175px;height:9px;background:#141414;border:1px solid #2b2b2b' },
+              h('div', { style: `width:${Math.min(100, Math.round((r.unitDollarGamma1Pct / maxGamma) * 100))}%;height:100%;background:#00e5ff` })
             )
           )
         )))
       ),
-      h('div', { class: 'tb', style: 'background:#070707;margin-top:6px' }, h('span', { class: 'lbl', text: '2) OMST — UNUSUAL INSTITUTIONAL OPTIONS SWEEP & BLOCK ORDER FLOW TAPE' })),
-      h('table', { class: 't' },
-        h('thead', null, h('tr', null, ['Time', 'Option Contract', 'Expiry', 'Execution Type', 'Size', 'Premium ($)', 'IV %', 'Delta', 'Institutional Signal'].map(x => h('th', { text: x })))),
-        h('tbody', null, SWEEPS.map(([tm, ct, ex, ty, sz, pr, iv, dl, sg]) => h('tr', { class: 'row' },
-          h('td', { class: 'l mu', text: tm }),
-          h('td', { class: 'l sym am', text: ct }),
-          h('td', { class: 'lb', text: ex }),
-          h('td', { class: 'l', text: ty }),
-          h('td', { text: sz }),
-          h('td', { class: 'up sym', text: pr }),
-          h('td', { class: 'mu', text: iv }),
-          h('td', { class: 'lb', text: dl }),
-          h('td', { class: sg.includes('BULLISH') || sg.includes('GAMMA') || sg.includes('CALL') ? 'up sym' : 'am sym', text: sg })
-        )))
+      h('div', { class: 'na', style: 'margin-top:8px;padding:10px' },
+        'OMST Live Options Sweep Tape: N/A — Live US OPRA / Cboe / Deribit options time & sales requires a licensed options data feed. Use OVME <GO> to price custom vanilla structures or OVDV <GO> to inspect empirical volatility term structure.'
       )
     );
   }

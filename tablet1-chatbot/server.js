@@ -2281,16 +2281,12 @@ const perfLedgerPath = path.join(resultsDir, 'performance_ledger.json');
 
 function ensurePerformanceLedger() {
     const baseline = {
-        baseline_wins: 15,
-        baseline_losses: 4,
-        baseline_realized_pnl_idr: 989000,
-        baseline_realized_pnl_usd: 59.94,
-        winning_trades: 15,
-        losing_trades: 4,
-        closed_trades: 19,
-        win_rate_pct: 78.95,
-        realized_pnl_idr: 989000,
-        realized_pnl_usd: 59.94,
+        winning_trades: 0,
+        losing_trades: 0,
+        closed_trades: 0,
+        win_rate_pct: 0,
+        realized_pnl_idr: 0,
+        realized_pnl_usd: 0,
         recorded_trade_ids: [],
         history: [],
         updated_at: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
@@ -2299,7 +2295,13 @@ function ensurePerformanceLedger() {
         fs.mkdirSync(resultsDir, { recursive: true });
         if (fs.existsSync(perfLedgerPath)) {
             const parsed = JSON.parse(fs.readFileSync(perfLedgerPath, 'utf8'));
-            if (parsed && typeof parsed === 'object' && (parsed.winning_trades || 0) >= 15) {
+            if (parsed && typeof parsed === 'object') {
+                // Clear legacy synthetic 15-win / 989,000 IDR placeholder if no recorded real trade IDs exist
+                const hasRealTrades = Array.isArray(parsed.recorded_trade_ids) && parsed.recorded_trade_ids.length > 0;
+                if (!hasRealTrades && parsed.baseline_wins === 15 && parsed.realized_pnl_idr === 989000) {
+                    fs.writeFileSync(perfLedgerPath, JSON.stringify(baseline, null, 2));
+                    return baseline;
+                }
                 return parsed;
             }
         }
@@ -2707,12 +2709,17 @@ function enrichScanWithMathAndRoi(scanObj, symbol) {
         ? Number(l3.stop_loss || l5.stop_loss)
         : Number((px * (1 - sign * 0.012)).toPrecision(6));
     const slDistFrac = px > 0 ? Math.max(0.0045, Math.abs(px - sl) / px) : 0.012;
-    const tp1 = Number(l3.take_profit_1 || l5.take_profit_1 || 0) > 0
-        ? Number(l3.take_profit_1 || l5.take_profit_1)
-        : Number((px * (1 + sign * 0.55 * slDistFrac)).toPrecision(6));
-    const tp2 = Number(l3.take_profit_2 || l3.take_profit || l5.take_profit_2 || l5.take_profit || 0) > 0
+    let tp2 = Number(l3.take_profit_2 || l3.take_profit || l5.take_profit_2 || l5.take_profit || 0) > 0
         ? Number(l3.take_profit_2 || l3.take_profit || l5.take_profit_2 || l5.take_profit)
         : Number((px * (1 + sign * 2.0 * slDistFrac)).toPrecision(6));
+    if (px > 0 && Math.abs(tp2 - px) / px < slDistFrac * 1.1) {
+        tp2 = Number((px * (1 + sign * 2.0 * slDistFrac)).toPrecision(6));
+    }
+    let tp1 = Number(l3.take_profit_1 || l5.take_profit_1 || 0);
+    // Guarantee distinct TP1 Lock (+0.55R) vs TP2 Runner whenever stored data collapsed tp1 == tp2
+    if (!(tp1 > 0) || Math.abs(tp2 - tp1) < Math.max(1e-8, px * 0.0015)) {
+        tp1 = Number((px * (1 + sign * 0.55 * slDistFrac)).toPrecision(6));
+    }
 
     // Ensure trajectory cone & tp_time_prediction
     const existingTp = scanObj.tp_time_prediction || l3.tp_time_prediction || l5.tp_time_prediction || {};
@@ -2900,29 +2907,34 @@ const FULL_CRYPTO_FUTURES_UNIVERSE = [
 let cryptoFuturesTickerCache = {};
 
 async function refreshCryptoFuturesTickers() {
+    let updated = false;
     try {
-        const binanceResp = await fetch('https://data-api.binance.vision/api/v3/ticker/24hr', {
+        const fapiResp = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr', {
             signal: AbortSignal.timeout(4000)
         });
-        if (binanceResp.ok) {
-            const tickers = await binanceResp.json();
+        if (fapiResp.ok) {
+            const tickers = await fapiResp.json();
             if (Array.isArray(tickers)) {
                 tickers.forEach(t => { cryptoFuturesTickerCache[t.symbol] = t; });
+                updated = true;
             }
         }
-    } catch (e) {
+    } catch (e) {}
+    if (!updated) {
         try {
-            const fapiResp = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr', {
+            const binanceResp = await fetch('https://data-api.binance.vision/api/v3/ticker/24hr', {
                 signal: AbortSignal.timeout(4000)
             });
-            if (fapiResp.ok) {
-                const tickers = await fapiResp.json();
+            if (binanceResp.ok) {
+                const tickers = await binanceResp.json();
                 if (Array.isArray(tickers)) {
                     tickers.forEach(t => { cryptoFuturesTickerCache[t.symbol] = t; });
+                    updated = true;
                 }
             }
         } catch (err) {}
     }
+    if (updated) updateCryptoFuturesWatchlistCache();
 }
 // High-speed In-Memory Watchlist Cache
 let cryptoFuturesWatchlistCache = [];
@@ -3004,7 +3016,9 @@ function updateCryptoFuturesWatchlistCache() {
     }
 }
 
-// Initial populate and periodic background refresh every 3 seconds
+// Initial populate and periodic background refresh every 3 seconds (plus live ticker poll)
+refreshCryptoFuturesTickers();
+setInterval(refreshCryptoFuturesTickers, 5000);
 updateCryptoFuturesWatchlistCache();
 setInterval(updateCryptoFuturesWatchlistCache, 3000);
 
@@ -3054,7 +3068,7 @@ app.get('/api/crypto-futures/status', (req, res) => {
 
     const hasTokens = fs.existsSync(tokensPath);
     const liveWallet = getRealBinanceWallet();
-    const binanceBalance = Number(liveWallet.total_wallet_balance ?? 1.78);
+    const binanceBalance = Number(liveWallet.total_wallet_balance ?? 0);
     const binanceAvailable = Number(liveWallet.available_balance ?? binanceBalance);
 
     res.json({
@@ -3397,17 +3411,35 @@ app.post('/api/execute', (req, res) => {
     res.json({ success: true, message: `Order untuk ${symbol} berhasil didaftarkan.`, position: pos });
 });
 
-// 7. AUTO TOGGLE (100% Native on Port 4000)
-app.post('/api/crypto-futures/auto/toggle', (req, res) => {
+// 7. AUTO TOGGLE / PAUSE / RESUME (100% Authoritative Sync with auto_trader.py)
+app.post(['/api/crypto-futures/auto/toggle', '/api/crypto-futures/auto/pause', '/api/crypto-futures/auto/resume'], (req, res) => {
     let state = {};
     try {
         if (fs.existsSync(statePath)) state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     } catch (e) {}
-    state.is_running = !state.is_running;
+    const curRunning = state.is_running !== false;
+    let nextRunning = !curRunning;
+    if (req.path.endsWith('/pause')) nextRunning = false;
+    else if (req.path.endsWith('/resume')) nextRunning = true;
+    else if (req.body && typeof req.body.running === 'boolean') nextRunning = req.body.running;
+
+    state.is_running = nextRunning;
+    state.control_updated_at = new Date().toISOString();
     try {
-        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
-    } catch (e) {}
-    res.json({ status: "SUCCESS", is_running: state.is_running });
+        fs.mkdirSync(resultsDir, { recursive: true });
+        const tmpStatePath = statePath + '.tmp';
+        fs.writeFileSync(tmpStatePath, JSON.stringify(state, null, 2));
+        fs.renameSync(tmpStatePath, statePath);
+    } catch (e) {
+        try { fs.writeFileSync(statePath, JSON.stringify(state, null, 2)); } catch (_) {}
+    }
+
+    if (nextRunning) {
+        const panicPath = path.join(resultsDir, 'panic_lock.json');
+        try { if (fs.existsSync(panicPath)) fs.unlinkSync(panicPath); } catch (e) {}
+        startBackgroundAutoTrader();
+    }
+    res.json({ status: "SUCCESS", is_running: state.is_running, autonomous_running: state.is_running });
 });
 
 // 8. PLUANG STATUS & BALANCE (100% Native on Port 4000)
@@ -3564,28 +3596,28 @@ app.get('/api/performance', (req, res) => {
         if (cp && cp.id && !recordedIds.has(cp.id)) {
             recordedIds.add(cp.id);
             const isWin = (cp.pnl_idr || 0) > 0 || (cp.pnl_pct || 0) > 0 || (cp.pnl_usd || 0) > 0;
-            if (isWin) ledger.winning_trades = (ledger.winning_trades || 15) + 1;
-            else ledger.losing_trades = (ledger.losing_trades || 4) + 1;
-            ledger.realized_pnl_idr = Math.round((ledger.realized_pnl_idr || 989000) + (cp.pnl_idr || 0));
-            ledger.realized_pnl_usd = Math.round(((ledger.realized_pnl_usd || 59.94) + (cp.pnl_usd || 0)) * 100) / 100;
+            if (isWin) ledger.winning_trades = (ledger.winning_trades || 0) + 1;
+            else ledger.losing_trades = (ledger.losing_trades || 0) + 1;
+            ledger.realized_pnl_idr = Math.round((ledger.realized_pnl_idr || 0) + (cp.pnl_idr || 0));
+            ledger.realized_pnl_usd = Math.round(((ledger.realized_pnl_usd || 0) + (cp.pnl_usd || 0)) * 100) / 100;
             ledgerDirty = true;
         }
     }
     if (ledgerDirty) {
         ledger.recorded_trade_ids = [...recordedIds].slice(-500);
-        ledger.closed_trades = (ledger.winning_trades || 15) + (ledger.losing_trades || 4);
-        ledger.win_rate_pct = Math.round(((ledger.winning_trades || 15) / Math.max(1, ledger.closed_trades)) * 10000) / 100;
+        ledger.closed_trades = (ledger.winning_trades || 0) + (ledger.losing_trades || 0);
+        ledger.win_rate_pct = ledger.closed_trades > 0 ? Math.round(((ledger.winning_trades || 0) / ledger.closed_trades) * 10000) / 100 : 0;
         ledger.updated_at = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
         try { fs.writeFileSync(perfLedgerPath, JSON.stringify(ledger, null, 2)); } catch (e) {}
     }
 
-    const wins = ledger.winning_trades ?? 15;
-    const losses = ledger.losing_trades ?? 4;
+    const wins = ledger.winning_trades ?? 0;
+    const losses = ledger.losing_trades ?? 0;
     const closedCount = wins + losses;
-    const winRate = closedCount > 0 ? Math.round((wins / closedCount) * 1000) / 10 : 78.9;
+    const winRate = closedCount > 0 ? Math.round((wins / closedCount) * 1000) / 10 : 0;
 
-    const realizedIdr = ledger.realized_pnl_idr ?? 989000;
-    const realizedUsd = ledger.realized_pnl_usd ?? 59.94;
+    const realizedIdr = ledger.realized_pnl_idr ?? 0;
+    const realizedUsd = ledger.realized_pnl_usd ?? 0;
     const unrealizedIdr = openPos.reduce((s, p) => s + (p.pnl_idr || 0), 0);
     const unrealizedUsd = openPos.reduce((s, p) => s + (p.pnl_usd || 0), 0);
 

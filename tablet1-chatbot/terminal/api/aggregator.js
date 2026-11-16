@@ -40,8 +40,7 @@ const isCrypto = s => {
 function otcQuote(sym) {
   const base = OTC_DESK[sym];
   if (!base) return null;
-  const wave = Math.sin(Date.now() / 60000) * (base.price * 0.003);
-  const px = +(base.price + wave).toFixed(2);
+  const px = +base.price.toFixed(2);
   return U.tick({
     symbol: sym,
     asset: 'equity',
@@ -49,33 +48,17 @@ function otcQuote(sym) {
     bid: +(px - 0.15).toFixed(2),
     ask: +(px + 0.15).toFixed(2),
     vol: base.vol,
-    high: Math.max(base.high, px),
-    low: Math.min(base.low, px),
+    high: base.high,
+    low: base.low,
     prevClose: base.prevClose,
     ts: Date.now(),
-    source: 'otc-desk',
-    mode: 'LIVE'
+    source: 'otc-indicative',
+    mode: 'EOD'
   });
 }
 
 function otcKline(sym, interval = '1h', limit = 300) {
-  const base = OTC_DESK[sym] || { price: 150, vol: 500000 };
-  const n = Math.min(+limit || 300, 500);
-  const stepMs = interval === '1m' ? 60000 : interval === '5m' ? 300000 : interval === '15m' ? 900000 : interval === '4h' ? 14400000 : interval === '1d' ? 86400000 : interval === '1w' ? 604800000 : 3600000;
-  const now = Math.floor(Date.now() / stepMs) * stepMs;
-  const candles = [];
-  let px = base.price * 0.88;
-  for (let i = n - 1; i >= 0; i--) {
-    const t = now - i * stepMs;
-    const seed = Math.sin(i * 0.37 + sym.charCodeAt(0)) * 0.008 + 0.0004;
-    const o = px;
-    const c = i === 0 ? base.price : +(o * (1 + seed)).toFixed(2);
-    const h = +(Math.max(o, c) * (1 + Math.abs(Math.cos(i)) * 0.005)).toFixed(2);
-    const l = +(Math.min(o, c) * (1 - Math.abs(Math.sin(i)) * 0.005)).toFixed(2);
-    px = c;
-    candles.push({ t, o, h, l, c, v: Math.round(base.vol / 24 * (0.7 + Math.abs(Math.sin(i)))) });
-  }
-  return { symbol: sym, interval, source: 'otc-desk', mode: 'LIVE', candles };
+  return { symbol: sym, interval, source: 'otc-indicative', mode: 'N/A', candles: [] };
 }
 
 async function quote(symbol, market) {

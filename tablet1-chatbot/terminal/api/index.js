@@ -93,6 +93,12 @@ module.exports = (app, server) => {
     const d = await edgarP.derivativesMatrix(req.query.limit || 30);
     res.json(env('binance-futures', d, { mode: 'LIVE' }));
   }));
+  r.get('/derivatives-intel', wrap('binance-futures', async (req, res) => {
+    const s = needSym(req);
+    const d = await edgarP.derivativesIntel(s);
+    if (!d) return fail(res, 'binance-futures', 'Derivatives Open Interest only available for USDT Perpetual contracts', 404);
+    res.json(env('binance-futures', d, { mode: 'LIVE' }));
+  }));
 
   async function probe() {
     const P = {

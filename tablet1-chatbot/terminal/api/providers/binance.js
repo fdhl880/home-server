@@ -41,9 +41,12 @@ async function quote(symbol, marketHint) {
 
 async function kline(symbol, interval = '1h', limit = 300, marketHint) {
   const p = parse(symbol, marketHint);
-  const iv = { '1d': '1d', '1w': '1w' }[interval] || interval;
-  const rows = await U.cached(`bnk:${p.market}:${p.pair}:${iv}:${limit}`, 2000, () => get(p.market, `${prefix(p.market)}/klines?symbol=${p.pair}&interval=${iv}&limit=${Math.min(+limit || 300, 1000)}`));
-  return { symbol: p.symbol, interval, source: PROV[p.market], mode: 'LIVE', candles: rows.map(r => ({ t: r[0], o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[5] })) };
+  // Binance Futures REST does not expose 1s klines; seamlessly source real 1s klines from Spot (or 1mo -> 1M)
+  let useMarket = p.market;
+  let iv = interval === '1mo' ? '1M' : ({ '1d': '1d', '1w': '1w' }[interval] || interval);
+  if (iv === '1s' && useMarket === 'futures') useMarket = 'spot';
+  const rows = await U.cached(`bnk:${useMarket}:${p.pair}:${iv}:${limit}`, iv === '1s' ? 900 : 2000, () => get(useMarket, `${prefix(useMarket)}/klines?symbol=${p.pair}&interval=${iv}&limit=${Math.min(+limit || 300, 1000)}`));
+  return { symbol: p.symbol, interval, source: PROV[useMarket], mode: 'LIVE', candles: rows.map(r => ({ t: r[0], o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[5] })) };
 }
 async function depth(symbol, limit = 20) {
   const p = parse(symbol);

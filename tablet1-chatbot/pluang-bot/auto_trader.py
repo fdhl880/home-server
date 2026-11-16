@@ -125,10 +125,41 @@ def load_state():
             pass
     return state
 
+def sync_control_flags_from_disk():
+    """Reload authoritative user control flags (is_running, mode, intervals) without clobbering runtime counters."""
+    global state
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                disk = json.load(f)
+            if isinstance(disk, dict):
+                for k in ("is_running", "mode", "scan_interval_sec", "quick_screen_interval_sec"):
+                    if k in disk:
+                        state[k] = disk[k]
+        except Exception:
+            pass
+    return bool(state.get("is_running", True))
+
 def save_state():
     try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
+        # Preserve authoritative user toggle written externally (e.g. via Web UI or Telegram)
+        if os.path.exists(STATE_FILE):
+            try:
+                with open(STATE_FILE, "r", encoding="utf-8") as f:
+                    disk = json.load(f)
+                if isinstance(disk, dict) and "is_running" in disk:
+                    disk_ts = str(disk.get("control_updated_at") or "")
+                    mem_ts = str(state.get("control_updated_at") or "")
+                    if disk_ts >= mem_ts:
+                        state["is_running"] = disk["is_running"]
+                        if disk_ts:
+                            state["control_updated_at"] = disk_ts
+            except Exception:
+                pass
+        tmp_path = STATE_FILE + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, STATE_FILE)
     except Exception:
         pass
 
@@ -1704,6 +1735,9 @@ def run_full_scan_cycle():
 
     # SEQUENTIAL SCAN — one coin at a time (Layer 1 → 2 → 3 → 4 → 5 → Committee)
     for idx, item in enumerate(scan_list, start=1):
+        if not sync_control_flags_from_disk():
+            print("[FULL SCAN] ⏸️ Paused by user mid-cycle. Halting remaining coin scans immediately.", flush=True)
+            break
         pair_disp = item.get('pair') or item.get('symbol', '').replace('-USD', 'USDT')
         print(f"\n[SCAN {idx}/{len(scan_list)}] ▶ Memproses koin: {pair_disp} ({item.get('name', pair_disp)})", flush=True)
         item, sym, pair, name, tier, res, com_res = _scan_one(item)
@@ -2020,13 +2054,24 @@ def start_loop():
     last_full_scan = 0
     last_quick_scan = 0
     was_in_all_in_mode = False
-    
+    was_paused_by_user = not sync_control_flags_from_disk()
+    if was_paused_by_user:
+        print("[*] Autonomous trader is currently PAUSED (waiting for resume signal)...", flush=True)
+
     while True:
         try:
-            if not state.get("is_running", True):
-                print("[*] Autonomous trader PAUSED.", flush=True)
-                time.sleep(30)
+            is_active = sync_control_flags_from_disk()
+            if not is_active:
+                if not was_paused_by_user:
+                    was_paused_by_user = True
+                    print("[*] Autonomous trader PAUSED by user.", flush=True)
+                time.sleep(2)
                 continue
+            elif was_paused_by_user:
+                was_paused_by_user = False
+                print("[*] Autonomous trader RESUMED by user! Triggering immediate scan cycle...", flush=True)
+                last_full_scan = 0
+                last_quick_scan = 0
             
             now = time.time()
             guard = check_wallet_and_position_guard()
