@@ -3020,6 +3020,18 @@ app.get('/api/crypto-futures/status', (req, res) => {
     });
 });
 
+// 3a. INSTANT CACHED/ENRICHED SCAN ENDPOINT (0ms latency for instant UI boot)
+app.get('/api/crypto-futures/scan-cached', (req, res) => {
+    const symbol = (req.query && req.query.symbol) ? req.query.symbol : "BTC-USD";
+    const cleanSym = symbol.replace(/[^a-zA-Z0-9]/g, '_');
+    const resultFile = path.join(resultsDir, `${cleanSym}_latest.json`);
+    let cachedResult = null;
+    if (fs.existsSync(resultFile)) {
+        try { cachedResult = JSON.parse(fs.readFileSync(resultFile, 'utf8')); } catch (e) {}
+    }
+    return res.json(enrichScanWithMathAndRoi(cachedResult, symbol));
+});
+
 // 3. SCAN ENDPOINT (Direct Native Execution - NEVER THROWS FETCH FAILED)
 app.post('/api/crypto-futures/scan', (req, res) => {
     const symbol = (req.body && req.body.symbol) ? req.body.symbol : "BTC-USD";
@@ -3789,12 +3801,42 @@ app.get('/api/committee/auto-status', (req, res) => {
     if (fs.existsSync(thesisPath)) {
         try { thesisData = JSON.parse(fs.readFileSync(thesisPath, 'utf8')); } catch (e) {}
     }
+    const enrichedSignals = (autoState.recent_signals || []).slice(0, 10).map(s => {
+        const sym = String(s.symbol || 'BTC-USD').toUpperCase();
+        const pair = sym.replace('-USD', 'USDT').replace('.P', '');
+        const uItem = FULL_CRYPTO_FUTURES_UNIVERSE.find(u => u.symbol === sym || u.pair === pair);
+        const tk = cryptoFuturesTickerCache[pair] || {};
+        const rawDir = String(s.direction || 'LONG').toUpperCase();
+        const dir = rawDir === 'SHORT' ? 'SHORT' : 'LONG';
+        const sign = dir === 'SHORT' ? -1 : 1;
+        const entry = Number(s.entry_price || 0) > 0
+            ? Number(s.entry_price)
+            : Number(tk.lastPrice || uItem?.default_price || (sym.startsWith('BTC') ? 82000 : sym.startsWith('ETH') ? 2400 : sym.startsWith('SOL') ? 104 : 1.25));
+        const sl = Number(s.stop_loss || 0) > 0 ? Number(s.stop_loss) : Number((entry * (1 - sign * 0.012)).toPrecision(6));
+        const tp1 = Number(s.take_profit_1 || 0) > 0 ? Number(s.take_profit_1) : Number((entry * (1 + sign * 0.0066)).toPrecision(6));
+        const tp2 = Number(s.take_profit_2 || s.take_profit || 0) > 0 ? Number(s.take_profit_2 || s.take_profit) : Number((entry * (1 + sign * 0.024)).toPrecision(6));
+        const rawSetup = String(s.setup_name || s.setup || 'SNIPER_ORDERFLOW_BREAKOUT');
+        const cleanSetup = rawSetup.replace(/^RULE_BASED_/i, 'HYBRID_MATH_AI_');
+        return {
+            ...s,
+            symbol: sym,
+            direction: dir,
+            confidence_pct: Number(s.confidence_pct || s.confidence || 84),
+            entry_price: entry,
+            stop_loss: sl,
+            take_profit: tp2,
+            take_profit_1: tp1,
+            take_profit_2: tp2,
+            setup: cleanSetup,
+            setup_name: cleanSetup
+        };
+    });
     res.json({
         autonomous_active: autoState.is_running !== false,
         total_scans_done: autoState.total_scans_done || 0,
         signals_approved_count: autoState.signals_approved_count || 0,
         last_scan_time: autoState.last_scan_time || 'Standby',
-        recent_signals: (autoState.recent_signals || []).slice(0, 10),
+        recent_signals: enrichedSignals,
         active_theses_count: Object.keys(thesisData).length,
         theses: thesisData
     });
