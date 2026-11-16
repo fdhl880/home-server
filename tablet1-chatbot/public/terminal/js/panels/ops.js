@@ -1,6 +1,6 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, fmtTime, dirCls, LS } from '../util.js';
 import { get, getRaw, tickOk } from '../api.js';
-import { attachTechnicalMasterCanvas } from './charts.js';
+import { attachTechnicalMasterCanvas } from './charts.js?v=20261116e';
 
 export function mountBOT(body, ctx) {
   body.classList.add('fill');
