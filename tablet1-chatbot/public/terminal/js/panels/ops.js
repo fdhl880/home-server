@@ -1283,14 +1283,15 @@ export function mountBOT(body, ctx) {
       );
     }
 
-    // 7. LIVE PERPETUAL FUTURES RADAR
+    // 7. LIVE PERPETUAL FUTURES RADAR (RANKED BY LIVE OPPORTUNITY SCORE)
     if (wl.length) {
       sc.append(
-        h('div', { class: 'tb', style: 'background:#070707;margin-top:4px' }, h('span', { class: 'lbl', text: `LIVE PERPETUAL FUTURES RADAR (${wl.length} CONTRACTS — CLICK TO CHART & DEEP SCAN)` })),
+        h('div', { class: 'tb', style: 'background:#070707;margin-top:4px' }, h('span', { class: 'lbl', text: `LIVE PERPETUAL FUTURES RADAR — TOP RANKED (${wl.length} CONTRACTS — CLICK TO CHART & DEEP SCAN)` })),
         h('table', { class: 't' },
-          h('thead', null, h('tr', null, ['Pair', 'Name', 'Last Px', '24h %', 'Trend Regime', 'Vol', 'Max Lev', 'Action'].map(x => h('th', { text: x })))),
-          h('tbody', null, wl.slice(0, 20).map(item => {
+          h('thead', null, h('tr', null, ['#', 'Pair', 'Name', 'Last Px', '24h %', 'Trend Regime', 'Vol / Opp', 'Max Lev', 'Action'].map(x => h('th', { text: x })))),
+          h('tbody', null, wl.slice(0, 20).map((item, rIdx) => {
             const chg = +(item.change_24h || 0);
+            const oppTxt = item.opportunity_score != null ? ` (${Number(item.opportunity_score).toFixed(1)})` : '';
             return h('tr', {
               class: 'row',
               onclick: () => {
@@ -1298,12 +1299,13 @@ export function mountBOT(body, ctx) {
                 runScan(item.symbol);
               }
             },
+              h('td', { class: 'mu', text: String(rIdx + 1) }),
               h('td', { class: 'l sym am', text: item.pair + '.P' }),
               h('td', { class: 'l mu', text: item.name }),
               h('td', { class: 'am', text: fmtPx(item.price) }),
               h('td', { class: dirCls(chg), text: fmtPct(chg) }),
               h('td', { class: item.trend && item.trend.includes('BULL') ? 'up' : 'dn', text: item.trend || '-' }),
-              h('td', { class: 'lb', text: item.volatility || 'MOD' }),
+              h('td', { class: 'lb', text: (item.volatility || 'MOD') + oppTxt }),
               h('td', { class: 'am', text: (item.leverage_max || 20) + 'x' }),
               h('td', null, h('button', { class: 'on', text: 'DEEP SCAN', onclick: ev => { ev.stopPropagation(); runScan(item.symbol); } }))
             );

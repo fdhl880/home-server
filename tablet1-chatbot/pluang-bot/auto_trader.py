@@ -2368,7 +2368,11 @@ def run_full_scan_cycle():
         from strategies.bandit_allocator import ContextualThompsonBandit
         if scan_list:
             bandit = ContextualThompsonBandit()
-            ranked_b = bandit.rank_candidates(scan_list, regime=regime)
+            for item_b in scan_list:
+                item_b.setdefault("strategy_id", f"TIER_{item_b.get('tier', 'CORE')}")
+                item_b.setdefault("regime", regime)
+                item_b["rrr_net"] = max(1.0, float(item_b.get("opportunity_score") or 5.0))
+            ranked_b = bandit.rank_candidates(scan_list, regime=regime, deterministic=True)
             if isinstance(ranked_b, list) and len(ranked_b) == len(scan_list):
                 scan_list = ranked_b
     except Exception:

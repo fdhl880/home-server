@@ -366,8 +366,9 @@ def fetch_all_binance_futures_pairs():
         pair = s.get("symbol", "")
         pair_upper = pair.upper()
 
-        # Exclude index baskets, dominance, tokenized assets, and quarterly delivery futures
-        if any(pair_upper.endswith(ex) for ex in ("DOMUSDT", "_PERP", "DEFUSDT")) or \
+        # Exclude non-ASCII, index baskets, dominance, tokenized assets, and quarterly delivery futures
+        if (not pair_upper.isascii()) or \
+           any(pair_upper.endswith(ex) for ex in ("DOMUSDT", "_PERP", "DEFUSDT")) or \
            pair_upper in ("DEFIUSDT", "FOOTBALLUSDT", "BLUEBIRDUSDT") or \
            (len(pair_upper) > 6 and pair_upper[-6:].isdigit()):
             continue

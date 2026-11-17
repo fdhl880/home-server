@@ -3111,6 +3111,15 @@ function updateCryptoFuturesWatchlistCache() {
             const qsm = qsMoversMap[item.pair] || {};
             const price = parseFloat(t.lastPrice) || qsm.price || item.default_price || 0;
             const change = parseFloat(t.priceChangePercent) || qsm.change_24h || (qsm.change ? parseFloat(qsm.change) : 0);
+            const volUsd = parseFloat(t.quoteVolume) || Number(qsm.volume_usd || 0) || 0;
+            const highPx = parseFloat(t.highPrice) || 0;
+            const lowPx = parseFloat(t.lowPrice) || 0;
+            const hlRange = lowPx > 0 && highPx > 0 ? ((highPx - lowPx) / lowPx) * 100 : Math.abs(change);
+            const volScore = volUsd > 0 ? Math.min(Math.log10(volUsd), 10) : 5.0;
+            const absChg = Math.abs(change);
+            const chgScore = absChg > 8.5 ? Math.max(2.0, 9.0 - (absChg - 8.5) * 0.4) : Math.min(absChg / 1.5, 10.0);
+            const rngScore = Math.min(hlRange / 3.0, 10.0);
+            const oppScore = Number(qsm.score || ((volScore * 0.35) + (chgScore * 0.40) + (rngScore * 0.25)).toFixed(2));
             
             // Check latest 5-layer audit file
             const cleanSym = item.symbol.replace(/[^a-zA-Z0-9]/g, '_');
@@ -3128,6 +3137,8 @@ function updateCryptoFuturesWatchlistCache() {
                 pair: item.pair,
                 price: price,
                 change_24h: change,
+                volume_usd: volUsd,
+                opportunity_score: oppScore,
                 rsi: 50,
                 rsi_14: 50,
                 trend: change > 3 ? "STRONG_BULLISH" : (change > 0 ? "BULLISH" : (change < -3 ? "STRONG_BEARISH" : "BEARISH")),
@@ -3138,6 +3149,7 @@ function updateCryptoFuturesWatchlistCache() {
             };
         });
 
+        enriched.sort((a, b) => (b.opportunity_score || 0) - (a.opportunity_score || 0));
         cryptoFuturesWatchlistCache = enriched;
     } catch (e) {
         console.error('Watchlist cache update error:', e.message);
