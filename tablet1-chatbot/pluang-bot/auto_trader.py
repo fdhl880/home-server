@@ -2696,20 +2696,25 @@ def run_full_scan_cycle():
             reason_short = (com_res.get("portfolio_manager", {}).get("decision") if com_res else fc.get("final_reason", ""))[:70]
             print(f"REJECTED {sym}: {reason_short}...", flush=True)
             state["signals_rejected_count"] += 1
-            if _entry_sig > 0 and _sl_sig > 0 and _tp2_sig > 0 and fc.get("direction") in ("LONG", "SHORT"):
+            if not fc.get("_shadow_registered") and _entry_sig > 0 and _sl_sig > 0 and _tp2_sig > 0 and fc.get("direction") in ("LONG", "SHORT"):
                 try:
                     from shadow.engine import ShadowEngine
-                    ShadowEngine().register_candidate({
-                        "symbol": sym,
-                        "strategy_id": setup,
-                        "regime": regime,
-                        "direction": fc.get("direction"),
-                        "entry_price": _entry_sig,
-                        "sl_price": _sl_sig,
-                        "tp_price": _tp2_sig,
-                        "ai_decision": "SKIP",
-                        "p_cal": fc.get("calibrated_prob") or (float(conf or 50) / 100.0),
-                    }, ai_decision="SKIP", skip_reason=reason_short)
+                    _p_cal_sh = float(fc.get("calibrated_prob") or (float(conf or 50) / 100.0))
+                    _reg_sh = (fc.get("math_proof") or {}).get("statistical_regime") or regime
+                    ShadowEngine().register_candidate(
+                        candidate={
+                            "symbol": sym,
+                            "strategy_id": setup,
+                            "regime": _reg_sh,
+                            "direction": fc.get("direction"),
+                            "entry_price": _entry_sig,
+                            "sl_price": _sl_sig,
+                            "tp1_price": _tp1_sig,
+                            "tp2_price": _tp2_sig,
+                        },
+                        ai_decision="SKIP",
+                        p_cal=_p_cal_sh,
+                    )
                 except Exception:
                     pass
 

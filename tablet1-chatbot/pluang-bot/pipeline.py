@@ -2200,26 +2200,25 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 if knn_note:
                     mp["episodic_knn_note"] = knn_note
 
-                cal_p = raw_p
+                cal_p = round(raw_p, 4)
                 try:
                     from features.hmm_drift import load_calibrator
-                    cal_p = load_calibrator().calibrate_prob(raw_p)
+                    _cal_obj = load_calibrator()
+                    if getattr(_cal_obj, "_is_fitted", False) and len(getattr(_cal_obj, "history_y", [])) >= 5:
+                        _cal_iso = _cal_obj.calibrate_prob(raw_p)
+                        _w_cal = min(0.50, len(_cal_obj.history_y) / 30.0)
+                        cal_p = round((1.0 - _w_cal) * raw_p + _w_cal * _cal_iso, 4)
                 except Exception:
-                    try:
-                        from calibration import ProbabilityCalibrator
-                        cal_p = ProbabilityCalibrator().calibrate_prob(raw_p)
-                    except Exception:
-                        pass
-                # Blend calibrated prior with hybrid score when journal sample is still growing
-                cal_p = round(0.65 * raw_p + 0.35 * cal_p, 4)
+                    pass
 
-                conformal_set = ["WIN"] if cal_p >= float(sniper_cfg.get("min_calibrated_p_tp1", 0.68)) else ["WIN", "LOSS"]
+                conformal_ok = True
+                conformal_set = ["WIN"] if cal_p >= float(sniper_cfg.get("min_calibrated_p_tp1", 0.74)) else ["WIN", "LOSS"]
                 try:
                     from features.hmm_drift import load_conformal_filter
                     sg = load_conformal_filter(alpha_target=float(sniper_cfg.get("conformal_alpha_target", 0.18)))
-                    c_res = sg.predict_set(cal_p)
-                    if isinstance(c_res, (list, set)):
-                        conformal_set = sorted(list(c_res))
+                    _c_ok, _c_reason, _c_info = sg.evaluate_gate(cal_p)
+                    conformal_ok = bool(_c_ok)
+                    conformal_set = list(_c_info.get("prediction_set") or [])
                 except Exception:
                     pass
 
@@ -2252,6 +2251,8 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                         _veto_reasons.append(f"P_Math {p_math_pct:.1f}% < 60% (bukti matematika belum cukup kuat)")
                     if s_hybrid_pct < 68.0:
                         _veto_reasons.append(f"S_Hybrid {s_hybrid_pct:.1f}% < 68% (kolaborasi Math+AI di bawah ambang Sniper)")
+                    if bool(sniper_cfg.get("enabled", True)) and not conformal_ok:
+                        _veto_reasons.append(f"SKIP_CONFORMAL_AMBIGUITY (set={conformal_set}, cal_p={cal_p:.2f})")
                     if _p_tp1_sl < 70.0:
                         _veto_reasons.append(f"First-Passage P(TP1<SL) {_p_tp1_sl:.1f}% < 70%")
                     if _pref_dir in ("LONG", "SHORT") and _fc_dir in ("LONG", "SHORT") and _pref_dir != _fc_dir and abs(_obi20) > 0.15:
@@ -2291,10 +2292,10 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 final_call["tp_time_prediction"] = plan_result.get("tp_time_prediction")
 
                 # Compute ROI (%) & PnL (USD & IDR) Projection sized against live Binance Futures wallet
-                _entry_px = float(plan_result.get("entry_price") or final_call.get("entry_price") or market_data.get("current_price") or 0)
-                _sl_px = float(plan_result.get("stop_loss") or final_call.get("stop_loss") or 0)
-                _tp2_px = float(plan_result.get("take_profit_2") or plan_result.get("take_profit") or final_call.get("take_profit_2") or final_call.get("take_profit") or 0)
-                _tp1_px = float(plan_result.get("take_profit_1") or final_call.get("take_profit_1") or 0)
+                _entry_px = float(final_call.get("entry_price") or plan_result.get("entry_price") or market_data.get("current_price") or 0)
+                _sl_px = float(final_call.get("stop_loss") or plan_result.get("stop_loss") or 0)
+                _tp2_px = float(final_call.get("take_profit_2") or final_call.get("take_profit") or plan_result.get("take_profit_2") or plan_result.get("take_profit") or 0)
+                _tp1_px = float(final_call.get("take_profit_1") or plan_result.get("take_profit_1") or 0)
                 _dir_str = str(final_call.get("direction") if final_call.get("direction") in ("LONG", "SHORT") else plan_result.get("action", "LONG")).upper()
                 _d_sign = -1.0 if _dir_str == "SHORT" else 1.0
                 _sl_d_abs = abs(_entry_px - _sl_px) if (_entry_px > 0 and _sl_px > 0) else (_entry_px * 0.012)
@@ -2365,6 +2366,7 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                             p_cal=cal_p,
                             features=mp,
                         )
+                        final_call["_shadow_registered"] = True
                     except Exception:
                         pass
             except Exception as _v2e:
@@ -2475,7 +2477,7 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
             "direction": final_call.get("direction", "NONE"),
             "setup": setup_result.get("setup_name", "N/A"),
             "ai_prob": final_call.get("confidence_score", 0),
-            "calibrated_prob": final_call.get("confidence_score", 0),
+            "calibrated_prob": final_call.get("calibrated_prob") if final_call.get("calibrated_prob") is not None else round(float(final_call.get("confidence_score", 0) or 0) / 100.0, 4),
             "entry": final_call.get("entry_price", 0),
             "sl": final_call.get("stop_loss", 0),
             "tp": final_call.get("take_profit_1", 0) or final_call.get("take_profit", 0),
