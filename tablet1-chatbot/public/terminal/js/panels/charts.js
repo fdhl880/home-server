@@ -1,5 +1,5 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtDate, fmtTime, dirCls } from '../util.js';
-import { get } from '../api.js';
+import { get, getRaw } from '../api.js';
 
 function calcSMA(candles, period, field = 'c') {
   const out = [];
@@ -618,26 +618,44 @@ export function attachTechnicalMasterCanvas({ wrap, chart, getSeries, getMapped,
       }
     }
 
-    // F. Trade Plan Risk / Reward Boxes (used when executing or previewing setup in BOT <GO>)
-    if (plan && plan.entry > 0 && plan.sl > 0 && plan.tp1 > 0) {
-      const boxStart = Math.max(plotW * 0.62, (xOfIdx(mapped.length - 10) ?? plotW * 0.68));
-      const boxW = Math.max(40, plotW - boxStart);
-      const yEnt = yOfPx(plan.entry), ySl = yOfPx(plan.sl), yTp1 = yOfPx(plan.tp1);
+    // F. Trade Plan Risk / Reward Boxes (used for LIVE Open Positions in GP/GIP & BOT <GO>)
+    if (plan && plan.entry > 0) {
+      const boxStart = Math.max(plotW * 0.58, (xOfIdx(mapped.length - 12) ?? plotW * 0.65));
+      const boxW = Math.max(44, plotW - boxStart);
+      const yEnt = yOfPx(plan.entry), ySl = plan.sl > 0 ? yOfPx(plan.sl) : null, yTp1 = plan.tp1 > 0 ? yOfPx(plan.tp1) : null;
       const yTp2 = plan.tp2 > 0 ? yOfPx(plan.tp2) : null;
+      const yLiq = plan.liq > 0 ? yOfPx(plan.liq) : null;
+      if (yEnt != null) {
+        ctx2d.save();
+        ctx2d.strokeStyle = '#ffb000';
+        ctx2d.lineWidth = 1.4;
+        ctx2d.beginPath(); ctx2d.moveTo(boxStart, yEnt); ctx2d.lineTo(plotW, yEnt); ctx2d.stroke();
+        ctx2d.restore();
+        drawPill(plan.entryLabel || `${plan.isOpen ? 'OPEN ' : ''}ENTRY ${plan.dir || ''} ${fmtPx(plan.entry)}`, boxStart + 4, yEnt - 3, 'rgba(32,20,0,0.92)', '#ffb000', '#ffb000', true);
+      }
       if (yEnt != null && ySl != null) {
         ctx2d.fillStyle = 'rgba(255, 59, 48, 0.14)';
         ctx2d.fillRect(boxStart, Math.min(yEnt, ySl), boxW, Math.max(2, Math.abs(ySl - yEnt)));
-        drawPill(`SL RISK ${fmtPx(plan.sl)}`, boxStart + 4, ySl + (plan.sl < plan.entry ? 11 : -3), 'rgba(38,6,6,0.9)', '#ff5a52', '#ff3b30', true);
+        drawPill(plan.slLabel || `SL ${fmtPx(plan.sl)}`, boxStart + 4, ySl + (plan.sl < plan.entry ? 11 : -3), 'rgba(38,6,6,0.92)', '#ff5a52', '#ff3b30', true);
       }
       if (yEnt != null && yTp1 != null) {
         ctx2d.fillStyle = 'rgba(0, 229, 255, 0.12)';
         ctx2d.fillRect(boxStart, Math.min(yEnt, yTp1), boxW, Math.max(2, Math.abs(yTp1 - yEnt)));
-        drawPill(`TP1 LOCK ${fmtPx(plan.tp1)}`, boxStart + 4, yTp1 - 2, 'rgba(0,22,28,0.9)', '#00e5ff', '#00e5ff', true);
+        drawPill(plan.tp1Label || `TP1 ${fmtPx(plan.tp1)}`, boxStart + 4, yTp1 - 2, 'rgba(0,22,28,0.92)', '#00e5ff', '#00e5ff', true);
       }
       if (yTp1 != null && yTp2 != null && Math.abs(yTp2 - yTp1) > 4) {
         ctx2d.fillStyle = 'rgba(0, 210, 106, 0.11)';
         ctx2d.fillRect(boxStart, Math.min(yTp1, yTp2), boxW, Math.max(2, Math.abs(yTp2 - yTp1)));
-        drawPill(`TP2 RUNNER ${fmtPx(plan.tp2)}`, boxStart + 4, yTp2 - 2, 'rgba(0,28,12,0.9)', '#00d26a', '#00d26a', true);
+        drawPill(plan.tp2Label || `TP2 ${fmtPx(plan.tp2)}`, boxStart + 4, yTp2 - 2, 'rgba(0,28,12,0.92)', '#00d26a', '#00d26a', true);
+      }
+      if (yLiq != null) {
+        ctx2d.save();
+        ctx2d.strokeStyle = 'rgba(224, 64, 251, 0.85)';
+        ctx2d.lineWidth = 1.2;
+        ctx2d.setLineDash([3, 3]);
+        ctx2d.beginPath(); ctx2d.moveTo(boxStart, yLiq); ctx2d.lineTo(plotW, yLiq); ctx2d.stroke();
+        ctx2d.restore();
+        drawPill(`LIQ ${fmtPx(plan.liq)}`, boxStart + 4, yLiq - 2, 'rgba(34,6,38,0.92)', '#e040fb', '#e040fb', true);
       }
     }
 
@@ -682,10 +700,16 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
 
   let chart = null, mainSeries = null, volSeries = null, volMaSeries = null, smaS = null, emaS = null, bbUpS = null, bbLoS = null, vwapS = null;
   let tmOverlay = null;
+  let activeTradePlan = null;
   let lastCandles = [];
   let mappedBars = [];
   let activeBar = null;
   let effectiveFeedNote = '';
+
+  function normPosPair(s) {
+    const u = String(s || '').toUpperCase().replace(/\.P$/, '').replace('-USD', 'USDT');
+    return u.endsWith('USDT') ? u : u + 'USDT';
+  }
 
   function ivSeconds(intervalStr) {
     const map = { '1s': 1, '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800 };
@@ -987,8 +1011,17 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
       leg.innerHTML = `<b style="color:#fff">${ctx.symbol}</b> [${feedLbl}]  O:<b style="color:#ffb000">${fmtPx(o)}</b>  H:<b style="color:#00d26a">${fmtPx(hi)}</b>  L:<b style="color:#ff3b30">${fmtPx(lo)}</b>  C:<b style="color:#ffb000">${fmtPx(cl)}</b> (<span class="${dirCls(chgPct)}">${fmtPct(chgPct)}</span>)  VOL:<b style="color:#00e5ff">${fmtVol(v)}</b>  <span style="color:#00d26a">⏱ ${remFmt}</span>`;
 
       const biasCol = tmSummary.bias === 'BULLISH' ? '#00d26a' : tmSummary.bias === 'BEARISH' ? '#ff3b30' : '#ffb000';
-      statStrip.innerHTML = '';
-      statStrip.append(
+      const stripItems = [];
+      if (activeTradePlan && activeTradePlan.entry > 0) {
+        const pnlCl = activeTradePlan.pnlPct >= 0 ? '#00d26a' : '#ff3b30';
+        stripItems.push(
+          h('span', {
+            style: `color:${pnlCl};font-weight:bold;border:1px solid ${pnlCl}66;padding:0 5px;background:rgba(12,8,4,0.9)`,
+            text: `● OPEN ${activeTradePlan.dir} ${activeTradePlan.lev}x | ENT:${fmtPx(activeTradePlan.entry)} | P&L:${activeTradePlan.pnlPct >= 0 ? '+' : ''}${Number(activeTradePlan.pnlPct).toFixed(2)}% ($${Number(activeTradePlan.pnlUsd).toFixed(2)}) | SL:${activeTradePlan.slState}`
+          })
+        );
+      }
+      stripItems.push(
         h('span', { class: 'sym am', text: `LAST: ${fmtPx(cl)}` }),
         h('span', { class: dirCls(chg), text: `CHG: ${fmtChg(chg)} (${fmtPct(chgPct)})` }),
         h('span', { style: `color:${biasCol};font-weight:bold`, text: `STRUCT: ${tmSummary.bias}` }),
@@ -1000,6 +1033,8 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
         lastSmaVal != null ? h('span', { style: 'color:#4da3ff', text: `SMA20: ${fmtPx(lastSmaVal)}` }) : null,
         lastEmaVal != null ? h('span', { style: 'color:#e040fb', text: `EMA50: ${fmtPx(lastEmaVal)}` }) : null
       );
+      statStrip.innerHTML = '';
+      statStrip.append(...stripItems.filter(Boolean));
     };
 
     const latestBar = mapped[mapped.length - 1];
@@ -1011,13 +1046,21 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
       const vBar = volSeries ? param.seriesData.get(volSeries) : null;
       if (b) updateLegend(b, vBar ? vBar.value : volByTime.get(param.time));
     });
+    if (activeTradePlan && activeTradePlan.entry > 0 && typeof mainSeries.createPriceLine === 'function') {
+      mainSeries.createPriceLine({ price: activeTradePlan.entry, color: '#ffb000', lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: '' });
+      if (activeTradePlan.sl > 0) mainSeries.createPriceLine({ price: activeTradePlan.sl, color: '#ff3b30', lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: '' });
+      if (activeTradePlan.tp1 > 0) mainSeries.createPriceLine({ price: activeTradePlan.tp1, color: '#00e5ff', lineWidth: 1.5, lineStyle: 2, axisLabelVisible: true, title: '' });
+      if (activeTradePlan.tp2 > 0) mainSeries.createPriceLine({ price: activeTradePlan.tp2, color: '#00d26a', lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: '' });
+      if (activeTradePlan.liq > 0) mainSeries.createPriceLine({ price: activeTradePlan.liq, color: '#e040fb', lineWidth: 1.5, lineStyle: 3, axisLabelVisible: true, title: '' });
+    }
     chart.timeScale().fitContent();
     tmOverlay = attachTechnicalMasterCanvas({
       wrap,
       chart,
       getSeries: () => mainSeries,
       getMapped: () => mappedBars,
-      getLayers: () => ({ struct: showStruct, trend: showTrend, fvg: showFvg, fib: showFib, vpvr: showVpvr })
+      getLayers: () => ({ struct: showStruct, trend: showTrend, fvg: showFvg, fib: showFib, vpvr: showVpvr }),
+      getTradePlan: () => activeTradePlan
     });
     renderOscillator(candles);
   }
@@ -1093,11 +1136,66 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
   ro.observe(wrap);
   ctx.cleanup(() => { ro.disconnect(); clearSubs(); if (chart) try { chart.remove(); } catch {} });
 
+  function paintOpenPosStrip() {
+    if (!activeTradePlan || activeTradePlan.entry <= 0) return;
+    const pnlCl = activeTradePlan.pnlPct >= 0 ? '#00d26a' : '#ff3b30';
+    const existing = statStrip.querySelector('[data-open-pos-pill]');
+    const txt = `● OPEN ${activeTradePlan.dir} ${activeTradePlan.lev}x | ENT:${fmtPx(activeTradePlan.entry)} | P&L:${activeTradePlan.pnlPct >= 0 ? '+' : ''}${Number(activeTradePlan.pnlPct).toFixed(2)}% ($${Number(activeTradePlan.pnlUsd).toFixed(2)}) | SL:${activeTradePlan.slState}`;
+    if (existing) {
+      existing.textContent = txt;
+      existing.style.color = pnlCl;
+      return;
+    }
+    statStrip.prepend(
+      h('span', {
+        'data-open-pos-pill': '1',
+        style: `color:${pnlCl};font-weight:bold;border:1px solid ${pnlCl}66;padding:0 5px;background:rgba(12,8,4,0.9)`,
+        text: txt
+      })
+    );
+  }
+
   async function load() {
     clearSubs();
     effectiveFeedNote = '';
     leg.textContent = `Loading ${ctx.symbol} (${iv})...`;
-    let env = await get('kline', { symbol: ctx.symbol, interval: iv, limit: iv === '1s' ? 180 : 300 }, 3000);
+    const posPromise = getRaw('/api/crypto-futures/positions').catch(() => ({ ok: false })).then(posEnv => {
+      const targetPair = normPosPair(ctx.symbol);
+      const posList = (posEnv && posEnv.ok && Array.isArray(posEnv.data)) ? posEnv.data : [];
+      const matchedPos = posList.find(p => p && (p.status === 'OPEN' || !p.status) && normPosPair(p.binance_pair || p.symbol) === targetPair);
+      if (matchedPos && Number(matchedPos.entry_price || 0) > 0) {
+        const ePx = Number(matchedPos.entry_price);
+        const dirP = String(matchedPos.direction || 'LONG').toUpperCase();
+        const sgn = dirP === 'SHORT' ? -1 : 1;
+        const slPx = Number(matchedPos.stop_loss || 0);
+        const rDist = slPx > 0 ? Math.abs(ePx - slPx) : ePx * 0.015;
+        let tp1Px = Number(matchedPos.take_profit_1 || 0);
+        let tp2Px = Number(matchedPos.take_profit_2 || matchedPos.take_profit || 0);
+        if (tp1Px <= 0) tp1Px = ePx + sgn * 0.55 * rDist;
+        if (tp2Px <= 0 || Math.abs(tp2Px - tp1Px) < ePx * 0.001) tp2Px = ePx + sgn * Math.max(2.0 * rDist, Math.abs(tp1Px - ePx) * 1.8);
+        activeTradePlan = {
+          isOpen: true,
+          dir: dirP,
+          lev: Number(matchedPos.leverage || 20),
+          entry: ePx,
+          sl: slPx,
+          tp1: tp1Px,
+          tp2: tp2Px,
+          liq: Number(matchedPos.liquidation_price || 0),
+          pnlPct: Number(matchedPos.pnl_pct || 0),
+          pnlUsd: Number(matchedPos.pnl_usd || 0),
+          slState: matchedPos.sl_state || 'MONITORED'
+        };
+        paintOpenPosStrip();
+      } else {
+        activeTradePlan = null;
+      }
+      return posEnv;
+    });
+    let [env] = await Promise.all([
+      get('kline', { symbol: ctx.symbol, interval: iv, limit: iv === '1s' ? 180 : 300 }, 3000),
+      posPromise
+    ]);
     let srcCandles = (env.ok && env.data && Array.isArray(env.data.candles) && env.data.candles.length) ? env.data.candles : null;
 
     if (!srcCandles && iv === '1s') {
@@ -1112,6 +1210,7 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
 
     ctx.status(env.ok ? env : { source: env.source || 'offline', ts: Date.now(), mode: srcCandles ? 'LIVE' : 'DOWN' });
     lastCandles = srcCandles || [];
+    paintOpenPosStrip();
     requestAnimationFrame(() => renderChart(lastCandles));
 
     if (!lastCandles.length) return;

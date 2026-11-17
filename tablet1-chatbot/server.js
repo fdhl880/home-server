@@ -2327,12 +2327,17 @@ try {
     }
 } catch (e) {}
 
-// Real-Time Binance Futures Wallet Sync (persisted in autotrader_state.json + live polled via BinanceFuturesClient)
+// Real-Time Binance Futures Wallet & Position Sync (persisted + live polled via BinanceFuturesClient)
 let liveBinanceWalletCache = {
-    total_wallet_balance: 1.78,
-    available_balance: 1.78,
+    total_wallet_balance: 0,
+    available_balance: 0,
     cross_unrealized_pnl: 0,
     updated_at: null
+};
+let liveBinancePositionsCache = {
+    positions: [],
+    syncedOk: false,
+    updated_at: 0
 };
 
 function getRealBinanceWallet() {
@@ -2350,20 +2355,32 @@ function getRealBinanceWallet() {
     return liveBinanceWalletCache;
 }
 
-function refreshRealBinanceWallet() {
+function refreshRealBinanceState() {
     getRealBinanceWallet();
     const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
-    const script = "import sys, json; sys.path.insert(0, '.'); from binance_futures import BinanceFuturesClient; print(json.dumps(BinanceFuturesClient().get_balance()))";
-    execFile(pyCmd, ['-c', script], { cwd: pluangDir, timeout: 10000 }, (err, stdout) => {
+    const script = [
+        "import sys, json; sys.path.insert(0, '.')",
+        "from binance_futures import BinanceFuturesClient",
+        "c = BinanceFuturesClient()",
+        "bal = c.get_balance() if c.api_key else {'isError': True}",
+        "pos = c.get_positions() if c.api_key else []",
+        "algos = {}",
+        "for p in (pos if isinstance(pos, list) else []):",
+        "    sym = p.get('symbol','')",
+        "    ok, al = c.get_open_algo_orders(sym) if sym else (False, [])",
+        "    algos[sym] = al if ok and isinstance(al, list) else []",
+        "print(json.dumps({'bal': bal, 'pos': pos if isinstance(pos, list) else None, 'algos': algos}))"
+    ].join("; ");
+    execFile(pyCmd, ['-c', script], { cwd: pluangDir, timeout: 12000 }, (err, stdout) => {
         if (err || !stdout) return;
         try {
             const lines = stdout.trim().split(/\r?\n/);
-            const lastLine = lines[lines.length - 1];
-            const parsed = JSON.parse(lastLine);
-            if (parsed && !parsed.isError && typeof parsed.total_wallet_balance === 'number') {
-                liveBinanceWalletCache.total_wallet_balance = Number(parsed.total_wallet_balance.toFixed(4));
-                liveBinanceWalletCache.available_balance = Number((parsed.available_balance ?? parsed.total_wallet_balance).toFixed(4));
-                liveBinanceWalletCache.cross_unrealized_pnl = Number((parsed.cross_unrealized_pnl || 0).toFixed(4));
+            const parsed = JSON.parse(lines[lines.length - 1]);
+            const bal = parsed && parsed.bal;
+            if (bal && !bal.isError && typeof bal.total_wallet_balance === 'number') {
+                liveBinanceWalletCache.total_wallet_balance = Number(bal.total_wallet_balance.toFixed(4));
+                liveBinanceWalletCache.available_balance = Number((bal.available_balance ?? bal.total_wallet_balance).toFixed(4));
+                liveBinanceWalletCache.cross_unrealized_pnl = Number((bal.cross_unrealized_pnl || 0).toFixed(4));
                 liveBinanceWalletCache.updated_at = new Date().toISOString();
                 if (fs.existsSync(statePath)) {
                     const st = JSON.parse(fs.readFileSync(statePath, 'utf8'));
@@ -2373,17 +2390,36 @@ function refreshRealBinanceWallet() {
                     fs.writeFileSync(statePath, JSON.stringify(st, null, 2));
                 }
             }
+            if (Array.isArray(parsed && parsed.pos)) {
+                const algosBySym = parsed.algos || {};
+                liveBinancePositionsCache = {
+                    positions: parsed.pos.map(p => {
+                        const sym = p.symbol || '';
+                        const list = Array.isArray(algosBySym[sym]) ? algosBySym[sym] : [];
+                        let slPx = 0, tpPx = 0, slAlgoId = null, tpAlgoId = null;
+                        for (const ao of list) {
+                            const otype = String(ao.orderType || ao.type || '').toUpperCase();
+                            const tpx = Number(ao.triggerPrice || ao.stopPrice || 0);
+                            if (otype.includes('TAKE_PROFIT') && tpx > 0) { tpPx = tpx; tpAlgoId = ao.algoId || null; }
+                            else if (otype.includes('STOP') && tpx > 0) { slPx = tpx; slAlgoId = ao.algoId || null; }
+                        }
+                        return { ...p, algo_sl: slPx, algo_tp: tpPx, sl_algo_id: slAlgoId, tp_algo_id: tpAlgoId };
+                    }),
+                    syncedOk: true,
+                    updated_at: Date.now()
+                };
+            }
         } catch (e) {}
     });
 }
-refreshRealBinanceWallet();
-setInterval(refreshRealBinanceWallet, 20000);
+refreshRealBinanceState();
+setInterval(refreshRealBinanceState, 10000);
 
 function computeRoiPnlProjection({ entryPrice, tp1Price, tp2Price, slPrice, initSlPrice, direction = 'LONG', leverage = 20, marginIdr = 0, marginUsd = 0 }) {
     const entry = Number(entryPrice) || 0;
     const lev = Number(leverage) || 20;
     const fx = 16500;
-    const realWalletUsd = Math.max(0.5, Number(getRealBinanceWallet().total_wallet_balance) || 1.78);
+    const realWalletUsd = Math.max(0.0, Number(getRealBinanceWallet().total_wallet_balance) || 0);
     const mUsd = Number(marginUsd) > 0 ? Number(marginUsd) : (Number(marginIdr) > 0 && Number(marginIdr) !== 50000 ? Number(marginIdr) / fx : realWalletUsd);
     const mIdr = Math.round(mUsd * fx);
     const sign = String(direction || 'LONG').toUpperCase() === 'SHORT' ? -1 : 1;
@@ -2438,7 +2474,7 @@ function enrichPositionWithRoiProjection(pos) {
     const curPx = Number(t.lastPrice || pos.current_price || entry || 0);
     const dir = String(pos.direction || pos.side || 'LONG').toUpperCase();
     const lev = Number(pos.leverage || 20);
-    const realWalletUsd = Math.max(0.5, Number(getRealBinanceWallet().total_wallet_balance) || 1.78);
+    const realWalletUsd = Math.max(0.0, Number(getRealBinanceWallet().total_wallet_balance) || 0);
     const mUsd = Number(pos.position_size_usd || 0) || (Number(pos.position_size_idr || 0) > 0 ? Number(pos.position_size_idr) / 16500 : realWalletUsd);
     const mIdr = Number(pos.position_size_idr || 0) || Math.round(mUsd * 16500);
 
@@ -2454,24 +2490,34 @@ function enrichPositionWithRoiProjection(pos) {
         marginUsd: mUsd
     });
 
+    const sign = dir === 'SHORT' ? -1 : 1;
     let liveRoiPct = Number(pos.pnl_pct || 0);
-    let livePnlUsd = Number(pos.pnl_usd ?? pos.unrealizedProfit ?? 0);
+    let livePnlUsd = Number(pos.pnl_usd ?? pos.unrealized_pnl ?? pos.unrealizedProfit ?? 0);
     let livePnlIdr = Number(pos.pnl_idr || 0);
-    if (entry > 0 && curPx > 0 && (!pos.pnl_pct && !pos.pnl_usd)) {
-        const sign = dir === 'SHORT' ? -1 : 1;
+    if (entry > 0 && curPx > 0 && (t.lastPrice || (!pos.pnl_pct && !pos.pnl_usd))) {
         liveRoiPct = Number((sign * ((curPx - entry) / entry) * lev * 100).toFixed(2));
-        livePnlUsd = Number(((liveRoiPct / 100) * mUsd).toFixed(2));
+        livePnlUsd = Number(((liveRoiPct / 100) * mUsd).toFixed(3));
         livePnlIdr = Math.round((liveRoiPct / 100) * mIdr);
+    } else if (mUsd > 0 && pos.unrealized_pnl !== undefined && pos.unrealized_pnl !== null && !t.lastPrice) {
+        livePnlUsd = Number(Number(pos.unrealized_pnl).toFixed(3));
+        livePnlIdr = Math.round(livePnlUsd * 16500);
+        liveRoiPct = Number(((livePnlUsd / mUsd) * 100).toFixed(2));
     }
+
+    const initSlVal = Number(pos.init_stop_loss || pos.stop_loss || 0);
+    const slFrac = entry > 0 && initSlVal > 0 ? Math.max(0.0045, Math.abs(entry - initSlVal) / entry) : 0.015;
+    const rMultipleCurr = (entry > 0 && curPx > 0) ? Number(((sign * (curPx - entry) / entry) / slFrac).toFixed(2)) : Number(pos.r_multiple_curr || 0);
 
     return {
         ...pos,
+        binance_pair: pair,
         current_price: curPx || pos.current_price || entry,
         position_size_usd: proj.margin_usd,
         position_size_idr: proj.margin_idr,
         pnl_pct: liveRoiPct,
         pnl_usd: livePnlUsd,
         pnl_idr: livePnlIdr,
+        r_multiple_curr: rMultipleCurr,
         take_profit_1: proj.if_hit_tp1.price || pos.take_profit_1,
         take_profit_2: proj.if_hit_tp2.price || pos.take_profit_2 || pos.take_profit,
         tp1_roi_pct: proj.if_hit_tp1.roi_pct,
@@ -2501,14 +2547,96 @@ function getAllStoredPositions() {
 function getLocalPositions() {
     try {
         const list = getAllStoredPositions();
-        return list
-            .filter(p => p && p.status === 'OPEN' && (p.binance_synced === true || p.pluang_synced === true) && p.order_id && p.order_id !== 'None')
-            .map(enrichPositionWithRoiProjection);
+        const openStored = list.filter(p => p && p.status === 'OPEN' && (p.binance_synced === true || p.pluang_synced === true));
+        const liveArr = liveBinancePositionsCache.syncedOk ? liveBinancePositionsCache.positions : null;
+
+        if (Array.isArray(liveArr)) {
+            const liveMap = new Map(liveArr.map(lp => [String(lp.symbol || '').toUpperCase(), lp]));
+            const merged = [];
+            const seenPairs = new Set();
+
+            for (const p of openStored) {
+                const pair = String(p.binance_pair || p.symbol || '').toUpperCase().replace('-USD', 'USDT').replace('.P', '');
+                const lp = liveMap.get(pair);
+                if (lp) {
+                    seenPairs.add(pair);
+                    const entryPx = Number(lp.entry_price || p.entry_price || 0);
+                    const dir = String(lp.direction || p.direction || 'LONG').toUpperCase();
+                    const lev = Number(lp.leverage || p.leverage || 20);
+                    const liqPx = Number(lp.liquidation_price || p.liquidation_price || 0);
+                    const isoMargin = Math.abs(Number(lp.isolated_margin || p.position_size_usd || 0)) || ((Math.abs(Number(lp.position_amount || 0)) * entryPx) / Math.max(1, lev));
+                    const slPx = Number(lp.algo_sl || p.stop_loss || 0);
+                    const tp2Px = Number(lp.algo_tp || p.take_profit_2 || p.take_profit || 0);
+                    merged.push(enrichPositionWithRoiProjection({
+                        ...p,
+                        order_id: (p.order_id && p.order_id !== 'None') ? p.order_id : `SYNC_${pair}`,
+                        binance_pair: pair,
+                        direction: dir,
+                        leverage: lev,
+                        entry_price: entryPx,
+                        current_price: Number(lp.mark_price || p.current_price || entryPx),
+                        liquidation_price: liqPx,
+                        position_size_usd: isoMargin,
+                        position_size_idr: Math.round(isoMargin * 16500),
+                        unrealized_pnl: Number(lp.unrealized_pnl ?? p.unrealized_pnl ?? 0),
+                        stop_loss: slPx,
+                        take_profit: tp2Px,
+                        take_profit_2: tp2Px,
+                        sl_state: lp.algo_sl > 0 ? 'CONFIRMED' : (p.sl_state || 'MISSING'),
+                        sl_algo_id: lp.sl_algo_id || p.sl_algo_id || null,
+                        tp_algo_id: lp.tp_algo_id || p.tp_algo_id || null,
+                        binance_synced: true
+                    }));
+                } else {
+                    const ageMs = p.opened_at ? (Date.now() - Date.parse(String(p.opened_at).replace(' UTC', 'Z'))) : 999999;
+                    if (!isNaN(ageMs) && ageMs < 15000) {
+                        merged.push(enrichPositionWithRoiProjection(p));
+                    }
+                }
+            }
+
+            // Synthesize any brand-new live Binance position not yet written by auto_trader.py
+            for (const lp of liveArr) {
+                const pair = String(lp.symbol || '').toUpperCase();
+                if (!pair || seenPairs.has(pair)) continue;
+                const entryPx = Number(lp.entry_price || 0);
+                const dir = String(lp.direction || 'LONG').toUpperCase();
+                const lev = Number(lp.leverage || 20);
+                const isoMargin = Math.abs(Number(lp.isolated_margin || 0)) || ((Math.abs(Number(lp.position_amount || 0)) * entryPx) / Math.max(1, lev));
+                merged.push(enrichPositionWithRoiProjection({
+                    id: `LIVE_${pair}`,
+                    order_id: `SYNC_${pair}`,
+                    symbol: pair.replace(/USDT$/, '-USD'),
+                    binance_pair: pair,
+                    direction: dir,
+                    leverage: lev,
+                    entry_price: entryPx,
+                    current_price: Number(lp.mark_price || entryPx),
+                    liquidation_price: Number(lp.liquidation_price || 0),
+                    position_size_usd: isoMargin,
+                    position_size_idr: Math.round(isoMargin * 16500),
+                    unrealized_pnl: Number(lp.unrealized_pnl || 0),
+                    stop_loss: Number(lp.algo_sl || 0),
+                    take_profit: Number(lp.algo_tp || 0),
+                    take_profit_2: Number(lp.algo_tp || 0),
+                    sl_state: lp.algo_sl > 0 ? 'CONFIRMED' : 'MISSING',
+                    sl_algo_id: lp.sl_algo_id || null,
+                    tp_algo_id: lp.tp_algo_id || null,
+                    status: 'OPEN',
+                    exchange: 'BINANCE_FUTURES',
+                    binance_synced: true,
+                    ai_sentinel_status: 'LIVE_EXCHANGE_SYNCED'
+                }));
+            }
+            return merged;
+        }
+
+        return openStored.map(enrichPositionWithRoiProjection);
     } catch (e) {}
     return [];
 }
 
-// Pertahankan seluruh posisi CLOSED_* saat server start; hanya bersihkan posisi OPEN yang tidak punya order_id valid
+// Keep CLOSED_* history and synced OPEN positions on startup (never drop live auto-imported trades missing order_id)
 try {
     if (fs.existsSync(positionsPath)) {
         const raw = JSON.parse(fs.readFileSync(positionsPath, 'utf8'));
@@ -2516,7 +2644,7 @@ try {
             const preserved = raw.filter(p => {
                 if (!p) return false;
                 if (String(p.status || '').startsWith('CLOSED')) return true;
-                return p.status === 'OPEN' && (p.binance_synced === true || p.pluang_synced === true) && p.order_id && p.order_id !== 'None';
+                return p.status === 'OPEN' && (p.binance_synced === true || p.pluang_synced === true);
             });
             fs.writeFileSync(positionsPath, JSON.stringify(preserved, null, 2));
         }
@@ -3164,7 +3292,7 @@ app.get(['/api/crypto-futures/positions', '/api/futures/positions'], (req, res) 
 app.get('/api/futures/wallet', (req, res) => {
     const cfg = getLocalTradingConfig();
     const liveWallet = getRealBinanceWallet();
-    const totalUsdt = Number(liveWallet.total_wallet_balance ?? 1.78);
+    const totalUsdt = Number(liveWallet.total_wallet_balance ?? 0);
     const availUsdt = Number(liveWallet.available_balance ?? totalUsdt);
     res.json({
         status: 'online',
@@ -3178,34 +3306,119 @@ app.get('/api/futures/wallet', (req, res) => {
     });
 });
 
-// 4b. CLOSE POSITION ENDPOINTS (Native on Port 4000)
+// 4b. CLOSE & SYNC-SL POSITION ENDPOINTS (Native on Port 4000, verified against Binance Futures)
 app.post(['/api/crypto-futures/positions/close', '/api/positions/close'], (req, res) => {
-    const { id, symbol, direction } = req.body || {};
-    let positions = getLocalPositions();
-    const target = positions.find(p => (id && p.id === id) || (symbol && p.symbol === symbol));
+    const { id, symbol, direction, binance_pair } = req.body || {};
+    const livePositions = getLocalPositions();
+    const target = livePositions.find(p =>
+        (id && p.id === id) ||
+        (binance_pair && String(p.binance_pair).toUpperCase() === String(binance_pair).toUpperCase()) ||
+        (symbol && (p.symbol === symbol || String(p.binance_pair).toUpperCase() === String(symbol).toUpperCase().replace('-USD', 'USDT').replace('.P', '')))
+    );
+    const targetPair = (target && (target.binance_pair || String(target.symbol || '').replace('-USD', 'USDT')))
+        || (binance_pair && String(binance_pair).toUpperCase())
+        || (symbol ? String(symbol).toUpperCase().replace('-USD', 'USDT').replace('.P', '') : '');
+    const targetDir = (target && target.direction) || direction || 'LONG';
 
-    if (target && (target.binance_pair || target.symbol)) {
-        const targetPair = target.binance_pair || target.symbol.replace('-USD', 'USDT');
-        const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
-        const pyCode = `
-import sys
-sys.path.append('${pluangDir.replace(/\\/g, '/')}')
-from binance_futures import BinanceFuturesClient
-try:
-    BinanceFuturesClient().close_position('${targetPair}', '${target.direction || "LONG"}')
-except Exception as e:
-    pass
-`;
-        execFile(pyCmd, ['-c', pyCode], { cwd: pluangDir, timeout: 15000 }, () => {});
+    const finalizeLocalClose = (closeMeta = {}) => {
+        const stored = getAllStoredPositions();
+        const closedAt = new Date().toISOString();
+        const updated = stored.map(p => {
+            if (!p) return p;
+            const pPair = String(p.binance_pair || p.symbol || '').toUpperCase().replace('-USD', 'USDT').replace('.P', '');
+            const matches = (id && p.id === id) || (targetPair && pPair === targetPair && p.status === 'OPEN');
+            if (matches) {
+                return { ...p, status: 'CLOSED_MANUAL', closed_at: closedAt, close_reason: 'USER_MANUAL_CLOSE', ...closeMeta };
+            }
+            return p;
+        });
+        try {
+            fs.mkdirSync(resultsDir, { recursive: true });
+            fs.writeFileSync(positionsPath, JSON.stringify(updated, null, 2));
+        } catch (e) {}
+        refreshRealBinanceState();
+    };
+
+    if (!targetPair) {
+        return res.status(400).json({ success: false, error: 'Missing position id or pair symbol' });
     }
 
-    if (id) {
-        positions = positions.filter(p => p.id !== id);
-    } else if (symbol) {
-        positions = positions.filter(p => !(p.symbol === symbol && (!direction || p.direction === direction)));
-    }
-    saveLocalPositions(positions);
-    res.json({ success: true, message: `Posisi ${symbol || id || ''} berhasil ditutup di Binance Futures.`, remaining: positions.length });
+    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const pyCode = [
+        "import sys, json; sys.path.insert(0, '.')",
+        "from binance_futures import BinanceFuturesClient",
+        "c = BinanceFuturesClient()",
+        `c.cancel_all_orders('${targetPair}')`,
+        `res = c.close_position('${targetPair}', '${targetDir}')`,
+        "print(json.dumps(res if isinstance(res, dict) else {'status': str(res)}))"
+    ].join("; ");
+
+    execFile(pyCmd, ['-c', pyCode], { cwd: pluangDir, timeout: 20000 }, (err, stdout, stderr) => {
+        let parsed = null;
+        try {
+            const lines = String(stdout || '').trim().split(/\r?\n/);
+            parsed = JSON.parse(lines[lines.length - 1]);
+        } catch (e) {}
+        const apiError = err ? err.message : (parsed && (parsed.error || (parsed.code && Number(parsed.code) < 0 ? parsed.msg : null)));
+        if (apiError) {
+            return res.status(502).json({ success: false, error: `Binance close failed for ${targetPair}: ${apiError}`, binance: parsed });
+        }
+        finalizeLocalClose({ close_response: parsed || {} });
+        res.json({ success: true, message: `Position ${targetPair} closed at market & algo orders cancelled.`, binance: parsed });
+    });
+});
+
+app.post(['/api/crypto-futures/positions/sync-sl', '/api/positions/sync-sl'], (req, res) => {
+    const { symbol, binance_pair, direction, stop_loss } = req.body || {};
+    const target = getLocalPositions().find(p =>
+        (binance_pair && String(p.binance_pair).toUpperCase() === String(binance_pair).toUpperCase()) ||
+        (symbol && (p.symbol === symbol || String(p.binance_pair).toUpperCase() === String(symbol).toUpperCase().replace('-USD', 'USDT').replace('.P', '')))
+    );
+    const pair = (target && target.binance_pair) || String(binance_pair || symbol || '').toUpperCase().replace('-USD', 'USDT').replace('.P', '');
+    if (!pair) return res.status(400).json({ success: false, error: 'Missing pair symbol' });
+
+    const dir = String((target && target.direction) || direction || 'LONG').toUpperCase();
+    const entryPx = Number((target && target.entry_price) || 0);
+    const reqSl = Number(stop_loss || (target && target.stop_loss) || 0);
+    const safeSl = reqSl > 0 ? reqSl : (entryPx > 0 ? Number((entryPx * (dir === 'LONG' ? 0.98 : 1.02)).toPrecision(6)) : 0);
+    if (safeSl <= 0) return res.status(400).json({ success: false, error: 'Valid stop_loss price required' });
+
+    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const oldAlgo = (target && target.sl_algo_id) ? `'${target.sl_algo_id}'` : 'None';
+    const pyCode = [
+        "import sys, json; sys.path.insert(0, '.')",
+        "from binance_futures import BinanceFuturesClient",
+        "c = BinanceFuturesClient()",
+        `res = c.amend_stop_loss('${pair}', '${dir}', ${safeSl}, old_algo_id=${oldAlgo})`,
+        "print(json.dumps(res if isinstance(res, dict) else {'status': str(res)}))"
+    ].join("; ");
+
+    execFile(pyCmd, ['-c', pyCode], { cwd: pluangDir, timeout: 15000 }, (err, stdout) => {
+        let parsed = null;
+        try {
+            const lines = String(stdout || '').trim().split(/\r?\n/);
+            parsed = JSON.parse(lines[lines.length - 1]);
+        } catch (e) {}
+        if (err || !parsed || parsed.error) {
+            return res.status(502).json({ success: false, error: (err && err.message) || (parsed && parsed.error) || 'Failed to sync SL on Binance' });
+        }
+        try {
+            const stored = getAllStoredPositions().map(p => {
+                if (p && p.status === 'OPEN' && String(p.binance_pair || p.symbol || '').toUpperCase().replace('-USD', 'USDT') === pair) {
+                    return {
+                        ...p,
+                        stop_loss: safeSl,
+                        sl_state: 'CONFIRMED',
+                        sl_algo_id: parsed.new_algo_id || parsed.algoId || p.sl_algo_id || null
+                    };
+                }
+                return p;
+            });
+            fs.writeFileSync(positionsPath, JSON.stringify(stored, null, 2));
+        } catch (e) {}
+        refreshRealBinanceState();
+        res.json({ success: true, pair, stop_loss: safeSl, sl_state: 'CONFIRMED', binance: parsed });
+    });
 });
 
 // 4c. CLEAR ALL POSITIONS (Hapus Seluruh Posisi)
@@ -3457,19 +3670,7 @@ app.get('/api/crypto-futures/pluang/balance', (req, res) => {
     });
 });
 
-// 9. CLOSE POSITION (100% Native on Port 4000)
-app.post('/api/crypto-futures/positions/close', (req, res) => {
-    const { symbol, id } = req.body || {};
-    let positions = getLocalPositions();
-    positions = positions.map(p => {
-        if ((id && p.id === id) || (symbol && p.symbol === symbol)) {
-            return { ...p, status: "CLOSED", closed_at: new Date().toISOString() };
-        }
-        return p;
-    });
-    saveLocalPositions(positions);
-    res.json({ status: "SUCCESS", message: `Position ${symbol || id} closed.` });
-});
+// Duplicate legacy /positions/close route removed — handled synchronously above with Binance Futures cancel_all_orders + close_position verification.
 
 // 9b. INSTITUTIONAL V2 ENDPOINTS: VAULT, PANIC KILL-SWITCH, & 28-PILLAR HEALTH
 app.get(['/api/crypto-futures/vault', '/api/vault'], (req, res) => {

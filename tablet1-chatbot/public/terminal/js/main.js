@@ -2,12 +2,12 @@ import { $, h, fmtTime, LS } from './util.js';
 import { get, net, startHub } from './api.js';
 import { dev } from './dev-adapter.js';
 
-import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261116e';
+import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261117a';
 import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261116e';
 import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261116e';
 import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261116e';
 import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR } from './panels/quant.js?v=20261116e';
-import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261116e';
+import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261117a';
 
 import { panels as newsPanels } from '../panels/news/index.js';
 import { panels as macroPanels } from '../panels/macro/index.js';

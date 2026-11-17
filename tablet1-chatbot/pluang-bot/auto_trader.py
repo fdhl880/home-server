@@ -442,20 +442,19 @@ PERF_LEDGER_FILE = os.path.join(RESULTS_DIR, "performance_ledger.json")
 
 def _ensure_perf_ledger() -> dict:
     """
-    Load or initialize the immutable Persistent Performance Ledger.
-    Seeded with the user's verified milestone: 15 Wins, 4 Losses, +Rp 989.000 Net Realized PnL.
+    Load or initialize the Persistent Performance Ledger from real verified closed trades (zero fake seed).
     """
     default_ledger = {
-        "baseline_wins": 15,
-        "baseline_losses": 4,
-        "baseline_realized_pnl_idr": 989000,
-        "baseline_realized_pnl_usd": 59.94,
-        "winning_trades": 15,
-        "losing_trades": 4,
-        "closed_trades": 19,
-        "win_rate_pct": 78.95,
-        "realized_pnl_idr": 989000,
-        "realized_pnl_usd": 59.94,
+        "baseline_wins": 0,
+        "baseline_losses": 0,
+        "baseline_realized_pnl_idr": 0,
+        "baseline_realized_pnl_usd": 0.0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "closed_trades": 0,
+        "win_rate_pct": 0.0,
+        "realized_pnl_idr": 0,
+        "realized_pnl_usd": 0.0,
         "recorded_trade_ids": [],
         "history": [],
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
@@ -464,8 +463,12 @@ def _ensure_perf_ledger() -> dict:
         try:
             with open(PERF_LEDGER_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if isinstance(data, dict) and data.get("winning_trades", 0) >= 15:
-                return data
+            if isinstance(data, dict):
+                # Strip legacy simulated baseline if no real recorded trades exist yet
+                if data.get("baseline_wins") == 15 and not data.get("recorded_trade_ids"):
+                    data.update(default_ledger)
+                else:
+                    return data
         except Exception:
             pass
     try:
@@ -513,15 +516,15 @@ def _record_trade_close_in_journal(pos: dict, exit_price: float, exit_reason: st
             net_usd = float(pnl_usd) - fee_usd
             net_idr = round(float(pos.get("pnl_idr") if pos.get("pnl_idr") is not None else net_usd * fx_r))
             if net_usd >= 0 or net_idr >= 0:
-                ledger["winning_trades"] = int(ledger.get("winning_trades", 15)) + 1
+                ledger["winning_trades"] = int(ledger.get("winning_trades", 0)) + 1
             else:
-                ledger["losing_trades"] = int(ledger.get("losing_trades", 4)) + 1
+                ledger["losing_trades"] = int(ledger.get("losing_trades", 0)) + 1
             w = int(ledger["winning_trades"])
             l = int(ledger["losing_trades"])
             ledger["closed_trades"] = w + l
             ledger["win_rate_pct"] = round((w / max(1, w + l)) * 100.0, 2)
-            ledger["realized_pnl_idr"] = round(float(ledger.get("realized_pnl_idr", 989000)) + net_idr)
-            ledger["realized_pnl_usd"] = round(float(ledger.get("realized_pnl_usd", 59.94)) + net_usd, 2)
+            ledger["realized_pnl_idr"] = round(float(ledger.get("realized_pnl_idr", 0)) + net_idr)
+            ledger["realized_pnl_usd"] = round(float(ledger.get("realized_pnl_usd", 0.0)) + net_usd, 2)
             ledger["recorded_trade_ids"] = rec_ids[-500:]
             hist = list(ledger.get("history", []))
             hist.insert(0, {
@@ -543,25 +546,138 @@ def _record_trade_close_in_journal(pos: dict, exit_price: float, exit_reason: st
         print(f"[JOURNAL] ⚠️ Error recording trade close in journal: {je}", flush=True)
 
 
+def _safe_sl_against_liquidation(entry_px: float, direction: str, sl_px: float, liq_px: float = 0.0, max_sl_pct: float = 2.25) -> float:
+    """Ensure Stop Loss is strictly valid and inside liquidation price with >=28% safety margin."""
+    if entry_px <= 0:
+        return sl_px
+    is_long = str(direction).upper() == "LONG"
+    cap_dist = entry_px * (max_sl_pct / 100.0)
+    if liq_px and liq_px > 0:
+        if is_long and liq_px < entry_px:
+            cap_dist = min(cap_dist, (entry_px - liq_px) * 0.72)
+        elif (not is_long) and liq_px > entry_px:
+            cap_dist = min(cap_dist, (liq_px - entry_px) * 0.72)
+    cap_dist = max(cap_dist, entry_px * 0.004)
+    if sl_px <= 0:
+        return round(entry_px - cap_dist if is_long else entry_px + cap_dist, 6)
+    if is_long:
+        if sl_px >= entry_px or (liq_px > 0 and sl_px <= liq_px):
+            return round(entry_px - cap_dist, 6)
+    else:
+        if sl_px <= entry_px or (liq_px > 0 and sl_px >= liq_px):
+            return round(entry_px + cap_dist, 6)
+    return round(sl_px, 6)
+
+
+def _build_synced_binance_pos(lp: dict, bn_client, fx_rate: float) -> dict:
+    """Construct a complete tracked position record from a live Binance Futures position & exchange algo orders."""
+    sym = lp.get("symbol", "")
+    amt = abs(float(lp.get("position_amount", lp.get("positionAmt", 0)) or 0))
+    entry_px = float(lp.get("entry_price", lp.get("entryPrice", 0)) or 0)
+    mark_px = float(lp.get("mark_price", lp.get("markPrice", entry_px)) or entry_px)
+    liq_px = float(lp.get("liquidation_price", lp.get("liquidationPrice", 0)) or 0)
+    lev = int(lp.get("leverage", 20) or 20)
+    raw_amt = float(lp.get("position_amount", lp.get("positionAmt", 1 if lp.get("direction") != "SHORT" else -1)) or 1)
+    dir_str = str(lp.get("direction") or ("LONG" if raw_amt >= 0 else "SHORT")).upper()
+    live_upnl = float(lp.get("unrealized_pnl", lp.get("unRealizedProfit", 0)) or 0)
+
+    tp_px = 0.0
+    sl_px = 0.0
+    sl_algo_id = None
+    tp_algo_id = None
+    sl_state = "MISSING"
+    if bn_client and sym:
+        try:
+            ok_algo, open_algos = bn_client.get_open_algo_orders(sym)
+            if ok_algo:
+                for ao in open_algos:
+                    otype = str(ao.get("orderType", ao.get("type", ""))).upper()
+                    tpx = float(ao.get("triggerPrice", ao.get("stopPrice", 0)) or 0)
+                    if "TAKE_PROFIT" in otype and tpx > 0:
+                        tp_px = tpx
+                        tp_algo_id = ao.get("algoId")
+                    elif "STOP" in otype and tpx > 0:
+                        sl_px = tpx
+                        sl_algo_id = ao.get("algoId")
+                        sl_state = "CONFIRMED"
+        except Exception:
+            sl_state = "UNKNOWN"
+
+    max_sl_cfg = float(_get_config().get("max_sl_pct", 2.25) or 2.25)
+    if sl_px <= 0 or (liq_px > 0 and ((dir_str == "LONG" and sl_px <= liq_px) or (dir_str == "SHORT" and sl_px >= liq_px))):
+        sl_px = _safe_sl_against_liquidation(entry_px, dir_str, 0.0, liq_px, max_sl_cfg)
+        if bn_client and sym and sl_px > 0:
+            try:
+                sl_res = bn_client.set_stop_loss(sym, dir_str, sl_px)
+                if isinstance(sl_res, dict) and "algoId" in sl_res:
+                    sl_algo_id = sl_res["algoId"]
+                    sl_state = "CONFIRMED"
+                else:
+                    sl_state = "LOCAL_GUARD_MONITORED"
+            except Exception:
+                sl_state = "LOCAL_GUARD_MONITORED"
+
+    sl_delta = abs(entry_px - sl_px) if (entry_px > 0 and sl_px > 0) else (entry_px * 0.015)
+    sgn = 1.0 if dir_str == "LONG" else -1.0
+    tp1_px = round(entry_px + sgn * 0.55 * sl_delta, 6) if entry_px > 0 else 0.0
+    if tp_px <= 0 and entry_px > 0:
+        tp_px = round(entry_px + sgn * 2.2 * sl_delta, 6)
+
+    iso_margin = abs(float(lp.get("isolated_margin", lp.get("isolatedMargin", 0)) or ((amt * entry_px / lev) if lev else 0)))
+    pnl_pct = round((live_upnl / iso_margin) * 100.0, 2) if iso_margin > 0 else 0.0
+
+    return {
+        "id": f"POS_BINANCE_{sym}_{int(time.time())}",
+        "order_id": f"SYNC_{sym}",
+        "symbol": sym.replace("USDT", "-USD"),
+        "binance_pair": sym,
+        "direction": dir_str,
+        "entry_price": entry_px,
+        "entry_price_idr": round(entry_px * fx_rate, 2),
+        "current_price": mark_px,
+        "current_price_idr": round(mark_px * fx_rate, 2),
+        "liquidation_price": liq_px,
+        "take_profit": tp_px,
+        "take_profit_1": tp1_px,
+        "take_profit_2": tp_px,
+        "stop_loss": sl_px,
+        "init_stop_loss": sl_px,
+        "sl_state": sl_state,
+        "sl_algo_id": sl_algo_id,
+        "tp_algo_id": tp_algo_id,
+        "leverage": lev,
+        "margin_type": lp.get("margin_type", "ISOLATED"),
+        "order_type": "MARKET",
+        "limit_price": entry_px,
+        "position_size_usdt": iso_margin,
+        "position_size_usd": iso_margin,
+        "position_size_idr": round(iso_margin * fx_rate, 2),
+        "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "status": "OPEN",
+        "pnl_pct": pnl_pct,
+        "pnl_usd": round(live_upnl, 4),
+        "pnl_idr": round(live_upnl * fx_rate, 2),
+        "unrealized_pnl": round(live_upnl, 4),
+        "exchange": "BINANCE_FUTURES",
+        "binance_synced": True,
+        "ai_sentinel_status": "ACTIVE_AI_MONITORED",
+    }
+
+
 def monitor_and_update_positions():
     """
     Real-time autonomous position monitor:
-    - Runs every 10 seconds in background
-    - Evaluates live prices of open positions
-    - Calculates floating PnL in USD and IDR
-    - Auto-executes TP2 (close with profit)
-    - Auto-executes TP1 (move SL to breakeven, risk-free trade)
-    - Auto-executes SL (protect capital)
-    - Sends Telegram notification on any event
+    - Runs every 8-10 seconds in background (even when new entries are PAUSED)
+    - Syncs live Binance mark price, unrealized PnL, liquidation price & exchange algo SL/TP
+    - Guards SL on exchange + triggers immediate local fallback if SL is unconfirmed
     """
-    if not os.path.exists(POSITIONS_FILE):
-        return []
-
-    try:
-        with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
-            positions = json.load(f)
-    except Exception:
-        return []
+    positions = []
+    if os.path.exists(POSITIONS_FILE):
+        try:
+            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+                positions = json.load(f)
+        except Exception:
+            positions = []
 
     updated = False
     fx_rate = get_fx_info()["usd_idr"]
@@ -582,76 +698,10 @@ def monitor_and_update_positions():
                     )
                     amt = float(lp.get("position_amount", 0))
                     if not already_tracked and abs(amt) > 0:
-                        entry_px = float(lp.get("entry_price", 0))
-                        lev = int(lp.get("leverage", 20))
-                        dir_str = lp.get("direction", "LONG" if amt > 0 else "SHORT")
-                        # T0.5: Read existing SL/TP from Binance openAlgoOrders instead of overwriting with +3%/-1.5%
-                        tp_px = 0.0
-                        sl_px = 0.0
-                        sl_algo_id = None
-                        tp_algo_id = None
-                        sl_state = "MISSING"
-                        try:
-                            ok_algo, open_algos = bn_client.get_open_algo_orders(sym)
-                            if ok_algo:
-                                for ao in open_algos:
-                                    otype = str(ao.get("orderType", ao.get("type", ""))).upper()
-                                    tpx = float(ao.get("triggerPrice", ao.get("stopPrice", 0)) or 0)
-                                    if "TAKE_PROFIT" in otype and tpx > 0:
-                                        tp_px = tpx
-                                        tp_algo_id = ao.get("algoId")
-                                    elif "STOP" in otype and tpx > 0:
-                                        sl_px = tpx
-                                        sl_algo_id = ao.get("algoId")
-                                        sl_state = "CONFIRMED"
-                        except Exception:
-                            sl_state = "UNKNOWN"
-                        if tp_px <= 0:
-                            tp_px = round(entry_px * (1.035 if dir_str == "LONG" else 0.965), 6)
-                        if sl_px <= 0:
-                            sl_px = round(entry_px * (0.980 if dir_str == "LONG" else 1.020), 6)
-                            try:
-                                sl_res = bn_client.set_stop_loss(sym, dir_str, sl_px)
-                                if isinstance(sl_res, dict) and "algoId" in sl_res:
-                                    sl_algo_id = sl_res["algoId"]
-                                    sl_state = "CONFIRMED"
-                            except Exception:
-                                pass
-                        iso_margin = abs(float(lp.get("isolated_margin", (amt * entry_px / lev) if lev else 0)))
-                        new_pos = {
-                            "id": f"POS_BINANCE_{sym}_{int(time.time())}",
-                            "symbol": sym.replace("USDT", "-USD"),
-                            "binance_pair": sym,
-                            "direction": dir_str,
-                            "entry_price": entry_px,
-                            "entry_price_idr": round(entry_px * fx_rate, 2),
-                            "take_profit": tp_px,
-                            "take_profit_1": tp_px,
-                            "take_profit_2": tp_px,
-                            "stop_loss": sl_px,
-                            "init_stop_loss": sl_px,
-                            "sl_state": sl_state,
-                            "sl_algo_id": sl_algo_id,
-                            "tp_algo_id": tp_algo_id,
-                            "leverage": lev,
-                            "margin_type": lp.get("margin_type", "ISOLATED"),
-                            "order_type": "MARKET",
-                            "limit_price": entry_px,
-                            "position_size_usdt": iso_margin,
-                            "position_size_usd": iso_margin,
-                            "position_size_idr": round(iso_margin * fx_rate, 2),
-                            "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-                            "status": "OPEN",
-                            "pnl_pct": 0.0,
-                            "pnl_usd": float(lp.get("unrealized_pnl", 0)),
-                            "pnl_idr": round(float(lp.get("unrealized_pnl", 0)) * fx_rate, 2),
-                            "exchange": "BINANCE_FUTURES",
-                            "binance_synced": True,
-                            "ai_sentinel_status": "ACTIVE_AI_MONITORED"
-                        }
+                        new_pos = _build_synced_binance_pos(lp, bn_client, fx_rate)
                         positions.append(new_pos)
                         updated = True
-                        print(f"[MONITOR] 📥 Auto-imported active Binance position: {sym} ({dir_str} {lev}x, SL State: {sl_state})", flush=True)
+                        print(f"[MONITOR] 📥 Auto-imported active Binance position: {sym} ({new_pos['direction']} {new_pos['leverage']}x, SL State: {new_pos['sl_state']})", flush=True)
         except Exception as e:
             print(f"[MONITOR] Binance sync warning: {e}", flush=True)
 
@@ -747,13 +797,31 @@ def monitor_and_update_positions():
                 updated = True
                 continue
             else:
-                # Still open on Binance — sync official mark price and unrealized PnL
+                # Still open on Binance — sync official entry, mark price, liquidation price, margin and unrealized PnL
                 live_item = bn_live_map[pair]
+                live_entry = float(live_item.get("entry_price", 0) or 0)
+                if live_entry > 0:
+                    entry_price = live_entry
+                    pos["entry_price"] = entry_price
+                    pos["entry_price_idr"] = round(entry_price * fx_rate, 2)
+                live_liq = float(live_item.get("liquidation_price", 0) or 0)
+                if live_liq > 0:
+                    pos["liquidation_price"] = live_liq
+                live_margin = abs(float(live_item.get("isolated_margin", 0) or 0))
+                if live_margin > 0:
+                    pos_usd = live_margin
+                    pos_idr = live_margin * fx_rate
+                    pos["position_size_usd"] = round(pos_usd, 4)
+                    pos["position_size_usdt"] = round(pos_usd, 4)
+                    pos["position_size_idr"] = round(pos_idr, 2)
+                if not pos.get("order_id") or str(pos.get("order_id")) == "None":
+                    pos["order_id"] = f"SYNC_{pair}"
                 current_price = float(live_item.get("mark_price", 0)) or ticker_map.get(pair, entry_price)
                 live_upnl = float(live_item.get("unrealized_pnl", 0))
                 pnl_usd = live_upnl
                 pnl_idr = live_upnl * fx_rate
                 pnl_pct = (live_upnl / pos_usd * 100.0) if pos_usd > 0 else 0.0
+                pos["unrealized_pnl"] = round(live_upnl, 4)
         else:
             current_price = ticker_map.get(pair, entry_price)
             if entry_price > 0:
@@ -821,14 +889,55 @@ def monitor_and_update_positions():
 
         updated = True
 
-        # T0.5: Reconcile Guard — Ensure exchange SL is CONFIRMED; if MISSING, re-place automatically
+        # Backfill SL / TP1 / TP2 levels if an imported or manual position lacks them
+        max_sl_cfg = float(_get_config().get("max_sl_pct", 2.25) or 2.25)
+        liq_px_curr = float(pos.get("liquidation_price", 0) or 0)
+        if is_binance_pos and bn_client and (sl <= 0 or tp <= 0):
+            try:
+                ok_algo, open_algos = bn_client.get_open_algo_orders(pair)
+                if ok_algo:
+                    for ao in open_algos:
+                        otype = str(ao.get("orderType", ao.get("type", ""))).upper()
+                        tpx = float(ao.get("triggerPrice", ao.get("stopPrice", 0)) or 0)
+                        if "TAKE_PROFIT" in otype and tpx > 0 and tp <= 0:
+                            tp = tpx
+                            pos["take_profit"] = tp
+                            pos["take_profit_2"] = tp
+                            pos["tp_algo_id"] = ao.get("algoId")
+                        elif "STOP" in otype and tpx > 0 and sl <= 0:
+                            sl = tpx
+                            pos["stop_loss"] = sl
+                            pos["init_stop_loss"] = pos.get("init_stop_loss") or sl
+                            pos["sl_algo_id"] = ao.get("algoId")
+                            pos["sl_state"] = "CONFIRMED"
+            except Exception:
+                pass
+        if sl <= 0 and entry_price > 0:
+            sl = _safe_sl_against_liquidation(entry_price, direction, 0.0, liq_px_curr, max_sl_cfg)
+            pos["stop_loss"] = sl
+            pos["init_stop_loss"] = pos.get("init_stop_loss") or sl
+        if entry_price > 0 and sl > 0:
+            sl_del = abs(entry_price - sl)
+            sgn_d = 1.0 if direction == "LONG" else -1.0
+            if tp <= 0:
+                tp = round(entry_price + sgn_d * 2.2 * sl_del, 6)
+                pos["take_profit"] = tp
+                pos["take_profit_2"] = tp
+            if not pos.get("take_profit_1") or abs(float(pos.get("take_profit_1") or 0) - tp) < max(1e-8, entry_price * 0.0015):
+                pos["take_profit_1"] = round(entry_price + sgn_d * 0.55 * sl_del, 6)
+
+        # T0.5: Reconcile Guard — Ensure exchange SL is CONFIRMED; if UNCONFIRMED/MISSING, clamp safely & re-place automatically
         if is_binance_pos and bn_client and sl > 0:
             try:
                 expected_sl_side = "SELL" if direction == "LONG" else "BUY"
                 sl_state = bn_client.verify_stop_loss_active(pair, expected_side=expected_sl_side, max_wait_sec=0.8, return_tristate=True)
                 pos["sl_state"] = sl_state
-                if sl_state == "MISSING":
-                    print(f"[RECONCILE GUARD] 🛡️ SL MISSING on {pair}! Re-placing SL at ${sl:,.4f} on exchange...", flush=True)
+                if sl_state != "CONFIRMED":
+                    safe_sl = _safe_sl_against_liquidation(entry_price, direction, sl, liq_px_curr, max_sl_cfg)
+                    if safe_sl != sl:
+                        sl = safe_sl
+                        pos["stop_loss"] = sl
+                    print(f"[RECONCILE GUARD] 🛡️ SL {sl_state} on {pair}! Re-placing SL at ${sl:,.4f} on exchange...", flush=True)
                     sl_res = bn_client.set_stop_loss(pair, direction, sl)
                     if isinstance(sl_res, dict) and "algoId" in sl_res:
                         pos["sl_algo_id"] = sl_res["algoId"]
@@ -1076,7 +1185,8 @@ def monitor_and_update_positions():
             except Exception:
                 time_since_open_sec = 0.0
 
-        allow_local_tp_sl_fallback = (not is_binance_pos) or (pos.get("sl_state") == "MISSING" and time_since_open_sec > 300)
+        sl_state_upper = str(pos.get("sl_state") or "").upper()
+        allow_local_tp_sl_fallback = (not is_binance_pos) or (sl_state_upper != "CONFIRMED")
 
         tp_hit = allow_local_tp_sl_fallback and ((direction == "LONG" and current_price >= tp > 0) or (direction == "SHORT" and current_price <= tp > 0))
         if tp_hit:
@@ -1164,8 +1274,8 @@ def check_wallet_and_position_guard():
     open_pos = [p for p in positions if p.get("status") == "OPEN"]
     
     bn_client = get_binance_client()
-    avail_usdt = float(state.get("binance_available_balance_usdt", 1.78))
-    total_usdt = float(state.get("binance_wallet_balance_usdt", 1.78))
+    avail_usdt = float(state.get("binance_available_balance_usdt", 0.0))
+    total_usdt = float(state.get("binance_wallet_balance_usdt", 0.0))
     
     if bn_client:
         try:
@@ -1206,18 +1316,7 @@ def check_wallet_and_position_guard():
                     if amt > 0:
                         pair_sym = lp.get("symbol", "")
                         if not any(p.get("binance_pair") == pair_sym or p.get("symbol", "").replace("-USD", "USDT") == pair_sym for p in valid_open_pos):
-                            new_p = {
-                                "symbol": pair_sym.replace("USDT", "-USD"),
-                                "binance_pair": pair_sym,
-                                "direction": lp.get("direction") or ("LONG" if float(lp.get("positionAmt", 1)) > 0 else "SHORT"),
-                                "entry_price": float(lp.get("entry_price", lp.get("entryPrice", 0))),
-                                "current_price": float(lp.get("mark_price", lp.get("markPrice", 0))),
-                                "unrealized_pnl": float(lp.get("unrealized_pnl", lp.get("unRealizedProfit", 0))),
-                                "leverage": int(lp.get("leverage", 20)),
-                                "status": "OPEN",
-                                "exchange": "BINANCE_FUTURES",
-                                "binance_synced": True
-                            }
+                            new_p = _build_synced_binance_pos(lp, bn_client, get_fx_info()["usd_idr"])
                             valid_open_pos.append(new_p)
                             positions.append(new_p)
                             dirty = True
@@ -2044,7 +2143,7 @@ def start_loop():
                 save_state()
                 print(f"[*] ✅ Binance Futures Engine LIVE! Wallet balance: ${usdt_bal:.2f} USDT (Available: ${avail_bal:.2f})", flush=True)
             else:
-                usdt_bal = float(state.get("binance_wallet_balance_usdt", 1.78))
+                usdt_bal = float(state.get("binance_wallet_balance_usdt", 0.0))
                 print(f"[*] ✅ Binance Futures Engine Initialized (Cached Wallet: ${usdt_bal:.2f} USDT)", flush=True)
         except Exception as e:
             print(f"[*] ⚠️ Binance Futures check warning: {e}", flush=True)
@@ -2053,6 +2152,7 @@ def start_loop():
 
     last_full_scan = 0
     last_quick_scan = 0
+    last_pause_monitor_ts = 0
     was_in_all_in_mode = False
     was_paused_by_user = not sync_control_flags_from_disk()
     if was_paused_by_user:
@@ -2064,11 +2164,25 @@ def start_loop():
             if not is_active:
                 if not was_paused_by_user:
                     was_paused_by_user = True
-                    print("[*] Autonomous trader PAUSED by user.", flush=True)
+                    state["status"] = "PAUSED"
+                    save_state()
+                    print("[*] Autonomous trader PAUSED by user (active position SL supervision continues).", flush=True)
+                now_pause = time.time()
+                if now_pause - last_pause_monitor_ts >= 8:
+                    last_pause_monitor_ts = now_pause
+                    try:
+                        guard = check_wallet_and_position_guard()
+                        monitor_and_update_positions()
+                        state["all_in_monitoring_mode"] = bool(guard.get("pause_scanning"))
+                        state["all_in_focus_positions"] = [p.get("symbol") for p in guard.get("open_positions", [])]
+                        save_state()
+                    except Exception as pe:
+                        print(f"[PAUSE MONITOR NOTICE] {pe}", flush=True)
                 time.sleep(2)
                 continue
             elif was_paused_by_user:
                 was_paused_by_user = False
+                state["status"] = "RUNNING"
                 print("[*] Autonomous trader RESUMED by user! Triggering immediate scan cycle...", flush=True)
                 last_full_scan = 0
                 last_quick_scan = 0

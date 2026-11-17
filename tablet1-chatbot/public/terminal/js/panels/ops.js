@@ -1,6 +1,6 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, fmtTime, dirCls, LS } from '../util.js';
 import { get, getRaw, tickOk } from '../api.js';
-import { attachTechnicalMasterCanvas } from './charts.js?v=20261116e';
+import { attachTechnicalMasterCanvas } from './charts.js?v=20261117a';
 
 export function mountBOT(body, ctx) {
   body.classList.add('fill');
@@ -31,6 +31,11 @@ export function mountBOT(body, ctx) {
   let autoTogglePending = false;
   let latestWalletUsdt = 0;
   let scanEpochSec = Math.floor(Date.now() / 1000);
+  let focusedPosPair = null;
+  let manualPreviewMode = false;
+  let focusedPositionObj = null;
+  let currentOpenPositions = [];
+  let actionBusy = false;
 
   function isCryptoForBot(s) {
     return /USDT|BTC|ETH|SOL|BNB|XRP|DOGE|ADA|AVAX|LINK|SUI|PEPE|DOT|MATIC|LTC|TON|ARB|OP|INJ|NEAR|APT|FET|RNDR|WIF|BONK/i.test(s || '');
@@ -91,9 +96,168 @@ export function mountBOT(body, ctx) {
     botTmOverlay = null;
   }
 
+  function buildActiveTradeViewModel() {
+    if (!manualPreviewMode && focusedPositionObj) {
+      const p = focusedPositionObj;
+      const dir = String(p.direction || p.side || 'LONG').toUpperCase();
+      const lev = +(p.leverage || 20);
+      const entry = +(p.entry_price || p.entryPrice || 0);
+      const curPx = +(p.current_price || entry || 0);
+      const sl = +(p.stop_loss || 0);
+      const { tp1, tp2 } = ensureDistinctTp(entry, sl, p.take_profit_1 || 0, p.take_profit_2 || p.take_profit || 0, dir);
+      const liq = +(p.liquidation_price || 0);
+      const mUsd = +(p.position_size_usd || latestWalletUsdt || 0);
+      const mIdr = +(p.position_size_idr || Math.round(mUsd * 16500));
+      const pnlUsd = +(p.pnl_usd ?? p.unrealized_pnl ?? p.unrealizedProfit ?? 0);
+      const pnlIdr = +(p.pnl_idr ?? Math.round(pnlUsd * 16500));
+      const pnlPct = +(p.pnl_pct ?? (mUsd > 0 ? (pnlUsd / mUsd) * 100 : 0));
+      const sym = toBinanceSym(p.binance_pair || p.symbol);
+      const tpSame = scanResult && toBinanceSym(scanResult.symbol) === sym
+        ? (scanResult.tp_time_prediction || scanResult.layer3_plan?.tp_time_prediction || {})
+        : {};
+      return {
+        isLivePosition: true,
+        posObj: p,
+        sym,
+        displaySym: p.symbol || sym.replace(/USDT$/, '-USD'),
+        dir,
+        lev,
+        entry,
+        curPx,
+        sl,
+        tp1,
+        tp2,
+        liq,
+        mUsd,
+        mIdr,
+        pnlUsd,
+        pnlIdr,
+        pnlPct,
+        rMult: +(p.r_multiple_curr ?? 0),
+        slState: p.sl_state || 'MONITORED',
+        pSurvive: p.p_survive_pct,
+        aiEval: p.ai_evaluation || '',
+        tp: tpSame,
+        scan: (scanResult && toBinanceSym(scanResult.symbol) === sym) ? scanResult : null
+      };
+    }
+    if (!scanResult) return null;
+    const l1 = scanResult.layer1_quant || scanResult.layer1_scanning || {};
+    const l3 = scanResult.layer3_plan || {};
+    const l5 = scanResult.layer5_final_call || {};
+    const tp = scanResult.tp_time_prediction || l3.tp_time_prediction || {};
+    const dir = String(l5.direction || l3.action || 'LONG').toUpperCase();
+    const lev = +(l3.leverage || l3.recommended_leverage || l5.leverage || 20);
+    const entry = +(l3.entry_price || l5.entry_price || l1.current_price || 0);
+    const sl = +(l3.stop_loss || l5.stop_loss || (entry > 0 ? (dir === 'LONG' ? entry * 0.988 : entry * 1.012) : 0));
+    const { tp1, tp2 } = ensureDistinctTp(entry, sl, l3.take_profit_1 || tp.tp1_price || 0, l3.take_profit_2 || l3.take_profit || tp.tp2_price || 0, dir);
+    const mUsd = +(latestWalletUsdt > 0 ? latestWalletUsdt : (+(l3.roi_pnl_projection?.margin_usd || 0))).toFixed(2);
+    const mIdr = Math.round(mUsd * 16500);
+    return {
+      isLivePosition: false,
+      posObj: null,
+      sym: toBinanceSym(scanResult.symbol || scanSym),
+      displaySym: scanResult.symbol || scanSym,
+      dir,
+      lev,
+      entry,
+      curPx: +(l1.current_price || entry || 0),
+      sl,
+      tp1,
+      tp2,
+      liq: 0,
+      mUsd,
+      mIdr,
+      pnlUsd: 0,
+      pnlIdr: 0,
+      pnlPct: 0,
+      rMult: 0,
+      slState: 'SCAN_PREVIEW',
+      pSurvive: null,
+      aiEval: '',
+      tp,
+      scan: scanResult
+    };
+  }
+
+  function focusOpenPosition(pos) {
+    if (!pos) return;
+    const pair = toBinanceSym(pos.binance_pair || pos.symbol);
+    focusedPosPair = pair;
+    focusedPositionObj = pos;
+    manualPreviewMode = false;
+    scanSym = pair.replace(/USDT$/, '-USD');
+    if (scanResult && toBinanceSym(scanResult.symbol) !== pair) scanResult = null;
+    ctx.setSymbol(pair.endsWith('USDT') ? pair + '.P' : pair);
+    load();
+  }
+
+  async function syncPositionSlAction(pos) {
+    if (!pos || actionBusy) return;
+    const pair = toBinanceSym(pos.binance_pair || pos.symbol);
+    const curSl = +(pos.stop_loss || 0);
+    const suggestedSl = curSl > 0 ? curSl : Number((+(pos.entry_price || 0) * (String(pos.direction).toUpperCase() === 'SHORT' ? 1.02 : 0.98)).toPrecision(6));
+    const input = window.prompt(`Sync / Place STOP_MARKET Stop Loss on Binance Futures for ${pair} (${pos.direction} ${pos.leverage}x).\nCurrent SL: ${curSl || 'MISSING'} | Entry: ${pos.entry_price} | Liq: ${pos.liquidation_price || 'N/A'}\n\nEnter target Stop Loss price:`, String(suggestedSl));
+    if (!input) return;
+    const val = Number(input);
+    if (!Number.isFinite(val) || val <= 0) { alert('Invalid Stop Loss price.'); return; }
+    actionBusy = true;
+    try {
+      const r = await fetch('/api/crypto-futures/positions/sync-sl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ binance_pair: pair, symbol: pos.symbol, direction: pos.direction, stop_loss: val })
+      });
+      const j = await r.json();
+      if (r.ok && j.success) {
+        alert(`Exchange Stop Loss CONFIRMED for ${pair} at $${val}`);
+      } else {
+        alert(`SL Sync failed: ${j.error || 'Unknown error'}`);
+      }
+    } catch (e) {
+      alert('SL Sync error: ' + e.message);
+    }
+    actionBusy = false;
+    await load();
+  }
+
+  async function closePositionAction(pos) {
+    if (!pos || actionBusy) return;
+    const pair = toBinanceSym(pos.binance_pair || pos.symbol);
+    const ok = window.confirm(`CLOSE ${pair} (${pos.direction} ${pos.leverage}x) AT MARKET?\nEntry: ${pos.entry_price} | Live Mark: ${pos.current_price}\nLive P&L: ${Number(pos.pnl_pct || 0).toFixed(2)}% ($${Number(pos.pnl_usd || 0).toFixed(2)})\n\nThis sends a real Binance Futures reduce-only MARKET close and cancels algo orders.`);
+    if (!ok) return;
+    actionBusy = true;
+    try {
+      const r = await fetch('/api/crypto-futures/positions/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: pos.id, binance_pair: pair, symbol: pos.symbol, direction: pos.direction })
+      });
+      const j = await r.json();
+      if (r.ok && j.success) {
+        focusedPosPair = null;
+        focusedPositionObj = null;
+        alert(`Closed ${pair} on Binance Futures.`);
+      } else {
+        alert(`Close failed: ${j.error || 'Unknown error'}`);
+      }
+    } catch (e) {
+      alert('Close error: ' + e.message);
+    }
+    actionBusy = false;
+    await load();
+  }
+
   async function runScan(sym) {
     if (scanning) return;
+    const targetNorm = sym ? toBinanceSym(sym) : toBinanceSym(scanSym);
+    const matchingOpen = currentOpenPositions.find(p => toBinanceSym(p.binance_pair || p.symbol) === targetNorm);
+    if (matchingOpen) {
+      focusOpenPosition(matchingOpen);
+      return;
+    }
     scanning = true;
+    manualPreviewMode = currentOpenPositions.length > 0;
     if (sym) {
       scanSym = String(sym).toUpperCase().replace(/\.P$/, '').replace(/USDT$/, '-USD');
       if (!scanSym.includes('-USD')) scanSym += '-USD';
@@ -168,8 +332,20 @@ export function mountBOT(body, ctx) {
     const autoBtnStyle = isAutoRunning
       ? 'color:#ff5a52;border-color:#ff3b3088;background:#1a0606;font-weight:bold'
       : 'color:#00d26a;border-color:#00d26a88;background:#041a0d;font-weight:bold';
+    const focusBackBtn = (currentOpenPositions.length > 0 && manualPreviewMode)
+      ? h('button', {
+          style: 'color:#ffb000;border-color:#ffb000aa;background:#241800;font-weight:bold',
+          text: `↩️ FOCUS OPEN POS (${toBinanceSym(currentOpenPositions[0].binance_pair || currentOpenPositions[0].symbol)})`,
+          onclick: () => focusOpenPosition(currentOpenPositions[0])
+        })
+      : null;
+    const lockedTag = (!manualPreviewMode && focusedPositionObj)
+      ? h('span', { class: 'am sym', style: 'font-size:10px;padding:1px 6px;border:1px solid #ffb00066;background:#1a1100', text: `🔒 FOCUS: ${toBinanceSym(focusedPositionObj.binance_pair || focusedPositionObj.symbol)}` })
+      : null;
+    const extraBtns = [lockedTag, focusBackBtn].filter(Boolean);
     tb.append(
       h('span', { class: 'lbl', text: 'BOT PYROFUEL 99% SNIPER (MATH + AI + NEWS):' }),
+      ...extraBtns,
       inp,
       h('button', { class: 'on', text: scanning ? 'SCANNING 5-LAYER...' : 'DEEP SCAN <GO>', onclick: () => runScan(inp.value.trim().toUpperCase()) }),
       h('span', { class: 'lbl', text: 'CHART TF:' }),
@@ -193,7 +369,8 @@ export function mountBOT(body, ctx) {
       botChartWrap.append(h('div', { class: 'na', text: 'LightweightCharts unavailable' }));
       return;
     }
-    const bSym = toBinanceSym(scanResult?.symbol || scanSym);
+    const vm = buildActiveTradeViewModel();
+    const bSym = toBinanceSym(vm?.sym || scanResult?.symbol || scanSym);
     let env = await get('kline', { symbol: bSym, interval: botChartIv, limit: botChartIv === '1s' ? 160 : 140 }, 3000);
     let rawCandles = (env.ok && env.data && Array.isArray(env.data.candles)) ? env.data.candles : [];
     let feedNote = '';
@@ -210,9 +387,9 @@ export function mountBOT(body, ctx) {
     }
 
     botLastRawCandles = rawCandles;
-    if (botRightBoxEl && scanResult) {
+    if (botRightBoxEl && vm) {
       const oldSvg = botRightBoxEl.querySelector('svg');
-      const freshSvg = renderVisualTrajectoryBlueprint(scanResult, rawCandles);
+      const freshSvg = renderVisualTrajectoryBlueprint(vm, rawCandles);
       if (oldSvg && freshSvg) oldSvg.replaceWith(freshSvg);
     }
 
@@ -257,39 +434,34 @@ export function mountBOT(body, ctx) {
 
     botActiveBar = mapped[mapped.length - 1] ? { ...mapped[mapped.length - 1] } : null;
 
-    // Draw Technical Master Overlays + Institutional Entry / SL / TP1 / TP2 Zones with Real Wallet Sizing
-    const l3 = scanResult?.layer3_plan || {};
-    const l5 = scanResult?.layer5_final_call || {};
-    const tpPred = scanResult?.tp_time_prediction || l3?.tp_time_prediction || {};
-    const dirChart = l5.direction || l3.action || 'LONG';
-    const levChart = +(l3.leverage || l3.recommended_leverage || 20);
-    const marginUsdChart = latestWalletUsdt > 0 ? latestWalletUsdt : (+(l3.position_size_idr || 0) / 16500);
-    const marginIdrChart = Math.round(marginUsdChart * 16500);
-    const entryPx = +(l3.entry_price || botActiveBar?.close || 0);
-    const slPx = +(l3.stop_loss || 0);
-    const { tp1: tp1Px, tp2: tp2Px } = ensureDistinctTp(
-      entryPx,
-      slPx,
-      l3.take_profit_1 || tpPred.tp1_price || 0,
-      l3.take_profit_2 || l3.take_profit || tpPred.tp2_price || 0,
-      dirChart
-    );
+    // Draw Technical Master Overlays + Exact Open Position (or Scan Plan) Entry / SL / TP1 / TP2 / LIQ Lines
+    const dirChart = vm?.dir || 'LONG';
+    const levChart = +(vm?.lev || 20);
+    const marginUsdChart = +(vm?.mUsd || latestWalletUsdt || 0);
+    const marginIdrChart = +(vm?.mIdr || Math.round(marginUsdChart * 16500));
+    const entryPx = +(vm?.entry || botActiveBar?.close || 0);
+    const slPx = +(vm?.sl || 0);
+    const liqPx = +(vm?.liq || 0);
+    const { tp1: tp1Px, tp2: tp2Px } = ensureDistinctTp(entryPx, slPx, vm?.tp1 || 0, vm?.tp2 || 0, dirChart);
     const mTp1Chart = calcTargetRoiPnl(entryPx, tp1Px, dirChart, levChart, marginIdrChart, marginUsdChart);
     const mTp2Chart = calcTargetRoiPnl(entryPx, tp2Px, dirChart, levChart, marginIdrChart, marginUsdChart);
     const mSlChart = calcTargetRoiPnl(entryPx, slPx, dirChart, levChart, marginIdrChart, marginUsdChart);
 
     if (typeof botSeries.createPriceLine === 'function') {
       if (entryPx > 0) {
-        botSeries.createPriceLine({ price: entryPx, color: '#ffb000', lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: `ENTRY (${dirChart} ${levChart}x)` });
+        botSeries.createPriceLine({ price: entryPx, color: '#ffb000', lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: '' });
       }
       if (slPx > 0) {
-        botSeries.createPriceLine({ price: slPx, color: '#ff3b30', lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: `SL (${mSlChart.roi_pct >= 0 ? '+' : ''}${mSlChart.roi_pct}% | ${mSlChart.pnl_idr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(mSlChart.pnl_idr))})` });
+        botSeries.createPriceLine({ price: slPx, color: '#ff3b30', lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: '' });
       }
       if (tp1Px > 0) {
-        botSeries.createPriceLine({ price: tp1Px, color: '#00e5ff', lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: `TP1 (+${mTp1Chart.roi_pct}% | +${fmtIdr(mTp1Chart.pnl_idr)})` });
+        botSeries.createPriceLine({ price: tp1Px, color: '#00e5ff', lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: '' });
       }
       if (tp2Px > 0 && Math.abs(tp2Px - tp1Px) > 1e-8) {
-        botSeries.createPriceLine({ price: tp2Px, color: '#00d26a', lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: `TP2 (+${mTp2Chart.roi_pct}% | +${fmtIdr(mTp2Chart.pnl_idr)})` });
+        botSeries.createPriceLine({ price: tp2Px, color: '#00d26a', lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: '' });
+      }
+      if (liqPx > 0) {
+        botSeries.createPriceLine({ price: liqPx, color: '#e040fb', lineWidth: 1.5, lineStyle: 3, axisLabelVisible: true, title: '' });
       }
     }
 
@@ -300,7 +472,19 @@ export function mountBOT(body, ctx) {
       getSeries: () => botSeries,
       getMapped: () => botMappedBars,
       getLayers: () => ({ struct: true, trend: true, fvg: true, fib: false, vpvr: true }),
-      getTradePlan: () => ({ dir: dirChart, entry: entryPx, sl: slPx, tp1: tp1Px, tp2: tp2Px })
+      getTradePlan: () => ({
+        isOpen: Boolean(vm?.isLivePosition),
+        dir: dirChart,
+        entry: entryPx,
+        sl: slPx,
+        tp1: tp1Px,
+        tp2: tp2Px,
+        liq: liqPx,
+        entryLabel: `${vm?.isLivePosition ? 'OPEN ' : ''}ENTRY ${dirChart} ${levChart}x (${fmtPx(entryPx)})`,
+        slLabel: `SL ${fmtPx(slPx)} (${mSlChart.roi_pct >= 0 ? '+' : ''}${mSlChart.roi_pct}%)`,
+        tp1Label: `TP1 ${fmtPx(tp1Px)} (+${mTp1Chart.roi_pct}%)`,
+        tp2Label: `TP2 ${fmtPx(tp2Px)} (+${mTp2Chart.roi_pct}%)`
+      })
     });
 
     const ivMap = { '1s': 1, '1m': 60, '5m': 300, '15m': 900, '1h': 3600 };
@@ -334,6 +518,14 @@ export function mountBOT(body, ctx) {
         if (botVolSeries) botVolSeries.update({ time: botActiveBar.time, value: botActiveBar.vol, color: botActiveBar.close >= botActiveBar.open ? 'rgba(0,210,106,0.5)' : 'rgba(255,59,48,0.5)' });
       } catch {}
       botTmOverlay?.scheduleDraw();
+      if (botEtaClockEl && vm?.isLivePosition && entryPx > 0) {
+        const liveM = calcTargetRoiPnl(entryPx, botActiveBar.close, dirChart, levChart, marginIdrChart, marginUsdChart);
+        const sgnL = dirChart === 'SHORT' ? -1 : 1;
+        const slDel = slPx > 0 ? Math.max(entryPx * 0.0045, Math.abs(entryPx - slPx)) : entryPx * 0.015;
+        const rL = (sgnL * (botActiveBar.close - entryPx) / slDel);
+        botEtaClockEl.style.color = liveM.roi_pct >= 0 ? '#00d26a' : '#ff5a52';
+        botEtaClockEl.textContent = `● LIVE P&L: ${liveM.roi_pct >= 0 ? '+' : ''}${fmtNum(liveM.roi_pct, 2)}% (${liveM.pnl_usd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(liveM.pnl_usd), 2)} / ${liveM.pnl_idr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(liveM.pnl_idr))}) • R: ${rL >= 0 ? '+' : ''}${fmtNum(rL, 2)}R`;
+      }
       const remS = ivSec <= 1 ? 1 : Math.max(0, ivSec - (nowS % ivSec));
       const remTxt = ivSec <= 1 ? '1S REALTIME' : `NEXT BAR: ${String(Math.floor(remS / 60)).padStart(2, '0')}:${String(remS % 60).padStart(2, '0')}s`;
       if (botChartLeg) {
@@ -367,7 +559,7 @@ export function mountBOT(body, ctx) {
         const ivTag = feedNote ? `${botChartIv.toUpperCase()} (${feedNote})` : botChartIv.toUpperCase();
         botChartLeg.innerHTML = `<b style="color:#fff">${bSym}</b> [${ivTag}]  PX:<b style="color:#ffb000">${fmtPx(botActiveBar.close)}</b>  H:<b style="color:#00d26a">${fmtPx(botActiveBar.high)}</b>  L:<b style="color:#ff3b30">${fmtPx(botActiveBar.low)}</b>  <span style="color:#00d26a">● ${remTxt}</span>`;
       }
-      if (botEtaClockEl && scanResult) {
+      if (botEtaClockEl && !vm?.isLivePosition && scanResult) {
         const tp = scanResult.tp_time_prediction || scanResult.layer3_plan?.tp_time_prediction || {};
         const tp1TotalSec = Math.max(60, Math.round((Number(tp.eta_tp1_hours) || 0.58) * 3600));
         const tp2TotalSec = Math.max(120, Math.round((Number(tp.eta_hours_realistic) || 2.2) * 3600));
@@ -380,44 +572,46 @@ export function mountBOT(body, ctx) {
     }, 1000);
   }
 
-  function renderVisualTrajectoryBlueprint(scan, candlesIn = []) {
-    const l3 = scan?.layer3_plan || {};
-    const l5 = scan?.layer5_final_call || {};
-    const mp = scan?.math_proof || l5?.math_proof || {};
-    const tp = scan?.tp_time_prediction || l3?.tp_time_prediction || {};
-    const dir = l5.direction || l3.action || 'LONG';
-    const entry = +(l3.entry_price || 100);
-    const sl = +(l3.stop_loss || (dir === 'LONG' ? entry * 0.985 : entry * 1.015));
+  function renderVisualTrajectoryBlueprint(vmOrScan, candlesIn = []) {
+    const isVm = Boolean(vmOrScan && ('isLivePosition' in vmOrScan));
+    const tp = isVm ? (vmOrScan.tp || {}) : (vmOrScan?.tp_time_prediction || vmOrScan?.layer3_plan?.tp_time_prediction || {});
+    const l3 = vmOrScan?.layer3_plan || {};
+    const l5 = vmOrScan?.layer5_final_call || {};
+    const dir = isVm ? vmOrScan.dir : (l5.direction || l3.action || 'LONG');
+    const entry = isVm ? +(vmOrScan.entry || 100) : +(l3.entry_price || 100);
+    const liveMark = isVm ? +(vmOrScan.curPx || entry) : 0;
+    const sl = isVm ? +(vmOrScan.sl || (dir === 'LONG' ? entry * 0.985 : entry * 1.015)) : +(l3.stop_loss || (dir === 'LONG' ? entry * 0.985 : entry * 1.015));
     const { tp1, tp2 } = ensureDistinctTp(
       entry,
       sl,
-      l3.take_profit_1 || tp.tp1_price || 0,
-      l3.take_profit_2 || l3.take_profit || tp.tp2_price || 0,
+      isVm ? vmOrScan.tp1 : (l3.take_profit_1 || tp.tp1_price || 0),
+      isVm ? vmOrScan.tp2 : (l3.take_profit_2 || l3.take_profit || tp.tp2_price || 0),
       dir
     );
     const slDist = Math.abs(entry - sl);
     const lockSl = entry + (dir === 'SHORT' ? -1 : 1) * slDist * 0.38;
 
-    const cone = Array.isArray(tp.trajectory_cone) && tp.trajectory_cone.length
+    const coneAnchor = (isVm && vmOrScan.isLivePosition && liveMark > 0) ? liveMark : entry;
+    const cone = Array.isArray(tp.trajectory_cone) && tp.trajectory_cone.length && !(isVm && vmOrScan.isLivePosition)
       ? tp.trajectory_cone
       : [1, 2, 3, 4, 5, 6, 7, 8].map(s => {
           const frac = s / 8;
-          const mid = entry + (tp2 - entry) * frac;
-          const band = Math.abs(tp2 - entry) * 0.28 * Math.sqrt(frac);
+          const mid = coneAnchor + (tp2 - coneAnchor) * frac;
+          const band = Math.max(Math.abs(tp2 - coneAnchor), slDist) * 0.28 * Math.sqrt(frac);
           return { step: s, eta_hours: +((tp.eta_hours_realistic || 2.2) * frac).toFixed(2), mid_price: mid, upper_price: mid + band, lower_price: mid - band };
         });
 
     const histBarsAll = Array.isArray(candlesIn) && candlesIn.length ? candlesIn.slice(-16) : [];
     const lastHistClose = histBarsAll.length ? Number(histBarsAll[histBarsAll.length - 1].c ?? histBarsAll[histBarsAll.length - 1].close ?? 0) : 0;
-    const isStaleScan = lastHistClose > 0 && Math.abs(lastHistClose - entry) / Math.max(1e-8, lastHistClose) > 0.06;
+    const isStaleScan = !(isVm && vmOrScan.isLivePosition) && lastHistClose > 0 && Math.abs(lastHistClose - entry) / Math.max(1e-8, lastHistClose) > 0.06;
     const histBars = isStaleScan ? [] : histBarsAll;
     const histPrices = histBars.map(c => +(c.c ?? c.close)).filter(v => Number.isFinite(v) && v > 0);
 
-    const allPrices = [entry, sl, lockSl, tp1, tp2, ...histPrices, ...cone.flatMap(c => [c.upper_price, c.lower_price, c.mid_price])].filter(x => Number.isFinite(x) && x > 0);
+    const allPrices = [entry, liveMark, sl, lockSl, tp1, tp2, ...histPrices, ...cone.flatMap(c => [c.upper_price, c.lower_price, c.mid_price])].filter(x => Number.isFinite(x) && x > 0);
     const minP = Math.min(...allPrices) * 0.9985;
     const maxP = Math.max(...allPrices) * 1.0015;
     const span = Math.max(maxP - minP, entry * 0.005);
-    const yOf = px => 176 - ((px - minP) / span) * 152;
+    const yOf = px => 176 - ((px - minP) / span) * 140;
 
     const ns = 'http://www.w3.org/2000/svg';
     const svg = document.createElementNS(ns, 'svg');
@@ -425,7 +619,7 @@ export function mountBOT(body, ctx) {
     svg.setAttribute('preserveAspectRatio', 'none');
     svg.style.cssText = 'width:100%;height:192px;display:block;background:#020408;border-bottom:1px solid #1e1e1e';
 
-    const yEntry = yOf(entry), ySl = yOf(sl), yLock = yOf(lockSl), yTp1 = yOf(tp1), yTp2 = yOf(tp2);
+    const yEntry = yOf(entry), yAnchor = yOf(coneAnchor), ySl = yOf(sl), yTp1 = yOf(tp1), yTp2 = yOf(tp2);
     const mkRect = (x, y1, y2, fill) => {
       const r = document.createElementNS(ns, 'rect');
       r.setAttribute('x', x);
@@ -452,7 +646,6 @@ export function mountBOT(body, ctx) {
       svg.append(ln);
       let labelX = preferRightX ? 255 : 24;
       let labelY = Math.max(12, Math.min(182, y - 3));
-      // Stagger horizontally or vertically if two price levels sit close together
       for (const prev of usedLabelYs) {
         if (Math.abs(prev.y - labelY) < 12 && Math.abs(prev.x - labelX) < 150) {
           labelX = prev.x < 180 ? 255 : 24;
@@ -472,10 +665,14 @@ export function mountBOT(body, ctx) {
     drawLevel(tp2, `TP2 RUNNER (${cleanEta(tp.eta_label, '~2h')})`, '#00d26a');
     drawLevel(tp1, `TP1 +0.55R LOCK (${cleanEta(tp.eta_tp1_label, '~35m')})`, '#00e5ff', '4,3');
     drawLevel(lockSl, 'LOCK SL (+0.38R)', '#4da3ff', '2,3', true);
-    drawLevel(entry, `ENTRY (${dir})`, '#ffb000');
+    drawLevel(entry, `${(isVm && vmOrScan.isLivePosition) ? 'OPEN ENTRY' : 'ENTRY'} (${dir})`, '#ffb000');
     drawLevel(sl, 'STOP LOSS (GUARD)', '#ff3b30', '3,3');
+    if (isVm && vmOrScan.isLivePosition && liveMark > 0) {
+      const mCol = vmOrScan.pnlPct >= 0 ? '#00d26a' : '#ffffff';
+      drawLevel(liveMark, `LIVE MARK (${vmOrScan.pnlPct >= 0 ? '+' : ''}${Number(vmOrScan.pnlPct).toFixed(2)}%)`, mCol, '2,2', true);
+    }
 
-    // Left Half (x: 20 -> 175): ACTUAL historical exchange candlesticks leading into Entry!
+    // Left Half (x: 20 -> 175): ACTUAL historical exchange candlesticks leading into current mark/entry
     if (histBars.length >= 2) {
       const barSpan = 152 / Math.max(1, histBars.length);
       histBars.forEach((b, idx) => {
@@ -503,10 +700,10 @@ export function mountBOT(body, ctx) {
       svg.append(waitTxt);
     }
 
-    // Monte Carlo / First-Passage Trajectory Cone (x: 175 -> 445)
+    // Monte Carlo / First-Passage Trajectory Cone (x: 175 -> 445) anchored at Live Mark (if open) or Entry
     const xOfStep = idx => 175 + ((idx + 1) / cone.length) * 270;
-    const upperPts = [`175.0,${yEntry.toFixed(1)}`, ...cone.map((c, idx) => `${xOfStep(idx).toFixed(1)},${yOf(c.upper_price).toFixed(1)}`)];
-    const lowerPts = [...cone.map((c, idx) => `${xOfStep(idx).toFixed(1)},${yOf(c.lower_price).toFixed(1)}`).reverse(), `175.0,${yEntry.toFixed(1)}`];
+    const upperPts = [`175.0,${yAnchor.toFixed(1)}`, ...cone.map((c, idx) => `${xOfStep(idx).toFixed(1)},${yOf(c.upper_price).toFixed(1)}`)];
+    const lowerPts = [...cone.map((c, idx) => `${xOfStep(idx).toFixed(1)},${yOf(c.lower_price).toFixed(1)}`).reverse(), `175.0,${yAnchor.toFixed(1)}`];
     const conePoly = document.createElementNS(ns, 'polygon');
     conePoly.setAttribute('points', [...upperPts, ...lowerPts].join(' '));
     conePoly.setAttribute('fill', dir === 'LONG' ? 'rgba(0, 229, 255, 0.16)' : 'rgba(224, 64, 251, 0.16)');
@@ -514,7 +711,7 @@ export function mountBOT(body, ctx) {
     conePoly.setAttribute('stroke-width', '1');
     svg.append(conePoly);
 
-    const midPts = [`175.0,${yEntry.toFixed(1)}`, ...cone.map((c, idx) => `${xOfStep(idx).toFixed(1)},${yOf(c.mid_price).toFixed(1)}`)];
+    const midPts = [`175.0,${yAnchor.toFixed(1)}`, ...cone.map((c, idx) => `${xOfStep(idx).toFixed(1)},${yOf(c.mid_price).toFixed(1)}`)];
     const midLine = document.createElementNS(ns, 'polyline');
     midLine.setAttribute('fill', 'none');
     midLine.setAttribute('stroke', '#00e5ff');
@@ -524,8 +721,8 @@ export function mountBOT(body, ctx) {
     svg.append(midLine);
 
     const cEntry = document.createElementNS(ns, 'circle');
-    cEntry.setAttribute('cx', '175'); cEntry.setAttribute('cy', yEntry.toFixed(1)); cEntry.setAttribute('r', '4.5');
-    cEntry.setAttribute('fill', '#ffb000');
+    cEntry.setAttribute('cx', '175'); cEntry.setAttribute('cy', yAnchor.toFixed(1)); cEntry.setAttribute('r', '4.5');
+    cEntry.setAttribute('fill', (isVm && vmOrScan.isLivePosition) ? '#ffffff' : '#ffb000');
     svg.append(cEntry);
 
     const lastCone = cone[cone.length - 1];
@@ -542,7 +739,7 @@ export function mountBOT(body, ctx) {
     obTitle.textContent = 'LIVE L2 DEPTH';
     svg.append(obTitle, obGroup);
 
-    const bSymDepth = toBinanceSym(scan?.symbol || scanSym);
+    const bSymDepth = toBinanceSym(isVm ? vmOrScan.sym : (vmOrScan?.symbol || scanSym));
     get('depth', { symbol: bSymDepth, limit: 12 }, 2500).then(dEnv => {
       if (!svg.isConnected) return;
       obGroup.textContent = '';
@@ -608,6 +805,28 @@ export function mountBOT(body, ctx) {
     const st = (stRes.ok && stRes.data) || {};
     const posList = (pRes.ok && Array.isArray(pRes.data)) ? pRes.data : ((pRes.ok && pRes.data && pRes.data.positions) || []);
     const openPos = posList.filter(p => p.status === 'OPEN' || !p.status);
+    currentOpenPositions = openPos;
+    if (openPos.length === 0) {
+      manualPreviewMode = false;
+      focusedPosPair = null;
+      focusedPositionObj = null;
+    } else if (!manualPreviewMode) {
+      focusedPositionObj = openPos.find(p => toBinanceSym(p.binance_pair || p.symbol) === focusedPosPair) || openPos[0];
+      focusedPosPair = toBinanceSym(focusedPositionObj.binance_pair || focusedPositionObj.symbol);
+      scanSym = focusedPosPair.replace(/USDT$/, '-USD');
+      if (scanResult && toBinanceSym(scanResult.symbol) !== focusedPosPair) {
+        scanResult = null;
+      }
+      if (!scanResult) {
+        try {
+          const sameCache = await getRaw(`/api/crypto-futures/scan-cached?symbol=${encodeURIComponent(scanSym)}`);
+          if (sameCache && sameCache.ok && sameCache.data && toBinanceSym(sameCache.data.symbol) === focusedPosPair) {
+            scanResult = sameCache.data;
+          }
+        } catch {}
+      }
+    }
+
     const perf = (perfRes.ok && perfRes.data) || {};
     const auto = (cRes.ok && cRes.data) || {};
     const wl = (wlRes.ok && Array.isArray(wlRes.data)) ? wlRes.data : [];
@@ -620,10 +839,11 @@ export function mountBOT(body, ctx) {
     latestWalletUsdt = realWalletUsdt;
     renderToolbar();
 
-    if (!scanResult && cachedScanRes && cachedScanRes.ok && cachedScanRes.data) {
+    if (openPos.length === 0 && !scanResult && cachedScanRes && cachedScanRes.ok && cachedScanRes.data) {
       scanResult = cachedScanRes.data;
       scanEpochSec = Math.floor(Date.now() / 1000);
     }
+    const vm = buildActiveTradeViewModel();
 
     // 1. TOP INSTITUTIONAL KPI & AUDITED PERFORMANCE LEDGER BAR
     const wins = perf.winning_trades ?? 0;
@@ -643,7 +863,7 @@ export function mountBOT(body, ctx) {
       h('div', { class: 'k', text: 'MULTI-KEY AI GATEWAY POOL' }),
       h('div', { class: 'v am sym', text: `${bucketsCount} ACTIVE MODEL BUCKETS (${fmtNum(gw.estimated_daily_token_capacity || 0, 0)} TOKENS/DAY) • HYBRID QUANT + AI` }),
       h('div', { class: 'k', text: 'AUTONOMOUS ENGINE STATUS' }),
-      h('div', { class: 'v ' + (isAutoRunning ? 'up sym' : 'dn sym'), text: `${isAutoRunning ? 'ACTIVE 24/7 SNIPER' : 'PAUSED BY USER'} • ${st.max_leverage || 20}x ${st.margin_type || 'ISOLATED'} • ${openPos.length} OPEN POSITIONS` }),
+      h('div', { class: 'v ' + (isAutoRunning ? 'up sym' : 'dn sym'), text: `${isAutoRunning ? 'ACTIVE 24/7 SNIPER' : 'PAUSED (SL GUARD ON)'} • ${st.max_leverage || 20}x ${st.margin_type || 'ISOLATED'} • ${openPos.length} OPEN ${openPos.length === 1 ? 'POSITION' : 'POSITIONS'}` }),
       h('div', { class: 'k', text: 'TERMINAL NEWS SENTINEL FEED' }),
       h('div', { class: 'v lb sym', text: `BIAS: ${newsData.overall_bias || scanResult?.terminal_news_macro?.overall_bias || 'NEUTRAL'} (${newsData.overall_score ?? scanResult?.terminal_news_macro?.overall_score ?? '0.00'}) • ${auto.total_scans_done ?? st.total_scans_done ?? 0} SCANS COMPLETED` }),
       h('div', { class: 'k', text: 'LIVE BINANCE FUTURES WALLET' }),
@@ -651,70 +871,85 @@ export function mountBOT(body, ctx) {
     );
     sc.append(kv);
 
-    // 2. VISUAL AI + MATHEMATICAL WORKSTATION FOR ACTIVE/SCANNED SYMBOL
-    if (scanResult) {
-      const l1 = scanResult.layer1_quant || scanResult.layer1_scanning || {};
-      const l2 = scanResult.layer2_sentiment || scanResult.layer2_setup || {};
-      const l3 = scanResult.layer3_plan || {};
-      const l4 = scanResult.layer4_risk || {};
-      const l5 = scanResult.layer5_final_call || {};
-      const mp = scanResult.math_proof || l5.math_proof || l1.math_proof || {};
-      const tp = scanResult.tp_time_prediction || l3.tp_time_prediction || {};
-      const ns3 = scanResult.neuro_symbolic_3brain || l5.neuro_symbolic_3brain || {};
-      const p5 = mp.composite_532_factors || {};
-      const dir = l5.direction || l3.action || 'LONG';
+    // 2. VISUAL AI + MATHEMATICAL WORKSTATION (LOCKED TO OPEN POSITION WHEN ACTIVE, OR SCANNED SYMBOL)
+    if (vm) {
+      const scanCtx = vm.scan || {};
+      const l1 = scanCtx.layer1_quant || scanCtx.layer1_scanning || {};
+      const l3 = scanCtx.layer3_plan || {};
+      const l5 = scanCtx.layer5_final_call || {};
+      const mp = scanCtx.math_proof || l5.math_proof || l1.math_proof || {};
+      const tp = vm.tp || {};
+      const dir = vm.dir;
+      const levNow = vm.lev;
+      const entryNow = vm.entry;
+      const slNow = vm.sl;
+      const tp1Now = vm.tp1;
+      const tp2Now = vm.tp2;
+      const marginUsdNow = +(vm.mUsd || 0).toFixed(2);
+      const marginIdrNow = Math.round(vm.mIdr || marginUsdNow * 16500);
       const tp1EtaClean = String(tp.eta_tp1_label || '~35m').replace(/\bmenit\b/gi, 'm').replace(/\bjam\b/gi, 'h').replace(/(\d+)j\b/gi, '$1h');
       const tp2EtaClean = String(tp.eta_label || '~2h 12m').replace(/\bmenit\b/gi, 'm').replace(/\bjam\b/gi, 'h').replace(/(\d+)j\b/gi, '$1h');
 
-      // TP ETA & First-Passage Countdown Banner
       botEtaClockEl = h('span', {
-        style: 'color:#00e5ff;font-weight:900;font-size:11.5px',
-        text: `⏱️ ETA TP1 LOCK (+0.55R): ${tp1EtaClean} (${tp.eta_tp1_hours || 0.58}h)  |  FULL TP2 RUNNER: ${tp2EtaClean} (${tp.eta_hours_realistic || 2.2}h)`
+        style: `color:${vm.isLivePosition ? (vm.pnlPct >= 0 ? '#00d26a' : '#ff5a52') : '#00e5ff'};font-weight:900;font-size:11.5px`,
+        text: vm.isLivePosition
+          ? `● LIVE P&L: ${vm.pnlPct >= 0 ? '+' : ''}${fmtNum(vm.pnlPct, 2)}% (${vm.pnlUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(vm.pnlUsd), 2)} / ${vm.pnlIdr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(vm.pnlIdr))}) • R: ${vm.rMult >= 0 ? '+' : ''}${fmtNum(vm.rMult, 2)}R`
+          : `⏱️ ETA TP1 LOCK (+0.55R): ${tp1EtaClean} (${tp.eta_tp1_hours || 0.58}h)  |  FULL TP2 RUNNER: ${tp2EtaClean} (${tp.eta_hours_realistic || 2.2}h)`
       });
+
+      const bannerBg = vm.isLivePosition
+        ? (vm.pnlPct >= 0 ? 'linear-gradient(90deg,#061c10,#07121e,#141000)' : 'linear-gradient(90deg,#200808,#120918,#141000)')
+        : 'linear-gradient(90deg,#091912,#07121e,#141000)';
+      const bannerBorder = vm.isLivePosition ? (vm.pnlPct >= 0 ? '#00d26a88' : '#ff3b30aa') : '#00d26a88';
+
+      const bannerLeftItems = [
+        h('span', {
+          class: 'am sym',
+          style: 'font-size:12px',
+          text: vm.isLivePosition ? `🔴 LIVE POSITION LOCK: [${vm.sym}]` : `🎯 [${vm.displaySym}] ${l5.status || 'APPROVED'}`
+        }),
+        h('span', { class: (dir === 'LONG' ? 'up' : 'dn') + ' sym', style: 'font-size:12px;padding:1px 6px;border:1px solid currentColor', text: `${dir} ${levNow}x` }),
+        vm.isLivePosition
+          ? h('span', { class: 'lb sym', text: `ENT:${fmtPx(entryNow)} | MARK:${fmtPx(vm.curPx)}${vm.liq > 0 ? ' | LIQ:' + fmtPx(vm.liq) : ''} | SL:${vm.slState}` })
+          : h('span', { class: 'up sym', text: `HYBRID SCORE: ${mp.s_hybrid_pct || l5.confidence_score || 88}% (P_Math ${mp.p_math_pct || 86}% × P_AI ${mp.p_ai_pct || 89}%)` })
+      ];
+      if (vm.isLivePosition) {
+        bannerLeftItems.push(
+          h('button', { style: 'color:#00e5ff;border-color:#00e5ff77;background:#04151c;font-weight:bold;padding:1px 6px', text: '🛡️ SYNC/EDIT SL', onclick: () => syncPositionSlAction(vm.posObj) }),
+          h('button', { style: 'color:#ff5a52;border-color:#ff3b30aa;background:#260606;font-weight:bold;padding:1px 6px', text: '🛑 CLOSE MARKET', onclick: () => closePositionAction(vm.posObj) })
+        );
+      }
 
       const banner = h('div', {
         class: 'tb',
-        style: 'background:linear-gradient(90deg,#091912,#07121e,#141000);border-bottom:1px solid #00d26a88;padding:5px 8px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px'
+        style: `background:${bannerBg};border-bottom:1px solid ${bannerBorder};padding:5px 8px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px`
       },
-        h('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap' },
-          h('span', { class: 'am sym', style: 'font-size:12px', text: `🎯 [${scanResult.symbol || scanSym}] ${l5.status || 'APPROVED'}` }),
-          h('span', { class: (dir === 'LONG' ? 'up' : 'dn') + ' sym', style: 'font-size:12px;padding:1px 6px;border:1px solid currentColor', text: `${dir} ${l3.recommended_leverage || 20}x` }),
-          h('span', { class: 'up sym', text: `HYBRID SCORE: ${mp.s_hybrid_pct || l5.confidence_score || 88}% (P_Math ${mp.p_math_pct || 86}% × P_AI ${mp.p_ai_pct || 89}%)` }),
-          h('span', { class: 'lb sym', text: `P(TP1 < SL): ${tp.p_hit_tp1_before_sl_pct || 86.4}% • P(TP2 < SL): ${tp.p_hit_tp2_before_sl_pct || 72.8}%` })
-        ),
+        h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, ...bannerLeftItems),
         botEtaClockEl
       );
       sc.append(banner);
+      if (vm.isLivePosition && vm.aiEval) {
+        sc.append(h('div', {
+          style: 'padding:3px 8px;background:#070a0f;border-bottom:1px solid #1b2430;font-size:10.5px;color:#8be9fd'
+        }, `🛡️ AI SENTINEL LIVE EVALUATION: ${vm.aiEval}`));
+      }
 
-      // Split 2-Column Visual Workstation: Left = Live Technical Master Candlestick Chart; Right = Real Candles + Monte Carlo Trajectory & L2 Depth
+      // Split 2-Column Visual Workstation: Left = Live Technical Master Candlestick Chart; Right = Trajectory & L2 Depth
       botChartWrap = h('div', { style: 'height:245px;position:relative;background:#000;border-right:1px solid var(--border)' });
       botChartLeg = h('div', { style: 'position:absolute;left:6px;top:4px;z-index:4;font-size:10.5px;background:rgba(0,0,0,0.82);padding:2px 6px;border:1px solid #222;pointer-events:none' });
       botChartWrap.append(botChartLeg);
 
-      const levNow = +(l3.leverage || l3.recommended_leverage || l5.leverage || 20);
-      const marginUsdNow = +(realWalletUsdt > 0 ? realWalletUsdt : (+(l3.roi_pnl_projection?.margin_usd || 0))).toFixed(2);
-      const marginIdrNow = Math.round(marginUsdNow * 16500);
-      const entryNow = +(l3.entry_price || l5.entry_price || l1.current_price || 100);
-      const slNow = +(l3.stop_loss || l5.stop_loss || (dir === 'LONG' ? entryNow * 0.988 : entryNow * 1.012));
-      const { tp1: tp1Now, tp2: tp2Now } = ensureDistinctTp(
-        entryNow,
-        slNow,
-        l3.take_profit_1 || tp.tp1_price || 0,
-        l3.take_profit_2 || l3.take_profit || tp.tp2_price || 0,
-        dir
-      );
-
       const rightBlueprintBox = h('div', { style: 'display:flex;flex-direction:column;background:#030508' },
         h('div', { class: 'tb', style: 'background:#080c12;font-size:10px;justify-content:space-between' },
-          h('span', { class: 'lbl', text: 'FIRST-PASSAGE MONTE CARLO TRAJECTORY CONE & LIVE L2 DEPTH' }),
-          h('span', { class: 'am sym', text: `SESSION: ${tp.market_session || 'US-EU OVERLAP'} (${tp.session_speed_multiplier || 1.25}x SPEED)` })
+          h('span', { class: 'lbl', text: vm.isLivePosition ? `LIVE OPEN TRADE TRAJECTORY & L2 DEPTH [${vm.sym}]` : 'FIRST-PASSAGE MONTE CARLO TRAJECTORY CONE & LIVE L2 DEPTH' }),
+          h('span', { class: 'am sym', text: vm.isLivePosition ? `SL GUARD: ${vm.slState}${vm.pSurvive != null ? ' • P_SURV:' + vm.pSurvive + '%' : ''}` : `SESSION: ${tp.market_session || 'US-EU OVERLAP'} (${tp.session_speed_multiplier || 1.25}x SPEED)` })
         ),
-        renderVisualTrajectoryBlueprint(scanResult, botLastRawCandles),
+        renderVisualTrajectoryBlueprint(vm, botLastRawCandles),
         h('div', { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:4px 6px;background:#05070a;font-size:10.5px;border-top:1px solid #161616' },
-          h('div', null, h('span', { class: 'mu', text: 'ENTRY PX: ' }), h('b', { class: 'am', text: fmtPx(entryNow) })),
+          h('div', null, h('span', { class: 'mu', text: vm.isLivePosition ? 'ENTRY / MARK: ' : 'ENTRY PX: ' }), h('b', { class: 'am', text: vm.isLivePosition ? `${fmtPx(entryNow)} / ${fmtPx(vm.curPx)}` : fmtPx(entryNow) })),
           h('div', null, h('span', { class: 'mu', text: 'STOP LOSS: ' }), h('b', { class: 'dn', text: fmtPx(slNow) })),
-          h('div', null, h('span', { class: 'mu', text: 'TP1 (+0.55R): ' }), h('b', { style: 'color:#00e5ff', text: `${fmtPx(tp1Now)} (${tp1EtaClean})` })),
-          h('div', null, h('span', { class: 'mu', text: 'TP2 RUNNER: ' }), h('b', { class: 'up', text: `${fmtPx(tp2Now)} (${tp2EtaClean})` }))
+          h('div', null, h('span', { class: 'mu', text: 'TP1 (+0.55R): ' }), h('b', { style: 'color:#00e5ff', text: `${fmtPx(tp1Now)}` })),
+          h('div', null, h('span', { class: 'mu', text: 'TP2 RUNNER: ' }), h('b', { class: 'up', text: `${fmtPx(tp2Now)}` }))
         )
       );
       botRightBoxEl = rightBlueprintBox;
@@ -726,7 +961,7 @@ export function mountBOT(body, ctx) {
       sc.append(visualGrid);
       requestAnimationFrame(() => mountAdaptiveBotChart());
 
-      // 2B. PROJECTED ROI (%) & P&L (IDR / USD) AT TP1 LOCK, FULL TP2 RUNNER & STOP LOSS (NO FAKE FILLERS)
+      // 2B. PROJECTED ROI (%) & P&L (IDR / USD) AT TP1 LOCK, FULL TP2 RUNNER & STOP LOSS (REAL WALLET SIZING)
       const slDistFracNow = entryNow > 0 ? Math.abs(entryNow - slNow) / entryNow : 0.012;
       const lockSlPxNow = entryNow * (1 + (dir === 'SHORT' ? -1 : 1) * 0.38 * slDistFracNow);
 
@@ -742,16 +977,21 @@ export function mountBOT(body, ctx) {
 
       const roiProjectionStrip = h('div', { style: 'background:#06090e;border-bottom:1px solid var(--border);padding:6px' },
         h('div', { class: 'tb', style: 'background:#0c131d;margin-bottom:5px;justify-content:space-between;border:1px solid #1c2d42' },
-          h('span', { class: 'am sym', text: `💰 PROJECTED ROI (%) & P&L (IDR / USD) AT TP1 LOCK, FULL TP2 RUNNER & STOP LOSS [${scanResult.symbol || scanSym} • ${dir} ${levNow}x ISOLATED]` }),
-          h('span', { class: 'up sym', text: `MATHEMATICAL EXPECTED VALUE (EV): ${evRoi >= 0 ? '+' : ''}${evRoi}% ROI (${evIdr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(evIdr))} / ${evUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(evUsd), 2)})` })
+          h('span', { class: 'am sym', text: `💰 ${vm.isLivePosition ? 'LIVE POSITION' : 'PROJECTED'} ROI (%) & P&L (IDR / USD) [${vm.sym} • ${dir} ${levNow}x ISOLATED]` }),
+          h('span', {
+            class: (vm.isLivePosition ? (vm.pnlPct >= 0 ? 'up' : 'dn') : 'up') + ' sym',
+            text: vm.isLivePosition
+              ? `CURRENT FLOATING: ${vm.pnlPct >= 0 ? '+' : ''}${fmtNum(vm.pnlPct, 2)}% (${vm.pnlUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(vm.pnlUsd), 2)})`
+              : `MATHEMATICAL EXPECTED VALUE (EV): ${evRoi >= 0 ? '+' : ''}${evRoi}% ROI (${evIdr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(evIdr))} / ${evUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(evUsd), 2)})`
+          })
         ),
         h('div', { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:11px' },
           // Box 1: Margin Allocation & Leverage
           h('div', { style: 'background:#090c10;border:1px solid #222;padding:6px;border-left:3px solid #ffb000' },
-            h('div', { class: 'mu', style: 'font-size:10px', text: '1) MARGIN ALLOCATION & LEVERAGE (BINANCE WALLET)' }),
+            h('div', { class: 'mu', style: 'font-size:10px', text: vm.isLivePosition ? '1) POSITION MARGIN & LIQUIDATION' : '1) MARGIN ALLOCATION & LEVERAGE' }),
             h('div', { class: 'am sym', style: 'font-size:13px;margin:2px 0', text: `$${fmtNum(marginUsdNow, 2)} USDT (${fmtIdr(marginIdrNow)})` }),
-            h('div', { class: 'lb', style: 'font-size:10px', text: `Leverage: ${levNow}x ISOLATED • Notional: $${fmtNum(marginUsdNow * levNow, 2)} (${fmtIdr(marginIdrNow * levNow)})` }),
-            h('div', { class: 'mu', style: 'font-size:10px', text: `Entry Px: ${fmtPx(entryNow)} | R:R = ${l3.risk_reward_ratio || '1:2.0'}` })
+            h('div', { class: 'lb', style: 'font-size:10px', text: `Leverage: ${levNow}x ISOLATED • Notional: $${fmtNum(marginUsdNow * levNow, 2)}` }),
+            h('div', { class: 'mu', style: 'font-size:10px', text: vm.liq > 0 ? `Entry: ${fmtPx(entryNow)} | Liq: ${fmtPx(vm.liq)}` : `Entry Px: ${fmtPx(entryNow)} | R:R = ${l3.risk_reward_ratio || '1:2.0'}` })
           ),
           // Box 2: If TP1 Lock Hit (+0.55R)
           h('div', { style: 'background:#041218;border:1px solid #00e5ff44;padding:6px;border-left:3px solid #00e5ff' },
@@ -769,14 +1009,27 @@ export function mountBOT(body, ctx) {
           ),
           // Box 4: If Stop Loss Hit (Initial Risk)
           h('div', { style: 'background:#160505;border:1px solid #ff3b3055;padding:6px;border-left:3px solid #ff3b30' },
-            h('div', { class: 'dn sym', style: 'font-size:10px', text: '4) 🛡️ IF STOP LOSS HIT (INITIAL PRE-LOCK RISK)' }),
+            h('div', { class: 'dn sym', style: 'font-size:10px', text: '4) 🛡️ IF STOP LOSS HIT (MAX RISK GUARD)' }),
             h('div', { class: 'dn sym', style: 'font-size:13px;font-weight:900;margin:2px 0', text: `${mSl.roi_pct}% ROI  ►  -$${fmtNum(Math.abs(mSl.pnl_usd), 2)} (-${fmtIdr(Math.abs(mSl.pnl_idr))})` }),
-            h('div', { class: 'lb', style: 'font-size:10px', text: `SL Level: ${fmtPx(slNow)} (-${Math.abs(mSl.move_pct)}% move) • Buffered Above 20x Liq` }),
+            h('div', { class: 'lb', style: 'font-size:10px', text: `SL Level: ${fmtPx(slNow)} (${mSl.move_pct}% move) • State: ${vm.slState}` }),
             h('div', { class: 'up', style: 'font-size:10px', text: `⚡ Stage-0 Scratch Guard (+0.30R): Locks +0.08R once +6% ROE reached` })
           )
         )
       );
       sc.append(roiProjectionStrip);
+    }
+
+    if (scanResult && toBinanceSym(scanResult.symbol) === toBinanceSym(vm?.sym || scanSym)) {
+      const l1 = scanResult.layer1_quant || scanResult.layer1_scanning || {};
+      const l2 = scanResult.layer2_sentiment || scanResult.layer2_setup || {};
+      const l3 = scanResult.layer3_plan || {};
+      const l4 = scanResult.layer4_risk || {};
+      const l5 = scanResult.layer5_final_call || {};
+      const mp = scanResult.math_proof || l5.math_proof || l1.math_proof || {};
+      const tp = scanResult.tp_time_prediction || l3.tp_time_prediction || {};
+      const ns3 = scanResult.neuro_symbolic_3brain || l5.neuro_symbolic_3brain || {};
+      const p5 = mp.composite_532_factors || {};
+      const tp2EtaClean = String(tp.eta_label || '~2h 12m').replace(/\bmenit\b/gi, 'm').replace(/\bjam\b/gi, 'h').replace(/(\d+)j\b/gi, '$1h');
 
       // 3. MATHEMATICAL PROOF MATRIX & 3-BRAIN NEURO-SYMBOLIC ENSEMBLE COLLABORATION
       const mathGrid = h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:6px;background:#040404;border-bottom:1px solid var(--border)' },
@@ -889,7 +1142,7 @@ export function mountBOT(body, ctx) {
     sc.append(
       h('div', { class: 'tb', style: 'background:#070707;justify-content:space-between' },
         h('span', { class: 'lbl', text: `ACTIVE BINANCE FUTURES POSITIONS (${openPos.length} OPEN)` }),
-        h('span', { class: 'am sym', style: 'font-size:10px', text: openPos.length ? 'CLICK ANY ROW TO LOAD INTO CHART & AI WORKSTATION' : 'LIVE EXCHANGE FEED — NO SIMULATED POSITIONS' })
+        h('span', { class: 'am sym', style: 'font-size:10px', text: openPos.length ? 'CLICK ANY ROW TO FOCUS CHART & POSITION WORKSTATION (NO NEW SCAN TRIGGERED)' : 'LIVE EXCHANGE FEED — NO SIMULATED POSITIONS' })
       )
     );
     if (openPos.length) {
@@ -899,21 +1152,23 @@ export function mountBOT(body, ctx) {
             'Symbol',
             'Side/Lev',
             'Margin',
-            'Entry / Mark',
+            'Entry / Mark / Liq',
             'Live P&L (ROI%)',
             'TP1 Lock (+0.55R)',
             'TP2 Runner',
             'Stop Loss (SL)',
-            'Status'
+            'Status & Actions'
           ].map(x => h('th', { text: x })))),
           h('tbody', null, openPos.map(p => {
-            const sym = (p.binance_pair || p.symbol || p.pair || '').replace('-USD', 'USDT');
+            const sym = toBinanceSym(p.binance_pair || p.symbol || p.pair || '');
+            const isFocused = !manualPreviewMode && focusedPosPair === sym;
             const side = String(p.direction || p.side || 'LONG').toUpperCase();
             const lev = +(p.leverage || 20);
             const mUsd = +(p.position_size_usd || realWalletUsdt || 0).toFixed(2);
             const mIdr = +(p.position_size_idr || Math.round(mUsd * 16500));
             const entryPx = +(p.entry_price || p.entryPrice || 0);
             const markPx = +(p.current_price || entryPx || 0);
+            const liqPx = +(p.liquidation_price || 0);
             const slPx = +(p.stop_loss || 0);
             const { tp1: tp1Px, tp2: tp2Px } = ensureDistinctTp(
               entryPx,
@@ -923,8 +1178,7 @@ export function mountBOT(body, ctx) {
               side
             );
 
-            const livePnlUsd = +(p.pnl_usd ?? p.unrealizedProfit ?? 0);
-            const livePnlIdr = +(p.pnl_idr ?? Math.round(livePnlUsd * 16500));
+            const livePnlUsd = +(p.pnl_usd ?? p.unrealized_pnl ?? p.unrealizedProfit ?? 0);
             const liveRoiPct = +(p.pnl_pct ?? (mUsd > 0 ? (livePnlUsd / mUsd) * 100 : 0));
 
             const mTp1 = calcTargetRoiPnl(entryPx, tp1Px, side, lev, mIdr, mUsd);
@@ -935,22 +1189,30 @@ export function mountBOT(body, ctx) {
 
             return h('tr', {
               class: 'row',
-              onclick: () => {
-                if (sym) {
-                  ctx.setSymbol(sym.endsWith('USDT') ? sym + '.P' : sym);
-                  runScan(sym.replace(/USDT$/, '-USD'));
-                }
-              }
+              style: isFocused ? 'box-shadow:inset 3px 0 0 #ffb000;background:#141106' : '',
+              onclick: () => focusOpenPosition(p)
             },
-              h('td', { class: 'l sym am', text: sym }),
+              h('td', { class: 'l sym am', text: (isFocused ? '► ' : '') + sym }),
               h('td', { class: (side === 'LONG' ? 'up' : 'dn') + ' sym', text: `${side} ${lev}x` }),
               h('td', { class: 'lb', text: `$${fmtNum(mUsd, 2)} (${fmtIdr(mIdr)})` }),
-              h('td', { text: `${fmtPx(entryPx)} / ${fmtPx(markPx)}` }),
+              h('td', { text: `${fmtPx(entryPx)} / ${fmtPx(markPx)}${liqPx > 0 ? ' (L:' + fmtPx(liqPx) + ')' : ''}` }),
               h('td', { class: dirCls(liveRoiPct) + ' sym', text: `${liveRoiPct >= 0 ? '+' : ''}${fmtNum(liveRoiPct, 2)}% (${livePnlUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(livePnlUsd), 2)})` }),
               h('td', { style: 'color:#00e5ff;font-weight:bold', text: `${fmtPx(tp1Px)} ► +${mTp1.roi_pct}% (+$${fmtNum(mTp1.pnl_usd, 2)})` }),
               h('td', { class: 'up sym', text: `${fmtPx(tp2Px)} ► +${mTp2.roi_pct}% (+$${fmtNum(mTp2.pnl_usd, 2)})` }),
               h('td', { class: (slInProfit ? 'up' : 'dn') + ' sym', text: `${fmtPx(slPx)} ► ${slInProfit ? '+' : ''}${mSl.roi_pct}% (${mSl.pnl_usd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(mSl.pnl_usd), 2)})` }),
-              h('td', { class: 'up', text: `${p.sl_state || p.status || 'OPEN'}${surv !== '-' ? ' • P:' + surv + '%' : ''}` })
+              h('td', { style: 'white-space:nowrap' },
+                h('span', { class: (p.sl_state === 'CONFIRMED' ? 'up' : 'am'), text: `${p.sl_state || p.status || 'OPEN'}${surv !== '-' ? ' • ' + surv + '%' : ''} ` }),
+                h('button', {
+                  style: 'margin-left:4px;padding:1px 5px;font-size:9.5px;color:#00e5ff;border-color:#00e5ff66',
+                  text: 'SL',
+                  onclick: (ev) => { ev.stopPropagation(); syncPositionSlAction(p); }
+                }),
+                h('button', {
+                  style: 'margin-left:3px;padding:1px 5px;font-size:9.5px;color:#ff5a52;border-color:#ff3b3088;background:#220606',
+                  text: 'CLOSE',
+                  onclick: (ev) => { ev.stopPropagation(); closePositionAction(p); }
+                })
+              )
             );
           }))
         )

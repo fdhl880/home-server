@@ -595,10 +595,8 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
 # ensuring the trading pipeline NEVER halts completely.
 # ===================================================================
 def _rule_based_setup(scan_data: dict):
-    """
-    Evaluates 500+ systematic quantitative factors (Jim Simons, Wyckoff,
-    Minervini, Smart Money Concepts, Microstructure) when Cloud AI is in cooldown.
-    """
+    """Disabled: AI-ONLY mandate requires Cloud AI for setup selection (no rule fallback)."""
+    raise AIUnavailable("Rule-based setup dinonaktifkan: keputusan harus dari AI")
     rsi = scan_data.get("rsi_14_1h", 50)
     ema_trend = scan_data.get("ema_trend_1h", "NEUTRAL")
     macd = scan_data.get("macd_1h", {})
@@ -1211,8 +1209,7 @@ def layer2_setup_hunter(symbol: str, scan_data: dict):
         result = _ai_json(prompt, system, 600, 0.1, f"Layer2 {symbol}")
     except Exception as e_l2:
         if "ALL_AI_FAILED" in str(e_l2) or isinstance(e_l2, AIUnavailable):
-            print(f"[AI FALLBACK] AI rate limited or unavailable. Activating 500+ Quant Factor Matrix for {symbol}...", flush=True)
-            return _rule_based_setup(scan_data)
+            raise AIUnavailable(f"AI unavailable in Layer2 for {symbol}: {e_l2}")
         raise
 
     if result.get("confluence_count", 0) < 1 and result.get("setup_name") != "NO_CLEAR_SETUP":
@@ -1824,6 +1821,33 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
         elif direction == "SHORT" and obi_20 > 0.28:
             result["status"] = "REJECTED"
             reasons.append(f"Orderbook L2 Bid Wall tebal (OFI_20={obi_20:+.2f}) menghalangi SHORT")
+
+        # Gate 12b: Geometry & Counter-Trend MTF Protection (prevents inverted levels & falling-knife 20x entries)
+        e_px = float(result.get("entry_price") or 0)
+        sl_px = float(result.get("stop_loss") or 0)
+        tp_px = float(result.get("take_profit_2") or result.get("take_profit") or 0)
+        if direction == "LONG" and e_px > 0 and sl_px > 0 and tp_px > 0:
+            if not (sl_px < e_px < tp_px):
+                result["status"] = "REJECTED"
+                reasons.append(f"Invalid LONG level geometry (SL={sl_px}, Entry={e_px}, TP={tp_px})")
+        elif direction == "SHORT" and e_px > 0 and sl_px > 0 and tp_px > 0:
+            if not (tp_px < e_px < sl_px):
+                result["status"] = "REJECTED"
+                reasons.append(f"Invalid SHORT level geometry (TP={tp_px}, Entry={e_px}, SL={sl_px})")
+
+        ema_1h = str(scan_data.get("ema_trend_1h") or market_data.get("ema_trend") or "").upper()
+        daily_tr = str(scan_data.get("daily_trend") or "").upper()
+        c_q = float((quant_matrix or {}).get("composite_quant_score", 50.0) or 50.0)
+        rsi_1h = float(scan_data.get("rsi_14_1h", 50.0) or 50.0)
+        liq_sw = str(((scan_data.get("smc") or {}).get("liquidity_sweep")) or "").upper()
+        if direction == "LONG" and "BEARISH" in ema_1h and "BEARISH" in daily_tr and c_q < 42.0:
+            if not (rsi_1h < 28.0 and "BULLISH" in liq_sw):
+                result["status"] = "REJECTED"
+                reasons.append(f"Counter-trend 20x LONG blocked (1H={ema_1h}, 1D={daily_tr}, Quant={c_q:.1f})")
+        elif direction == "SHORT" and "BULLISH" in ema_1h and "BULLISH" in daily_tr and c_q > 58.0:
+            if not (rsi_1h > 72.0 and "BEARISH" in liq_sw):
+                result["status"] = "REJECTED"
+                reasons.append(f"Counter-trend 20x SHORT blocked (1H={ema_1h}, 1D={daily_tr}, Quant={c_q:.1f})")
     except Exception:
         pass
 
