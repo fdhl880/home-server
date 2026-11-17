@@ -23,6 +23,8 @@ DEFAULT_ADWIN_PATH = os.path.join(RESULTS_DIR_DEFAULT, "adwin_state.json")
 DEFAULT_META_PATH = os.path.join(RESULTS_DIR_DEFAULT, "tabular_meta_weights.json")
 DEFAULT_ENSEMBLE_PATH = os.path.join(RESULTS_DIR_DEFAULT, "ensemble_weights.json")
 DEFAULT_EPISODES_PATH = os.path.join(RESULTS_DIR_DEFAULT, "episodic_memory.json")
+DEFAULT_CALIBRATOR_PATH = os.path.join(RESULTS_DIR_DEFAULT, "calibrator_state.json")
+DEFAULT_CONFORMAL_PATH = os.path.join(RESULTS_DIR_DEFAULT, "conformal_state.json")
 
 
 def atomic_write_json(path: str, payload: Any) -> bool:
@@ -452,3 +454,68 @@ def append_episodic_episode(
     if len(rows) > max_episodes:
         rows = rows[-max_episodes:]
     return atomic_write_json(target, rows)
+
+
+def load_calibrator(path: Optional[str] = None):
+    """Load persisted ProbabilityCalibrator sample history and fit PAVA isotonic knots."""
+    from calibration import ProbabilityCalibrator
+    target = path or DEFAULT_CALIBRATOR_PATH
+    cal = ProbabilityCalibrator()
+    if os.path.exists(target):
+        try:
+            with open(target, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            p_raw = [float(x) for x in data.get("history_p_raw", [])][-300:]
+            y_val = [1 if int(y) > 0 else 0 for y in data.get("history_y", [])][-300:]
+            if p_raw and len(p_raw) == len(y_val):
+                cal.fit(p_raw, y_val)
+        except Exception:
+            pass
+    return cal
+
+
+def save_calibrator(cal, path: Optional[str] = None) -> bool:
+    """Atomically persist ProbabilityCalibrator history across restarts."""
+    target = path or DEFAULT_CALIBRATOR_PATH
+    p_raw = [round(float(x), 5) for x in getattr(cal, "history_p_raw", [])[-300:]]
+    y_val = [1 if int(y) > 0 else 0 for y in getattr(cal, "history_y", [])[-300:]]
+    return atomic_write_json(target, {
+        "history_p_raw": p_raw,
+        "history_y": y_val,
+        "n_samples": len(y_val),
+        "is_fitted": bool(getattr(cal, "_is_fitted", False)),
+        "updated_at": time.time(),
+    })
+
+
+def load_conformal_filter(path: Optional[str] = None, alpha_target: float = 0.18):
+    """Load persisted AdaptiveConformalFilter nonconformity window and online alpha_t."""
+    from ai.conformal import AdaptiveConformalFilter
+    target = path or DEFAULT_CONFORMAL_PATH
+    filt = AdaptiveConformalFilter(alpha_target=float(alpha_target))
+    if os.path.exists(target):
+        try:
+            with open(target, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            scores = [float(x) for x in data.get("scores_window", [])]
+            if scores:
+                filt = AdaptiveConformalFilter(alpha_target=float(alpha_target), warm_start_scores=scores[-filt.window_size:])
+            if "alpha_t" in data:
+                filt.alpha_t = float(max(filt.alpha_min, min(filt.alpha_max, float(data["alpha_t"]))))
+            for e in data.get("error_history", [])[-500:]:
+                filt.error_history.append(1 if int(e) > 0 else 0)
+        except Exception:
+            pass
+    return filt
+
+
+def save_conformal_filter(filt, path: Optional[str] = None) -> bool:
+    """Atomically persist AdaptiveConformalFilter scores window & adaptive alpha_t."""
+    target = path or DEFAULT_CONFORMAL_PATH
+    return atomic_write_json(target, {
+        "alpha_t": round(float(getattr(filt, "alpha_t", 0.18)), 5),
+        "alpha_target": round(float(getattr(filt, "alpha_target", 0.18)), 5),
+        "scores_window": [round(float(x), 5) for x in list(getattr(filt, "scores_window", []))[-100:]],
+        "error_history": [int(x) for x in list(getattr(filt, "error_history", []))[-200:]],
+        "updated_at": time.time(),
+    })

@@ -778,28 +778,34 @@ def _update_closed_loop_learners(pos: dict, net_usd: float, exit_price: float, e
     except Exception:
         pass
 
-    # 4. PAVA Calibrator + Adaptive Conformal Filter
+    # 4. PAVA Calibrator + Adaptive Conformal Filter (persisted across restarts)
     cal_p = float(pos.get("calibrated_prob") or (float(pos.get("confidence_score", 70)) / 100.0))
+    cal_obj = None
     try:
-        from calibration import ProbabilityCalibrator
-        ProbabilityCalibrator().record_outcome(cal_p, 1 if outcome_win else 0)
+        from features.hmm_drift import load_calibrator, save_calibrator
+        cal_obj = load_calibrator()
+        cal_obj.record_outcome(cal_p, outcome_win, strategy_id=strat_id, regime=regime_str)
+        save_calibrator(cal_obj)
     except Exception:
         pass
     try:
-        from ai.conformal import AdaptiveConformalFilter
+        from features.hmm_drift import load_conformal_filter, save_conformal_filter
         sniper_cfg = cfg.get("sniper_75_mode", {})
-        AdaptiveConformalFilter(alpha_target=float(sniper_cfg.get("conformal_alpha_target", 0.18))).update(
-            p_hat=cal_p, y_true=1 if outcome_win else 0
-        )
+        c_filt = load_conformal_filter(alpha_target=float(sniper_cfg.get("conformal_alpha_target", 0.18)))
+        c_filt.update(cal_p, outcome_win)
+        save_conformal_filter(c_filt)
     except Exception:
         pass
 
-    # 5. ADWIN Concept Drift Detector
+    # 5. ADWIN Concept Drift Detector (trims stale pre-drift calibration window safely)
     try:
-        from features.hmm_drift import ADWINDetector
+        from features.hmm_drift import ADWINDetector, save_calibrator
         drift_res = ADWINDetector().update(r_mult_net)
         if drift_res.get("drift_detected"):
             print(f"[ADWIN DRIFT] 🌊 Concept drift detected in recent trade stream (window={drift_res.get('window_len')})", flush=True)
+            if cal_obj is not None and len(getattr(cal_obj, "history_y", [])) > 25:
+                cal_obj.fit(cal_obj.history_p_raw[-25:], cal_obj.history_y[-25:])
+                save_calibrator(cal_obj)
     except Exception:
         pass
 

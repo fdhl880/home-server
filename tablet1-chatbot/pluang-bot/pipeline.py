@@ -2202,17 +2202,21 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
 
                 cal_p = raw_p
                 try:
-                    from calibration import ProbabilityCalibrator
-                    cal_p = ProbabilityCalibrator().calibrate_prob(raw_p)
+                    from features.hmm_drift import load_calibrator
+                    cal_p = load_calibrator().calibrate_prob(raw_p)
                 except Exception:
-                    pass
+                    try:
+                        from calibration import ProbabilityCalibrator
+                        cal_p = ProbabilityCalibrator().calibrate_prob(raw_p)
+                    except Exception:
+                        pass
                 # Blend calibrated prior with hybrid score when journal sample is still growing
                 cal_p = round(0.65 * raw_p + 0.35 * cal_p, 4)
 
                 conformal_set = ["WIN"] if cal_p >= float(sniper_cfg.get("min_calibrated_p_tp1", 0.68)) else ["WIN", "LOSS"]
                 try:
-                    from ai.conformal import AdaptiveConformalFilter
-                    sg = AdaptiveConformalFilter(alpha_target=float(sniper_cfg.get("conformal_alpha_target", 0.18)))
+                    from features.hmm_drift import load_conformal_filter
+                    sg = load_conformal_filter(alpha_target=float(sniper_cfg.get("conformal_alpha_target", 0.18)))
                     c_res = sg.predict_set(cal_p)
                     if isinstance(c_res, (list, set)):
                         conformal_set = sorted(list(c_res))
