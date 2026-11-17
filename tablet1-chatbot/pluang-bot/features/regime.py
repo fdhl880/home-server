@@ -463,3 +463,7 @@ def detect_market_regime(
         "btc_vr4": btc_res["vr4"],
         "is_tradable": final_regime != "CHOP_NO_TRADE",
     }
+
+
+# Backward-compatible alias for callers expecting classify_regime(klines)
+classify_regime = detect_market_regime

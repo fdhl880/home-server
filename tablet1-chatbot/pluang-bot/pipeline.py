@@ -1117,10 +1117,10 @@ def layer1_scanning(symbol: str):
             closes_15m = [float(x[4]) for x in kl_15m if len(x) > 4]
             highs_15m = [float(x[2]) for x in kl_15m if len(x) > 4]
             lows_15m = [float(x[3]) for x in kl_15m if len(x) > 4]
-            from features.regime import hurst_exponent, variance_ratio, classify_regime
+            from features.regime import hurst_exponent, variance_ratio, detect_market_regime
             hurst_h = hurst_exponent(closes_15m)
             vr_q, vr_z = variance_ratio(closes_15m, lag=4)
-            reg_obj = classify_regime(kl_15m)
+            reg_obj = detect_market_regime(kl_15m)
             if isinstance(reg_obj, dict) and reg_obj.get("regime"):
                 stat_regime = reg_obj["regime"]
     except Exception:

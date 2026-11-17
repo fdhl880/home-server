@@ -1519,3 +1519,8 @@ class BinanceFuturesClient:
             print(f"[BinanceFutures] ❌ Execution failed: {e}", flush=True)
 
         return execution_log
+
+
+def get_binance_client() -> BinanceFuturesClient:
+    """Compatibility factory for legacy Flask server callers."""
+    return BinanceFuturesClient()
