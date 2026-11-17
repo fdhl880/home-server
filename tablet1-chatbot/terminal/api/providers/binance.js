@@ -4,23 +4,55 @@ const U = require('./../util');
 
 const REST = {
   spot: ['https://api.binance.com', 'https://data-api.binance.vision', 'https://api1.binance.com', 'https://api-gcp.binance.com'],
-  futures: ['https://fapi.binance.com'],
+  futures: ['https://fapi.binance.com', 'https://fapi1.binance.com'],
 };
 const WSH = {
   spot: ['wss://stream.binance.com:9443/stream', 'wss://data-stream.binance.vision/stream', 'wss://stream.binance.com:443/stream'],
   futures: ['wss://fstream.binance.com/stream'],
 };
 const PROV = { spot: 'binance-spot', futures: 'binance-futures' };
+const FUTURES_ONLY_TTL_MS = 10 * 60 * 1000;
+const futuresOnlyPairs = new Map(); // pair -> expiresAtMs
+
+function isKnownFuturesOnly(pair) {
+  const exp = futuresOnlyPairs.get(pair);
+  if (!exp) return false;
+  if (exp > Date.now()) return true;
+  futuresOnlyPairs.delete(pair);
+  return false;
+}
+function markFuturesOnly(pair) {
+  if (futuresOnlyPairs.size > 500) {
+    const now = Date.now();
+    for (const [k, exp] of futuresOnlyPairs) if (exp <= now) futuresOnlyPairs.delete(k);
+  }
+  futuresOnlyPairs.set(pair, Date.now() + FUTURES_ONLY_TTL_MS);
+}
 
 // "BTCUSDT.P" -> {market:'futures', pair:'BTCUSDT'}
 function parse(symbol, marketHint) {
   let s = String(symbol).toUpperCase();
   let market = marketHint === 'futures' ? 'futures' : 'spot';
   if (s.endsWith('.P')) { market = 'futures'; s = s.slice(0, -2); }
+  else if (!marketHint && isKnownFuturesOnly(s)) { market = 'futures'; }
   return { market, pair: s, symbol: market === 'futures' ? s + '.P' : s };
 }
 const get = (market, pathq) => U.getJsonFallback(REST[market], pathq, { provider: PROV[market], mode: 'LIVE' });
 const prefix = m => (m === 'futures' ? '/fapi/v1' : '/api/v3');
+
+async function withFuturesFallback(symbol, marketHint, fn) {
+  const p = parse(symbol, marketHint);
+  try {
+    return await fn(p);
+  } catch (err) {
+    const rawUp = String(symbol).toUpperCase();
+    if (marketHint === 'futures' || rawUp.endsWith('.P') || p.market !== 'spot') throw err;
+    const pFut = { market: 'futures', pair: p.pair, symbol: p.pair + '.P' };
+    const res = await fn(pFut);
+    markFuturesOnly(pFut.pair);
+    return res;
+  }
+}
 
 function fromTicker24(market, symbol, t, book) {
   return U.tick({
@@ -31,33 +63,60 @@ function fromTicker24(market, symbol, t, book) {
 }
 
 async function quote(symbol, marketHint) {
-  const p = parse(symbol, marketHint);
-  const [t, b] = await Promise.all([
-    U.cached(`bn24:${p.market}:${p.pair}`, 1000, () => get(p.market, `${prefix(p.market)}/ticker/24hr?symbol=${p.pair}`)),
-    U.cached(`bnbk:${p.market}:${p.pair}`, 1000, () => get(p.market, `${prefix(p.market)}/ticker/bookTicker?symbol=${p.pair}`)).catch(() => null),
-  ]);
-  return fromTicker24(p.market, p.symbol, t, b);
+  return withFuturesFallback(symbol, marketHint, async p => {
+    const [t, b] = await Promise.all([
+      U.cached(`bn24:${p.market}:${p.pair}`, 1000, () => get(p.market, `${prefix(p.market)}/ticker/24hr?symbol=${p.pair}`)),
+      U.cached(`bnbk:${p.market}:${p.pair}`, 1000, () => get(p.market, `${prefix(p.market)}/ticker/bookTicker?symbol=${p.pair}`)).catch(() => null),
+    ]);
+    return fromTicker24(p.market, p.symbol, t, b);
+  });
 }
 
 async function kline(symbol, interval = '1h', limit = 300, marketHint) {
-  const p = parse(symbol, marketHint);
-  // Binance Futures REST does not expose 1s klines; seamlessly source real 1s klines from Spot (or 1mo -> 1M)
-  let useMarket = p.market;
-  let iv = interval === '1mo' ? '1M' : ({ '1d': '1d', '1w': '1w' }[interval] || interval);
-  if (iv === '1s' && useMarket === 'futures') useMarket = 'spot';
-  const rows = await U.cached(`bnk:${useMarket}:${p.pair}:${iv}:${limit}`, iv === '1s' ? 900 : 2000, () => get(useMarket, `${prefix(useMarket)}/klines?symbol=${p.pair}&interval=${iv}&limit=${Math.min(+limit || 300, 1000)}`));
-  return { symbol: p.symbol, interval, source: PROV[useMarket], mode: 'LIVE', candles: rows.map(r => ({ t: r[0], o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[5] })) };
+  const ivNorm = interval === '1mo' ? '1M' : ({ '1d': '1d', '1w': '1w' }[interval] || interval);
+  const fetchBars = async (mkt, barIv) => {
+    const p = parse(symbol, mkt);
+    const rows = await U.cached(
+      `bnk:${mkt}:${p.pair}:${barIv}:${limit}`,
+      barIv === '1s' ? 900 : 2000,
+      () => get(mkt, `${prefix(mkt)}/klines?symbol=${p.pair}&interval=${barIv}&limit=${Math.min(+limit || 300, 1000)}`)
+    );
+    return {
+      symbol: p.symbol,
+      interval: barIv,
+      source: PROV[mkt],
+      mode: 'LIVE',
+      candles: rows.map(r => ({ t: r[0], o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[5] })),
+    };
+  };
+
+  if (ivNorm === '1s') {
+    // Binance Futures lacks 1s klines; try Spot 1s first (unless futures-only), otherwise fall back to Futures 1m.
+    const p0 = parse(symbol, marketHint);
+    if (!isKnownFuturesOnly(p0.pair)) {
+      try {
+        return await fetchBars('spot', '1s');
+      } catch (_) { /* fall through to futures 1m */ }
+    }
+    const res1m = await fetchBars('futures', '1m');
+    if (!marketHint && !String(symbol).toUpperCase().endsWith('.P')) markFuturesOnly(p0.pair);
+    return res1m;
+  }
+
+  return withFuturesFallback(symbol, marketHint, p => fetchBars(p.market, ivNorm));
 }
-async function depth(symbol, limit = 20) {
-  const p = parse(symbol);
+async function depth(symbol, limit = 20, marketHint) {
   const lim = [5, 10, 20, 50, 100, 500].find(x => x >= limit) || 100;
-  const d = await get(p.market, `${prefix(p.market)}/depth?symbol=${p.pair}&limit=${lim}`);
-  return { symbol: p.symbol, bids: d.bids.map(x => [+x[0], +x[1]]), asks: d.asks.map(x => [+x[0], +x[1]]), ts: d.E || d.T || Date.now(), source: PROV[p.market], mode: 'LIVE' };
+  return withFuturesFallback(symbol, marketHint, async p => {
+    const d = await get(p.market, `${prefix(p.market)}/depth?symbol=${p.pair}&limit=${lim}`);
+    return { symbol: p.symbol, bids: d.bids.map(x => [+x[0], +x[1]]), asks: d.asks.map(x => [+x[0], +x[1]]), ts: d.E || d.T || Date.now(), source: PROV[p.market], mode: 'LIVE' };
+  });
 }
-async function trades(symbol, limit = 50) {
-  const p = parse(symbol);
-  const r = await get(p.market, `${prefix(p.market)}/trades?symbol=${p.pair}&limit=${Math.min(+limit || 50, 100)}`);
-  return r.reverse().map(t => ({ id: t.id, price: +t.price, qty: +t.qty, side: t.isBuyerMaker ? 'SELL' : 'BUY', ts: t.time, source: PROV[p.market], mode: 'LIVE' }));
+async function trades(symbol, limit = 50, marketHint) {
+  return withFuturesFallback(symbol, marketHint, async p => {
+    const r = await get(p.market, `${prefix(p.market)}/trades?symbol=${p.pair}&limit=${Math.min(+limit || 50, 100)}`);
+    return r.reverse().map(t => ({ id: t.id, price: +t.price, qty: +t.qty, side: t.isBuyerMaker ? 'SELL' : 'BUY', ts: t.time, source: PROV[p.market], mode: 'LIVE' }));
+  });
 }
 async function movers(market = 'spot', dir = 'gainers', limit = 20) {
   const all = await U.cached(`bnall:${market}`, 10000, () => get(market, `${prefix(market)}/ticker/24hr`));

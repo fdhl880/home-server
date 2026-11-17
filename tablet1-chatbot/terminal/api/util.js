@@ -138,7 +138,8 @@ function classify(sym) {
   const s = String(sym).toUpperCase();
   if (s.endsWith('.P')) return 'crypto-perp';
   if (/-(USD|USDT)$/.test(s)) return 'crypto';
-  if (/(USDT|USDC|BUSD|FDUSD|BTC|ETH|BNB)$/.test(s) && !s.includes('=') && !s.startsWith('^') && !s.includes('.') && s.length > 5) return 'crypto';
+  if (/^[A-Z0-9]{1,12}(USDT|USDC|BUSD|FDUSD)$/.test(s)) return 'crypto';
+  if (/^[A-Z0-9]{3,12}(BTC|ETH|BNB)$/.test(s)) return 'crypto';
   if (s.startsWith('^')) return /^\^(TNX|FVX|TYX|IRX)$/.test(s) ? 'bond' : 'index';
   if (s.endsWith('=X')) return 'forex';
   if (s.endsWith('=F')) return 'commodity';

@@ -48,13 +48,13 @@ module.exports = (app, server) => {
     const s = needSym(req);
     const { providerSym } = agg.resolveProviderSym(s);
     const target = agg.isCrypto(s) ? providerSym : 'BTCUSDT';
-    const d = await binance.depth(target, +req.query.limit || 20); res.json(env(d.source, d));
+    const d = await binance.depth(target, +req.query.limit || 20, mkt(req)); res.json(env(d.source, d));
   }));
   r.get('/trades', wrap('binance-spot', async (req, res) => {
     const s = needSym(req);
     const { providerSym } = agg.resolveProviderSym(s);
     const target = agg.isCrypto(s) ? providerSym : 'BTCUSDT';
-    const d = await binance.trades(target, +req.query.limit || 50); res.json(env(d[0] ? d[0].source : 'binance-spot', d));
+    const d = await binance.trades(target, +req.query.limit || 50, mkt(req)); res.json(env(d[0] ? d[0].source : 'binance-spot', d));
   }));
   r.get('/news', wrap('news-rss', async (req, res) => {
     const d = await newsP.news({ q: req.query.q, cat: req.query.cat, limit: req.query.limit });

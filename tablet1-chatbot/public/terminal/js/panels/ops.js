@@ -38,7 +38,7 @@ export function mountBOT(body, ctx) {
   let actionBusy = false;
 
   function isCryptoForBot(s) {
-    return /USDT|BTC|ETH|SOL|BNB|XRP|DOGE|ADA|AVAX|LINK|SUI|PEPE|DOT|MATIC|LTC|TON|ARB|OP|INJ|NEAR|APT|FET|RNDR|WIF|BONK/i.test(s || '');
+    return /-(USD|USDT)$|\.P$|USDT|BTC|ETH|SOL|BNB|XRP|DOGE|ADA|AVAX|LINK|SUI|PEPE|DOT|MATIC|LTC|TON|ARB|OP|INJ|NEAR|APT|FET|RNDR|WIF|BONK/i.test(s || '');
   }
 
   function toBinanceSym(sym) {
@@ -371,11 +371,12 @@ export function mountBOT(body, ctx) {
     }
     const vm = buildActiveTradeViewModel();
     const bSym = toBinanceSym(vm?.sym || scanResult?.symbol || scanSym);
-    let env = await get('kline', { symbol: bSym, interval: botChartIv, limit: botChartIv === '1s' ? 160 : 140 }, 3000);
+    const bPerpSym = bSym.endsWith('.P') ? bSym : `${bSym}.P`;
+    let env = await get('kline', { symbol: bSym, interval: botChartIv, market: 'futures', limit: botChartIv === '1s' ? 160 : 140 }, 3000);
     let rawCandles = (env.ok && env.data && Array.isArray(env.data.candles)) ? env.data.candles : [];
-    let feedNote = '';
+    let feedNote = (botChartIv === '1s' && env.ok && env.data && env.data.interval === '1m') ? '1M FEED + LIVE TICK' : '';
     if (!rawCandles.length && botChartIv === '1s') {
-      const mEnv = await get('kline', { symbol: bSym, interval: '1m', limit: 120 }, 3000);
+      const mEnv = await get('kline', { symbol: bSym, interval: '1m', market: 'futures', limit: 120 }, 3000);
       if (mEnv.ok && mEnv.data && Array.isArray(mEnv.data.candles) && mEnv.data.candles.length) {
         rawCandles = mEnv.data.candles;
         feedNote = '1M FEED + LIVE TICK';
@@ -540,14 +541,14 @@ export function mountBOT(body, ctx) {
     }
 
     if (botChartIv !== '1s') {
-      botUnsubs.push(ctx.sub(`kline:${bSym}:${botChartIv}`, k => {
+      botUnsubs.push(ctx.sub(`kline:${bPerpSym}:${botChartIv}`, k => {
         if (k && k.c) updateBotTick(+k.c, +(k.v || 0));
       }));
     }
-    botUnsubs.push(ctx.sub(`trades:${bSym}`, tr => {
+    botUnsubs.push(ctx.sub(`trades:${bPerpSym}`, tr => {
       if (tr && tr.price) updateBotTick(+tr.price, +(tr.qty || tr.size || 0));
     }));
-    botUnsubs.push(ctx.sub(`ticker:${bSym}`, tk => {
+    botUnsubs.push(ctx.sub(`ticker:${bPerpSym}`, tk => {
       if (tk && tk.price) updateBotTick(+tk.price, 0);
     }));
 
