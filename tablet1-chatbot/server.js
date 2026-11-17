@@ -3937,22 +3937,78 @@ app.get('/api/performance', (req, res) => {
 // ==============================================================
 // MULTI-KEY AI GATEWAY TELEMETRY & KEY POOL MANAGER
 // ==============================================================
+function readPluangAiPool() {
+    const envPath = path.join(pluangDir, '.env');
+    const envMap = {};
+    try {
+        if (fs.existsSync(envPath)) {
+            for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+                const s = line.trim();
+                if (!s || s.startsWith('#') || !s.includes('=')) continue;
+                const idx = s.indexOf('=');
+                const k = s.slice(0, idx).trim();
+                const v = s.slice(idx + 1).trim().replace(/^["']|["']$/g, '');
+                if (k) envMap[k] = v;
+            }
+        }
+    } catch (e) {}
+
+    const pools = { groq: [], gemini: [], cerebras: [], mistral: [], openrouter: [], nvidia: [] };
+    const pushKey = (fallbackProv, raw) => {
+        const k = String(raw || '').trim().replace(/^["']|["']$/g, '');
+        if (!k || k.startsWith('AQ.')) return;
+        let dest = fallbackProv;
+        if (k.startsWith('AIza')) dest = 'gemini';
+        else if (k.startsWith('sk-or-')) dest = 'openrouter';
+        else if (k.startsWith('gsk_')) dest = 'groq';
+        if (pools[dest] && !pools[dest].includes(k)) pools[dest].push(k);
+    };
+
+    const specs = [
+        ['groq', ['GROQ_API_KEYS', 'GROQ_API_KEY']],
+        ['gemini', ['GEMINI_API_KEYS', 'GEMINI_API_KEY', 'GOOGLE_API_KEY']],
+        ['cerebras', ['CEREBRAS_API_KEYS', 'CEREBRAS_API_KEY']],
+        ['mistral', ['MISTRAL_API_KEYS', 'MISTRAL_API_KEY']],
+        ['openrouter', ['OPENROUTER_API_KEYS', 'OPENROUTER_API_KEY']],
+        ['nvidia', ['NVIDIA_API_KEYS', 'NVIDIA_API_KEY']],
+    ];
+    for (const [prov, names] of specs) {
+        for (const n of names) {
+            const val = envMap[n] || process.env[n] || '';
+            for (const part of val.split(',')) pushKey(prov, part);
+        }
+        const base = names[names.length - 1];
+        for (let i = 1; i <= 9; i++) {
+            const val = envMap[`${base}_${i}`] || process.env[`${base}_${i}`] || '';
+            if (val) pushKey(prov, val);
+        }
+    }
+
+    const totalBuckets = pools.groq.length * 5 + pools.gemini.length * 2 + pools.openrouter.length * 3
+        + pools.cerebras.length * 2 + pools.mistral.length + pools.nvidia.length;
+    const totalDailyTokenCapacity = pools.groq.length * 5 * 200000 + pools.gemini.length * 1000000
+        + pools.openrouter.length * 300000 + (pools.cerebras.length + pools.mistral.length + pools.nvidia.length) * 500000;
+
+    return { envPath, envMap, pools, totalBuckets, totalDailyTokenCapacity };
+}
+
 app.get('/api/crypto-futures/ai-gateway', (req, res) => {
     const ledgerFile = path.join(resultsDir, 'ai_budget_ledger.json');
     let ledger = { utc_date: new Date().toISOString().slice(0, 10), total_calls_today: 0, total_tokens_today: 0, buckets: {} };
     try {
         if (fs.existsSync(ledgerFile)) ledger = JSON.parse(fs.readFileSync(ledgerFile, 'utf8'));
     } catch (e) {}
-    const groqKeys = (process.env.GROQ_API_KEYS || process.env.GROQ_API_KEY || '').split(',').map(s => s.trim()).filter(Boolean);
-    const orKeys = (process.env.OPENROUTER_API_KEYS || process.env.OPENROUTER_API_KEY || '').split(',').map(s => s.trim()).filter(Boolean);
+    const { pools, totalBuckets, totalDailyTokenCapacity } = readPluangAiPool();
     const groqModels = ['llama-3.3-70b-versatile', 'qwen/qwen3-32b', 'deepseek-r1-distill-llama-70b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
-    const totalBuckets = Math.max(10, groqKeys.length * groqModels.length + orKeys.length * 3);
-    const totalDailyTokenCapacity = Math.max(2300000, groqKeys.length * groqModels.length * 200000 + orKeys.length * 300000);
     res.json({
-        status: 'ACTIVE',
+        status: totalBuckets > 0 ? 'ACTIVE' : 'NO_KEYS',
         engine: '3-BRAIN_NEURO_SYMBOLIC_HYBRID_V3',
-        groq_keys_count: groqKeys.length || 2,
-        openrouter_keys_count: orKeys.length || 1,
+        groq_keys_count: pools.groq.length,
+        gemini_keys_count: pools.gemini.length,
+        openrouter_keys_count: pools.openrouter.length,
+        cerebras_keys_count: pools.cerebras.length,
+        mistral_keys_count: pools.mistral.length,
+        nvidia_keys_count: pools.nvidia.length,
         active_buckets_count: totalBuckets,
         total_active_buckets: totalBuckets,
         daily_token_capacity: totalDailyTokenCapacity,
@@ -3966,28 +4022,71 @@ app.get('/api/crypto-futures/ai-gateway', (req, res) => {
 
 app.post('/api/crypto-futures/ai-gateway/add-key', (req, res) => {
     const { provider = 'groq', apiKey = '', api_key = '' } = req.body || {};
-    const cleanKey = String(apiKey || api_key).trim();
+    const cleanKey = String(apiKey || api_key).trim().replace(/^["']|["']$/g, '');
     if (!cleanKey || cleanKey.length < 12) {
         return res.status(400).json({ ok: false, error: 'Invalid API key' });
     }
-    const envVar = provider.toLowerCase() === 'openrouter' ? 'OPENROUTER_API_KEYS' : 'GROQ_API_KEYS';
-    const existing = (process.env[envVar] || '').split(',').map(s => s.trim()).filter(Boolean);
-    if (!existing.includes(cleanKey)) existing.push(cleanKey);
-    process.env[envVar] = existing.join(',');
+    if (cleanKey.startsWith('AQ.')) {
+        return res.status(400).json({ ok: false, error: 'Token berawalan AQ. bukan Google AI Studio API Key (harus AIza...).' });
+    }
+
+    let reqProv = String(provider || 'groq').trim().toLowerCase();
+    if (cleanKey.startsWith('AIza')) reqProv = 'gemini';
+    else if (cleanKey.startsWith('sk-or-')) reqProv = 'openrouter';
+    else if (cleanKey.startsWith('gsk_')) reqProv = 'groq';
+
+    const varMap = {
+        groq: 'GROQ_API_KEYS',
+        gemini: 'GEMINI_API_KEYS',
+        openrouter: 'OPENROUTER_API_KEYS',
+        cerebras: 'CEREBRAS_API_KEYS',
+        mistral: 'MISTRAL_API_KEYS',
+        nvidia: 'NVIDIA_API_KEYS',
+    };
+    const envVar = varMap[reqProv] || 'GROQ_API_KEYS';
+    const targetProv = varMap[reqProv] ? reqProv : 'groq';
+
+    const state = readPluangAiPool();
+    if (!state.pools[targetProv].includes(cleanKey)) {
+        state.pools[targetProv].push(cleanKey);
+    }
+
+    // Rewrite clean provider _KEYS lines in pluang-bot/.env so misplaced keys (e.g. AIza in GROQ_API_KEYS) are also repaired
     try {
-        const envPath = path.join(pluangDir, '.env');
-        if (fs.existsSync(envPath)) {
-            let txt = fs.readFileSync(envPath, 'utf8');
-            const re = new RegExp(`^${envVar}=.*$`, 'm');
-            if (re.test(txt)) txt = txt.replace(re, `${envVar}=${process.env[envVar]}`);
-            else txt += `\n${envVar}=${process.env[envVar]}\n`;
-            fs.writeFileSync(envPath, txt, 'utf8');
+        let txt = fs.existsSync(state.envPath) ? fs.readFileSync(state.envPath, 'utf8') : '';
+        const upsertEnv = (name, val) => {
+            const re = new RegExp(`^${name}=.*$`, 'm');
+            if (re.test(txt)) txt = txt.replace(re, `${name}=${val}`);
+            else txt += (txt.endsWith('\n') || !txt ? '' : '\n') + `${name}=${val}\n`;
+            process.env[name] = val;
+        };
+        for (const [pv, vName] of Object.entries(varMap)) {
+            if (pv === targetProv || (state.pools[pv] && state.pools[pv].length > 0)) {
+                upsertEnv(vName, state.pools[pv].join(','));
+            }
         }
-    } catch (e) {}
-    const groqKeys = (process.env.GROQ_API_KEYS || '').split(',').filter(Boolean);
-    const orKeys = (process.env.OPENROUTER_API_KEYS || '').split(',').filter(Boolean);
-    const totalBuckets = Math.max(10, groqKeys.length * 5 + orKeys.length * 3);
-    res.json({ ok: true, provider, total_keys: existing.length, gateway: { total_active_buckets: totalBuckets } });
+        fs.writeFileSync(state.envPath, txt, 'utf8');
+    } catch (e) {
+        return res.status(500).json({ ok: false, error: 'Failed writing .env: ' + e.message });
+    }
+
+    const updated = readPluangAiPool();
+    res.json({
+        ok: true,
+        provider: targetProv,
+        env_var: envVar,
+        total_keys: updated.pools[targetProv].length,
+        counts: {
+            groq: updated.pools.groq.length,
+            gemini: updated.pools.gemini.length,
+            openrouter: updated.pools.openrouter.length,
+            cerebras: updated.pools.cerebras.length,
+        },
+        gateway: {
+            total_active_buckets: updated.totalBuckets,
+            daily_token_capacity: updated.totalDailyTokenCapacity,
+        }
+    });
 });
 
 // ==============================================================

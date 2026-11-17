@@ -1907,15 +1907,17 @@ export function mountBTCA(body, ctx) {
   async function load() {
     sc.textContent = '';
     sc.append(h('div', { class: 'loading', text: 'LOADING INSTITUTIONAL TCA & QUANT TELEMETRY...' }));
-    const [tcaR, qhR] = await Promise.all([
+    const [tcaR, qhR, aiR] = await Promise.all([
       getJson('/api/crypto-futures/tca?limit=80'),
-      getJson('/api/crypto-futures/quant-health')
+      getJson('/api/crypto-futures/quant-health'),
+      getJson('/api/crypto-futures/ai-gateway')
     ]);
     sc.textContent = '';
     ctx.status({ source: 'pyrofuel-tca-sql', ts: Date.now(), mode: (tcaR.ok || qhR.ok) ? 'LIVE' : 'N/A' });
 
     const tca = (tcaR.data && tcaR.data.tca) || {};
     const qh = qhR.data || {};
+    const ai = aiR.data || {};
     const brk = qh.breaker || {};
     const adw = qh.adwin || {};
     const br = qh.brains || {};
@@ -1937,7 +1939,9 @@ export function mountBTCA(body, ctx) {
         h('div', { class: 'k', text: 'HARD RISK CIRCUIT BREAKER & VAULT' }),
         h('div', { class: 'v sym ' + (brkActive ? 'dn' : 'up'), text: `${brkActive ? 'TRIPPED (' + (brk.breaker_reason || 'COOLDOWN') + ')' : 'ARMED CLEAR'}  •  LOSSES: ${brk.consecutive_losses || 0}/${brk.breaker_consecutive_losses_limit || 2}  •  DAILY TRADES: ${brk.daily_trades_count || 0}/${brk.max_daily_trades || 10}  •  VAULT: $${fmtNum(vlt.locked_profit_vault_usdt || 0, 2)}` }),
         h('div', { class: 'k', text: '3-BRAIN WEIGHTS & ADWIN DRIFT' }),
-        h('div', { class: 'v lb sym', text: `ML=${((ew.ml || 0.4) * 100).toFixed(0)}% / kNN=${((ew.knn || 0.25) * 100).toFixed(0)}% / LLM=${((ew.llm || 0.35) * 100).toFixed(0)}%  •  TABULAR=${br.tabular_updates || 0}  •  EPISODES=${br.episodic_count || 0}  •  ADWIN DRIFTS=${adw.drift_count || 0} (W=${adw.window_len || 0})` })
+        h('div', { class: 'v lb sym', text: `ML=${((ew.ml || 0.4) * 100).toFixed(0)}% / kNN=${((ew.knn || 0.25) * 100).toFixed(0)}% / LLM=${((ew.llm || 0.35) * 100).toFixed(0)}%  •  TABULAR=${br.tabular_updates || 0}  •  EPISODES=${br.episodic_count || 0}  •  ADWIN DRIFTS=${adw.drift_count || 0} (W=${adw.window_len || 0})` }),
+        h('div', { class: 'k', text: 'AI GATEWAY KEY POOL & DAILY BUDGET' }),
+        h('div', { class: 'v sym ' + ((ai.active_buckets_count || 0) > 0 ? 'up' : 'dn'), text: `GROQ=${ai.groq_keys_count || 0} key | GEMINI=${ai.gemini_keys_count || 0} key | OPENROUTER=${ai.openrouter_keys_count || 0} key | CEREBRAS=${ai.cerebras_keys_count || 0}  •  BUCKETS=${ai.active_buckets_count || 0}  •  USED=${fmtNum(ai.tokens_used_today || 0, 0)}/${fmtNum((ai.daily_token_capacity || 0) / 1000, 0)}k tok` })
       )
     );
 

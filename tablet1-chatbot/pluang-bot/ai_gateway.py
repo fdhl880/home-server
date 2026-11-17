@@ -403,7 +403,14 @@ class AIGateway:
         if hasattr(self.session, "headers") and isinstance(self.session.headers, dict):
             self.session.headers.update({"User-Agent": MANDATORY_USER_AGENT})
 
-        self.provider_keys: Dict[str, List[str]] = self._load_provider_keys(provider_keys)
+        self._explicit_keys = provider_keys
+        self._env_path = os.path.join(BASE_DIR, ".env")
+        self._env_mtime = 0.0
+        self._discover_groq_models = bool(discover_groq_models)
+        if self._explicit_keys is None:
+            self._sync_env_file_into_os()
+
+        self.provider_keys: Dict[str, List[str]] = self._load_provider_keys(self._explicit_keys)
         self.provider_models: Dict[str, List[str]] = {
             p: list(cfg["default_models"]) for p, cfg in self.PROVIDER_CONFIGS.items()
         }
@@ -422,37 +429,81 @@ class AIGateway:
         if discover_groq_models and self.provider_keys.get("groq"):
             self.discover_groq_models()
 
+    def _sync_env_file_into_os(self) -> bool:
+        """Reload pluang-bot/.env if its mtime advanced (supports runtime +ADD API KEY hot-reload)."""
+        if self._explicit_keys is not None or not os.path.exists(self._env_path):
+            return False
+        try:
+            mt = os.path.getmtime(self._env_path)
+            if mt <= self._env_mtime:
+                return False
+            with open(self._env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    s = line.strip()
+                    if s and not s.startswith("#") and "=" in s:
+                        k, v = s.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip('"').strip("'")
+                        if k:
+                            os.environ[k] = v
+            self._env_mtime = mt
+            return True
+        except Exception:
+            return False
+
+    def refresh_keys_if_env_changed(self) -> None:
+        if self._explicit_keys is not None:
+            return
+        with self._lock:
+            if self._sync_env_file_into_os():
+                prev_groq = len(self.provider_keys.get("groq", []))
+                self.provider_keys = self._load_provider_keys(None)
+                if self._discover_groq_models and len(self.provider_keys.get("groq", [])) > prev_groq:
+                    try:
+                        self.discover_groq_models()
+                    except Exception:
+                        pass
+
     def _load_provider_keys(
         self, explicit_keys: Optional[Dict[str, List[str]]] = None
     ) -> Dict[str, List[str]]:
         pool: Dict[str, List[str]] = {p: [] for p in self.PROVIDER_CONFIGS}
-        if explicit_keys:
+        if explicit_keys is not None:
             for p, keys in explicit_keys.items():
                 if p in pool and keys:
                     pool[p].extend([k.strip() for k in keys if k and k.strip()])
+            return pool
+
+        def _append_key(target_provider: str, raw_key: str) -> None:
+            clean = raw_key.strip().strip('"').strip("'")
+            if not clean:
+                return
+            # Auto-rescue misfiled provider keys written by legacy callers
+            if clean.startswith("AQ."):
+                return
+            if clean.startswith("AIza"):
+                dest = "gemini"
+            elif clean.startswith("sk-or-"):
+                dest = "openrouter"
+            elif clean.startswith("gsk_"):
+                dest = "groq"
+            else:
+                dest = target_provider
+            if dest in pool and clean not in pool[dest]:
+                pool[dest].append(clean)
 
         for p, cfg in self.PROVIDER_CONFIGS.items():
-            if pool[p]:
-                continue
-            collected: List[str] = []
             for env_name in cfg["env_keys"]:
                 raw = os.environ.get(env_name, "")
                 if raw:
                     for part in raw.split(","):
-                        clean = part.strip().strip('"').strip("'")
-                        if p == "gemini" and clean.startswith("AQ."):
-                            continue
-                        if clean and clean not in collected:
-                            collected.append(clean)
+                        _append_key(p, part)
             # Also check numbered keys like GROQ_API_KEY_1, GROQ_API_KEY_2, etc.
             base_env = cfg["env_keys"][-1]
             for idx in range(1, 10):
-                numbered = os.environ.get(f"{base_env}_{idx}", "").strip().strip('"').strip("'")
-                if p == "gemini" and numbered.startswith("AQ."):
-                    continue
-                if numbered and numbered not in collected:
-                    collected.append(numbered)
-            pool[p] = collected
+                numbered = os.environ.get(f"{base_env}_{idx}", "")
+                if numbered:
+                    _append_key(p, numbered)
         return pool
 
     def _bucket_id(self, provider: str, model: str, api_key: str) -> str:
@@ -667,6 +718,7 @@ class AIGateway:
         If exclude_provider / exclude_model_family are set (e.g. for Cross-Model Red-Team Auditor),
         prioritizes routes from a different model family/provider first.
         """
+        self.refresh_keys_if_env_changed()
         primary_routes: List[Tuple[str, str, str]] = []
         fallback_routes: List[Tuple[str, str, str]] = []
 
@@ -698,13 +750,14 @@ class AIGateway:
         user_prompt: str,
         temperature: float = 0.1,
         max_tokens: int = 900,
+        use_json_format: bool = True,
     ) -> Tuple[int, str, Dict[str, str], int]:
         """
         Execute single HTTP request against the selected provider.
         Returns (status_code, raw_content_or_err, headers_dict, total_tokens_used).
         """
         # Ensure the word 'json' is always present in the system prompt for OpenAI json_object mode
-        if "json" not in system_prompt.lower():
+        if use_json_format and "json" not in system_prompt.lower():
             system_prompt = f"{system_prompt}\nRespond strictly in valid JSON format."
 
         if provider == "gemini":
@@ -714,14 +767,16 @@ class AIGateway:
                 "User-Agent": MANDATORY_USER_AGENT,
                 "x-goog-api-key": api_key,
             }
+            gen_cfg: Dict[str, Any] = {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
+            }
+            if use_json_format:
+                gen_cfg["responseMimeType"] = "application/json"
             payload = {
                 "systemInstruction": {"parts": [{"text": system_prompt}]},
                 "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-                "generationConfig": {
-                    "temperature": temperature,
-                    "maxOutputTokens": max_tokens,
-                    "responseMimeType": "application/json",
-                },
+                "generationConfig": gen_cfg,
             }
             resp = self.session.post(url, headers=headers, json=payload, timeout=15.0)
             resp_headers = dict(getattr(resp, "headers", {}) or {})
@@ -754,8 +809,9 @@ class AIGateway:
                 ],
                 "temperature": temperature,
                 "max_tokens": max_tokens,
-                "response_format": {"type": "json_object"},
             }
+            if use_json_format:
+                payload["response_format"] = {"type": "json_object"}
             resp = self.session.post(url, headers=headers, json=payload, timeout=15.0)
             resp_headers = dict(getattr(resp, "headers", {}) or {})
             if resp.status_code >= 400:
@@ -935,47 +991,16 @@ class AIGateway:
                 continue
             tried.append(f"{provider}/{model}")
             try:
-                if is_json:
-                    status_code, raw_text, resp_headers, tokens_used = self._invoke_provider_http(
-                        provider=provider,
-                        model=model,
-                        api_key=api_key,
-                        system_prompt=eff_sys,
-                        user_prompt=prompt,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                    )
-                else:
-                    # Plain text / non-JSON call
-                    url = (
-                        self.PROVIDER_CONFIGS["gemini"]["chat_url_template"].format(model=model)
-                        if provider == "gemini"
-                        else self.PROVIDER_CONFIGS[provider]["chat_url"]
-                    )
-                    headers = {
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                        "User-Agent": MANDATORY_USER_AGENT,
-                    }
-                    payload = {
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": eff_sys},
-                            {"role": "user", "content": prompt},
-                        ],
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                    }
-                    resp = self.session.post(url, headers=headers, json=payload, timeout=18.0)
-                    status_code = resp.status_code
-                    resp_headers = dict(getattr(resp, "headers", {}) or {})
-                    if status_code >= 400:
-                        raw_text, tokens_used = resp.text, 0
-                    else:
-                        data = resp.json()
-                        choices = data.get("choices", [])
-                        raw_text = choices[0].get("message", {}).get("content", "") if choices else ""
-                        tokens_used = int((data.get("usage") or {}).get("total_tokens", 400))
+                status_code, raw_text, resp_headers, tokens_used = self._invoke_provider_http(
+                    provider=provider,
+                    model=model,
+                    api_key=api_key,
+                    system_prompt=eff_sys,
+                    user_prompt=prompt,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    use_json_format=is_json,
+                )
             except Exception as exc:
                 self.mark_bucket_error(provider, model, api_key, 503, str(exc))
                 last_err = f"{provider}/{model}: {exc}"

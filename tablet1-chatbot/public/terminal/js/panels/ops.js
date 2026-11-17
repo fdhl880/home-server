@@ -301,9 +301,9 @@ export function mountBOT(body, ctx) {
   }
 
   async function promptAddApiKey() {
-    const provider = (window.prompt('Select AI Provider (groq / openrouter / gemini):', 'groq') || '').trim().toLowerCase();
+    const provider = (window.prompt('Select AI Provider (groq / gemini / openrouter / cerebras / mistral / nvidia):', 'groq') || '').trim().toLowerCase();
     if (!provider) return;
-    const apiKey = (window.prompt(`Enter new ${provider.toUpperCase()} API Key (hot-reloaded into active pool immediately):`, '') || '').trim();
+    const apiKey = (window.prompt(`Enter new ${provider.toUpperCase()} API Key (hot-reloaded into active pool):`, '') || '').trim();
     if (!apiKey) return;
     try {
       const r = await fetch('/api/crypto-futures/ai-gateway/add-key', {
@@ -313,8 +313,13 @@ export function mountBOT(body, ctx) {
       });
       const j = await r.json();
       if (r.ok && j.ok) {
-        alert(`API Key for ${provider.toUpperCase()} added! Total Active Buckets: ${j.gateway?.total_active_buckets || 13}`);
-        runScan(scanSym);
+        const c = j.counts || {};
+        alert(
+          `API Key ${(j.provider || provider).toUpperCase()} tersimpan!\n` +
+          `Groq=${c.groq ?? '-'} | Gemini=${c.gemini ?? '-'} | OpenRouter=${c.openrouter ?? '-'} | Cerebras=${c.cerebras ?? '-'}\n` +
+          `Total Active Buckets: ${j.gateway?.total_active_buckets || '-'} (Est Cap: ${((j.gateway?.daily_token_capacity || 0) / 1e6).toFixed(1)}M tok/hari)`
+        );
+        load();
       } else {
         alert('Failed to add API Key: ' + (j.error || 'Unknown error'));
       }
