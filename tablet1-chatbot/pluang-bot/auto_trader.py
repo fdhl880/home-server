@@ -1521,94 +1521,95 @@ def monitor_and_update_positions():
         except Exception:
             pos["p_survive_pct"] = pos.get("p_survive_pct", 78.0)
 
-        # Stage 0 (Early Breakeven Scratch Guard at +0.30R / +6% ROE):
-        # Prevents winning trades that reach +0.30R from ever reversing into a full -1.0R loss!
-        if r_multiple_curr >= 0.30 and not pos.get("stage0_be_guard_set") and not pos.get("tp1_profit_lock_set"):
+        sniper_m = cfg_mon.get("sniper_75_mode") or {}
+        tp1_trig_r = float(sniper_m.get("tp1_lock_trigger_r", 0.55) or 0.55)
+        tp1_lock_r = float(sniper_m.get("sl_lock_after_tp1_r", 0.38) or 0.38)
+        tp1_partial_frac = float(sniper_m.get("tp1_partial_close_pct") or cfg_mon.get("tp1_partial_close_pct") or 0.65)
+
+        def _apply_exchange_sl_lock(new_sl_px: float) -> None:
+            nonlocal sl
+            if is_binance_pos and bn_client:
+                try:
+                    amend_res = bn_client.amend_stop_loss(pair, direction, new_sl_px, old_algo_id=pos.get("sl_algo_id"))
+                    if isinstance(amend_res, dict) and amend_res.get("status") == "AMENDED":
+                        pos["sl_algo_id"] = amend_res.get("new_algo_id")
+                        pos["sl_state"] = "CONFIRMED"
+                except Exception:
+                    pass
+            pos["stop_loss"] = new_sl_px
+            sl = new_sl_px
+
+        # Stage 0 (Early Breakeven Scratch Guard at +0.30R): skipped if already at or past TP1 trigger
+        if 0.30 <= r_multiple_curr < tp1_trig_r and not pos.get("stage0_be_guard_set") and not pos.get("tp1_profit_lock_set"):
             be_lock_pct = max(0.0012, 0.08 * sl_dist_pct)  # +0.08R covers roundtrip taker fees + micro profit
             new_sl = round(entry_price * (1.0 + be_lock_pct if direction == "LONG" else 1.0 - be_lock_pct), 6)
             better = (direction == "LONG" and new_sl > sl) or (direction == "SHORT" and (sl <= 0 or new_sl < sl))
             if better:
                 pos["stage0_be_guard_set"] = True
                 pos["breakeven_set"] = True
-                if is_binance_pos and bn_client:
-                    try:
-                        amend_res = bn_client.amend_stop_loss(pair, direction, new_sl, old_algo_id=pos.get("sl_algo_id"))
-                        if isinstance(amend_res, dict) and amend_res.get("status") == "AMENDED":
-                            pos["sl_algo_id"] = amend_res.get("new_algo_id")
-                            pos["sl_state"] = "CONFIRMED"
-                    except Exception:
-                        pass
-                pos["stop_loss"] = new_sl
-                sl = new_sl
+                _apply_exchange_sl_lock(new_sl)
 
-        # Stage 1 (T7.4 Sniper 75% Mode): At +0.55R, lock SL on exchange at +0.38R & Partial Close (tp1_partial_close_pct=0.65)
-        sniper_m = cfg_mon.get("sniper_75_mode") or {}
-        tp1_trig_r = float(sniper_m.get("tp1_lock_trigger_r", 0.55) or 0.55)
-        tp1_lock_r = float(sniper_m.get("sl_lock_after_tp1_r", 0.38) or 0.38)
-        tp1_partial_frac = float(cfg_mon.get("tp1_partial_close_pct", 0.65) or 0.65)
-        if r_multiple_curr >= tp1_trig_r and not pos.get("tp1_profit_lock_set"):
-            lock_pct = max(0.0022, tp1_lock_r * sl_dist_pct)
-            new_sl = round(entry_price * (1.0 + lock_pct if direction == "LONG" else 1.0 - lock_pct), 6)
-            better = (direction == "LONG" and new_sl > sl) or (direction == "SHORT" and (sl <= 0 or new_sl < sl))
-            if better:
-                pos["tp1_profit_lock_set"] = True
-                pos["breakeven_set"] = True
-                if is_binance_pos and bn_client:
-                    amend_res = bn_client.amend_stop_loss(pair, direction, new_sl, old_algo_id=pos.get("sl_algo_id"))
-                    if isinstance(amend_res, dict) and amend_res.get("status") == "AMENDED":
-                        pos["sl_algo_id"] = amend_res.get("new_algo_id")
-                        pos["sl_state"] = "CONFIRMED"
-                pos["stop_loss"] = new_sl
-                sl = new_sl
-
-                partial_note = ""
-                if is_binance_pos and bn_client and tp1_partial_frac > 0 and not pos.get("tp1_partial_closed"):
-                    try:
-                        pc_res = bn_client.partial_close_position(pair, direction, fraction=tp1_partial_frac)
-                        pos["tp1_partial_result"] = pc_res
-                        if pc_res.get("partial_closed"):
-                            pos["tp1_partial_closed"] = True
-                            pos["quantity"] = pc_res.get("remaining_qty", pos.get("quantity"))
-                            partial_note = f"\n💵 <b>Partial Close {int(tp1_partial_frac*100)}%:</b> Realized {pc_res.get('closed_qty')} (Sisa {pc_res.get('remaining_qty')} Runner)"
-                        else:
-                            partial_note = f"\nℹ️ <b>Partial Close:</b> {pc_res.get('status')} (Full qty kept under +{tp1_lock_r}R SL lock)"
-                    except Exception:
-                        pass
-
-                send_telegram(
-                    f"🎯 <b>[SNIPER 75% PROFIT LOCK] TP1 (+{tp1_trig_r:.2f}R) TERCAPAI — PROFIT DIKUNCI DI BURSA!</b>\n\n"
-                    f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction} {int(leverage)}x)\n"
-                    f"📈 <b>Floating Profit:</b> +{pnl_pct:.2f}% (+{r_multiple_curr:.2f}R)\n"
-                    f"🔒 <b>SL Bursa Di-amend ke:</b> ${new_sl:,.4f} (+{tp1_lock_r:.2f}R Net Profit Terkunci)"
-                    f"{partial_note}\n"
-                    f"✨ <i>Transaksi ini 100% TERKUNCI MENANG di bursa sambil mengawal Runner ke TP2!</i>"
-                )
-
-        # Stage 2 (T0.6 R-Based Exchange Trailing): +1.0R -> lock +0.65R; +1.5R -> lock +1.10R; +2.0R -> lock +1.55R
+        # Stage 1 (T7.4 Sniper 75% Mode): At +0.55R, lock SL on exchange at +0.38R (unless a higher Stage 2 lock applies) & Partial Close 65%
         r_trail_stages = [
             (1.00, "r_trail_10_set", 0.65, "Lock +0.65R Profit"),
             (1.50, "r_trail_15_set", 1.10, "Lock +1.10R Profit"),
             (2.00, "r_trail_20_set", 1.55, "Lock +1.55R Profit"),
         ]
-        for r_trig, flag_key, r_lock, label in r_trail_stages:
+        if r_multiple_curr >= tp1_trig_r and not pos.get("tp1_profit_lock_set"):
+            pos["stage0_be_guard_set"] = True
+            pos["tp1_profit_lock_set"] = True
+            pos["breakeven_set"] = True
+            # If price jumped directly past a Stage 2 tier, amend once directly to highest reached tier
+            target_r_lock = tp1_lock_r
+            if r_multiple_curr < 1.00:
+                lock_pct = max(0.0022, target_r_lock * sl_dist_pct)
+                new_sl = round(entry_price * (1.0 + lock_pct if direction == "LONG" else 1.0 - lock_pct), 6)
+                better = (direction == "LONG" and new_sl > sl) or (direction == "SHORT" and (sl <= 0 or new_sl < sl))
+                if better:
+                    _apply_exchange_sl_lock(new_sl)
+            else:
+                new_sl = sl
+
+            partial_note = ""
+            if is_binance_pos and bn_client and tp1_partial_frac > 0 and not pos.get("tp1_partial_closed"):
+                try:
+                    pc_res = bn_client.partial_close_position(pair, direction, fraction=tp1_partial_frac)
+                    pos["tp1_partial_result"] = pc_res
+                    if pc_res.get("partial_closed"):
+                        pos["tp1_partial_closed"] = True
+                        pos["quantity"] = pc_res.get("remaining_qty", pos.get("quantity"))
+                        partial_note = f"\n💵 <b>Partial Close {int(tp1_partial_frac*100)}%:</b> Realized {pc_res.get('closed_qty')} (Sisa {pc_res.get('remaining_qty')} Runner)"
+                    else:
+                        partial_note = f"\nℹ️ <b>Partial Close:</b> {pc_res.get('status')} (Full qty kept under +{tp1_lock_r}R SL lock)"
+                except Exception:
+                    pass
+
+            send_telegram(
+                f"🎯 <b>[SNIPER 75% PROFIT LOCK] TP1 (+{tp1_trig_r:.2f}R) TERCAPAI — PROFIT DIKUNCI DI BURSA!</b>\n\n"
+                f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction} {int(leverage)}x)\n"
+                f"📈 <b>Floating Profit:</b> +{pnl_pct:.2f}% (+{r_multiple_curr:.2f}R)\n"
+                f"🔒 <b>SL Bursa Di-amend ke:</b> ${new_sl:,.4f} (+{tp1_lock_r:.2f}R Net Profit Terkunci)"
+                f"{partial_note}\n"
+                f"✨ <i>Transaksi ini 100% TERKUNCI MENANG di bursa sambil mengawal Runner ke TP2!</i>"
+            )
+
+        # Stage 2 (T0.6 R-Based Exchange Trailing): Amend once directly to highest reached milestone
+        for r_trig, flag_key, r_lock, label in reversed(r_trail_stages):
             if r_multiple_curr >= r_trig and not pos.get(flag_key):
+                for sub_trig, sub_flag, _, _ in r_trail_stages:
+                    if r_multiple_curr >= sub_trig:
+                        pos[sub_flag] = True
                 lock_pct = max(0.004, r_lock * sl_dist_pct)
                 new_sl = round(entry_price * (1.0 + lock_pct if direction == "LONG" else 1.0 - lock_pct), 6)
                 better = (direction == "LONG" and new_sl > sl) or (direction == "SHORT" and (sl <= 0 or new_sl < sl))
                 if better:
-                    pos[flag_key] = True
-                    if is_binance_pos and bn_client:
-                        amend_res = bn_client.amend_stop_loss(pair, direction, new_sl, old_algo_id=pos.get("sl_algo_id"))
-                        if amend_res.get("status") == "AMENDED":
-                            pos["sl_algo_id"] = amend_res.get("new_algo_id")
-                            pos["sl_state"] = "CONFIRMED"
-                    pos["stop_loss"] = new_sl
-                    sl = new_sl
+                    _apply_exchange_sl_lock(new_sl)
                     send_telegram(
                         f"📈 <b>[ON-EXCHANGE R-TRAILING] {label.upper()}</b>\n"
                         f"💎 <code>{pos.get('symbol')}</code> {direction} | +{r_multiple_curr:.2f}R (ROE: +{pnl_pct:.1f}%)\n"
                         f"🔒 SL Bursa Baru: <b>${new_sl:,.4f}</b>"
                     )
+                break
 
         # Blueprint v3 C4: Legacy Flash Crash Exit removed.
         # Native exchange STOP_MARKET orders handle stop-loss protection directly.
