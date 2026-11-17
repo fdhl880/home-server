@@ -1887,6 +1887,138 @@ export function mountCRPR(body, ctx) {
   load();
 }
 
+export function mountBTCA(body, ctx) {
+  const tb = h('div', { class: 'tb' });
+  const btn = h('button', { class: 'on', text: 'REFRESH' });
+  tb.append(h('span', { class: 'lbl', text: 'BTCA // EXECUTION TCA, MARKOUTS & QUANT ENGINE HEALTH' }), h('span', { class: 'sp' }), btn);
+  const sc = h('div', { class: 'sc' });
+  body.append(tb, sc);
+
+  async function getJson(url) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) return { ok: false, data: null };
+      return { ok: true, data: await r.json() };
+    } catch {
+      return { ok: false, data: null };
+    }
+  }
+
+  async function load() {
+    sc.textContent = '';
+    sc.append(h('div', { class: 'loading', text: 'LOADING INSTITUTIONAL TCA & QUANT TELEMETRY...' }));
+    const [tcaR, qhR] = await Promise.all([
+      getJson('/api/crypto-futures/tca?limit=80'),
+      getJson('/api/crypto-futures/quant-health')
+    ]);
+    sc.textContent = '';
+    ctx.status({ source: 'pyrofuel-tca-sql', ts: Date.now(), mode: (tcaR.ok || qhR.ok) ? 'LIVE' : 'N/A' });
+
+    const tca = (tcaR.data && tcaR.data.tca) || {};
+    const qh = qhR.data || {};
+    const brk = qh.breaker || {};
+    const adw = qh.adwin || {};
+    const br = qh.brains || {};
+    const ew = br.ensemble_weights || { ml: 0.4, knn: 0.25, llm: 0.35 };
+    const vlt = qh.vault || {};
+
+    const fmtMk = (v) => (v == null ? 'PENDING' : `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)} bps`);
+    const mkCls = (v) => (v == null ? 'mu' : Number(v) >= 0 ? 'up' : 'dn');
+    const brkActive = Boolean(brk.breaker_active);
+
+    sc.append(
+      h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border);padding:6px 8px' },
+        h('div', { class: 'k', text: 'MAKER GTX FILL SHARE' }),
+        h('div', { class: 'v sym ' + ((tca.maker_fill_rate_pct || 0) >= 50 ? 'up' : 'am'), text: `${fmtNum(tca.maker_fill_rate_pct || 0, 1)}% MAKER  •  ${tca.count || 0} AUDITED EXECUTIONS` }),
+        h('div', { class: 'k', text: 'ARRIVAL SLIPPAGE (AVG / P95)' }),
+        h('div', { class: 'v sym ' + ((tca.avg_arrival_slippage_bps || 0) <= 3 ? 'up' : 'dn'), text: `${fmtNum(tca.avg_arrival_slippage_bps || 0, 2)} bps AVG  |  ${fmtNum(tca.p95_arrival_slippage_bps || 0, 2)} bps P95  (VWAP IMPACT EST: ${fmtNum(tca.avg_impact_bps || 0, 2)} bps)` }),
+        h('div', { class: 'k', text: 'FEE DRAG (% ROE) & POST-TRADE MARKOUTS' }),
+        h('div', { class: 'v sym am', text: `FEE DRAG: ${fmtNum(tca.avg_fee_drag_roe_pct || 0, 2)}% ROE  •  +1m: ${fmtMk(tca.avg_markout_1m_bps)}  •  +5m: ${fmtMk(tca.avg_markout_5m_bps)}  •  Close: ${fmtMk(tca.avg_markout_close_bps)}` }),
+        h('div', { class: 'k', text: 'HARD RISK CIRCUIT BREAKER & VAULT' }),
+        h('div', { class: 'v sym ' + (brkActive ? 'dn' : 'up'), text: `${brkActive ? 'TRIPPED (' + (brk.breaker_reason || 'COOLDOWN') + ')' : 'ARMED CLEAR'}  •  LOSSES: ${brk.consecutive_losses || 0}/${brk.breaker_consecutive_losses_limit || 2}  •  DAILY TRADES: ${brk.daily_trades_count || 0}/${brk.max_daily_trades || 10}  •  VAULT: $${fmtNum(vlt.locked_profit_vault_usdt || 0, 2)}` }),
+        h('div', { class: 'k', text: '3-BRAIN WEIGHTS & ADWIN DRIFT' }),
+        h('div', { class: 'v lb sym', text: `ML=${((ew.ml || 0.4) * 100).toFixed(0)}% / kNN=${((ew.knn || 0.25) * 100).toFixed(0)}% / LLM=${((ew.llm || 0.35) * 100).toFixed(0)}%  •  TABULAR=${br.tabular_updates || 0}  •  EPISODES=${br.episodic_count || 0}  •  ADWIN DRIFTS=${adw.drift_count || 0} (W=${adw.window_len || 0})` })
+      )
+    );
+
+    const routingRows = Object.entries(tca.by_routing || {});
+    sc.append(h('div', { class: 'tb', style: 'background:#070707;margin-top:6px' }, h('span', { class: 'lbl', text: 'SMART ORDER ROUTING TIER ATTRIBUTION' })));
+    if (routingRows.length) {
+      sc.append(
+        h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Routing Tier', 'Fills', 'Avg Arrival Slip (bps)', 'Avg Fee Drag (% ROE)'].map(x => h('th', { text: x })))),
+          h('tbody', null, routingRows.map(([rt, m]) => h('tr', { class: 'row' },
+            h('td', { class: 'l sym ' + (rt.includes('MAKER') ? 'up' : 'am'), text: rt }),
+            h('td', { text: String(m.n || 0) }),
+            h('td', { class: Number(m.avg_slip_bps || 0) <= 3 ? 'up sym' : 'dn sym', text: `${Number(m.avg_slip_bps || 0).toFixed(2)} bps` }),
+            h('td', { class: 'am sym', text: `${Number(m.avg_fee_drag_roe_pct || 0).toFixed(3)}%` })
+          )))
+        )
+      );
+    } else {
+      sc.append(h('div', { class: 'na', text: 'NO TCA ROUTING SAMPLES YET — NEW MAKER_FIRST_GTX / IOC EXECUTIONS WILL LOG HERE AUTOMATICALLY.' }));
+    }
+
+    const recent = tca.recent || [];
+    sc.append(h('div', { class: 'tb', style: 'background:#070707;margin-top:8px' }, h('span', { class: 'lbl', text: 'RECENT EXECUTION TCA BLOTTER & POST-FILL MARKOUTS' })));
+    if (recent.length) {
+      sc.append(
+        h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Time (UTC)', 'Symbol', 'Side', 'Routing', 'Arrival Px', 'Fill Px', 'Slip (bps)', 'Fee ($/ROE%)', '+1m Markout', '+5m Markout', 'Close'].map(x => h('th', { text: x })))),
+          h('tbody', null, recent.map(r => {
+            const ts = r.ts_ms ? new Date(r.ts_ms).toISOString().slice(11, 19) : '-';
+            const sideCls = String(r.direction || '').toUpperCase() === 'SHORT' ? 'dn' : 'up';
+            return h('tr', { class: 'row' },
+              h('td', { class: 'mu', text: ts }),
+              h('td', { class: 'l sym cy', text: r.symbol }),
+              h('td', { class: sideCls, text: r.direction }),
+              h('td', { class: 'l am', text: r.routing_used }),
+              h('td', { text: fmtPx(r.arrival_price) }),
+              h('td', { text: fmtPx(r.fill_price) }),
+              h('td', { class: Number(r.arrival_slippage_bps || 0) <= 3 ? 'up' : 'dn', text: `${Number(r.arrival_slippage_bps || 0).toFixed(2)}` }),
+              h('td', { class: 'am', text: `$${Number(r.fee_usdt || 0).toFixed(4)} (${Number(r.fee_drag_roe_pct || 0).toFixed(2)}%)` }),
+              h('td', { class: mkCls(r.markout_1m_bps), text: fmtMk(r.markout_1m_bps) }),
+              h('td', { class: mkCls(r.markout_5m_bps), text: fmtMk(r.markout_5m_bps) }),
+              h('td', { class: mkCls(r.markout_close_bps), text: fmtMk(r.markout_close_bps) })
+            );
+          }))
+        )
+      );
+    } else {
+      sc.append(h('div', { class: 'na', text: 'NO EXECUTED FILLS IN TCA BLOTTER YET.' }));
+    }
+
+    const arms = Object.entries(qh.bandit_arms || {});
+    const degraded = qh.degraded_strategies || {};
+    sc.append(h('div', { class: 'tb', style: 'background:#070707;margin-top:8px' }, h('span', { class: 'lbl', text: 'CONTEXTUAL THOMPSON BANDIT ARMS & AUTO-DEGRADATION AUDIT' })));
+    if (arms.length) {
+      sc.append(
+        h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Strategy | Regime', 'Alpha', 'Beta', 'Posterior Win%', 'Status'].map(x => h('th', { text: x })))),
+          h('tbody', null, arms.slice(0, 20).map(([k, v]) => {
+            const strat = String(k).split('|')[0];
+            const a = Number(v.alpha || 2), b = Number(v.beta || 2);
+            const postMean = ((a / Math.max(1e-6, a + b)) * 100).toFixed(1);
+            const isDeg = Boolean((degraded[strat] || {}).degraded);
+            return h('tr', { class: 'row' },
+              h('td', { class: 'l sym cy', text: k }),
+              h('td', { text: a.toFixed(2) }),
+              h('td', { text: b.toFixed(2) }),
+              h('td', { class: Number(postMean) >= 55 ? 'up sym' : 'am sym', text: `${postMean}%` }),
+              h('td', { class: isDeg ? 'dn' : 'up', text: isDeg ? 'SHADOW_ONLY (DEMOTED)' : 'LIVE_ELIGIBLE' })
+            );
+          }))
+        )
+      );
+    } else {
+      sc.append(h('div', { class: 'na', text: 'BANDIT THOMPSON POSTERIORS INITIALIZING (NO CLOSED ARMS RECORDED YET).' }));
+    }
+  }
+
+  btn.onclick = load;
+  load();
+}
+
 
 
 

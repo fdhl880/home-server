@@ -931,6 +931,87 @@ class BinanceFuturesClient:
             res_algo = None
         return {"standard": res_std, "algo": res_algo}
 
+    def get_order_book(self, symbol: str, limit: int = 20) -> dict:
+        """Fetch L2 order book bids/asks for VWAP slippage impact & micro-price calculation."""
+        sym = self.normalize_symbol(symbol)
+        res = self._request("GET", "/fapi/v1/depth", {"symbol": sym, "limit": int(limit)})
+        return res if isinstance(res, dict) and not res.get("isError") else {}
+
+    def query_order(self, symbol: str, order_id: int) -> dict:
+        """Query single standard order status/executedQty/avgPrice on Binance Futures."""
+        sym = self.normalize_symbol(symbol)
+        return self._request("GET", "/fapi/v1/order", {"symbol": sym, "orderId": int(order_id)}, signed=True)
+
+    def cancel_order(self, symbol: str, order_id: int) -> dict:
+        """Cancel a single open standard order on Binance Futures."""
+        sym = self.normalize_symbol(symbol)
+        return self._request("DELETE", "/fapi/v1/order", {"symbol": sym, "orderId": int(order_id)}, signed=True)
+
+    def partial_close_position(self, symbol: str, direction: str, fraction: float = 0.65) -> dict:
+        """
+        Close `fraction` (e.g. 65%) of an active position at TP1 (+0.55R) while leaving
+        remaining 35% runner open. Strictly enforces `minNotional` & `minQty` on BOTH the
+        partial slice AND the remaining runner slice so micro-accounts never hit -4164 or dust locks.
+        """
+        sym = self.normalize_symbol(symbol)
+        positions = self.get_positions(sym)
+        if not isinstance(positions, list) or not positions:
+            return {"status": "NO_ACTIVE_POSITION", "partial_closed": False, "symbol": sym}
+
+        pos = next((p for p in positions if p.get("symbol") == sym and float(p.get("position_amount", 0)) > 0), None)
+        if not pos:
+            return {"status": "NO_ACTIVE_POSITION", "partial_closed": False, "symbol": sym}
+
+        total_qty = abs(float(pos.get("position_amount", 0)))
+        mark_px = float(pos.get("mark_price") or self.get_market_price(sym) or 0.0)
+        rules = self.get_symbol_filters(sym)
+        min_notional = float(rules.get("minNotional", 5.0))
+        min_qty = float(rules.get("minQty", 0.001))
+
+        frac = max(0.10, min(0.85, float(fraction or 0.65)))
+        partial_qty = self.format_quantity(sym, total_qty * frac)
+        rem_qty = max(0.0, total_qty - partial_qty)
+        partial_notional = partial_qty * mark_px
+        rem_notional = rem_qty * mark_px
+
+        if (
+            partial_qty < min_qty
+            or rem_qty < min_qty
+            or mark_px <= 0
+            or partial_notional < min_notional
+            or rem_notional < min_notional
+        ):
+            return {
+                "status": "SKIPPED_MIN_NOTIONAL",
+                "partial_closed": False,
+                "symbol": sym,
+                "total_qty": total_qty,
+                "partial_qty": partial_qty,
+                "remaining_qty": round(rem_qty, 8),
+                "min_notional": min_notional,
+                "partial_notional": round(partial_notional, 2),
+                "remaining_notional": round(rem_notional, 2),
+            }
+
+        res = self.close_position(sym, direction, quantity=partial_qty)
+        if isinstance(res, dict) and res.get("isError"):
+            return {
+                "status": "PARTIAL_CLOSE_ERROR",
+                "partial_closed": False,
+                "symbol": sym,
+                "error": res.get("error"),
+                "order": res,
+            }
+
+        return {
+            "status": "PARTIAL_CLOSED",
+            "partial_closed": True,
+            "symbol": sym,
+            "closed_qty": partial_qty,
+            "remaining_qty": round(rem_qty, 8),
+            "order": res,
+        }
+
     # ===================================================================
     # FULL AUTONOMOUS PIPELINE EXECUTION (T0.3, T0.4, T7.1, T7.2, T7.3)
     # ===================================================================
@@ -1014,34 +1095,48 @@ class BinanceFuturesClient:
         except Exception:
             pass
 
-        # 2. Check live wallet balance & apply ALL_IN (95% working balance) sizing
-        avail_usdt = 100.0
+        # 2. Check live wallet balance strictly (NO hardcoded fake $100/$10 fallback) & enforce Profit Ratchet Vault
+        avail_usdt = 0.0
         sizing_mode = str(config.get("sizing_mode", "ALL_IN")).upper()
         all_in_fraction = float(config.get("all_in_balance_fraction", 0.95))
         pos_size_usd = float(signal.get("position_size_usdt") or signal.get("position_size_usd") or 0.0)
 
         try:
             bal_info = self.get_balance()
-            if isinstance(bal_info, dict) and "available_balance" in bal_info:
-                avail_usdt = float(bal_info["available_balance"])
-                if avail_usdt < 0.30:
-                    return {
-                        "status": "REJECTED_LOW_BALANCE",
-                        "error": f"Available margin ${avail_usdt:.2f} is insufficient (Min $0.30 USDT required)",
-                        "binance_synced": False,
-                    }
-                locked_vault = self._get_locked_vault_usdt()
-                working_usdt = max(min(avail_usdt, 1.0), avail_usdt - locked_vault)
-                if sizing_mode == "ALL_IN" or pos_size_usd <= 0:
-                    pos_size_usd = round(working_usdt * all_in_fraction, 4)
-                else:
-                    max_safe_margin = round(working_usdt * all_in_fraction, 4)
-                    if pos_size_usd > max_safe_margin:
-                        pos_size_usd = max_safe_margin
+            if not isinstance(bal_info, dict) or bal_info.get("isError") or "available_balance" not in bal_info:
+                err_txt = (bal_info or {}).get("error", "Invalid balance payload") if isinstance(bal_info, dict) else "Balance endpoint did not return dict"
+                return {
+                    "status": "REJECTED_BALANCE_API_ERROR",
+                    "error": f"Live Binance balance unavailable ({err_txt}) — refusing unsafe order sizing",
+                    "binance_synced": False,
+                }
+            avail_usdt = float(bal_info["available_balance"])
+            if avail_usdt < 0.30:
+                return {
+                    "status": "REJECTED_LOW_BALANCE",
+                    "error": f"Available margin ${avail_usdt:.2f} is insufficient (Min $0.30 USDT required)",
+                    "binance_synced": False,
+                }
+            locked_vault = self._get_locked_vault_usdt()
+            working_usdt = max(0.0, avail_usdt - locked_vault)
+            if working_usdt < 0.30:
+                return {
+                    "status": "REJECTED_VAULT_PROTECTED",
+                    "error": f"Available balance ${avail_usdt:.2f} is protected by Profit Ratchet Vault (${locked_vault:.2f} locked)",
+                    "binance_synced": False,
+                }
+            if sizing_mode == "ALL_IN" or pos_size_usd <= 0:
+                pos_size_usd = round(working_usdt * all_in_fraction, 4)
+            else:
+                max_safe_margin = round(working_usdt * all_in_fraction, 4)
+                if pos_size_usd > max_safe_margin:
+                    pos_size_usd = max_safe_margin
         except Exception as e:
-            print(f"[BinanceFutures] ⚠️ Balance check warning: {e}", flush=True)
-            if pos_size_usd <= 0:
-                pos_size_usd = 10.0
+            return {
+                "status": "REJECTED_BALANCE_API_ERROR",
+                "error": f"Balance API exception ({e}) — refusing unsafe order sizing",
+                "binance_synced": False,
+            }
 
         # 3. Get live mark price
         mark_price = self.get_market_price(symbol)
@@ -1098,6 +1193,39 @@ class BinanceFuturesClient:
 
         sl, tp = self._sanitize_sl_tp(symbol, direction, mark_price, sl, tp)
 
+        # Pre-trade L2 Order Book VWAP Slippage Impact Gate & Avellaneda-Stoikov Optimal Price
+        depth_book = {}
+        try:
+            depth_book = self.get_order_book(symbol, limit=20)
+        except Exception:
+            depth_book = {}
+
+        arrival_price = float(mark_price)
+        impact_bps_est = 0.0
+        router = None
+        if depth_book.get("bids") and depth_book.get("asks"):
+            best_bid = float(depth_book["bids"][0][0])
+            best_ask = float(depth_book["asks"][0][0])
+            best_bid_qty = float(depth_book["bids"][0][1])
+            best_ask_qty = float(depth_book["asks"][0][1])
+            if best_bid > 0 and best_ask > 0:
+                arrival_price = 0.5 * (best_bid + best_ask)
+            try:
+                from exec.avellaneda_router import AvellanedaStoikovRouter
+                max_imp = float(config.get("max_vwap_impact_bps", 8.0))
+                router = AvellanedaStoikovRouter(max_impact_bps=max_imp)
+                imp = router.compute_vwap_impact_bps(depth_book, direction, quantity)
+                impact_bps_est = float(imp.get("impact_bps", 0.0) or 0.0)
+                if not imp.get("passed", True):
+                    return {
+                        "status": "REJECTED_SLIPPAGE_IMPACT",
+                        "error": f"Pre-trade VWAP impact rejected {symbol}: {imp.get('reason')}",
+                        "impact_bps_est": round(impact_bps_est, 3),
+                        "binance_synced": False,
+                    }
+            except Exception:
+                router = None
+
         execution_log = {
             "exchange": "BINANCE_FUTURES",
             "symbol": symbol,
@@ -1107,6 +1235,9 @@ class BinanceFuturesClient:
             "sizing_mode": sizing_mode,
             "order_type": order_type,
             "entry_price": mark_price,
+            "arrival_price": arrival_price,
+            "impact_bps_est": round(impact_bps_est, 3),
+            "routing_used": order_type,
             "quantity": quantity,
             "position_size_usdt": round(pos_size_usd, 4),
             "notional_usdt": round(quantity * mark_price, 2),
@@ -1120,18 +1251,175 @@ class BinanceFuturesClient:
         }
 
         try:
-            # Step 1: Open Position
-            order_res = self.open_position(
-                symbol=symbol,
-                direction=direction,
-                quantity=quantity,
-                leverage=leverage,
-                order_type=order_type,
-                limit_price=limit_price if order_type == "LIMIT" else None,
-                margin_type=margin_type,
-                price_match=price_match,
-                client_order_id=signal.get("client_order_id"),
+            # Step 1: Smart Maker-First GTX / Chase-Limit -> Slippage-Capped IOC / Market Fallback
+            order_res = None
+            routing_used = "MARKET_TAKER"
+            mp_sig = signal.get("math_proof") or {}
+            vpin_val = float(mp_sig.get("vpin", 0.35) or 0.35)
+            vpin_cdf = float(mp_sig.get("vpin_cdf", 0.50) or 0.50)
+            ofi_20 = float(mp_sig.get("obi_weighted_20", 0.0) or 0.0)
+            tick_sz = float(rules.get("tickSize", 0.01))
+
+            use_maker_first = (
+                order_type in ("MAKER_FIRST_GTX", "SMART_MAKER", "LIMIT", "GTX")
+                and not bool(signal.get("vpin_toxic_maker_block", False))
             )
+
+            if use_maker_first and depth_book.get("bids") and depth_book.get("asks"):
+                filled_qty_total = 0.0
+                weighted_fill_cost = 0.0
+                rem_qty = quantity
+
+                for cycle in range(2):
+                    if rem_qty * mark_price < min_notional and filled_qty_total > 0:
+                        break
+                    cycle_book = depth_book if cycle == 0 else (self.get_order_book(symbol, limit=5) or depth_book)
+                    bids_c = cycle_book.get("bids") or depth_book["bids"]
+                    asks_c = cycle_book.get("asks") or depth_book["asks"]
+                    bb_px, bb_q = float(bids_c[0][0]), float(bids_c[0][1])
+                    ba_px, ba_q = float(asks_c[0][0]), float(asks_c[0][1])
+                    chase_px = bb_px if direction == "LONG" else ba_px
+                    if router is not None and cycle == 0:
+                        opt = router.compute_optimal_offset(
+                            direction=direction,
+                            best_bid_price=bb_px,
+                            best_bid_qty=bb_q,
+                            best_ask_price=ba_px,
+                            best_ask_qty=ba_q,
+                            ofi_20=ofi_20,
+                            vpin=vpin_val,
+                            vpin_cdf=vpin_cdf,
+                            tick_size=tick_sz,
+                        )
+                        if not opt.get("allowed_passive_maker", True):
+                            break
+                        chase_px = float(opt.get("optimal_limit_price") or chase_px)
+
+                    chase_px = self.format_price(symbol, chase_px)
+                    cycle_qty = self.format_quantity(symbol, rem_qty)
+                    res_gtx = self.open_position(
+                        symbol=symbol,
+                        direction=direction,
+                        quantity=cycle_qty,
+                        leverage=leverage,
+                        order_type="LIMIT",
+                        limit_price=chase_px,
+                        margin_type=margin_type,
+                        time_in_force="GTX",
+                        client_order_id=signal.get("client_order_id") if cycle == 0 else None,
+                    )
+                    execution_log["steps"][f"maker_gtx_cycle_{cycle + 1}"] = res_gtx
+                    if not isinstance(res_gtx, dict) or res_gtx.get("isError"):
+                        # -5022 Post-Only would immediately match: move cleanly to next check/IOC
+                        continue
+                    oid = res_gtx.get("orderId")
+                    order_res = res_gtx
+                    if oid:
+                        for _poll in range(3):
+                            time.sleep(0.4)
+                            qo = self.query_order(symbol, oid)
+                            if isinstance(qo, dict) and not qo.get("isError"):
+                                order_res = qo
+                                if str(qo.get("status", "")).upper() == "FILLED":
+                                    ex_q = float(qo.get("executedQty") or cycle_qty)
+                                    av_p = float(qo.get("avgPrice") or chase_px)
+                                    filled_qty_total += ex_q
+                                    weighted_fill_cost += ex_q * av_p
+                                    rem_qty = max(0.0, quantity - filled_qty_total)
+                                    routing_used = "MAKER_GTX_FILLED"
+                                    break
+                        if rem_qty <= 0 or (rem_qty * mark_price < min_notional and filled_qty_total > 0):
+                            break
+                        # Cancel unfilled portion before chasing or falling back
+                        self.cancel_order(symbol, oid)
+                        qo_post = self.query_order(symbol, oid)
+                        if isinstance(qo_post, dict) and not qo_post.get("isError"):
+                            ex_q = float(qo_post.get("executedQty") or 0.0)
+                            if ex_q > 0:
+                                av_p = float(qo_post.get("avgPrice") or chase_px)
+                                filled_qty_total += ex_q
+                                weighted_fill_cost += ex_q * av_p
+                                rem_qty = max(0.0, quantity - filled_qty_total)
+                                order_res = qo_post
+
+                if filled_qty_total > 0 and (rem_qty <= 0 or (rem_qty * mark_price < min_notional)):
+                    execution_log["quantity"] = round(filled_qty_total, 8)
+                    if weighted_fill_cost > 0:
+                        execution_log["entry_price"] = round(weighted_fill_cost / filled_qty_total, 8)
+                elif rem_qty > 0 and not bool(config.get("maker_only_no_taker_fallback", False)):
+                    # Slippage-capped IOC fallback for remaining quantity before Market
+                    rem_fmt = self.format_quantity(symbol, rem_qty)
+                    if rem_fmt * mark_price >= min_notional:
+                        cap_bps = min(8.0, float(config.get("max_vwap_impact_bps", 8.0))) / 10000.0
+                        ioc_px = self.format_price(
+                            symbol,
+                            arrival_price * (1.0 + cap_bps) if direction == "LONG" else arrival_price * (1.0 - cap_bps),
+                        )
+                        ioc_res = self.open_position(
+                            symbol=symbol,
+                            direction=direction,
+                            quantity=rem_fmt,
+                            leverage=leverage,
+                            order_type="LIMIT",
+                            limit_price=ioc_px,
+                            margin_type=margin_type,
+                            time_in_force="IOC",
+                        )
+                        execution_log["steps"]["ioc_fallback"] = ioc_res
+                        ioc_filled = float(ioc_res.get("executedQty") or 0.0) if isinstance(ioc_res, dict) and not ioc_res.get("isError") else 0.0
+                        if ioc_filled > 0:
+                            av_p = float(ioc_res.get("avgPrice") or ioc_px)
+                            filled_qty_total += ioc_filled
+                            weighted_fill_cost += ioc_filled * av_p
+                            rem_qty = max(0.0, quantity - filled_qty_total)
+                            order_res = ioc_res
+                            routing_used = "HYBRID_GTX_IOC" if filled_qty_total > ioc_filled else "LIMIT_IOC_CAPPED"
+                        if rem_qty > 0 and (rem_qty * mark_price >= min_notional) and filled_qty_total <= 0:
+                            mkt_res = self.open_position(
+                                symbol=symbol,
+                                direction=direction,
+                                quantity=rem_fmt,
+                                leverage=leverage,
+                                order_type="MARKET",
+                                margin_type=margin_type,
+                                client_order_id=signal.get("client_order_id"),
+                            )
+                            order_res = mkt_res
+                            routing_used = "MARKET_FALLBACK"
+                if filled_qty_total > 0:
+                    execution_log["quantity"] = round(filled_qty_total, 8)
+                    quantity = execution_log["quantity"]
+                    if weighted_fill_cost > 0:
+                        execution_log["entry_price"] = round(weighted_fill_cost / filled_qty_total, 8)
+            elif order_type == "LIMIT" and limit_price > 0 and not depth_book.get("bids"):
+                order_res = self.open_position(
+                    symbol=symbol,
+                    direction=direction,
+                    quantity=quantity,
+                    leverage=leverage,
+                    order_type="LIMIT",
+                    limit_price=limit_price,
+                    margin_type=margin_type,
+                    price_match=price_match,
+                    client_order_id=signal.get("client_order_id"),
+                )
+                routing_used = "LIMIT_GTC"
+
+            if order_res is None:
+                order_res = self.open_position(
+                    symbol=symbol,
+                    direction=direction,
+                    quantity=quantity,
+                    leverage=leverage,
+                    order_type="MARKET",
+                    limit_price=None,
+                    margin_type=margin_type,
+                    price_match=price_match,
+                    client_order_id=signal.get("client_order_id"),
+                )
+                routing_used = "MARKET_TAKER"
+
+            execution_log["routing_used"] = routing_used
             execution_log["steps"]["open_position"] = order_res
 
             if isinstance(order_res, dict) and order_res.get("isError"):
@@ -1145,8 +1433,29 @@ class BinanceFuturesClient:
             # Step 2 (T0.3): Poll positionRisk until position is open (prevents -4509 on closePosition=true)
             pos_info = self.wait_for_position_open(symbol, max_wait_sec=3.0)
             if pos_info:
-                execution_log["entry_price"] = float(pos_info.get("entry_price") or mark_price)
+                execution_log["entry_price"] = float(pos_info.get("entry_price") or execution_log.get("entry_price") or mark_price)
                 execution_log["liquidation_price"] = float(pos_info.get("liquidation_price", 0.0))
+
+            fill_px = float(execution_log.get("entry_price") or mark_price)
+            arr_px = float(arrival_price or fill_px or mark_price)
+            sign_slip = 1.0 if direction == "LONG" else -1.0
+            arr_slip_bps = sign_slip * ((fill_px - arr_px) / arr_px) * 10000.0 if arr_px > 0 else 0.0
+            notional_act = float(execution_log["quantity"]) * fill_px
+            fee_rate = 0.0002 if "MAKER_GTX" in routing_used else 0.0005
+            est_fee_usdt = notional_act * fee_rate
+            fee_drag_roe_pct = (est_fee_usdt / pos_size_usd) * 100.0 if pos_size_usd > 0 else 0.0
+            execution_log["tca"] = {
+                "symbol": symbol,
+                "direction": direction,
+                "routing_used": routing_used,
+                "arrival_price": round(arr_px, 8),
+                "fill_price": round(fill_px, 8),
+                "arrival_slippage_bps": round(arr_slip_bps, 3),
+                "fee_usdt": round(est_fee_usdt, 6),
+                "margin_usdt": round(pos_size_usd, 4),
+                "fee_drag_roe_pct": round(fee_drag_roe_pct, 4),
+                "impact_bps_est": round(impact_bps_est, 3),
+            }
 
             # Step 3: Place Take Profit Algo Order
             if tp > 0:

@@ -739,7 +739,8 @@ export function mountBOT(body, ctx) {
     obTitle.textContent = 'LIVE L2 DEPTH';
     svg.append(obTitle, obGroup);
 
-    const bSymDepth = toBinanceSym(isVm ? vmOrScan.sym : (vmOrScan?.symbol || scanSym));
+    const bSymDepthBase = toBinanceSym(isVm ? vmOrScan.sym : (vmOrScan?.symbol || scanSym));
+    const bSymDepth = bSymDepthBase.endsWith('.P') ? bSymDepthBase : `${bSymDepthBase}.P`;
     get('depth', { symbol: bSymDepth, limit: 12 }, 2500).then(dEnv => {
       if (!svg.isConnected) return;
       obGroup.textContent = '';
@@ -789,7 +790,7 @@ export function mountBOT(body, ctx) {
 
   async function load() {
     renderToolbar();
-    const [stRes, pRes, perfRes, cRes, wlRes, gwRes, newsRes, cachedScanRes] = await Promise.all([
+    const [stRes, pRes, perfRes, cRes, wlRes, gwRes, newsRes, qhRes, cachedScanRes] = await Promise.all([
       getRaw('/api/crypto-futures/status'),
       getRaw('/api/crypto-futures/positions'),
       getRaw('/api/performance'),
@@ -797,6 +798,7 @@ export function mountBOT(body, ctx) {
       getRaw('/api/crypto-futures/watchlist'),
       getRaw('/api/crypto-futures/ai-gateway'),
       getRaw('/api/news-sentinel'),
+      getRaw('/api/crypto-futures/quant-health'),
       !scanResult ? getRaw(`/api/crypto-futures/scan-cached?symbol=${encodeURIComponent(scanSym)}`) : Promise.resolve(null)
     ]);
     ctx.status({ source: 'pyrofuel-sniper-v4', ts: Date.now(), mode: (stRes.ok || pRes.ok || cRes.ok) ? 'LIVE' : 'N/A' });
@@ -832,6 +834,11 @@ export function mountBOT(body, ctx) {
     const wl = (wlRes.ok && Array.isArray(wlRes.data)) ? wlRes.data : [];
     const gw = (gwRes.ok && gwRes.data) || {};
     const newsData = (newsRes.ok && newsRes.data) || {};
+    const qh = (qhRes && qhRes.ok && qhRes.data) || {};
+    const brk = qh.breaker || {};
+    const adw = qh.adwin || {};
+    const brns = qh.brains || {};
+    const ews = brns.ensemble_weights || {};
 
     isAutoRunning = Boolean(st.autonomous_running ?? st.is_running ?? auto.is_running);
     const realWalletUsdt = Number(st.binance_wallet_balance_usdt ?? 0);
@@ -867,7 +874,9 @@ export function mountBOT(body, ctx) {
       h('div', { class: 'k', text: 'TERMINAL NEWS SENTINEL FEED' }),
       h('div', { class: 'v lb sym', text: `BIAS: ${newsData.overall_bias || scanResult?.terminal_news_macro?.overall_bias || 'NEUTRAL'} (${newsData.overall_score ?? scanResult?.terminal_news_macro?.overall_score ?? '0.00'}) • ${auto.total_scans_done ?? st.total_scans_done ?? 0} SCANS COMPLETED` }),
       h('div', { class: 'k', text: 'LIVE BINANCE FUTURES WALLET' }),
-      h('div', { class: 'v am sym', text: `$${fmtNum(realWalletUsdt, 2)} USDT (${fmtIdr(realWalletUsdt * 16500)}) • AVAIL MARGIN: $${fmtNum(availWalletUsdt, 2)} USDT` })
+      h('div', { class: 'v am sym', text: `$${fmtNum(realWalletUsdt, 2)} USDT (${fmtIdr(realWalletUsdt * 16500)}) • AVAIL MARGIN: $${fmtNum(availWalletUsdt, 2)} USDT` }),
+      h('div', { class: 'k', text: 'RISK BREAKER & QUANT HEALTH (BTCA)' }),
+      h('div', { class: 'v sym ' + (brk.breaker_active ? 'dn' : 'up'), text: `${brk.breaker_active ? 'TRIPPED' : 'ARMED'} • LOSSES: ${brk.consecutive_losses || 0}/${brk.breaker_consecutive_losses_limit || 2} • TRADES: ${brk.daily_trades_count || 0}/${brk.max_daily_trades || 10} • ADWIN DRIFTS: ${adw.drift_count || 0} • ML=${Math.round((ews.ml ?? 0.4) * 100)}%/kNN=${Math.round((ews.knn ?? 0.25) * 100)}%/LLM=${Math.round((ews.llm ?? 0.35) * 100)}%` })
     );
     sc.append(kv);
 

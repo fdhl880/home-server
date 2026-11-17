@@ -6,8 +6,8 @@ import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261117a';
 import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261116e';
 import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261116e';
 import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261116e';
-import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR } from './panels/quant.js?v=20261116e';
-import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261117a';
+import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261117b';
+import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261117b';
 
 import { panels as newsPanels } from '../panels/news/index.js';
 import { panels as macroPanels } from '../panels/macro/index.js';
@@ -151,6 +151,8 @@ export const CATALOG = [
 
   // Operations, Portfolio, Risk, AI & System
   { code: 'BOT', cat: 'AI ENGINE', title: 'Pyrofuel 28-Pillar AI Bot', desc: 'Live Binance Futures Auto-Trader Telemetry, Active Positions & 5-Layer Signals', mount: mountBOT },
+  { code: 'BTCA', cat: 'EXECUTION', title: 'Execution TCA & Quant Health', desc: 'Maker GTX Fill Share, Arrival Slippage, +1m/+5m Markouts, Risk Breaker & ADWIN Drift', mount: mountBTCA },
+  { code: 'TCA', cat: 'EXECUTION', title: 'Transaction Cost Analysis (TCA)', desc: 'Execution Quality, VWAP Impact, Fee Drag & Strategy Bandit Audit', mount: mountBTCA },
   { code: 'PORT', cat: 'PORTFOLIO', title: 'Portfolio & Risk Analytics', desc: 'Institutional Multi-Asset Holdings Valuation, Weight Attribution & DMA Execution', mount: mountPORT },
   { code: 'EMSX', cat: 'EXECUTION', title: 'Execution Management System (EMSX)', desc: 'Direct Market Access (DMA) Multi-Asset Order Routing & Execution Blotter', mount: mountEMSX },
   { code: 'BLOT', cat: 'EXECUTION', title: 'Execution Trade Blotter', desc: 'Audited Multi-Asset Order & Trade History Blotter', mount: mountEMSX },

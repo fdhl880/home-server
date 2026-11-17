@@ -3739,6 +3739,88 @@ app.get(['/api/crypto-futures/health', '/api/health'], (req, res) => {
     });
 });
 
+app.get(['/api/crypto-futures/tca', '/api/tca'], (req, res) => {
+    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const limit = Math.max(10, Math.min(200, Number(req.query.limit || 80)));
+    const pyCode = `
+import sys, json
+sys.path.append('${pluangDir.replace(/\\/g, '/')}')
+import journal
+print(json.dumps(journal.get_tca_summary(limit=${limit}), ensure_ascii=False))
+`;
+    execFile(pyCmd, ['-c', pyCode], { cwd: pluangDir, timeout: 8000 }, (err, stdout) => {
+        if (!err && stdout) {
+            try {
+                const summary = JSON.parse(stdout.trim());
+                return res.json({ status: "SUCCESS", tca: summary });
+            } catch (e) {}
+        }
+        return res.json({
+            status: "SUCCESS",
+            tca: {
+                count: 0,
+                avg_arrival_slippage_bps: 0,
+                p95_arrival_slippage_bps: 0,
+                maker_fill_rate_pct: 0,
+                avg_fee_drag_roe_pct: 0,
+                avg_impact_bps: 0,
+                avg_markout_1m_bps: null,
+                avg_markout_5m_bps: null,
+                avg_markout_close_bps: null,
+                by_routing: {},
+                recent: []
+            }
+        });
+    });
+});
+
+app.get(['/api/crypto-futures/quant-health', '/api/quant-health'], (req, res) => {
+    const readJsonSafe = (fname, fb) => {
+        try {
+            const fp = path.join(resultsDir, fname);
+            if (fs.existsSync(fp)) return JSON.parse(fs.readFileSync(fp, 'utf8'));
+        } catch (e) {}
+        return fb;
+    };
+    const cfg = getLocalTradingConfig();
+    const breaker = readJsonSafe('risk_breaker_state.json', {
+        consecutive_losses: 0,
+        breaker_consecutive_losses_limit: cfg.circuit_breaker_consecutive_losses || 2,
+        breaker_active: false,
+        breaker_reason: null,
+        daily_trades_count: 0,
+        max_daily_trades: cfg.max_daily_trades || 10,
+        daily_dd_pct: 0,
+        breaker_daily_dd_limit_pct: cfg.breaker_daily_dd_pct || 15.0
+    });
+    const adwin = readJsonSafe('adwin_state.json', { drift_count: 0, total_samples: 0, window: [] });
+    const ensemble = readJsonSafe('ensemble_weights.json', { weights: { ml: 0.4, knn: 0.25, llm: 0.35 } });
+    const tabMeta = readJsonSafe('tabular_meta_weights.json', { n_updates: 0, feature_dim: 15 });
+    const bandit = readJsonSafe('bandit_state.json', { arms: {} });
+    const degraded = readJsonSafe('degraded_strategies.json', {});
+    const episodes = readJsonSafe('episodic_memory.json', []);
+    const vault = readJsonSafe('vault_state.json', { locked_profit_vault_usdt: 0, high_water_mark_equity: 0 });
+
+    res.json({
+        status: "SUCCESS",
+        breaker,
+        adwin: {
+            drift_count: adwin.drift_count || 0,
+            total_samples: adwin.total_samples || 0,
+            window_len: Array.isArray(adwin.window) ? adwin.window.length : 0,
+            last_drift_ts: adwin.last_drift_ts || 0
+        },
+        brains: {
+            ensemble_weights: ensemble.weights || { ml: 0.4, knn: 0.25, llm: 0.35 },
+            tabular_updates: tabMeta.n_updates || 0,
+            episodic_count: Array.isArray(episodes) ? episodes.length : 0
+        },
+        bandit_arms: bandit.arms || {},
+        degraded_strategies: degraded,
+        vault
+    });
+});
+
 // Auto-start background Auto-Trader worker if Python is present (Single-Instance Guard)
 let _autoTraderProc = null;
 let _autoTraderRestartTimer = null;

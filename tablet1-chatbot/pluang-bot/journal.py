@@ -128,6 +128,25 @@ def init_db(db_path: Optional[str] = None) -> None:
             reject_reason TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS tca_executions (
+            exec_id TEXT PRIMARY KEY,
+            trade_id TEXT,
+            symbol TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            routing_used TEXT NOT NULL,
+            arrival_price REAL NOT NULL,
+            fill_price REAL NOT NULL,
+            arrival_slippage_bps REAL NOT NULL DEFAULT 0.0,
+            fee_usdt REAL NOT NULL DEFAULT 0.0,
+            margin_usdt REAL NOT NULL DEFAULT 0.0,
+            fee_drag_roe_pct REAL NOT NULL DEFAULT 0.0,
+            impact_bps_est REAL NOT NULL DEFAULT 0.0,
+            markout_1m_bps REAL,
+            markout_5m_bps REAL,
+            markout_close_bps REAL,
+            ts_ms INTEGER NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_decisions_symbol_ts ON decisions(symbol, ts_ms);
         CREATE INDEX IF NOT EXISTS idx_decisions_strat_regime ON decisions(strategy_id, regime);
         CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
@@ -135,6 +154,8 @@ def init_db(db_path: Optional[str] = None) -> None:
         CREATE INDEX IF NOT EXISTS idx_trades_closed_at ON trades(closed_at);
         CREATE INDEX IF NOT EXISTS idx_shadow_status ON shadow_trades(status);
         CREATE INDEX IF NOT EXISTS idx_shadow_strat_regime ON shadow_trades(strategy_id, regime);
+        CREATE INDEX IF NOT EXISTS idx_tca_symbol_ts ON tca_executions(symbol, ts_ms);
+        CREATE INDEX IF NOT EXISTS idx_tca_trade_id ON tca_executions(trade_id);
         """)
 
 
@@ -763,6 +784,151 @@ def generate_gate_report(db_path: Optional[str] = None) -> Dict[str, Any]:
         "shadow_trades_resolved": len(shadow_closed),
         "by_strategy_regime": by_strat_regime,
         "gate_passed": gate_passed,
+    }
+
+
+def _signed_bps_move(direction: str, ref_price: float, cur_price: float) -> float:
+    """Compute signed price move in bps relative to trade direction (+ = favorable)."""
+    ref = float(ref_price or 0.0)
+    cur = float(cur_price or 0.0)
+    if ref <= 0 or cur <= 0:
+        return 0.0
+    sign = 1.0 if str(direction).upper() == "LONG" else -1.0
+    return round(sign * ((cur - ref) / ref) * 10000.0, 3)
+
+
+def record_tca_execution(tca_data: dict, db_path: Optional[str] = None) -> str:
+    """Record execution arrival slippage, routing tier, fee drag, and impact estimate."""
+    init_db(db_path)
+    ts_ms = int(tca_data.get("ts_ms") or time.time() * 1000)
+    sym = str(tca_data.get("symbol", "")).upper().strip()
+    exec_id = str(tca_data.get("exec_id") or f"TCA_{sym}_{ts_ms}")
+    direction = str(tca_data.get("direction", "LONG")).upper().strip()
+    arrival_px = float(tca_data.get("arrival_price") or 0.0)
+    fill_px = float(tca_data.get("fill_price") or arrival_px or 0.0)
+    slip_bps = tca_data.get("arrival_slippage_bps")
+    if slip_bps is None:
+        if arrival_px > 0 and fill_px > 0:
+            sign = 1.0 if direction == "LONG" else -1.0
+            slip_bps = sign * ((fill_px - arrival_px) / arrival_px) * 10000.0
+        else:
+            slip_bps = 0.0
+    fee_usdt = float(tca_data.get("fee_usdt") or 0.0)
+    margin_usdt = float(tca_data.get("margin_usdt") or 0.0)
+    fee_drag_roe = float(tca_data.get("fee_drag_roe_pct") or ((fee_usdt / margin_usdt) * 100.0 if margin_usdt > 0 else 0.0))
+
+    with get_db(db_path) as conn:
+        conn.execute("""
+        INSERT OR REPLACE INTO tca_executions (
+            exec_id, trade_id, symbol, direction, routing_used,
+            arrival_price, fill_price, arrival_slippage_bps,
+            fee_usdt, margin_usdt, fee_drag_roe_pct, impact_bps_est,
+            markout_1m_bps, markout_5m_bps, markout_close_bps, ts_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            exec_id,
+            tca_data.get("trade_id"),
+            sym,
+            direction,
+            str(tca_data.get("routing_used", "UNKNOWN")),
+            arrival_px,
+            fill_px,
+            round(float(slip_bps), 3),
+            round(fee_usdt, 6),
+            round(margin_usdt, 4),
+            round(fee_drag_roe, 4),
+            round(float(tca_data.get("impact_bps_est") or 0.0), 3),
+            tca_data.get("markout_1m_bps"),
+            tca_data.get("markout_5m_bps"),
+            tca_data.get("markout_close_bps"),
+            ts_ms,
+        ))
+    return exec_id
+
+
+def update_tca_markout(trade_id_or_exec_id: str, horizon: str, price: float, db_path: Optional[str] = None) -> bool:
+    """Update markout_1m_bps, markout_5m_bps, or markout_close_bps from fill price."""
+    col_map = {
+        "1m": "markout_1m_bps",
+        "5m": "markout_5m_bps",
+        "close": "markout_close_bps",
+    }
+    col = col_map.get(str(horizon).lower().strip())
+    if not col or not trade_id_or_exec_id or float(price or 0.0) <= 0:
+        return False
+    init_db(db_path)
+    with get_db(db_path) as conn:
+        row = conn.execute(
+            "SELECT exec_id, direction, fill_price FROM tca_executions WHERE exec_id = ? OR trade_id = ? ORDER BY ts_ms DESC LIMIT 1",
+            (trade_id_or_exec_id, trade_id_or_exec_id),
+        ).fetchone()
+        if not row:
+            return False
+        bps = _signed_bps_move(row["direction"], row["fill_price"], price)
+        conn.execute(f"UPDATE tca_executions SET {col} = ? WHERE exec_id = ?", (bps, row["exec_id"]))
+    return True
+
+
+def get_tca_summary(limit: int = 50, db_path: Optional[str] = None) -> dict:
+    """Summarize execution quality (arrival slippage, maker fill share, fee drag, markouts) for BTCA <GO>."""
+    lim = max(1, min(500, int(limit)))
+    init_db(db_path)
+    with get_db(db_path) as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM tca_executions ORDER BY ts_ms DESC LIMIT ?", (lim,)
+        ).fetchall()]
+
+    n = len(rows)
+    if n == 0:
+        return {
+            "count": 0,
+            "avg_arrival_slippage_bps": 0.0,
+            "p95_arrival_slippage_bps": 0.0,
+            "maker_fill_rate_pct": 0.0,
+            "avg_fee_drag_roe_pct": 0.0,
+            "avg_impact_bps": 0.0,
+            "avg_markout_1m_bps": None,
+            "avg_markout_5m_bps": None,
+            "avg_markout_close_bps": None,
+            "by_routing": {},
+            "recent": [],
+        }
+
+    slips = sorted(float(r["arrival_slippage_bps"] or 0.0) for r in rows)
+    maker_count = sum(1 for r in rows if any(k in str(r.get("routing_used", "")).upper() for k in ("MAKER", "GTX", "QUEUE", "PRICEMATCH")))
+    m1 = [float(r["markout_1m_bps"]) for r in rows if r.get("markout_1m_bps") is not None]
+    m5 = [float(r["markout_5m_bps"]) for r in rows if r.get("markout_5m_bps") is not None]
+    mc = [float(r["markout_close_bps"]) for r in rows if r.get("markout_close_bps") is not None]
+
+    by_routing = {}
+    for r in rows:
+        rt = str(r.get("routing_used") or "UNKNOWN")
+        bucket = by_routing.setdefault(rt, {"n": 0, "slips": [], "fees": []})
+        bucket["n"] += 1
+        bucket["slips"].append(float(r.get("arrival_slippage_bps") or 0.0))
+        bucket["fees"].append(float(r.get("fee_drag_roe_pct") or 0.0))
+    by_routing_out = {
+        k: {
+            "n": v["n"],
+            "avg_slip_bps": round(sum(v["slips"]) / v["n"], 3),
+            "avg_fee_drag_roe_pct": round(sum(v["fees"]) / v["n"], 3),
+        }
+        for k, v in by_routing.items()
+    }
+
+    p95_idx = min(n - 1, int(0.95 * (n - 1)))
+    return {
+        "count": n,
+        "avg_arrival_slippage_bps": round(sum(slips) / n, 3),
+        "p95_arrival_slippage_bps": round(slips[p95_idx], 3),
+        "maker_fill_rate_pct": round((maker_count / n) * 100.0, 2),
+        "avg_fee_drag_roe_pct": round(sum(float(r["fee_drag_roe_pct"] or 0.0) for r in rows) / n, 3),
+        "avg_impact_bps": round(sum(float(r["impact_bps_est"] or 0.0) for r in rows) / n, 3),
+        "avg_markout_1m_bps": round(sum(m1) / len(m1), 3) if m1 else None,
+        "avg_markout_5m_bps": round(sum(m5) / len(m5), 3) if m5 else None,
+        "avg_markout_close_bps": round(sum(mc) / len(mc), 3) if mc else None,
+        "by_routing": by_routing_out,
+        "recent": rows[:25],
     }
 
 

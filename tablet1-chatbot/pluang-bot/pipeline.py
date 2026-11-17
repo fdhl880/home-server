@@ -980,6 +980,56 @@ def _fetch_live_l2_orderbook(symbol: str) -> dict:
     return {}
 
 
+_OPTIONS_SURFACE_CACHE = {}
+
+
+def _fetch_live_agg_trades(pair: str, limit: int = 80) -> list:
+    """Fetch recent aggregated futures trades for Hawkes liquidation/cascade intensity tracking."""
+    try:
+        r = requests.get(f"https://fapi.binance.com/fapi/v1/aggTrades?symbol={pair}&limit={int(limit)}", timeout=2.5, verify=False)
+        if r.status_code == 200:
+            data = r.json()
+            return data if isinstance(data, list) else []
+    except Exception:
+        pass
+    return []
+
+
+def _fetch_oi_history(pair: str, period: str = "15m", limit: int = 40) -> list:
+    """Fetch 15m Open Interest series for synthetic liquidation magnet & HMM estimation."""
+    try:
+        r = requests.get(
+            f"https://fapi.binance.com/futures/data/openInterestHist?symbol={pair}&period={period}&limit={int(limit)}",
+            timeout=2.5,
+            verify=False,
+        )
+        if r.status_code == 200:
+            rows = r.json()
+            if isinstance(rows, list):
+                return [float(row.get("sumOpenInterestValue") or row.get("sumOpenInterest") or 0.0) for row in rows]
+    except Exception:
+        pass
+    return []
+
+
+def _fetch_cached_options_surface(symbol: str, realized_vol_pct: float = 45.0) -> dict:
+    """Fetch Deribit BTC/ETH DVOL, VRP, 25d skew, and dealer gamma regime with 5-minute TTL cache."""
+    curr = "ETH" if "ETH" in str(symbol).upper() else "BTC"
+    now = time.time()
+    cached = _OPTIONS_SURFACE_CACHE.get(curr)
+    if cached and (now - cached[0] < 300.0):
+        return cached[1]
+    try:
+        from features.options_surface import fetch_options_surface
+        surf = fetch_options_surface(currency=curr, realized_vol_yz_24h=float(realized_vol_pct or 45.0), timeout=2.5)
+        if isinstance(surf, dict):
+            _OPTIONS_SURFACE_CACHE[curr] = (now, surf)
+            return surf
+    except Exception:
+        pass
+    return {"currency": curr, "dealer_gamma_regime": "UNKNOWN", "veto_aggressive_long": False, "veto_aggressive_short": False}
+
+
 def _fetch_terminal_news_and_macro() -> dict:
     """
     Pull live multi-desk headlines & sentiment directly from the user's Bloomberg Terminal
@@ -1053,13 +1103,20 @@ def layer1_scanning(symbol: str):
     vr_q = 1.05
     vr_z = 0.45
     stat_regime = str(qf_raw.get("regime", "NORMAL"))
+    pair = f"{symbol.upper().replace('-USD', '')}USDT"
+    kl_15m = []
+    closes_15m = []
+    highs_15m = []
+    lows_15m = []
     try:
         from market_data import normalize_symbol_to_pair
         pair = normalize_symbol_to_pair(symbol)
         kr = requests.get(f"https://fapi.binance.com/fapi/v1/klines?symbol={pair}&interval=15m&limit=120", timeout=3.0, verify=False)
         if kr.status_code == 200:
-            kl_15m = kr.json()
+            kl_15m = kr.json() or []
             closes_15m = [float(x[4]) for x in kl_15m if len(x) > 4]
+            highs_15m = [float(x[2]) for x in kl_15m if len(x) > 4]
+            lows_15m = [float(x[3]) for x in kl_15m if len(x) > 4]
             from features.regime import hurst_exponent, variance_ratio, classify_regime
             hurst_h = hurst_exponent(closes_15m)
             vr_q, vr_z = variance_ratio(closes_15m, lag=4)
@@ -1081,6 +1138,11 @@ def layer1_scanning(symbol: str):
     vol_tr = str((data_1h.get("volume_profile") or {}).get("volume_trend", "NEUTRAL")).upper()
     ls_ratio = float((data_1h.get("long_short_ratio") or {}).get("long_short_ratio", 1.0) or 1.0)
     news_score = float(news_macro.get("sentiment_score", 50.0) or 50.0)
+    fr_raw = (data_1h.get("funding_rate") or {}).get("funding_rate_pct", 0.0)
+    try:
+        funding_pct = float(fr_raw or 0.0)
+    except Exception:
+        funding_pct = 0.0
 
     # Directional Math Edge calculation
     math_dir = "LONG" if c_score >= 50.0 else "SHORT"
@@ -1088,6 +1150,63 @@ def layer1_scanning(symbol: str):
         math_dir = "LONG"
     elif "BEAR" in ema_1h and "BEAR" in daily_tr:
         math_dir = "SHORT"
+
+    # === INSTITUTIONAL MICROSTRUCTURE, OPTIONS, HMM & LIQ HEATMAP ENGINES ===
+    vpin_info = {"vpin": 0.35, "vpin_cdf": 0.50, "toxic_flow_veto": False, "veto_maker_long": False, "veto_maker_short": False}
+    try:
+        if kl_15m:
+            from features.toxicity import compute_vpin
+            v_res = compute_vpin(kl_15m, proposed_direction=math_dir)
+            if isinstance(v_res, dict):
+                vpin_info = v_res
+    except Exception:
+        pass
+
+    hawkes_info = {"state": "BASELINE", "ratio_minus": 1.0, "ratio_plus": 1.0, "block_long": False, "block_short": False}
+    try:
+        agg_trades = _fetch_live_agg_trades(pair, limit=80)
+        if agg_trades:
+            from features.hawkes import HawkesCascadeTracker
+            hk = HawkesCascadeTracker()
+            last_t = None
+            for tr in agg_trades:
+                t_s = float(tr.get("T") or 0) / 1000.0
+                px_t = float(tr.get("p") or 0.0)
+                qty_t = float(tr.get("q") or 0.0)
+                if t_s > 0 and px_t > 0 and qty_t > 0:
+                    side_t = "SELL" if bool(tr.get("m", False)) else "BUY"
+                    hk.update_event(t_s, side_t, px_t * qty_t)
+                    last_t = t_s
+            if last_t is not None:
+                hawkes_info = hk.evaluate(t_sec=last_t, ofi_20=obi_20)
+    except Exception:
+        pass
+
+    oi_series = _fetch_oi_history(pair, period="15m", limit=40)
+    hmm_info = {"current_state": "STATE_0_LOW_VOL_CHOP", "state_index": 0, "p_transition_to_cascade": 0.10, "squeeze_risk_score": 15.0, "recommended_risk_mult": 1.0}
+    try:
+        if len(closes_15m) >= 24:
+            from features.hmm_drift import GaussianHMM3Regime
+            hmm_info = GaussianHMM3Regime().fit_and_predict(closes_15m, oi_series=oi_series, funding_rate=funding_pct)
+    except Exception:
+        pass
+
+    vol_pct_24h = 45.0
+    try:
+        vol_obj = data_1h.get("volatility") or {}
+        atr_v = float(data_1h.get("atr_pct") or 1.2)
+        vol_pct_24h = float(vol_obj.get("annualized_vol_pct") or min(140.0, max(20.0, atr_v * 38.0)))
+    except Exception:
+        pass
+    options_info = _fetch_cached_options_surface(symbol, realized_vol_pct=vol_pct_24h)
+
+    liq_heatmap = {"nearest_long_liq_magnet": None, "nearest_short_liq_magnet": None}
+    try:
+        if len(closes_15m) >= 12:
+            from features.liq_heatmap import build_liquidation_heatmap
+            liq_heatmap = build_liquidation_heatmap(closes_15m, highs_15m, lows_15m, oi_series or [1.0] * len(closes_15m), proposed_sl=None, direction=math_dir)
+    except Exception:
+        pass
 
     dir_sign = 1.0 if math_dir == "LONG" else -1.0
     base_edge = abs(c_score - 50.0) * 1.15  # 0..57.5
@@ -1111,6 +1230,20 @@ def layer1_scanning(symbol: str):
         "micro_price": round(float(ofi_info.get("micro_price", 0) or 0), 6),
         "micro_divergence": round(float(ofi_info.get("micro_divergence", 0) or 0), 4),
         "spread_bps": round(float(ofi_info.get("spread_bps", 1.2) or 1.2), 2),
+        "vpin": round(float(vpin_info.get("vpin", 0.35) or 0.35), 4),
+        "vpin_cdf": round(float(vpin_info.get("vpin_cdf", 0.50) or 0.50), 4),
+        "vpin_toxic_veto": bool(vpin_info.get("toxic_flow_veto", False)),
+        "hawkes_state": hawkes_info.get("state", "BASELINE"),
+        "hawkes_ratio_minus": round(float(hawkes_info.get("ratio_minus", 1.0) or 1.0), 2),
+        "hawkes_ratio_plus": round(float(hawkes_info.get("ratio_plus", 1.0) or 1.0), 2),
+        "hmm_state": hmm_info.get("current_state", "STATE_0_LOW_VOL_CHOP"),
+        "hmm_cascade_prob": hmm_info.get("p_transition_to_cascade", 0.10),
+        "hmm_squeeze_score": hmm_info.get("squeeze_risk_score", 15.0),
+        "options_dvol": options_info.get("dvol"),
+        "options_vrp": options_info.get("vrp"),
+        "options_dealer_gamma": options_info.get("dealer_gamma_regime", "UNKNOWN"),
+        "nearest_long_liq_magnet": liq_heatmap.get("nearest_long_liq_magnet"),
+        "nearest_short_liq_magnet": liq_heatmap.get("nearest_short_liq_magnet"),
         "composite_532_factors": round(c_score, 2),
         "ofi_contribution_pts": round(ofi_bonus, 2),
         "hurst_contribution_pts": round(hurst_bonus, 2),
@@ -1121,6 +1254,19 @@ def layer1_scanning(symbol: str):
     }
     data_1h["math_proof"] = math_proof
     data_1h["news_macro"] = news_macro
+    data_1h["_micro_risk"] = {
+        "vpin": vpin_info,
+        "hawkes": hawkes_info,
+        "hmm": hmm_info,
+        "options": options_info,
+        "liq_heatmap": liq_heatmap,
+    }
+    data_1h["_liq_inputs"] = {
+        "closes": closes_15m[-60:],
+        "highs": highs_15m[-60:],
+        "lows": lows_15m[-60:],
+        "oi": oi_series[-60:] if oi_series else [],
+    }
 
     # Generate scan summary for AI consumption (lean, high signal-to-noise ratio)
     scan_summary = {
@@ -1848,6 +1994,61 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
             if not (rsi_1h > 72.0 and "BEARISH" in liq_sw):
                 result["status"] = "REJECTED"
                 reasons.append(f"Counter-trend 20x SHORT blocked (1H={ema_1h}, 1D={daily_tr}, Quant={c_q:.1f})")
+
+        # Gate 12c: Hawkes Cascade + Options Surface + HMM Cascade + VPIN Adverse Veto + Liq-Heatmap SL Shield
+        micro_risk = market_data.get("_micro_risk") or {}
+        hk = micro_risk.get("hawkes") or {}
+        if direction == "LONG" and hk.get("block_long"):
+            result["status"] = "REJECTED"
+            reasons.append(f"Hawkes Sell-Cascade Acceleration ({hk.get('state')}, ratio-={hk.get('ratio_minus')})")
+        elif direction == "SHORT" and hk.get("block_short"):
+            result["status"] = "REJECTED"
+            reasons.append(f"Hawkes Buy-Squeeze Acceleration ({hk.get('state')}, ratio+={hk.get('ratio_plus')})")
+
+        opt = micro_risk.get("options") or {}
+        if direction == "LONG" and opt.get("veto_aggressive_long"):
+            result["status"] = "REJECTED"
+            reasons.append(f"Options Dealer Gamma Veto LONG ({opt.get('dealer_gamma_regime')}, DVOL={opt.get('dvol')})")
+        elif direction == "SHORT" and opt.get("veto_aggressive_short"):
+            result["status"] = "REJECTED"
+            reasons.append(f"Options Dealer Gamma Veto SHORT ({opt.get('dealer_gamma_regime')}, DVOL={opt.get('dvol')})")
+
+        vp = micro_risk.get("vpin") or {}
+        if direction == "LONG" and vp.get("veto_maker_long") and obi_20 < 0.05:
+            result["status"] = "REJECTED"
+            reasons.append(f"VPIN Toxic Sell Flow (VPIN={vp.get('vpin', 0):.2f}, CDF={vp.get('vpin_cdf', 0):.2f})")
+        elif direction == "SHORT" and vp.get("veto_maker_short") and obi_20 > -0.05:
+            result["status"] = "REJECTED"
+            reasons.append(f"VPIN Toxic Buy Flow (VPIN={vp.get('vpin', 0):.2f}, CDF={vp.get('vpin_cdf', 0):.2f})")
+
+        hmm = micro_risk.get("hmm") or {}
+        if float(hmm.get("p_transition_to_cascade", 0.0) or 0.0) >= 0.80 and float(mp.get("p_math_pct", 70.0) or 70.0) < 76.0:
+            result["status"] = "REJECTED"
+            reasons.append(f"HMM Cascade Transition Prob={hmm.get('p_transition_to_cascade')} too high ({hmm.get('current_state')})")
+
+        liq_in = market_data.get("_liq_inputs") or {}
+        if result.get("status") == "APPROVED" and e_px > 0 and sl_px > 0 and len(liq_in.get("closes", [])) >= 12:
+            from features.liq_heatmap import build_liquidation_heatmap
+            lh_check = build_liquidation_heatmap(
+                liq_in["closes"],
+                liq_in["highs"],
+                liq_in["lows"],
+                liq_in["oi"] or [1.0] * len(liq_in["closes"]),
+                proposed_sl=sl_px,
+                direction=direction,
+            )
+            if lh_check.get("is_sl_in_stop_hunt_zone"):
+                rec_sl = float(lh_check.get("recommended_safe_sl") or 0.0)
+                valid_side = (direction == "LONG" and 0 < rec_sl < e_px) or (direction == "SHORT" and rec_sl > e_px)
+                rec_dist_pct = (abs(e_px - rec_sl) / e_px) * 100.0 if rec_sl > 0 else 999.0
+                if valid_side and rec_dist_pct <= float(cfg.get("max_sl_pct", 2.5)):
+                    result["stop_loss"] = round(rec_sl, 6)
+                    mp["sl_liq_shielded"] = True
+                    mp["sl_liq_original"] = sl_px
+                    mp["sl_liq_shielded_to"] = round(rec_sl, 6)
+                elif rec_dist_pct > float(cfg.get("max_sl_pct", 2.5)):
+                    result["status"] = "REJECTED"
+                    reasons.append(f"SL (${sl_px:.4f}) sits in Stop-Hunt Liq Magnet and safe SL exceeds max_sl_pct ({rec_dist_pct:.2f}%)")
     except Exception:
         pass
 
@@ -1957,15 +2158,47 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 p_quant_ml = round(p_math_pct / 100.0, 4)
                 p_knn = round(max(0.45, min(0.92, (p_math_pct + p_ai_pct) / 200.0)), 4)
                 p_llm = round(p_ai_pct / 100.0, 4)
+                quant_feat_vec = None
+                knn_note = None
                 try:
-                    from ai.hybrid_ensemble import NeuroSymbolicEnsemble
-                    ens = NeuroSymbolicEnsemble()
+                    from features.hmm_drift import (
+                        extract_quant_feature_vector,
+                        load_tabular_meta_model,
+                        load_episodic_memory,
+                        load_ensemble_weights,
+                    )
+                    quant_feat_vec = extract_quant_feature_vector(mp, scan_summary)
+                    tab_model = load_tabular_meta_model(feature_dim=len(quant_feat_vec))
+                    if getattr(tab_model, "n_updates", 0) >= 5:
+                        p_tab = float(tab_model.predict_proba(quant_feat_vec))
+                        p_quant_ml = round(max(0.05, min(0.95, 0.55 * p_tab + 0.45 * (p_math_pct / 100.0))), 4)
+
+                    ep_mem = load_episodic_memory(feature_dim=len(quant_feat_vec))
+                    if len(getattr(ep_mem, "_vectors_list", [])) >= 3:
+                        q_knn = ep_mem.query(quant_feat_vec, regime=mp.get("statistical_regime"))
+                        if isinstance(q_knn, dict) and q_knn.get("k_used", 0) > 0:
+                            p_knn = round(float(q_knn["p_knn"]), 4)
+                            knn_note = q_knn.get("prompt_summary")
+
+                    ens = load_ensemble_weights()
                     comb = ens.combine_probabilities(p_quant_ml=p_quant_ml, p_knn=p_knn, p_llm=p_llm)
                     if isinstance(comb, dict) and comb.get("p_hybrid"):
                         raw_p = float(comb["p_hybrid"])
                         s_hybrid_pct = round(raw_p * 100.0, 2)
                 except Exception:
-                    pass
+                    try:
+                        from ai.hybrid_ensemble import NeuroSymbolicEnsemble
+                        ens = NeuroSymbolicEnsemble()
+                        comb = ens.combine_probabilities(p_quant_ml=p_quant_ml, p_knn=p_knn, p_llm=p_llm)
+                        if isinstance(comb, dict) and comb.get("p_hybrid"):
+                            raw_p = float(comb["p_hybrid"])
+                            s_hybrid_pct = round(raw_p * 100.0, 2)
+                    except Exception:
+                        pass
+                if quant_feat_vec is not None:
+                    final_call["_quant_feature_vector"] = [round(float(x), 5) for x in quant_feat_vec]
+                if knn_note:
+                    mp["episodic_knn_note"] = knn_note
 
                 cal_p = raw_p
                 try:

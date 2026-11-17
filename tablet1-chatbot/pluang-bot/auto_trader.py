@@ -26,9 +26,25 @@ import os
 import sys
 import json
 import time
+import queue
+import asyncio
+import threading
 import requests
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+try:
+    from features.hmm_drift import atomic_write_json
+except Exception:
+    def atomic_write_json(path: str, payload) -> bool:
+        try:
+            tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, path)
+            return True
+        except Exception:
+            return False
 
 try:
     import bootstrap_credentials
@@ -156,12 +172,42 @@ def save_state():
                             state["control_updated_at"] = disk_ts
             except Exception:
                 pass
-        tmp_path = STATE_FILE + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, STATE_FILE)
+        atomic_write_json(STATE_FILE, state)
     except Exception:
         pass
+
+
+# === NON-BLOCKING TELEGRAM QUEUE WORKER (Zero loop stall, no polling getUpdates) ===
+_TG_QUEUE = queue.Queue(maxsize=200)
+_TG_WORKER_STARTED = False
+_TG_WORKER_LOCK = threading.Lock()
+
+
+def _telegram_sender_loop():
+    while True:
+        item = _TG_QUEUE.get()
+        try:
+            url, payload = item
+            requests.post(url, json=payload, timeout=8)
+        except Exception as e:
+            print(f"[TELEGRAM ASYNC ERROR] {e}", flush=True)
+        finally:
+            try:
+                _TG_QUEUE.task_done()
+            except Exception:
+                pass
+
+
+def _ensure_telegram_worker():
+    global _TG_WORKER_STARTED
+    if _TG_WORKER_STARTED:
+        return
+    with _TG_WORKER_LOCK:
+        if not _TG_WORKER_STARTED:
+            t = threading.Thread(target=_telegram_sender_loop, name="tg-async-sender", daemon=True)
+            t.start()
+            _TG_WORKER_STARTED = True
+
 
 def send_telegram(text, reply_markup=None):
     if not TELEGRAM_TOKEN:
@@ -182,32 +228,187 @@ def send_telegram(text, reply_markup=None):
             chat_ids.add(int(env_cid))
         except Exception:
             pass
-
     if not chat_ids:
-        # Fallback to getUpdates only if no chat_id has ever been recorded
-        try:
-            r = requests.get(f"{TELE_API}/getUpdates?limit=5", timeout=10)
-            if r.status_code == 200:
-                updates = r.json().get("result", [])
-                for u in updates:
-                    msg = u.get("message") or u.get("callback_query", {}).get("message")
-                    if msg and "chat" in msg:
-                        chat_ids.add(msg["chat"]["id"])
-        except Exception:
-            pass
+        return
 
+    _ensure_telegram_worker()
+    url = f"{TELE_API}/sendMessage"
     for cid in chat_ids:
-        payload = {
-            "chat_id": cid,
-            "text": text,
-            "parse_mode": "HTML"
-        }
+        payload = {"chat_id": cid, "text": text, "parse_mode": "HTML"}
         if reply_markup:
             payload["reply_markup"] = reply_markup
         try:
-            requests.post(f"{TELE_API}/sendMessage", json=payload, timeout=10)
+            _TG_QUEUE.put_nowait((url, payload))
+        except queue.Full:
+            try:
+                _TG_QUEUE.get_nowait()
+                _TG_QUEUE.put_nowait((url, payload))
+            except Exception:
+                pass
+
+
+# === HARD RISK BREAKER & REALTIME WS USER DATA STREAM ===
+RISK_BREAKER_FILE = os.path.join(RESULTS_DIR, "risk_breaker_state.json")
+DEGRADED_STRAT_FILE = os.path.join(RESULTS_DIR, "degraded_strategies.json")
+_WS_WAKEUP_EVENT = threading.Event()
+_LIVE_MARK_PRICES = {}
+_LIVE_MARK_LOCK = threading.Lock()
+_WS_WORKER_STARTED = False
+_WS_WORKER_LOCK = threading.Lock()
+
+
+def load_hard_risk_engine(cfg: dict = None, current_equity: float = None):
+    """Load HardRiskEngine + daily trade counter persisted across restarts."""
+    from risk.engine import HardRiskEngine
+    from risk.vault import ProfitRatchetVault
+
+    cfg_raw = dict(cfg or _get_config())
+    if "breaker_consecutive_losses" not in cfg_raw and "circuit_breaker_consecutive_losses" in cfg_raw:
+        cfg_raw["breaker_consecutive_losses"] = cfg_raw["circuit_breaker_consecutive_losses"]
+    vault = ProfitRatchetVault(initial_equity=float(current_equity or 0.0), persist=True)
+    eng = HardRiskEngine(config=cfg_raw, vault=vault)
+
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    daily_trades = 0
+    if os.path.exists(RISK_BREAKER_FILE):
+        try:
+            with open(RISK_BREAKER_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            if isinstance(saved, dict):
+                eng.consecutive_losses = int(saved.get("consecutive_losses", 0))
+                eng.breaker_until_ts = float(saved.get("breaker_until_ts", 0.0))
+                eng.breaker_reason = saved.get("breaker_reason")
+                if saved.get("daily_date") == today_str:
+                    daily_trades = int(saved.get("daily_trades_count", 0))
+                    eng.daily_start_equity = float(saved.get("daily_start_equity", 0.0))
+                eng.current_equity = float(saved.get("current_equity", 0.0))
+        except Exception:
+            pass
+
+    if current_equity is not None and current_equity > 0:
+        eng.current_equity = float(current_equity)
+        if eng.daily_start_equity <= 0:
+            eng.daily_start_equity = float(current_equity)
+    eng._daily_date = today_str
+    eng._daily_trades_count = daily_trades
+    return eng
+
+
+def save_hard_risk_engine(eng, daily_trades_delta: int = 0) -> dict:
+    """Atomically persist HardRiskEngine circuit breaker + daily trade counter."""
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    curr_date = getattr(eng, "_daily_date", today_str)
+    cnt = int(getattr(eng, "_daily_trades_count", 0)) if curr_date == today_str else 0
+    cnt = max(0, cnt + int(daily_trades_delta))
+    eng._daily_date = today_str
+    eng._daily_trades_count = cnt
+
+    max_daily = int(_get_config().get("max_daily_trades", 10) or 10)
+    daily_dd_pct = 0.0
+    if getattr(eng, "daily_start_equity", 0.0) > 0 and getattr(eng, "current_equity", 0.0) > 0:
+        daily_dd_pct = max(0.0, (eng.daily_start_equity - eng.current_equity) / eng.daily_start_equity * 100.0)
+
+    payload = {
+        "consecutive_losses": int(eng.consecutive_losses),
+        "breaker_consecutive_losses_limit": int(eng.breaker_consecutive_losses),
+        "breaker_until_ts": float(eng.breaker_until_ts),
+        "breaker_active": bool(eng.is_circuit_breaker_active()),
+        "breaker_reason": eng.breaker_reason,
+        "daily_date": today_str,
+        "daily_trades_count": cnt,
+        "max_daily_trades": max_daily,
+        "daily_start_equity": round(float(eng.daily_start_equity), 4),
+        "current_equity": round(float(eng.current_equity), 4),
+        "daily_dd_pct": round(daily_dd_pct, 2),
+        "breaker_daily_dd_limit_pct": float(eng.breaker_daily_dd_pct),
+        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }
+    atomic_write_json(RISK_BREAKER_FILE, payload)
+    return payload
+
+
+def _start_realtime_ws_worker(bn_client):
+    """Start background daemon thread running Binance Futures UserDataStream + markPrice WS via websockets."""
+    global _WS_WORKER_STARTED
+    if _WS_WORKER_STARTED or bn_client is None:
+        return
+    with _WS_WORKER_LOCK:
+        if _WS_WORKER_STARTED:
+            return
+        _WS_WORKER_STARTED = True
+
+    def _ws_runner():
+        try:
+            import websockets
+            from exec.userstream import UserDataStreamManager
         except Exception as e:
-            print(f"[TELEGRAM ERROR] {e}")
+            print(f"[WS] Notice: websockets/UserDataStreamManager unavailable ({e})", flush=True)
+            return
+
+        async def _loop():
+            mgr = UserDataStreamManager(client=bn_client)
+            backoff = 2.0
+            while True:
+                try:
+                    lk = mgr.create_listen_key()
+                    if not lk:
+                        await asyncio.sleep(15.0)
+                        continue
+                    streams = [lk]
+                    try:
+                        if os.path.exists(POSITIONS_FILE):
+                            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+                                cur_p = json.load(f)
+                            for p in (cur_p or []):
+                                if p.get("status") == "OPEN":
+                                    bp = (p.get("binance_pair") or p.get("symbol", "").replace("-USD", "USDT")).lower()
+                                    if bp:
+                                        streams.append(f"{bp}@markPrice@1s")
+                    except Exception:
+                        pass
+
+                    base_ws = "wss://stream.binancefuture.com" if getattr(bn_client, "testnet", False) else "wss://fstream.binance.com"
+                    url = f"{base_ws}/stream?streams=" + "/".join(streams) if len(streams) > 1 else mgr.get_ws_url(testnet=getattr(bn_client, "testnet", False))
+
+                    async with websockets.connect(url, ping_interval=20, ping_timeout=15, open_timeout=10) as ws:
+                        backoff = 2.0
+                        last_ka = time.time()
+                        while True:
+                            if time.time() - last_ka >= 1500.0:
+                                mgr.keepalive_listen_key()
+                                last_ka = time.time()
+                            raw = await asyncio.wait_for(ws.recv(), timeout=60.0)
+                            msg = json.loads(raw)
+                            payload = msg.get("data", msg) if isinstance(msg, dict) else {}
+                            ev = str(payload.get("e", ""))
+                            if ev == "markPriceUpdate":
+                                s_sym = str(payload.get("s", "")).upper()
+                                m_px = float(payload.get("p") or 0.0)
+                                if s_sym and m_px > 0:
+                                    with _LIVE_MARK_LOCK:
+                                        _LIVE_MARK_PRICES[s_sym] = (m_px, time.time())
+                            elif ev in ("ORDER_TRADE_UPDATE", "ALGO_UPDATE", "ACCOUNT_UPDATE", "ACCOUNT_CONFIG_UPDATE"):
+                                res = mgr.handle_event(payload)
+                                _WS_WAKEUP_EVENT.set()
+                                if ev in ("ORDER_TRADE_UPDATE", "ALGO_UPDATE"):
+                                    print(f"[WS REALTIME] ⚡ {ev}: {res.get('symbol', '')} {res.get('status', '')}", flush=True)
+                except asyncio.TimeoutError:
+                    try:
+                        mgr.keepalive_listen_key()
+                    except Exception:
+                        pass
+                except Exception as wse:
+                    await asyncio.sleep(backoff)
+                    backoff = min(30.0, backoff * 1.5)
+
+        try:
+            asyncio.run(_loop())
+        except Exception as e:
+            print(f"[WS] Runner exited: {e}", flush=True)
+
+    t = threading.Thread(target=_ws_runner, name="binance-ws-userstream", daemon=True)
+    t.start()
+    print("[WS] 🌐 Binance Futures UserDataStream + markPrice@1s daemon active (<50ms wakeup)", flush=True)
 
 def record_position(signal: dict):
     """Record position locally AND execute on Binance Futures"""
@@ -217,28 +418,45 @@ def record_position(signal: dict):
     leverage = min(20, max_lev)  # Fixed 20x leverage (user mandate)
     margin_type = signal.get("margin_type") or cfg.get("margin_type", "ISOLATED")
 
-    # 1. AI GOVERNS ORDER TYPE & LIMIT PRICE
-    order_type = (signal.get("order_type") or cfg.get("order_type", "MARKET")).upper()
+    # 1. SMART EXECUTION DEFAULT (respect config/AI instead of hardcoded MARKET)
+    order_type = (signal.get("order_type") or cfg.get("order_type", "MAKER_FIRST_GTX")).upper()
     limit_price = float(signal.get("limit_price") or signal.get("entry_price", 0))
 
     tp = float(signal.get("take_profit") or signal.get("take_profit_2") or signal.get("take_profit_1", 0))
     sl = float(signal.get("stop_loss", 0))
 
-    # 2. SIZING FRAKSIONAL BERDASARKAN RISIKO (RISK_FRACTIONAL)
-    # Mandat: Risiko per trade dibatasi ketat (2% saat probation, 5% setelah lolos gate).
-    # Sisa margin tetap utuh di wallet untuk menjaga liquidation distance pada leverage 20x.
-    avail_usdt = 100.0
-    try:
-        _bn = get_binance_client()
-        if _bn:
-            _bal = _bn.get_balance()
-            if isinstance(_bal, dict) and "available_balance" in _bal:
-                avail_usdt = float(_bal.get("available_balance", 0.0))
-    except Exception as e:
-        print(f"[SIZING] ⚠️ Balance check warning: {e}", flush=True)
+    # 1b. Hard Risk Circuit Breaker & Max Daily Trades check
+    risk_eng = load_hard_risk_engine(cfg)
+    max_daily_trades = int(cfg.get("max_daily_trades", 10) or 10)
+    if risk_eng.is_circuit_breaker_active():
+        print(f"[RISK BREAKER] 🛑 Circuit Breaker active ({risk_eng.breaker_reason}). Entry blocked.", flush=True)
+        return None
+    if getattr(risk_eng, "_daily_trades_count", 0) >= max_daily_trades:
+        print(f"[RISK BREAKER] 🛑 Daily trade limit reached ({risk_eng._daily_trades_count}/{max_daily_trades}). Entry blocked.", flush=True)
+        return None
 
-    if avail_usdt <= 0:
-        avail_usdt = 10.0
+    # 2. LIVE WALLET CHECK (NO hardcoded fake $100/$10 balance fallback!)
+    _bn = get_binance_client()
+    if not _bn:
+        print("[SIZING] ❌ Binance client not configured — refusing fake balance sizing.", flush=True)
+        return None
+    avail_usdt = 0.0
+    total_equity_usdt = 0.0
+    try:
+        _bal = _bn.get_balance()
+        if not isinstance(_bal, dict) or _bal.get("isError") or "available_balance" not in _bal:
+            print(f"[SIZING] ❌ Binance balance endpoint unavailable ({_bal}) — entry aborted safely.", flush=True)
+            return None
+        avail_usdt = float(_bal.get("available_balance", 0.0))
+        total_equity_usdt = float(_bal.get("total_wallet_balance", avail_usdt))
+    except Exception as e:
+        print(f"[SIZING] ❌ Binance balance check failed ({e}) — entry aborted safely.", flush=True)
+        return None
+
+    if avail_usdt < 0.30:
+        print(f"[SIZING] ⚠️ Insufficient Binance available margin (${avail_usdt:.2f} < $0.30). Entry aborted.", flush=True)
+        return None
+    risk_eng = load_hard_risk_engine(cfg, current_equity=total_equity_usdt)
 
     # Jarak Stop Loss (%)
     entry_p = float(signal.get("entry_price") or limit_price or 0.0)
@@ -351,8 +569,17 @@ def record_position(signal: dict):
         "risk_reward_ratio": signal.get("risk_reward_ratio", "1:2.0"),
         "confidence_score": signal.get("confidence_score", 0),
         "setup_name": signal.get("setup_name", "N/A"),
+        "regime": signal.get("regime", "NORMAL"),
+        "p_quant_ml": signal.get("p_quant_ml"),
+        "p_knn": signal.get("p_knn"),
+        "p_llm": signal.get("p_llm"),
+        "calibrated_prob": signal.get("calibrated_prob"),
+        "conformal_set": signal.get("conformal_set"),
+        "quant_feature_vector": signal.get("quant_feature_vector"),
         "estimated_time_horizon": signal.get("estimated_time_horizon", "N/A"),
         "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "opened_ts": time.time(),
+        "max_r_reached": 0.0,
         "status": "OPEN",
         "pnl_idr": 0,
         "pnl_usd": 0,
@@ -376,12 +603,14 @@ def record_position(signal: dict):
                     "entry_price": pos["entry_price"],
                     "take_profit": pos["take_profit"],
                     "stop_loss": pos["stop_loss"],
-                    "position_size_usdt": pos["position_size_usdt"]
+                    "position_size_usdt": pos["position_size_usdt"],
+                    "math_proof": signal.get("math_proof") or {},
                 }, config=cfg)
                 
                 pos["binance_synced"] = execution_result.get("binance_synced", False)
                 pos["binance_execution"] = execution_result
                 pos["order_id"] = execution_result.get("order_id")
+                pos["routing_used"] = execution_result.get("routing_used", pos["order_type"])
                 
                 if pos["binance_synced"]:
                     pos["entry_price"] = execution_result.get("entry_price") or pos["entry_price"]
@@ -392,9 +621,9 @@ def record_position(signal: dict):
                     pos["tp_algo_id"] = execution_result.get("tp_algo_id")
                     pos["sl_state"] = execution_result.get("sl_state", "CONFIRMED")
                     pos["quantity"] = execution_result.get("quantity")
-                    limit_str = f" @ ${limit_price:,.4f}" if order_type == "LIMIT" else ""
+                    limit_str = f" @ ${limit_price:,.4f}" if order_type in ("LIMIT", "GTX", "MAKER_FIRST_GTX") else ""
                     print(f"[BINANCE] ✅ Real trade executed on Binance Futures: {pos['direction']} {pos['binance_pair']} "
-                          f"${pos_size_usd} {leverage}x {margin_type} {order_type}{limit_str} TP: ${pos['take_profit']} SL: ${pos['stop_loss']} (Order #{pos['order_id']})", flush=True)
+                          f"${pos_size_usd} {leverage}x {margin_type} {pos['routing_used']}{limit_str} TP: ${pos['take_profit']} SL: ${pos['stop_loss']} (Order #{pos['order_id']})", flush=True)
                 else:
                     print(f"[BINANCE] ⚠️ Binance execution rejected: {execution_result.get('error')}", flush=True)
                     return None
@@ -410,13 +639,14 @@ def record_position(signal: dict):
         return None
 
     positions.append(pos)
+    atomic_write_json(POSITIONS_FILE, positions)
+
     try:
-        with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
-            json.dump(positions, f, indent=2, ensure_ascii=False)
+        save_hard_risk_engine(risk_eng, daily_trades_delta=1)
     except Exception:
         pass
 
-    # Log new position to SQLite WAL Journal
+    # Log new position & TCA execution to SQLite WAL Journal
     try:
         import journal
         journal.open_trade({
@@ -429,9 +659,16 @@ def record_position(signal: dict):
             "qty": pos.get("quantity") or (pos["position_size_usd"] * pos["leverage"] / pos["entry_price"] if pos["entry_price"] else 0),
             "leverage": pos["leverage"],
             "margin_usd": pos["position_size_usd"],
-            "fee_usd": round(pos["position_size_usd"] * pos["leverage"] * 0.0005, 4)
+            "fee_usd": round(pos["position_size_usd"] * pos["leverage"] * 0.0005, 4),
+            "strategy_id": pos.get("setup_name", "AI_SETUP"),
+            "regime": pos.get("regime", "NORMAL"),
+            "cal_p": pos.get("calibrated_prob") or (float(pos.get("confidence_score", 70)) / 100.0),
         })
-        print(f"[JOURNAL] 📖 Open trade recorded in journal: {pos['id']}", flush=True)
+        tca_payload = (pos.get("binance_execution") or {}).get("tca")
+        if isinstance(tca_payload, dict) and tca_payload:
+            tca_exec_id = journal.record_tca_execution({**tca_payload, "trade_id": pos["id"]})
+            pos["tca_exec_id"] = tca_exec_id
+        print(f"[JOURNAL] 📖 Open trade & TCA recorded in journal: {pos['id']}", flush=True)
     except Exception as je:
         print(f"[JOURNAL] ⚠️ Journal open trade logging error: {je}", flush=True)
 
@@ -473,15 +710,135 @@ def _ensure_perf_ledger() -> dict:
             pass
     try:
         os.makedirs(RESULTS_DIR, exist_ok=True)
-        with open(PERF_LEDGER_FILE, "w", encoding="utf-8") as f:
-            json.dump(default_ledger, f, indent=2, ensure_ascii=False)
+        atomic_write_json(PERF_LEDGER_FILE, default_ledger)
     except Exception:
         pass
     return default_ledger
 
 
+def _update_closed_loop_learners(pos: dict, net_usd: float, exit_price: float, exit_reason: str):
+    """Run closed-loop online updates on close: HardRiskEngine, Bandit, Degradation, Calibrator, Conformal, ADWIN, 3-Brain."""
+    cfg = _get_config()
+    strat_id = str(pos.get("setup_name") or "AI_SETUP")
+    regime_str = str(pos.get("regime") or "NORMAL")
+    entry_px = float(pos.get("entry_price") or 1.0)
+    init_sl = float(pos.get("init_stop_loss") or pos.get("stop_loss") or 0.0)
+    lev = float(pos.get("leverage", 20) or 20)
+    pos_usd = float(pos.get("position_size_usd") or 1.0)
+    sl_dist = max(0.0045, abs(entry_px - init_sl) / entry_px) if (entry_px > 0 and init_sl > 0) else 0.008
+    risk_usd = max(0.02, pos_usd * lev * sl_dist)
+    r_mult_net = round(float(net_usd) / risk_usd, 4)
+    outcome_win = bool(r_mult_net > 0 or net_usd > 0)
+
+    # 1. HardRiskEngine Circuit Breaker update
+    try:
+        eq_now = state.get("binance_wallet_balance_usdt")
+        eng = load_hard_risk_engine(cfg, current_equity=float(eq_now) if eq_now else None)
+        res_brk = eng.record_trade_result(net_pnl_usdt=float(net_usd), new_equity=float(eq_now) if eq_now else None)
+        save_hard_risk_engine(eng)
+        if res_brk.get("breaker_active"):
+            send_telegram(
+                f"🛑 <b>[HARD RISK BREAKER TRIPPED]</b>\n\n"
+                f"⚠️ Alasan: <code>{res_brk.get('breaker_reason')}</code>\n"
+                f"📉 Loss Beruntun: {res_brk.get('consecutive_losses')} | Daily DD: {res_brk.get('daily_dd_pct')}%\n"
+                f"❄️ Entry baru dikunci otomatis selama {cfg.get('breaker_cooldown_hours', 12)} jam untuk proteksi ekuitas."
+            )
+    except Exception:
+        pass
+
+    # 2. Contextual Thompson Bandit
+    try:
+        from strategies.bandit_allocator import ContextualThompsonBandit
+        bandit = ContextualThompsonBandit()
+        bandit.update(strat_id, regime_str, r_net=r_mult_net)
+    except Exception:
+        pass
+
+    # 3. Walk-Forward Strategy Auto-Degradation check
+    try:
+        from shadow.promote import evaluate_auto_degradation
+        deg = evaluate_auto_degradation(strat_id, window=15, min_trades=15)
+        if isinstance(deg, dict):
+            degraded_map = {}
+            if os.path.exists(DEGRADED_STRAT_FILE):
+                try:
+                    with open(DEGRADED_STRAT_FILE, "r", encoding="utf-8") as f:
+                        degraded_map = json.load(f) or {}
+                except Exception:
+                    degraded_map = {}
+            if deg.get("degraded"):
+                was_deg = bool((degraded_map.get(strat_id) or {}).get("degraded"))
+                degraded_map[strat_id] = {**deg, "updated_at": time.time()}
+                atomic_write_json(DEGRADED_STRAT_FILE, degraded_map)
+                if not was_deg:
+                    send_telegram(f"⚠️ <b>[AUTO-DEGRADATION]</b> Strategi <code>{strat_id}</code> turun ke <b>SHADOW_ONLY</b> ({deg.get('reason')}).")
+            elif strat_id in degraded_map:
+                degraded_map.pop(strat_id, None)
+                atomic_write_json(DEGRADED_STRAT_FILE, degraded_map)
+    except Exception:
+        pass
+
+    # 4. PAVA Calibrator + Adaptive Conformal Filter
+    cal_p = float(pos.get("calibrated_prob") or (float(pos.get("confidence_score", 70)) / 100.0))
+    try:
+        from calibration import ProbabilityCalibrator
+        ProbabilityCalibrator().record_outcome(cal_p, 1 if outcome_win else 0)
+    except Exception:
+        pass
+    try:
+        from ai.conformal import AdaptiveConformalFilter
+        sniper_cfg = cfg.get("sniper_75_mode", {})
+        AdaptiveConformalFilter(alpha_target=float(sniper_cfg.get("conformal_alpha_target", 0.18))).update(
+            p_hat=cal_p, y_true=1 if outcome_win else 0
+        )
+    except Exception:
+        pass
+
+    # 5. ADWIN Concept Drift Detector
+    try:
+        from features.hmm_drift import ADWINDetector
+        drift_res = ADWINDetector().update(r_mult_net)
+        if drift_res.get("drift_detected"):
+            print(f"[ADWIN DRIFT] 🌊 Concept drift detected in recent trade stream (window={drift_res.get('window_len')})", flush=True)
+    except Exception:
+        pass
+
+    # 6. Online TabularMetaModel + NeuroSymbolicEnsemble + EpisodicMarketMemory
+    x_vec = pos.get("quant_feature_vector")
+    if isinstance(x_vec, list) and len(x_vec) >= 10:
+        try:
+            from features.hmm_drift import (
+                load_tabular_meta_model,
+                save_tabular_meta_model,
+                load_ensemble_weights,
+                save_ensemble_weights,
+                append_episodic_episode,
+            )
+            tab_model = load_tabular_meta_model(feature_dim=len(x_vec))
+            tab_model.partial_fit(x_vec, 1 if outcome_win else 0)
+            save_tabular_meta_model(tab_model)
+
+            p_ml = float(pos.get("p_quant_ml") or 0.65)
+            p_knn = float(pos.get("p_knn") or 0.65)
+            p_llm = float(pos.get("p_llm") or (float(pos.get("confidence_score", 70)) / 100.0))
+            ens = load_ensemble_weights()
+            ens.update_from_outcome(p_ml, p_knn, p_llm, outcome_tp1_win=outcome_win, feature_vector=None)
+            save_ensemble_weights(ens)
+
+            append_episodic_episode(
+                feature_vector=x_vec,
+                r_multiple_net=r_mult_net,
+                outcome_win=outcome_win,
+                regime=regime_str,
+                strategy_id=strat_id,
+                note=f"{pos.get('symbol')} {exit_reason}",
+            )
+        except Exception:
+            pass
+
+
 def _record_trade_close_in_journal(pos: dict, exit_price: float, exit_reason: str, pnl_usd: float = None):
-    """Helper to record closed trades into SQLite WAL journal AND persistent performance_ledger.json"""
+    """Helper to record closed trades into SQLite WAL journal, TCA markouts, performance_ledger, and online learners."""
     try:
         import journal
         pos_id = pos.get("id")
@@ -505,6 +862,10 @@ def _record_trade_close_in_journal(pos: dict, exit_price: float, exit_reason: st
             "exit_reason": exit_reason,
             "is_estimated": 0
         })
+        try:
+            journal.update_tca_markout(pos_id, "close", float(exit_price or 0.0))
+        except Exception:
+            pass
         print(f"[JOURNAL] 📕 Closed trade logged in journal: {pos_id} ({exit_reason}, PnL: ${pnl_usd:+.2f})", flush=True)
 
         # Update Persistent Performance Ledger (Zero-Reset across restarts)
@@ -540,8 +901,8 @@ def _record_trade_close_in_journal(pos: dict, exit_price: float, exit_reason: st
             })
             ledger["history"] = hist[:200]
             ledger["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            with open(PERF_LEDGER_FILE, "w", encoding="utf-8") as lf:
-                json.dump(ledger, lf, indent=2, ensure_ascii=False)
+            atomic_write_json(PERF_LEDGER_FILE, ledger)
+            _update_closed_loop_learners(pos, net_usd, exit_price, exit_reason)
     except Exception as je:
         print(f"[JOURNAL] ⚠️ Error recording trade close in journal: {je}", flush=True)
 
@@ -664,12 +1025,120 @@ def _build_synced_binance_pos(lp: dict, bn_client, fx_rate: float) -> dict:
     }
 
 
+_THESIS_MONITOR = None
+_MICRO_STATE_CACHE = {}
+_PREV_DEPTH_BOOKS = {}
+_SHADOW_LAST_SYNC_TS = 0.0
+
+
+def _get_thesis_monitor():
+    global _THESIS_MONITOR
+    if _THESIS_MONITOR is None:
+        from exec.thesis_monitor import IntrabarThesisMonitor
+        _THESIS_MONITOR = IntrabarThesisMonitor(survival_threshold=0.18, required_consecutive_breaches=3)
+    return _THESIS_MONITOR
+
+
+def _fetch_live_micro_state(pair: str, bn_client=None) -> dict:
+    """Compute real OFI_20, TFI_5m, spot_perp_div, and annualized sigma (20s cache)."""
+    now = time.time()
+    cached = _MICRO_STATE_CACHE.get(pair)
+    if cached and (now - cached[0] < 20.0):
+        return cached[1]
+
+    micro = {"ofi_20": 0.0, "tfi_5m": 0.0, "spot_perp_div": 0.0, "vpin": 0.35, "oi_quadrant": "NEUTRAL", "sigma": 0.35}
+    try:
+        book = bn_client.get_order_book(pair, limit=20) if bn_client and hasattr(bn_client, "get_order_book") else {}
+        if not book:
+            r_bk = requests.get(f"https://fapi.binance.com/fapi/v1/depth?symbol={pair}&limit=20", timeout=2.5, verify=False)
+            if r_bk.status_code == 200:
+                book = r_bk.json()
+        if book and book.get("bids") and book.get("asks"):
+            from features.microstructure import compute_multilevel_ofi
+            prev_bk = _PREV_DEPTH_BOOKS.get(pair, book)
+            ofi_res = compute_multilevel_ofi(prev_bk, book)
+            _PREV_DEPTH_BOOKS[pair] = book
+            micro["ofi_20"] = float(ofi_res.get("obi_weighted_20", 0.0) or 0.0)
+    except Exception:
+        pass
+
+    try:
+        r_ag = requests.get(f"https://fapi.binance.com/fapi/v1/aggTrades?symbol={pair}&limit=80", timeout=2.5, verify=False)
+        if r_ag.status_code == 200:
+            trades = r_ag.json() or []
+            buy_v, sell_v = 0.0, 0.0
+            for t in trades:
+                q_usd = float(t.get("p") or 0) * float(t.get("q") or 0)
+                if bool(t.get("m", False)):
+                    sell_v += q_usd
+                else:
+                    buy_v += q_usd
+            tot_v = buy_v + sell_v
+            if tot_v > 0:
+                micro["tfi_5m"] = round((buy_v - sell_v) / tot_v, 4)
+    except Exception:
+        pass
+
+    try:
+        r_pi = requests.get(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={pair}", timeout=2.0, verify=False)
+        if r_pi.status_code == 200:
+            pi = r_pi.json() or {}
+            m_p = float(pi.get("markPrice") or 0.0)
+            i_p = float(pi.get("indexPrice") or 0.0)
+            if m_p > 0 and i_p > 0:
+                micro["spot_perp_div"] = round((i_p - m_p) / i_p, 6)
+    except Exception:
+        pass
+
+    try:
+        r_kl = requests.get(f"https://fapi.binance.com/fapi/v1/klines?symbol={pair}&interval=5m&limit=24", timeout=2.5, verify=False)
+        if r_kl.status_code == 200:
+            kl = r_kl.json() or []
+            cl = [float(x[4]) for x in kl if len(x) > 4]
+            if len(cl) >= 6:
+                import numpy as _np
+                rets = _np.diff(_np.log(_np.maximum(cl, 1e-8)))
+                # Annualized sigma from 5m bars (288 * 365 = 105120 bars/yr)
+                sig_ann = float(_np.std(rets)) * (105120.0 ** 0.5) if rets.size > 2 else 0.35
+                micro["sigma"] = max(0.15, min(2.5, sig_ann))
+    except Exception:
+        pass
+
+    _MICRO_STATE_CACHE[pair] = (now, micro)
+    return micro
+
+
+def _sync_open_shadow_trades(ticker_map: dict):
+    """Periodically update counterfactual shadow_trades against live market prices (60s throttle)."""
+    global _SHADOW_LAST_SYNC_TS
+    now = time.time()
+    if not ticker_map or (now - _SHADOW_LAST_SYNC_TS < 60.0):
+        return
+    _SHADOW_LAST_SYNC_TS = now
+    try:
+        import journal
+        from shadow.engine import ShadowEngine
+        with journal.get_db() as conn:
+            open_syms = [r["symbol"] for r in conn.execute("SELECT DISTINCT symbol FROM shadow_trades WHERE status = 'OPEN'").fetchall()]
+        if not open_syms:
+            return
+        se = ShadowEngine()
+        for sym in open_syms:
+            pair = sym.replace("-USD", "USDT").upper()
+            px = float(ticker_map.get(pair) or 0.0)
+            if px > 0:
+                se.update_open_shadows(sym, {"close": px, "high": px, "low": px})
+    except Exception:
+        pass
+
+
 def monitor_and_update_positions():
     """
     Real-time autonomous position monitor:
-    - Runs every 8-10 seconds in background (even when new entries are PAUSED)
+    - Runs every 8-10 seconds (or immediately on <50ms WebSocket event wake-up)
     - Syncs live Binance mark price, unrealized PnL, liquidation price & exchange algo SL/TP
-    - Guards SL on exchange + triggers immediate local fallback if SL is unconfirmed
+    - Evaluates real-time L2 OFI/TFI/Div orderflow with IntrabarThesisMonitor + Early Invalidation
+    - Executes partial TP1 close (tp1_partial_close_pct=0.65) + on-exchange SL lock
     """
     positions = []
     if os.path.exists(POSITIONS_FILE):
@@ -705,18 +1174,17 @@ def monitor_and_update_positions():
         except Exception as e:
             print(f"[MONITOR] Binance sync warning: {e}", flush=True)
 
+    tickers = get_binance_24h_tickers()
+    ticker_map = {t["symbol"]: float(t.get("lastPrice", 0)) for t in tickers if "symbol" in t} if tickers else {}
+    _sync_open_shadow_trades(ticker_map)
+
     open_pos = [p for p in positions if p.get("status") == "OPEN"]
     if not open_pos:
         if updated:
-            try:
-                with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
-                    json.dump(positions, f, indent=2, ensure_ascii=False)
-            except Exception:
-                pass
+            atomic_write_json(POSITIONS_FILE, positions)
         return []
 
-    tickers = get_binance_24h_tickers()
-    ticker_map = {t["symbol"]: float(t.get("lastPrice", 0)) for t in tickers if "symbol" in t} if tickers else {}
+    cfg_mon = _get_config()
     for pos in open_pos:
         pair = pos.get("binance_pair") or pos.get("symbol", "").replace("-USD", "USDT")
         direction = pos.get("direction", "LONG").upper()
@@ -817,6 +1285,10 @@ def monitor_and_update_positions():
                 if not pos.get("order_id") or str(pos.get("order_id")) == "None":
                     pos["order_id"] = f"SYNC_{pair}"
                 current_price = float(live_item.get("mark_price", 0)) or ticker_map.get(pair, entry_price)
+                with _LIVE_MARK_LOCK:
+                    _ws_m = _LIVE_MARK_PRICES.get(pair)
+                    if _ws_m and (time.time() - _ws_m[1] < 3.0) and _ws_m[0] > 0:
+                        current_price = float(_ws_m[0])
                 live_upnl = float(live_item.get("unrealized_pnl", 0))
                 pnl_usd = live_upnl
                 pnl_idr = live_upnl * fx_rate
@@ -953,21 +1425,95 @@ def monitor_and_update_positions():
         price_gain_pct = ((current_price - entry_price) / entry_price) if direction == "LONG" else ((entry_price - current_price) / entry_price)
         r_multiple_curr = price_gain_pct / sl_dist_pct if sl_dist_pct > 0 else 0.0
         pos["r_multiple_curr"] = round(r_multiple_curr, 3)
+        pos["max_r_reached"] = round(max(float(pos.get("max_r_reached") or 0.0), r_multiple_curr), 3)
 
-        # Intrabar First-Passage Survival Probability P_survive(t) & Live TP ETA Countdown
+        # Compute elapsed time & record +1m / +5m Post-Trade Markout in SQLite journal
+        elapsed_sec = 0.0
+        _open_str_m = pos.get("opened_at") or pos.get("entry_time") or ""
+        if pos.get("opened_ts"):
+            elapsed_sec = max(0.0, time.time() - float(pos["opened_ts"]))
+        elif _open_str_m:
+            try:
+                from datetime import timezone as _tz_m
+                _od = datetime.fromisoformat(_open_str_m.replace(" UTC", "+00:00").replace("Z", "+00:00"))
+                elapsed_sec = max(0.0, (datetime.now(_tz_m.utc) - _od.astimezone(_tz_m.utc)).total_seconds())
+            except Exception:
+                elapsed_sec = 0.0
+        if pos.get("id"):
+            try:
+                import journal
+                if elapsed_sec >= 60.0 and not pos.get("markout_1m_done"):
+                    if journal.update_tca_markout(pos["id"], "1m", current_price):
+                        pos["markout_1m_done"] = True
+                if elapsed_sec >= 300.0 and not pos.get("markout_5m_done"):
+                    if journal.update_tca_markout(pos["id"], "5m", current_price):
+                        pos["markout_5m_done"] = True
+            except Exception:
+                pass
+
+        # Real Orderflow Intrabar First-Passage Survival & Early Invalidation (0.35R / Structural Reversal)
         try:
-            from exec.thesis_monitor import IntrabarThesisMonitor
-            p_surv = IntrabarThesisMonitor.compute_first_passage_survival_prob(
+            micro_state = _fetch_live_micro_state(pair, bn_client=bn_client)
+            tm = _get_thesis_monitor()
+            early_loss_lim = abs(float(cfg_mon.get("early_invalidation_max_loss_r", 0.35) or 0.35))
+            allow_ai_emg = (
+                r_multiple_curr <= -early_loss_lim
+                and (time.time() - float(pos.get("last_ai_emg_ts") or 0.0) >= 90.0)
+            )
+            decide_eng = None
+            if allow_ai_emg:
+                pos["last_ai_emg_ts"] = time.time()
+                try:
+                    from ai.decide import AIDecisionEngine
+                    decide_eng = AIDecisionEngine()
+                except Exception:
+                    decide_eng = None
+
+            th_res = tm.evaluate_position(
+                symbol=pair,
+                direction=direction,
+                entry_price=entry_price,
                 current_price=current_price,
                 sl_price=sl if sl > 0 else init_sl,
                 tp_price=tp if tp > 0 else entry_price * (1.02 if direction == "LONG" else 0.98),
-                direction=direction,
-                mu_drift=0.08 if r_multiple_curr >= 0 else -0.04,
-                sigma=0.25,
+                elapsed_sec=elapsed_sec,
+                micro_state=micro_state,
+                sigma=float(micro_state.get("sigma", 0.35)),
+                max_r_reached=float(pos.get("max_r_reached") or 0.0),
+                decide_engine=decide_eng,
             )
-            pos["p_survive_pct"] = round(p_surv * 100.0, 1)
+            pos["p_survive_pct"] = round(float(th_res.get("p_survive", 0.78)) * 100.0, 1)
+            pos["orderflow_mu_drift"] = th_res.get("mu_drift")
+            pos["ofi_20_live"] = micro_state.get("ofi_20")
+            pos["tfi_5m_live"] = micro_state.get("tfi_5m")
+
+            should_early_exit = (
+                (r_multiple_curr <= -early_loss_lim)
+                and (bool(th_res.get("should_scratch")) or int(th_res.get("consecutive_breaches", 0)) >= 3)
+            )
+            if should_early_exit:
+                pos["status"] = "CLOSED_EARLY_INVALIDATION"
+                pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                pos["close_price"] = current_price
+                pos["close_reason"] = th_res.get("close_reason") or "EARLY_ORDERFLOW_THESIS_INVALIDATION"
+                _record_trade_close_in_journal(pos, current_price, "CLOSED_EARLY_INVALIDATION", pnl_usd)
+                if is_binance_pos and bn_client:
+                    try:
+                        bn_client.close_position(pair, direction)
+                        bn_client.cancel_all_orders(pair)
+                    except Exception as _ee:
+                        print(f"[EARLY INVALIDATION CLOSE ERROR] {_ee}", flush=True)
+                tm.reset_symbol(pair)
+                send_telegram(
+                    f"⚡ <b>[EARLY THESIS INVALIDATION] {pos.get('symbol')} Ditutup Dini</b>\n\n"
+                    f"📉 R-Multiple: <b>{r_multiple_curr:+.2f}R</b> (Batas Invalidation: -{early_loss_lim:.2f}R)\n"
+                    f"🧠 P(Survive): <b>{pos['p_survive_pct']:.1f}%</b> | OFI={micro_state.get('ofi_20', 0):+.2f} | TFI={micro_state.get('tfi_5m', 0):+.2f}\n"
+                    f"🛡️ Memotong loss lebih awal sebelum menyentuh -1.0R penuh!"
+                )
+                updated = True
+                continue
         except Exception:
-            pos["p_survive_pct"] = 78.0
+            pos["p_survive_pct"] = pos.get("p_survive_pct", 78.0)
 
         # Stage 0 (Early Breakeven Scratch Guard at +0.30R / +6% ROE):
         # Prevents winning trades that reach +0.30R from ever reversing into a full -1.0R loss!
@@ -989,9 +1535,13 @@ def monitor_and_update_positions():
                 pos["stop_loss"] = new_sl
                 sl = new_sl
 
-        # Stage 1 (T7.4 Sniper 75% Mode): At +0.55R, lock SL on exchange at +0.38R net profit (100% Guaranteed WIN!)
-        if r_multiple_curr >= 0.55 and not pos.get("tp1_profit_lock_set"):
-            lock_pct = max(0.0022, 0.38 * sl_dist_pct)
+        # Stage 1 (T7.4 Sniper 75% Mode): At +0.55R, lock SL on exchange at +0.38R & Partial Close (tp1_partial_close_pct=0.65)
+        sniper_m = cfg_mon.get("sniper_75_mode") or {}
+        tp1_trig_r = float(sniper_m.get("tp1_lock_trigger_r", 0.55) or 0.55)
+        tp1_lock_r = float(sniper_m.get("sl_lock_after_tp1_r", 0.38) or 0.38)
+        tp1_partial_frac = float(cfg_mon.get("tp1_partial_close_pct", 0.65) or 0.65)
+        if r_multiple_curr >= tp1_trig_r and not pos.get("tp1_profit_lock_set"):
+            lock_pct = max(0.0022, tp1_lock_r * sl_dist_pct)
             new_sl = round(entry_price * (1.0 + lock_pct if direction == "LONG" else 1.0 - lock_pct), 6)
             better = (direction == "LONG" and new_sl > sl) or (direction == "SHORT" and (sl <= 0 or new_sl < sl))
             if better:
@@ -999,16 +1549,32 @@ def monitor_and_update_positions():
                 pos["breakeven_set"] = True
                 if is_binance_pos and bn_client:
                     amend_res = bn_client.amend_stop_loss(pair, direction, new_sl, old_algo_id=pos.get("sl_algo_id"))
-                    if amend_res.get("status") == "AMENDED":
+                    if isinstance(amend_res, dict) and amend_res.get("status") == "AMENDED":
                         pos["sl_algo_id"] = amend_res.get("new_algo_id")
                         pos["sl_state"] = "CONFIRMED"
                 pos["stop_loss"] = new_sl
                 sl = new_sl
+
+                partial_note = ""
+                if is_binance_pos and bn_client and tp1_partial_frac > 0 and not pos.get("tp1_partial_closed"):
+                    try:
+                        pc_res = bn_client.partial_close_position(pair, direction, fraction=tp1_partial_frac)
+                        pos["tp1_partial_result"] = pc_res
+                        if pc_res.get("partial_closed"):
+                            pos["tp1_partial_closed"] = True
+                            pos["quantity"] = pc_res.get("remaining_qty", pos.get("quantity"))
+                            partial_note = f"\n💵 <b>Partial Close {int(tp1_partial_frac*100)}%:</b> Realized {pc_res.get('closed_qty')} (Sisa {pc_res.get('remaining_qty')} Runner)"
+                        else:
+                            partial_note = f"\nℹ️ <b>Partial Close:</b> {pc_res.get('status')} (Full qty kept under +{tp1_lock_r}R SL lock)"
+                    except Exception:
+                        pass
+
                 send_telegram(
-                    f"🎯 <b>[SNIPER 75% PROFIT LOCK] TP1 (+0.55R) TERCAPAI — PROFIT DIKUNCI DI BURSA!</b>\n\n"
+                    f"🎯 <b>[SNIPER 75% PROFIT LOCK] TP1 (+{tp1_trig_r:.2f}R) TERCAPAI — PROFIT DIKUNCI DI BURSA!</b>\n\n"
                     f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction} {int(leverage)}x)\n"
                     f"📈 <b>Floating Profit:</b> +{pnl_pct:.2f}% (+{r_multiple_curr:.2f}R)\n"
-                    f"🔒 <b>SL Bursa Di-amend ke:</b> ${new_sl:,.4f} (+0.38R Net Profit Terkunci)\n"
+                    f"🔒 <b>SL Bursa Di-amend ke:</b> ${new_sl:,.4f} (+{tp1_lock_r:.2f}R Net Profit Terkunci)"
+                    f"{partial_note}\n"
                     f"✨ <i>Transaksi ini 100% TERKUNCI MENANG di bursa sambil mengawal Runner ke TP2!</i>"
                 )
 
@@ -1236,22 +1802,18 @@ def monitor_and_update_positions():
             continue
 
     if updated:
-        try:
-            with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
-                json.dump(positions, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+        atomic_write_json(POSITIONS_FILE, positions)
 
-    # T9.1 / T9.3: Write heartbeat.json for watchdog & /health diagnostics
+    # T9.1 / T9.3: Write heartbeat.json atomically for watchdog & /health diagnostics
     try:
         hb_path = os.path.join(RESULTS_DIR, "heartbeat.json")
-        with open(hb_path, "w", encoding="utf-8") as hbf:
-            json.dump({
-                "timestamp": time.time(),
-                "utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-                "open_positions": len([p for p in positions if p.get("status") == "OPEN"]),
-                "status": "HEALTHY",
-            }, hbf)
+        atomic_write_json(hb_path, {
+            "timestamp": time.time(),
+            "utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "open_positions": len([p for p in positions if p.get("status") == "OPEN"]),
+            "ws_active": bool(_WS_WORKER_STARTED),
+            "status": "HEALTHY",
+        })
     except Exception:
         pass
 
@@ -1323,11 +1885,7 @@ def check_wallet_and_position_guard():
 
                 open_pos = valid_open_pos
                 if dirty:
-                    try:
-                        with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
-                            json.dump(positions, f, indent=2, ensure_ascii=False)
-                    except Exception:
-                        pass
+                    atomic_write_json(POSITIONS_FILE, positions)
         except Exception as e:
             print(f"[GUARD] Binance sync notice: {e}", flush=True)
 
@@ -1343,6 +1901,21 @@ def check_wallet_and_position_guard():
             if p_data.get("locked", False):
                 should_pause = True
                 reason = f"EMERGENCY PANIC LOCK AKTIF: {p_data.get('reason', 'Triggered via /panic')}"
+        except Exception:
+            pass
+
+    # T7.5: Check HardRiskEngine Circuit Breaker & Max Daily Trades
+    if not should_pause:
+        try:
+            cfg_g = _get_config()
+            r_eng = load_hard_risk_engine(cfg_g, current_equity=total_usdt if total_usdt > 0 else None)
+            max_dt = int(cfg_g.get("max_daily_trades", 10) or 10)
+            if r_eng.is_circuit_breaker_active():
+                should_pause = True
+                reason = f"HARD RISK CIRCUIT BREAKER AKTIF ({r_eng.breaker_reason}) — entry baru ditahan otomatis."
+            elif getattr(r_eng, "_daily_trades_count", 0) >= max_dt:
+                should_pause = True
+                reason = f"BATAS TRADE HARIAN TERCAPAI ({r_eng._daily_trades_count}/{max_dt}) — berhenti sampai 00:00 UTC."
         except Exception:
             pass
 
@@ -1450,8 +2023,7 @@ def run_quick_screen():
             } for c in ranked[:20]],
             "fx_rate": get_fx_info()
         }
-        with open(QUICK_SCREEN_FILE, "w", encoding="utf-8") as f:
-            json.dump(screen_data, f, indent=2, ensure_ascii=False)
+        atomic_write_json(QUICK_SCREEN_FILE, screen_data)
     except Exception:
         pass
     
@@ -1653,52 +2225,56 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=N
                                              "LINK-USD","DOT-USD","UNI-USD","MATIC-USD"}}
 
     candidates = []
-    forced_core = []
 
     for coin in screen_pool:
         pair = coin.get("pair", "")
         sym = coin.get("symbol", pair.replace("USDT", "-USD"))
-        change_24h = abs(coin.get("price_change_24h_pct", 0))
-        vol_usd = coin.get("volume_24h_usd", 0)
-        opp_score = coin.get("opportunity_score", 0)
+        change_24h = abs(float(coin.get("price_change_24h_pct", 0) or 0))
+        vol_usd = float(coin.get("volume_24h_usd", 0) or 0)
+        opp_score = float(coin.get("opportunity_score", 0) or 0)
+        funding_abs = abs(float(coin.get("funding_rate", coin.get("lastFundingRate", 0)) or 0))
 
-        # CORE coins: ambil tanpa syarat (max 4 dari core)
-        if sym.upper() in core_symbols and len(forced_core) < 4:
-            forced_core.append(coin)
-            continue
+        # Quantitative Opportunity Scoring (Squeeze/Pullback/Funding + Liquidity, avoiding blown-out chases)
+        score = 0.0
 
-        # Quick pre-checks dari ticker data (tanpa API tambahan):
-        score = 0
+        # 1. Liquidity & Depth Proxy (institutional futures volume)
+        if vol_usd > 150_000_000:
+            score += 2.0
+        elif vol_usd > 35_000_000:
+            score += 1.2
 
-        # Kriteria 1: Momentum (|24h change| > 3%)
-        if change_24h > 3.0:
-            score += 1
+        # 2. Constructive volatility / pullback vs overextended FOMO chase
+        if 1.2 <= change_24h <= 6.5:
+            score += 2.0
+        elif 0.4 <= change_24h < 1.2:
+            score += 1.2  # Squeeze coiling candidate
+        elif change_24h > 8.5:
+            score -= 1.5  # Penalize late vertical exhaustion chase
 
-        # Kriteria 2: Volume tinggi ($50M+)
-        if vol_usd > 50_000_000:
-            score += 1
+        # 3. Pre-ranker opportunity composite
+        if opp_score >= 70:
+            score += 2.0
+        elif opp_score >= 55:
+            score += 1.0
 
-        # Kriteria 3: Opportunity score tinggi dari ranker
-        if opp_score > 60:
-            score += 1
+        # 4. Crowded funding squeeze potential
+        if funding_abs >= 0.0003:
+            score += 1.5
 
-        # Kriteria 4: Momentum sangat kuat (|24h| > 6%)
-        if change_24h > 6.0:
-            score += 1
+        # 5. Modest anchor liquidity bonus for CORE futures (no unconditional bypass!)
+        if sym.upper() in core_symbols:
+            score += 0.8
 
-        if score >= 2:
-            candidates.append((score, coin))
+        if score >= 2.0:
+            candidates.append((score, opp_score, coin))
 
-    # Sort by score descending
-    candidates.sort(key=lambda x: x[0], reverse=True)
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    final = [c for _, _, c in candidates[:max_ai_coins]]
 
-    # Build final list: core first, then best candidates, up to max_ai_coins
-    slots_for_dynamic = max(0, max_ai_coins - len(forced_core))
-    final = forced_core + [c for _, c in candidates[:slots_for_dynamic]]
-
-    print(f"[PRE-FILTER] {len(screen_pool)} koin eligible di-screen → "
-          f"{len(forced_core)} core + {len(final)-len(forced_core)} dynamic = "
-          f"{len(final)} lolos → AI pipeline", flush=True)
+    print(
+        f"[PRE-FILTER] {len(screen_pool)} koin eligible di-screen -> {len(final)} setup berkualitas lolos (tanpa paksa flat-core) -> AI pipeline",
+        flush=True,
+    )
     return final
 
 
@@ -1776,12 +2352,21 @@ def run_full_scan_cycle():
             seen_pairs_pf.add(p)
             all_candidates.append(coin)
 
-    # Gate teknikal + T0.7 minNotional filter → max N koin untuk AI
+    # Gate teknikal + T0.7 minNotional filter -> max N koin untuk AI
     scan_list = _technical_pre_filter(
         all_candidates,
         max_ai_coins=max_coins,
         available_balance_usdt=guard.get("available_usdt"),
     )
+    try:
+        from strategies.bandit_allocator import ContextualThompsonBandit
+        if scan_list:
+            bandit = ContextualThompsonBandit()
+            ranked_b = bandit.rank_candidates(scan_list, regime=regime)
+            if isinstance(ranked_b, list) and len(ranked_b) == len(scan_list):
+                scan_list = ranked_b
+    except Exception:
+        pass
 
     # SIDEWAYS BONUS: Jika pasar sideways, tambahkan koin khusus sideways strategy
     if regime == "SIDEWAYS":
@@ -1865,6 +2450,18 @@ def run_full_scan_cycle():
             print(f"[COMMITTEE VETO] {sym}: Pipeline lolos tapi 9-Agent Committee mem-veto: {pm_dec}", flush=True)
             status = "REJECTED_BY_COMMITTEE"
 
+        # Strategy Auto-Degradation Gate: if setup demoted to SHADOW_ONLY, block real capital
+        if is_trade_approved and os.path.exists(DEGRADED_STRAT_FILE):
+            try:
+                with open(DEGRADED_STRAT_FILE, "r", encoding="utf-8") as df:
+                    deg_map = json.load(df) or {}
+                if bool((deg_map.get(setup) or {}).get("degraded")):
+                    is_trade_approved = False
+                    status = "STRATEGY_DEMOTED_SHADOW_ONLY"
+                    print(f"[AUTO-DEGRADATION] 🛡️ {sym} setup '{setup}' sedang SHADOW_ONLY ({deg_map[setup].get('reason')})", flush=True)
+            except Exception:
+                pass
+
         # BIDIRECTIONAL BTC GUARD (Blueprint T3.1):
         # 1. Batalkan sinyal LONG altcoin jika BTC sedang dump tajam
         # 2. Batalkan sinyal SHORT altcoin jika BTC sedang pump tajam (anti short-squeeze)
@@ -1931,6 +2528,10 @@ def run_full_scan_cycle():
                 budget_allocated = min(budget_allocated, max_budget)
             leverage_allocated = 20  # Always 20x (user mandate)
 
+            _ns_meta = fc.get("neuro_symbolic_3brain") or (res.get("neuro_symbolic_3brain") if isinstance(res, dict) else {}) or {}
+            _mp_meta = (res.get("math_proof") if isinstance(res, dict) else None) or {}
+            _order_type_exec = (fc.get("order_type") or _plan_sig.get("order_type") or cfg.get("order_type", "MAKER_FIRST_GTX")).upper()
+
             exec_plan = {
                 "symbol": sym,
                 "binance_pair": pair,
@@ -1938,6 +2539,7 @@ def run_full_scan_cycle():
                 "action": final_dir,
                 "confidence_score": max(conf, com_conf),
                 "setup_name": setup,
+                "regime": (_mp_meta.get("statistical_regime") if isinstance(_mp_meta, dict) else None) or regime,
                 "entry_price": trade_params.get("entry_price") or fc.get("entry_price"),
                 "position_size_idr": budget_allocated,
                 "leverage": leverage_allocated,
@@ -1946,7 +2548,14 @@ def run_full_scan_cycle():
                 "take_profit": trade_params.get("tp2_price") or fc.get("take_profit"),
                 "stop_loss": trade_params.get("sl_price") or fc.get("stop_loss"),
                 "margin_type": "ISOLATED",
-                "order_type": "MARKET",
+                "order_type": _order_type_exec,
+                "math_proof": _mp_meta,
+                "p_quant_ml": _ns_meta.get("brain1_tabular_ml_prob"),
+                "p_knn": _ns_meta.get("brain2_episodic_knn_prob"),
+                "p_llm": _ns_meta.get("brain3_llm_meta_prob"),
+                "calibrated_prob": fc.get("calibrated_prob"),
+                "conformal_set": fc.get("conformal_set"),
+                "quant_feature_vector": fc.get("_quant_feature_vector"),
                 "estimated_time_horizon": (
                     trade_params.get("estimated_time_horizon")
                     or (com_res.get("estimated_time_horizon") if com_res else None)
@@ -2071,6 +2680,22 @@ def run_full_scan_cycle():
             reason_short = (com_res.get("portfolio_manager", {}).get("decision") if com_res else fc.get("final_reason", ""))[:70]
             print(f"REJECTED {sym}: {reason_short}...", flush=True)
             state["signals_rejected_count"] += 1
+            if _entry_sig > 0 and _sl_sig > 0 and _tp2_sig > 0 and fc.get("direction") in ("LONG", "SHORT"):
+                try:
+                    from shadow.engine import ShadowEngine
+                    ShadowEngine().register_candidate({
+                        "symbol": sym,
+                        "strategy_id": setup,
+                        "regime": regime,
+                        "direction": fc.get("direction"),
+                        "entry_price": _entry_sig,
+                        "sl_price": _sl_sig,
+                        "tp_price": _tp2_sig,
+                        "ai_decision": "SKIP",
+                        "p_cal": fc.get("calibrated_prob") or (float(conf or 50) / 100.0),
+                    }, ai_decision="SKIP", skip_reason=reason_short)
+                except Exception:
+                    pass
 
     state["total_scans_done"] += 1
     state["last_scan_time"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -2087,8 +2712,7 @@ def run_full_scan_cycle():
             "fx_rate": get_fx_info(),
             "config": cfg
         }
-        with open(UNIVERSE_FILE, "w", encoding="utf-8") as f:
-            json.dump(universe_data, f, indent=2, ensure_ascii=False)
+        atomic_write_json(UNIVERSE_FILE, universe_data)
     except Exception:
         pass
     
@@ -2133,6 +2757,10 @@ def start_loop():
     load_state()
     bn_client = get_binance_client()
     if bn_client:
+        try:
+            _start_realtime_ws_worker(bn_client)
+        except Exception:
+            pass
         try:
             bal = bn_client.get_balance()
             if isinstance(bal, dict) and not bal.get("isError") and "total_wallet_balance" in bal:
@@ -2215,8 +2843,9 @@ def start_loop():
                     )
                     print(f"\n[SENTINEL ALL-IN] 🛡️ {guard['reason']}", flush=True)
                 
-                # In all-in mode, skip scanning! Focus 100% on the open position.
-                time.sleep(8)
+                # In all-in mode, skip scanning! Focus 100% on the open position with <50ms WS wake-up.
+                _WS_WAKEUP_EVENT.wait(timeout=8)
+                _WS_WAKEUP_EVENT.clear()
                 continue
 
             else:
@@ -2254,7 +2883,8 @@ def start_loop():
                         print(f"[-] Full scan error: {e}", flush=True)
                     last_full_scan = now
                 
-                time.sleep(10)  # Check every 10 seconds
+                _WS_WAKEUP_EVENT.wait(timeout=10)  # Wakes immediately on UserDataStream WS fill/algo event
+                _WS_WAKEUP_EVENT.clear()
             
         except KeyboardInterrupt:
             print("[*] Autonomous trader stopped by user.", flush=True)
