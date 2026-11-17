@@ -2251,22 +2251,28 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=N
         elif change_24h > 8.5:
             score -= 1.5  # Penalize late vertical exhaustion chase
 
-        # 3. Pre-ranker opportunity composite
-        if opp_score >= 70:
+        # 3. Pre-ranker opportunity composite (supports 0..10 market_data scale or normalized 0..100)
+        opp_norm = (opp_score / 10.0) if opp_score > 12.0 else opp_score
+        if opp_norm >= 5.8:
             score += 2.0
-        elif opp_score >= 55:
+        elif opp_norm >= 4.5:
+            score += 1.0
+
+        # 3b. Intraday high-low range squeeze/expansion activity
+        hl_range = float(coin.get("high_low_range_pct", 0) or 0)
+        if hl_range >= 4.0:
             score += 1.0
 
         # 4. Crowded funding squeeze potential
         if funding_abs >= 0.0003:
             score += 1.5
 
-        # 5. Modest anchor liquidity bonus for CORE futures (no unconditional bypass!)
+        # 5. Small tie-breaker for CORE liquidity (never drowns out strong dynamic alts)
         if sym.upper() in core_symbols:
-            score += 0.8
+            score += 0.25
 
         if score >= 2.0:
-            candidates.append((score, opp_score, coin))
+            candidates.append((score, opp_norm, coin))
 
     candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
     final = [c for _, _, c in candidates[:max_ai_coins]]
@@ -2324,15 +2330,20 @@ def run_full_scan_cycle():
 
     # Adjust agresivitas scan berdasarkan regime (fokus ke koin terbaik demi efisiensi kuota AI)
     if regime == "VOLATILE":
-        max_coins = 2     # hati-hati saat volatile
+        max_coins = 3
     elif regime == "SIDEWAYS":
-        max_coins = 3     # fokus koin terkuat saat sideways
+        max_coins = 4
     else:
-        max_coins = 3     # trending / normal (top 3 actionable coins)
+        max_coins = 4
 
-    # Gabungkan ranked + watchlist untuk pre-filter
+    # Live ranked Binance pairs FIRST so real volume/change/opportunity metrics are preserved!
     seen_pairs_pf = set()
     all_candidates = []
+    for coin in ranked:
+        p = coin.get("pair")
+        if p and p not in seen_pairs_pf:
+            seen_pairs_pf.add(p)
+            all_candidates.append(coin)
     for c in CRYPTO_FUTURES_WATCHLIST:
         pair_name = c["symbol"].replace("-USD", "USDT")
         if pair_name not in seen_pairs_pf:
@@ -2344,13 +2355,8 @@ def run_full_scan_cycle():
                 "tier": c.get("tier", "CORE"),
                 "price_change_24h_pct": 0,
                 "volume_24h_usd": 0,
-                "opportunity_score": 80,
+                "opportunity_score": 0.0,
             })
-    for coin in ranked:
-        p = coin.get("pair")
-        if p and p not in seen_pairs_pf:
-            seen_pairs_pf.add(p)
-            all_candidates.append(coin)
 
     # Gate teknikal + T0.7 minNotional filter -> max N koin untuk AI
     scan_list = _technical_pre_filter(

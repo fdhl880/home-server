@@ -385,9 +385,9 @@ def fetch_all_binance_futures_pairs():
         low_24h = float(tk.get("lowPrice", 0) or 0)
 
         # High-Liquidity Filter for 20x Leverage Safety:
-        # Require >= $50M 24h volume for general altcoins, except CORE major coins
+        # Require >= $15M 24h volume for general altcoins, except CORE major coins
         is_core = pair_upper in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "SUIUSDT", "NEARUSDT")
-        if not is_core and vol_usd < 50_000_000:
+        if not is_core and vol_usd < 15_000_000:
             continue
 
         # Categorize tier
@@ -431,7 +431,7 @@ def fetch_all_binance_futures_pairs():
     # Sort descending by volume
     all_pairs.sort(key=lambda x: x["volume_24h_usd"], reverse=True)
 
-    if len(all_pairs) > 50:
+    if len(all_pairs) >= 15:
         _DYNAMIC_UNIVERSE_CACHE["data"] = all_pairs
         _DYNAMIC_UNIVERSE_CACHE["last_fetch"] = now
         return all_pairs
@@ -518,9 +518,9 @@ def rank_universe_by_opportunity():
 
         opp_score = (vol_score * 0.35) + (change_score * 0.40) + (range_score * 0.25)
 
-        # Core anchor coins get slight priority for consistent baseline
+        # Tiny liquidity anchor tie-breaker so high-volatility alts are never drowned out by flat majors
         if pair in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
-            opp_score += 1.5
+            opp_score += 0.20
 
         c_copy = dict(coin)
         c_copy.update({

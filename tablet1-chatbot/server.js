@@ -4193,22 +4193,24 @@ app.get('/api/committee/auto-status', (req, res) => {
         const pair = sym.replace('-USD', 'USDT').replace('.P', '');
         const uItem = FULL_CRYPTO_FUTURES_UNIVERSE.find(u => u.symbol === sym || u.pair === pair);
         const tk = cryptoFuturesTickerCache[pair] || {};
-        const rawDir = String(s.direction || 'LONG').toUpperCase();
-        const dir = rawDir === 'SHORT' ? 'SHORT' : 'LONG';
+        const rawDir = String(s.direction || 'NONE').toUpperCase();
+        const isActionableDir = rawDir === 'LONG' || rawDir === 'SHORT';
+        const dir = isActionableDir ? rawDir : 'NONE';
         const sign = dir === 'SHORT' ? -1 : 1;
-        const entry = Number(s.entry_price || 0) > 0
-            ? Number(s.entry_price)
-            : Number(tk.lastPrice || uItem?.default_price || (sym.startsWith('BTC') ? 82000 : sym.startsWith('ETH') ? 2400 : sym.startsWith('SOL') ? 104 : 1.25));
-        const sl = Number(s.stop_loss || 0) > 0 ? Number(s.stop_loss) : Number((entry * (1 - sign * 0.012)).toPrecision(6));
-        const tp1 = Number(s.take_profit_1 || 0) > 0 ? Number(s.take_profit_1) : Number((entry * (1 + sign * 0.0066)).toPrecision(6));
-        const tp2 = Number(s.take_profit_2 || s.take_profit || 0) > 0 ? Number(s.take_profit_2 || s.take_profit) : Number((entry * (1 + sign * 0.024)).toPrecision(6));
-        const rawSetup = String(s.setup_name || s.setup || 'SNIPER_ORDERFLOW_BREAKOUT');
+        const rawEntry = Number(s.entry_price || 0);
+        const entry = rawEntry > 0
+            ? rawEntry
+            : (isActionableDir && s.status === 'APPROVED' ? Number(tk.lastPrice || uItem?.default_price || 0) : 0);
+        const sl = Number(s.stop_loss || 0) > 0 ? Number(s.stop_loss) : (entry > 0 ? Number((entry * (1 - sign * 0.012)).toPrecision(6)) : 0);
+        const tp1 = Number(s.take_profit_1 || 0) > 0 ? Number(s.take_profit_1) : (entry > 0 ? Number((entry * (1 + sign * 0.0066)).toPrecision(6)) : 0);
+        const tp2 = Number(s.take_profit_2 || s.take_profit || 0) > 0 ? Number(s.take_profit_2 || s.take_profit) : (entry > 0 ? Number((entry * (1 + sign * 0.024)).toPrecision(6)) : 0);
+        const rawSetup = String(s.setup_name || s.setup || 'NO_CLEAR_SETUP');
         const cleanSetup = rawSetup.replace(/^RULE_BASED_/i, 'HYBRID_MATH_AI_');
         return {
             ...s,
             symbol: sym,
             direction: dir,
-            confidence_pct: Number(s.confidence_pct || s.confidence || 84),
+            confidence_pct: Number(s.confidence_pct || s.confidence || 0),
             entry_price: entry,
             stop_loss: sl,
             take_profit: tp2,
