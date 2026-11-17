@@ -947,6 +947,10 @@ export function mountBOT(body, ctx) {
         sc.append(h('div', {
           style: 'padding:3px 8px;background:#070a0f;border-bottom:1px solid #1b2430;font-size:10.5px;color:#8be9fd'
         }, `🛡️ AI SENTINEL LIVE EVALUATION: ${vm.aiEval}`));
+      } else if (!vm.isLivePosition && String(l5.status || '').toUpperCase() !== 'APPROVED' && (l5.final_reason || scanResult?.error)) {
+        sc.append(h('div', {
+          style: 'padding:3px 8px;background:#190707;border-bottom:1px solid #ff3b3044;font-size:10.5px;color:#ff9b95'
+        }, `⛔ ALASAN DITOLAK: ${l5.final_reason || scanResult?.error}`));
       }
 
       // Split 2-Column Visual Workstation: Left = Live Technical Master Candlestick Chart; Right = Trajectory & L2 Depth
@@ -1065,7 +1069,7 @@ export function mountBOT(body, ctx) {
             h('div', { class: 'k', text: 'MICRO-PRICE & SPREAD' }),
             h('div', { class: 'v lb sym', text: `MICRO PX: ${fmtPx(mp.micro_price || l3.entry_price)} (${mp.micro_price_div_bps ?? '+1.85'} bps) • SPREAD: ${mp.spread_bps ?? 1.2} bps` }),
             h('div', { class: 'k', text: 'KELLY / RISK-REWARD RATIO' }),
-            h('div', { class: 'v up sym', text: `R:R = 1 : ${l3.risk_reward_ratio ?? 2.45} • KELLY FRACTION: ${mp.kelly_fraction_pct ?? 4.8}% • EV: +${mp.expected_value_r ?? 0.92}R` }),
+            h('div', { class: 'v up sym', text: `R:R = 1 : ${String(l3.risk_reward_ratio ?? 2.45).replace(/^1\s*:\s*/i, '')} • KELLY FRACTION: ${mp.kelly_fraction_pct ?? 4.8}% • EV: +${mp.expected_value_r ?? 0.92}R` }),
             h('div', { class: 'k', text: 'STAGE 0/1/2 PROFIT LOCK' }),
             h('div', { class: 'v am', text: 'Scratch +0.30R→+0.08R | TP1 +0.55R→+0.38R | TP2 +1.0R→+0.65R' })
           )
@@ -1107,15 +1111,10 @@ export function mountBOT(body, ctx) {
       const newsItems = Array.isArray(newsData.headlines) ? newsData.headlines.slice(0, 4)
         : (Array.isArray(scanResult?.terminal_news_macro?.top_headlines) ? scanResult.terminal_news_macro.top_headlines.slice(0, 4) : []);
 
-      const isIdText = txt => /\b(dan|atau|yang|untuk|dengan|karena|tidak|belum|sudah|pada|dari|harga|pasar|posisi|tren|terdeteksi|konfluensi)\b/i.test(String(txt || ''));
       const rawFinalText = l5.final_reason || l5.Final_Summary_ID || l5.reasoning || '';
-      const engFinalText = (!rawFinalText || isIdText(rawFinalText))
-        ? `Full institutional confluence across First-Passage Drift-Diffusion (P(TP1<SL)=${tp.p_hit_tp1_before_sl_pct || 86.4}%), 20-level L2 Orderbook OFI (${mp.obi_weighted_20 ?? '+0.245'}), Hurst H=${mp.hurst_exponent ?? 0.612}, and 532 Wall Street Quant Factors.`
-        : rawFinalText;
-      const rawL2Text = l2.explanation_id || l2.reasoning_id || l2.summary || '';
-      const engL2Text = (!rawL2Text || isIdText(rawL2Text))
-        ? `Institutional orderflow absorption confirmed with positive microstructure delta.`
-        : rawL2Text;
+      const engFinalText = rawFinalText || `Full institutional confluence across First-Passage Drift-Diffusion (P(TP1<SL)=${tp.p_hit_tp1_before_sl_pct || 86.4}%), 20-level L2 Orderbook OFI (${mp.obi_weighted_20 ?? '+0.245'}), Hurst H=${mp.hurst_exponent ?? 0.612}, and 532 Wall Street Quant Factors.`;
+      const rawL2Text = l2.explanation_id || l2.reasoning_id || l2.summary || l2.reasoning || '';
+      const engL2Text = rawL2Text || `Institutional orderflow absorption confirmed with positive microstructure delta.`;
 
       const aiNarrativeBox = h('div', { style: 'padding:6px;background:#050505;border-bottom:1px solid var(--border)' },
         h('div', { class: 'tb', style: 'background:#120e00;border-bottom:1px solid #ffb00055;margin-bottom:4px;justify-content:space-between' },

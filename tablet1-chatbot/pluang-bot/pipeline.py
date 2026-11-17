@@ -1623,15 +1623,22 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
 
     # SAFETY: If AI returned bad TP (RRR < 1.3)
     ai_tp = result.get("take_profit", 0)
-    if ai_tp and current_price > 0 and ai_sl and ai_sl != current_price:
-        ai_rrr = abs(ai_tp - current_price) / abs(current_price - result["stop_loss"]) if abs(current_price - result["stop_loss"]) > 0 else 0
+    if ai_tp and current_price > 0 and result.get("stop_loss") and result["stop_loss"] != current_price:
+        sl_d_cur = abs(current_price - result["stop_loss"])
+        ai_rrr = abs(ai_tp - current_price) / sl_d_cur if sl_d_cur > 0 else 0
         if ai_rrr < 1.3:
             print(f"[TP SAFETY] {symbol}: AI RRR {ai_rrr:.2f} too low → forcing TP2 to {tp_safe:.6f}", flush=True)
-            sl_d_safe = abs(current_price - result["stop_loss"])
             d_sgn = -1.0 if direction == "SHORT" else 1.0
             result["take_profit"] = tp_safe
             result["take_profit_2"] = tp_safe
-            result["take_profit_1"] = round(current_price + d_sgn * 0.55 * sl_d_safe, 6)
+            result["take_profit_1"] = round(current_price + d_sgn * 0.55 * sl_d_cur, 6)
+
+    # Keep numeric and string risk_reward_ratio synchronized with final entry/SL/TP
+    _e_fin = float(result.get("entry_price") or current_price or 0)
+    _sl_fin = float(result.get("stop_loss") or 0)
+    _tp_fin = float(result.get("take_profit_2") or result.get("take_profit") or 0)
+    if _e_fin > 0 and _sl_fin > 0 and _tp_fin > 0 and abs(_e_fin - _sl_fin) > 1e-12:
+        result["risk_reward_ratio"] = f"1:{round(abs(_tp_fin - _e_fin) / abs(_e_fin - _sl_fin), 2)}"
 
     if result.get("position_size_idr") is None or result.get("position_size_idr") < 0:
         result["position_size_idr"] = 0
@@ -1902,16 +1909,24 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
         result["status"] = "REJECTED"
         reasons.append(f"Terdapat {len(real_cf)} kegagalan risiko kritis: {', '.join(real_cf)}")
 
-    # Gate 8: RRR check
+    # Gate 8: RRR check (prefer actual price geometry over possibly stale LLM string)
     if result.get("direction", "NONE") != "NONE":
         try:
-            rrr_str = result.get("risk_reward_ratio", "0:0")
-            parts = rrr_str.split(":")
-            if len(parts) == 2:
-                rrr_val = float(parts[1]) / float(parts[0]) if float(parts[0]) > 0 else 0
-                if rrr_val < current_min_rrr:
-                    result["status"] = "REJECTED"
-                    reasons.append(f"Risk-to-Reward {rrr_str} di bawah rasio minimum 1:{current_min_rrr}")
+            _ent8 = float(result.get("entry_price") or plan_result.get("entry_price") or 0)
+            _sl8 = float(result.get("stop_loss") or plan_result.get("stop_loss") or 0)
+            _tp8 = float(result.get("take_profit_2") or result.get("take_profit") or plan_result.get("take_profit_2") or plan_result.get("take_profit") or 0)
+            rrr_val = None
+            if _ent8 > 0 and _sl8 > 0 and _tp8 > 0 and abs(_ent8 - _sl8) > 1e-12:
+                rrr_val = abs(_tp8 - _ent8) / abs(_ent8 - _sl8)
+                result["risk_reward_ratio"] = f"1:{round(rrr_val, 2)}"
+            else:
+                rrr_str = str(result.get("risk_reward_ratio", "0:0"))
+                parts = rrr_str.split(":")
+                if len(parts) == 2 and float(parts[0]) > 0:
+                    rrr_val = float(parts[1]) / float(parts[0])
+            if rrr_val is not None and rrr_val < current_min_rrr:
+                result["status"] = "REJECTED"
+                reasons.append(f"Risk-to-Reward 1:{rrr_val:.2f} di bawah rasio minimum 1:{current_min_rrr}")
         except Exception:
             pass
 
