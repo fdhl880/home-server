@@ -1,6 +1,6 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, fmtTime, dirCls, LS } from '../util.js';
-import { get, getRaw, tickOk } from '../api.js';
-import { attachTechnicalMasterCanvas } from './charts.js?v=20261117a';
+import { get, getRaw, tickOk, apiFetch } from '../api.js';
+import { attachTechnicalMasterCanvas } from './charts.js?v=20261118b';
 
 export function mountBOT(body, ctx) {
   body.classList.add('fill');
@@ -36,6 +36,9 @@ export function mountBOT(body, ctx) {
   let focusedPositionObj = null;
   let currentOpenPositions = [];
   let actionBusy = false;
+  let unmounted = false;
+  let botLoadInFlight = false;
+  let botChartRafId = null;
 
   function isCryptoForBot(s) {
     return /-(USD|USDT)$|\.P$|USDT|BTC|ETH|SOL|BNB|XRP|DOGE|ADA|AVAX|LINK|SUI|PEPE|DOT|MATIC|LTC|TON|ARB|OP|INJ|NEAR|APT|FET|RNDR|WIF|BONK/i.test(s || '');
@@ -87,6 +90,7 @@ export function mountBOT(body, ctx) {
   }
 
   function clearBotChartSubs() {
+    if (botChartRafId != null) { cancelAnimationFrame(botChartRafId); botChartRafId = null; }
     botUnsubs.forEach(u => { try { u(); } catch {} });
     botUnsubs = [];
     if (botSecTimer) { clearInterval(botSecTimer); botSecTimer = null; }
@@ -203,11 +207,11 @@ export function mountBOT(body, ctx) {
     if (!Number.isFinite(val) || val <= 0) { alert('Invalid Stop Loss price.'); return; }
     actionBusy = true;
     try {
-      const r = await fetch('/api/crypto-futures/positions/sync-sl', {
+      const r = await apiFetch('/api/crypto-futures/positions/sync-sl', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ binance_pair: pair, symbol: pos.symbol, direction: pos.direction, stop_loss: val })
-      });
+      }, 15000);
       const j = await r.json();
       if (r.ok && j.success) {
         alert(`Exchange Stop Loss CONFIRMED for ${pair} at $${val}`);
@@ -228,11 +232,11 @@ export function mountBOT(body, ctx) {
     if (!ok) return;
     actionBusy = true;
     try {
-      const r = await fetch('/api/crypto-futures/positions/close', {
+      const r = await apiFetch('/api/crypto-futures/positions/close', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: pos.id, binance_pair: pair, symbol: pos.symbol, direction: pos.direction })
-      });
+      }, 15000);
       const j = await r.json();
       if (r.ok && j.success) {
         focusedPosPair = null;
@@ -264,11 +268,11 @@ export function mountBOT(body, ctx) {
     }
     renderToolbar();
     try {
-      const r = await fetch('/api/crypto-futures/scan', {
+      const r = await apiFetch('/api/crypto-futures/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbol: scanSym })
-      });
+      }, 65000);
       if (r.ok) {
         scanResult = await r.json();
         scanEpochSec = Math.floor(Date.now() / 1000);
@@ -284,11 +288,11 @@ export function mountBOT(body, ctx) {
     const targetRunning = !isAutoRunning;
     renderToolbar();
     try {
-      const res = await fetch('/api/crypto-futures/auto/toggle', {
+      const res = await apiFetch('/api/crypto-futures/auto/toggle', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ running: targetRunning })
-      });
+      }, 15000);
       if (res.ok) {
         const j = await res.json();
         if (typeof j.is_running === 'boolean') isAutoRunning = j.is_running;
@@ -306,11 +310,11 @@ export function mountBOT(body, ctx) {
     const apiKey = (window.prompt(`Enter new ${provider.toUpperCase()} API Key (hot-reloaded into active pool):`, '') || '').trim();
     if (!apiKey) return;
     try {
-      const r = await fetch('/api/crypto-futures/ai-gateway/add-key', {
+      const r = await apiFetch('/api/crypto-futures/ai-gateway/add-key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider, api_key: apiKey })
-      });
+      }, 15000);
       const j = await r.json();
       if (r.ok && j.ok) {
         const c = j.counts || {};
@@ -366,7 +370,7 @@ export function mountBOT(body, ctx) {
   }
 
   async function mountAdaptiveBotChart() {
-    if (!botChartWrap) return;
+    if (unmounted || !botChartWrap || !botChartWrap.isConnected) return;
     clearBotChartSubs();
     botChartWrap.querySelectorAll('.tv-lightweight-charts, .na, .tm-overlay-canvas').forEach(e => e.remove());
     const LWC = window.LightweightCharts;
@@ -378,10 +382,12 @@ export function mountBOT(body, ctx) {
     const bSym = toBinanceSym(vm?.sym || scanResult?.symbol || scanSym);
     const bPerpSym = bSym.endsWith('.P') ? bSym : `${bSym}.P`;
     let env = await get('kline', { symbol: bSym, interval: botChartIv, market: 'futures', limit: botChartIv === '1s' ? 160 : 140 }, 3000);
+    if (unmounted || !botChartWrap || !botChartWrap.isConnected) return;
     let rawCandles = (env.ok && env.data && Array.isArray(env.data.candles)) ? env.data.candles : [];
     let feedNote = (botChartIv === '1s' && env.ok && env.data && env.data.interval === '1m') ? '1M FEED + LIVE TICK' : '';
     if (!rawCandles.length && botChartIv === '1s') {
       const mEnv = await get('kline', { symbol: bSym, interval: '1m', market: 'futures', limit: 120 }, 3000);
+      if (unmounted || !botChartWrap || !botChartWrap.isConnected) return;
       if (mEnv.ok && mEnv.data && Array.isArray(mEnv.data.candles) && mEnv.data.candles.length) {
         rawCandles = mEnv.data.candles;
         feedNote = '1M FEED + LIVE TICK';
@@ -497,7 +503,25 @@ export function mountBOT(body, ctx) {
     const ivSec = ivMap[botChartIv] || 60;
     let lastTickMs = Date.now();
 
+    const renderBotLegend = statusTxt => {
+      if (!botChartLeg || !botActiveBar) return;
+      const ivTag = feedNote ? `${botChartIv.toUpperCase()} (${feedNote})` : botChartIv.toUpperCase();
+      botChartLeg.textContent = '';
+      botChartLeg.append(
+        h('b', { style: 'color:#fff', text: bSym }),
+        ` [${ivTag}]  PX:`,
+        h('b', { style: 'color:#ffb000', text: fmtPx(botActiveBar.close) }),
+        '  H:',
+        h('b', { style: 'color:#00d26a', text: fmtPx(botActiveBar.high) }),
+        '  L:',
+        h('b', { style: 'color:#ff3b30', text: fmtPx(botActiveBar.low) }),
+        '  ',
+        h('span', { style: 'color:#00d26a', text: statusTxt })
+      );
+    };
+
     const updateBotTick = (px, qty = 0) => {
+      if (unmounted) return;
       const price = Number(px);
       if (!botSeries || !Number.isFinite(price) || price <= 0) return;
       lastTickMs = Date.now();
@@ -534,15 +558,11 @@ export function mountBOT(body, ctx) {
       }
       const remS = ivSec <= 1 ? 1 : Math.max(0, ivSec - (nowS % ivSec));
       const remTxt = ivSec <= 1 ? '1S REALTIME' : `NEXT BAR: ${String(Math.floor(remS / 60)).padStart(2, '0')}:${String(remS % 60).padStart(2, '0')}s`;
-      if (botChartLeg) {
-        const ivTag = feedNote ? `${botChartIv.toUpperCase()} (${feedNote})` : botChartIv.toUpperCase();
-        botChartLeg.innerHTML = `<b style="color:#fff">${bSym}</b> [${ivTag}]  PX:<b style="color:#ffb000">${fmtPx(botActiveBar.close)}</b>  H:<b style="color:#00d26a">${fmtPx(botActiveBar.high)}</b>  L:<b style="color:#ff3b30">${fmtPx(botActiveBar.low)}</b>  <span style="color:#00d26a">● ${remTxt}</span>`;
-      }
+      renderBotLegend(`● ${remTxt}`);
     };
 
     if (botChartLeg && botActiveBar) {
-      const ivTag = feedNote ? `${botChartIv.toUpperCase()} (${feedNote})` : botChartIv.toUpperCase();
-      botChartLeg.innerHTML = `<b style="color:#fff">${bSym}</b> [${ivTag}]  PX:<b style="color:#ffb000">${fmtPx(botActiveBar.close)}</b>  H:<b style="color:#00d26a">${fmtPx(botActiveBar.high)}</b>  L:<b style="color:#ff3b30">${fmtPx(botActiveBar.low)}</b>  <span style="color:#00d26a">● TECH MASTER LIVE</span>`;
+      renderBotLegend('● TECH MASTER LIVE');
     }
 
     if (botChartIv !== '1s') {
@@ -558,12 +578,16 @@ export function mountBOT(body, ctx) {
     }));
 
     botSecTimer = setInterval(() => {
+      if (unmounted || !botChartWrap || !botChartWrap.isConnected) {
+        clearBotChartSubs();
+        return;
+      }
+      if (typeof document !== 'undefined' && document.hidden) return;
       const nowS = Math.floor(Date.now() / 1000);
       if (botActiveBar && botChartLeg) {
         const remS = ivSec <= 1 ? 1 : Math.max(0, ivSec - (nowS % ivSec));
         const remTxt = ivSec <= 1 ? '1S REALTIME' : `NEXT BAR: ${String(Math.floor(remS / 60)).padStart(2, '0')}:${String(remS % 60).padStart(2, '0')}s`;
-        const ivTag = feedNote ? `${botChartIv.toUpperCase()} (${feedNote})` : botChartIv.toUpperCase();
-        botChartLeg.innerHTML = `<b style="color:#fff">${bSym}</b> [${ivTag}]  PX:<b style="color:#ffb000">${fmtPx(botActiveBar.close)}</b>  H:<b style="color:#00d26a">${fmtPx(botActiveBar.high)}</b>  L:<b style="color:#ff3b30">${fmtPx(botActiveBar.low)}</b>  <span style="color:#00d26a">● ${remTxt}</span>`;
+        renderBotLegend(`● ${remTxt}`);
       }
       if (botEtaClockEl && !vm?.isLivePosition && scanResult) {
         const tp = scanResult.tp_time_prediction || scanResult.layer3_plan?.tp_time_prediction || {};
@@ -794,7 +818,7 @@ export function mountBOT(body, ctx) {
     return svg;
   }
 
-  async function load() {
+  async function _loadInner() {
     renderToolbar();
     const [stRes, pRes, perfRes, cRes, wlRes, gwRes, newsRes, qhRes, cachedScanRes] = await Promise.all([
       getRaw('/api/crypto-futures/status'),
@@ -807,6 +831,7 @@ export function mountBOT(body, ctx) {
       getRaw('/api/crypto-futures/quant-health'),
       !scanResult ? getRaw(`/api/crypto-futures/scan-cached?symbol=${encodeURIComponent(scanSym)}`) : Promise.resolve(null)
     ]);
+    if (unmounted) return;
     ctx.status({ source: 'pyrofuel-sniper-v4', ts: Date.now(), mode: (stRes.ok || pRes.ok || cRes.ok) ? 'LIVE' : 'N/A' });
     sc.textContent = '';
 
@@ -896,8 +921,17 @@ export function mountBOT(body, ctx) {
             text: '🔓 RESET BREAKER',
             onclick: async () => {
               if (!window.confirm('Reset Risk Breaker 12 jam lebih cepat? Pastikan kamu sudah evaluasi alasan 2 loss sebelumnya terlebih dahulu.')) return;
-              const rr = await fetch('/api/crypto-futures/risk-breaker/resume', { method: 'POST' });
+              const rr = await apiFetch('/api/crypto-futures/risk-breaker/resume', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ confirm: 'CONFIRM_RESUME' })
+              }, 15000);
               if (rr.ok) load();
+              else {
+                let errMsg = 'HTTP ' + rr.status;
+                try { const j = await rr.json(); if (j && j.error) errMsg = j.error; } catch {}
+                alert('Reset breaker failed: ' + errMsg);
+              }
             }
           }));
         }
@@ -998,7 +1032,11 @@ export function mountBOT(body, ctx) {
         rightBlueprintBox
       );
       sc.append(visualGrid);
-      requestAnimationFrame(() => mountAdaptiveBotChart());
+      if (botChartRafId != null) cancelAnimationFrame(botChartRafId);
+      botChartRafId = requestAnimationFrame(() => {
+        botChartRafId = null;
+        if (!unmounted) mountAdaptiveBotChart();
+      });
 
       // 2B. PROJECTED ROI (%) & P&L (IDR / USD) AT TP1 LOCK, FULL TP2 RUNNER & STOP LOSS (REAL WALLET SIZING)
       const slDistFracNow = entryNow > 0 ? Math.abs(entryNow - slNow) / entryNow : 0.012;
@@ -1339,9 +1377,17 @@ export function mountBOT(body, ctx) {
       );
     }
   }
+  async function load() {
+    if (unmounted || botLoadInFlight) return;
+    botLoadInFlight = true;
+    try { await _loadInner(); } finally { botLoadInFlight = false; }
+  }
   load();
-  const iv = setInterval(load, 15000);
-  ctx.cleanup(() => { clearInterval(iv); clearBotChartSubs(); });
+  const iv = setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) return;
+    load();
+  }, 15000);
+  ctx.cleanup(() => { unmounted = true; clearInterval(iv); clearBotChartSubs(); });
 }
 
 export function mountPORT(body, ctx) {
@@ -1349,6 +1395,8 @@ export function mountPORT(body, ctx) {
   const tb = h('div', { class: 'tb' });
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
+  let portUnmounted = false;
+  let portLoading = false;
 
   function fmtIdr(v) {
     const n = Number(v) || 0;
@@ -1372,11 +1420,11 @@ export function mountPORT(body, ctx) {
 
   async function execQuickTrade(type, symbol, qty, orderType = 'MARKET', limitPrice = null) {
     try {
-      const r = await fetch('/api/portfolio/trade', {
+      const r = await apiFetch('/api/portfolio/trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type, symbol, qty: Number(qty), orderType, limitPrice, tif: 'GTC', allowQueue: true })
-      });
+      }, 15000);
       const j = await r.json();
       if (!r.ok && j.error) alert('DMA Order Notice: ' + j.error);
     } catch (e) {
@@ -1385,8 +1433,9 @@ export function mountPORT(body, ctx) {
     load();
   }
 
-  async function load() {
+  async function _loadPort() {
     const pRes = await getRaw('/api/portfolio');
+    if (portUnmounted) return;
     ctx.status({ source: 'b-pipe-portfolio', ts: Date.now(), mode: pRes.ok ? 'LIVE' : 'N/A' });
     tb.textContent = '';
     sc.textContent = '';
@@ -1505,9 +1554,17 @@ export function mountPORT(body, ctx) {
       );
     }
   }
+  async function load() {
+    if (portUnmounted || portLoading) return;
+    portLoading = true;
+    try { await _loadPort(); } finally { portLoading = false; }
+  }
   load();
-  const iv = setInterval(load, 8000);
-  ctx.cleanup(() => clearInterval(iv));
+  const iv = setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) return;
+    load();
+  }, 8000);
+  ctx.cleanup(() => { portUnmounted = true; clearInterval(iv); });
 }
 
 export function mountEMSX(body, ctx) {
@@ -1557,7 +1614,7 @@ export function mountEMSX(body, ctx) {
     const submitOrder = async () => {
       sym = iSym.value.trim().toUpperCase() || sym;
       qty = parseFloat(iQty.value) || qty;
-      const r = await fetch('/api/portfolio/trade', {
+      const r = await apiFetch('/api/portfolio/trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1569,7 +1626,7 @@ export function mountEMSX(body, ctx) {
           tif,
           allowQueue: true
         })
-      });
+      }, 15000);
       const j = await r.json();
       if (!r.ok && j.error) alert('EMSX Rejection: ' + j.error);
       render();
@@ -1879,14 +1936,14 @@ export function mountIB(body, ctx) {
       ]);
       const q = (qEnv.ok && qEnv.data && qEnv.data[0]) || {};
       const port = (pRes.ok && pRes.data) || {};
-      const r = await fetch('/api/terminal/analyst', {
+      const r = await apiFetch('/api/terminal/analyst', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: `[Context Security: ${ctx.symbol} Last=${q.price ?? 'N/A'} Chg%=${q.chgPct ?? 'N/A'}%] ${txt}`,
           portfolioContext: port
         })
-      });
+      }, 30000);
       const j = await r.json();
       const reply = j.analysis || j.reply || j.response || j.message || `B-ANALYST QUANT SNAPSHOT [${ctx.symbol}]: Last=${fmtPx(q.price)} (${fmtPct(q.chgPct)}), Range=${fmtPx(q.low)}–${fmtPx(q.high)}, Vol=${fmtVol(q.vol)}. Portfolio NAV: Rp ${Math.round(port.totalNetWorth || 200000000).toLocaleString('id-ID')}.`;
       msgs.push({ ts: Date.now(), from: 'ASKB-AI', text: reply });
@@ -2043,7 +2100,7 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
   let activeMsg = null;
   let store = {
     account: { name: 'FADHIL MUHAMMAD SYAFIQ LUBIS', email: 'fadhil.lubis@bloomberg.net', externalEmail: 'fadhilsyafiq90@gmail.com', uuid: '38492018' },
-    alertConfig: { targetEmail: 'fadhilsyafiq90@gmail.com', enableHotNews: true, enableFuturesOpen: true, enableFuturesClose: true, enableEmsxOrders: true, smtpUser: 'fadhilsyafiq90@gmail.com', smtpPass: '' },
+    alertConfig: { targetEmail: 'fadhilsyafiq90@gmail.com', enableHotNews: true, enableFuturesOpen: true, enableFuturesClose: true, enableEmsxOrders: true, smtpUser: 'fadhilsyafiq90@gmail.com', hasSmtpPass: false },
     alertLog: [],
     inbox: [],
     sent: [],
@@ -2131,7 +2188,7 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
               activeMsg = m;
               if (m.unread) {
                 m.unread = false;
-                await fetch('/api/terminal/bmail/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: m.id }) });
+                await apiFetch('/api/terminal/bmail/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: m.id }) }, 12000);
               }
               render();
             }
@@ -2148,21 +2205,39 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
       );
     } else if (tab === 'ALERTS') {
       const iEmail = h('input', { value: cfg.targetEmail || 'fadhilsyafiq90@gmail.com', style: 'width:240px;color:var(--up);font-weight:bold' });
-      const iPass = h('input', { type: 'password', value: cfg.smtpPass || '', placeholder: 'Optional 16-char Gmail App Password for direct background SMTP...', style: 'width:320px' });
+      const iPass = h('input', {
+        type: 'password',
+        value: '',
+        autocomplete: 'new-password',
+        placeholder: cfg.hasSmtpPass ? 'Saved on server — enter new password to replace...' : 'Optional 16-char Gmail App Password for direct background SMTP...',
+        style: 'width:320px'
+      });
 
       const saveCfg = async (patch = {}) => {
-        const next = Object.assign({}, cfg, { targetEmail: iEmail.value.trim() || 'fadhilsyafiq90@gmail.com', smtpPass: iPass.value.trim() }, patch);
-        const r = await fetch('/api/terminal/bmail/alert-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) });
+        const next = {
+          targetEmail: iEmail.value.trim() || 'fadhilsyafiq90@gmail.com',
+          enableHotNews: cfg.enableHotNews !== false,
+          enableFuturesOpen: cfg.enableFuturesOpen !== false,
+          enableFuturesClose: cfg.enableFuturesClose !== false,
+          enableEmsxOrders: cfg.enableEmsxOrders !== false,
+          smtpUser: cfg.smtpUser || iEmail.value.trim() || 'fadhilsyafiq90@gmail.com',
+          ...patch
+        };
+        const passInput = iPass.value.trim();
+        if (passInput) next.smtpPass = passInput;
+        const r = await apiFetch('/api/terminal/bmail/alert-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) }, 15000);
         const j = await r.json();
         if (j.ok && j.data) store = j.data;
-        alertStatusBanner = `✓ SAVED AUTO-EMAIL RULES FOR ${(store.alertConfig && store.alertConfig.targetEmail) || 'fadhilsyafiq90@gmail.com'}`;
+        alertStatusBanner = r.ok
+          ? `✓ SAVED AUTO-EMAIL RULES FOR ${(store.alertConfig && store.alertConfig.targetEmail) || 'fadhilsyafiq90@gmail.com'}`
+          : `✗ FAILED TO SAVE RULES: ${j.error || ('HTTP ' + r.status)}`;
         render();
       };
 
       const triggerTest = async (type) => {
         alertStatusBanner = `DISPATCHING ${type} EMAIL TO ${cfg.targetEmail || 'fadhilsyafiq90@gmail.com'}...`;
         render();
-        const r = await fetch('/api/terminal/bmail/test-alert', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type }) });
+        const r = await apiFetch('/api/terminal/bmail/test-alert', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type }) }, 15000);
         const j = await r.json();
         if (j.ok && j.data) store = j.data;
         alertStatusBanner = `✓ ${type} DISPATCHED TO ${(j.entry && j.entry.to) || 'fadhilsyafiq90@gmail.com'} [${(j.entry && j.entry.status) || 'OK'}]`;
@@ -2252,12 +2327,16 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
           attachmentFn: composeState.attachmentFn,
           attachmentLabel: composeState.attachmentLabel
         };
-        const r = await fetch('/api/terminal/bmail/send', {
+        const r = await apiFetch('/api/terminal/bmail/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
-        });
+        }, 15000);
         const j = await r.json();
+        if (!r.ok) {
+          alert('B-Mail send failed: ' + (j.error || ('HTTP ' + r.status)));
+          return;
+        }
         if (j.ok && j.data) store = j.data;
         composeState.body = '';
         tab = 'INBOX';

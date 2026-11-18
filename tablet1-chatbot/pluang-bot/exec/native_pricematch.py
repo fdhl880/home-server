@@ -1,4 +1,7 @@
 """
+WARNING: Unused / offline-tested module — NOT imported by the live auto_trader/binance_futures path.
+Live execution currently runs through `auto_trader.py` -> `binance_futures.py` (`BinanceFuturesClient`).
+
 ===========================================================================
 PYROFUEL BINANCE NATIVE PRICEMATCH & GTD ROUTER v3.0 (T6.6)
 ===========================================================================

@@ -3,7 +3,10 @@ PYROFUEL BOT - INSTITUTIONAL TRADE, DECISION & SHADOW JOURNAL (SQLite WAL v3)
 Task T1.1: Pencatatan komprehensif seluruh keputusan AI (decisions), eksekusi live (trades),
 dan akun bayangan (shadow_trades) berbasis fill nyata di SQLite mode WAL.
 """
+import contextlib
 import os
+import re
+import shutil
 import sys
 import math
 import sqlite3
@@ -14,6 +17,24 @@ from typing import Dict, List, Optional, Any
 
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BOT_DIR, "results", "pyrofuel_journal.db")
+DEFAULT_ASSUMED_COST_PCT = 0.08
+
+
+def _get_tca_jsonl_path(db_path: Optional[str] = None) -> str:
+    target_db = os.path.abspath(db_path or DB_PATH)
+    results_dir = os.path.dirname(target_db)
+    os.makedirs(results_dir, exist_ok=True)
+    return os.path.join(results_dir, "tca_metrics.jsonl")
+
+
+def _append_tca_jsonl(payload: Dict[str, Any], db_path: Optional[str] = None) -> Optional[str]:
+    try:
+        jsonl_path = _get_tca_jsonl_path(db_path)
+        with open(jsonl_path, "a", encoding="utf-8") as jf:
+            jf.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return jsonl_path
+    except Exception:
+        return None
 
 
 def get_db(db_path: Optional[str] = None) -> sqlite3.Connection:
@@ -386,10 +407,59 @@ def record_trade_close(
             trade_id,
         ))
 
-        return {
+        tca_row = conn.execute(
+            "SELECT arrival_slippage_bps FROM tca_executions WHERE trade_id = ? ORDER BY ts_ms DESC LIMIT 1",
+            (trade_id,),
+        ).fetchone()
+        slip_bps = float(
+            close_data.get(
+                "arrival_slippage_bps",
+                tca_row["arrival_slippage_bps"] if tca_row and tca_row["arrival_slippage_bps"] is not None else 0.0,
+            )
+            or 0.0
+        )
+        eff_notional = notional if notional > 0 else max(float(row["margin_usdt"] or 0.0) * float(row["leverage"] or 20), 0.0)
+        if "realized_cost_pct" in close_data and close_data["realized_cost_pct"] is not None:
+            realized_cost_pct = float(close_data["realized_cost_pct"])
+        else:
+            fee_funding_pct = ((fee_usdt + funding_usdt) / eff_notional * 100.0) if eff_notional > 0 else 0.0
+            slip_pct = max(0.0, slip_bps) / 100.0
+            realized_cost_pct = fee_funding_pct + slip_pct
+
+        assumed_cost_pct = float(close_data.get("assumed_cost_pct", DEFAULT_ASSUMED_COST_PCT) or DEFAULT_ASSUMED_COST_PCT)
+        cost_drift_pct = realized_cost_pct - assumed_cost_pct
+        gross_pnl_usdt = net_pnl_usdt + fee_usdt + funding_usdt
+
+        tca_line = {
+            "event_type": "TRADE_CLOSE",
             "trade_id": trade_id,
+            "symbol": str(row["symbol"] or "UNKNOWN"),
+            "direction": direction,
+            "regime": str(row["regime"] or "UNKNOWN"),
+            "strategy_id": str(row["strategy_id"] or "MANUAL"),
+            "arrival_slippage_bps": round(slip_bps, 3),
+            "fee_usdt": round(fee_usdt, 6),
+            "funding_usdt": round(funding_usdt, 6),
+            "gross_pnl_usdt": round(gross_pnl_usdt, 6),
             "net_pnl_usdt": round(net_pnl_usdt, 6),
             "r_multiple_net": round(r_multiple_net, 4),
+            "realized_cost_pct": round(realized_cost_pct, 5),
+            "assumed_cost_pct": round(assumed_cost_pct, 5),
+            "cost_drift_pct": round(cost_drift_pct, 5),
+            "ts_ms": closed_at,
+        }
+        _append_tca_jsonl(tca_line, db_path=db_path)
+
+        return {
+            "trade_id": trade_id,
+            "gross_pnl_usdt": round(gross_pnl_usdt, 6),
+            "fee_usdt": round(fee_usdt, 6),
+            "funding_usdt": round(funding_usdt, 6),
+            "net_pnl_usdt": round(net_pnl_usdt, 6),
+            "r_multiple_net": round(r_multiple_net, 4),
+            "realized_cost_pct": round(realized_cost_pct, 5),
+            "assumed_cost_pct": round(assumed_cost_pct, 5),
+            "cost_drift_pct": round(cost_drift_pct, 5),
             "holding_sec": holding_sec,
             "close_reason": close_reason,
         }
@@ -843,6 +913,50 @@ def record_tca_execution(tca_data: dict, db_path: Optional[str] = None) -> str:
             tca_data.get("markout_close_bps"),
             ts_ms,
         ))
+        tr_row = None
+        if tca_data.get("trade_id"):
+            tr_row = conn.execute(
+                "SELECT regime, strategy_id, notional_usdt, funding_usdt, net_pnl_usdt, r_multiple_net, leverage FROM trades WHERE trade_id = ?",
+                (tca_data.get("trade_id"),),
+            ).fetchone()
+
+    regime = str(tca_data.get("regime") or (tr_row["regime"] if tr_row and tr_row["regime"] else "UNKNOWN"))
+    strategy_id = str(tca_data.get("strategy_id") or (tr_row["strategy_id"] if tr_row and tr_row["strategy_id"] else "MANUAL"))
+    funding_usdt = float(tca_data.get("funding_usdt", tr_row["funding_usdt"] if tr_row and tr_row["funding_usdt"] is not None else 0.0) or 0.0)
+    net_pnl_usdt = float(tca_data.get("net_pnl_usdt", tr_row["net_pnl_usdt"] if tr_row and tr_row["net_pnl_usdt"] is not None else 0.0) or 0.0)
+    r_multiple_net = float(tca_data.get("r_multiple_net", tr_row["r_multiple_net"] if tr_row and tr_row["r_multiple_net"] is not None else 0.0) or 0.0)
+    notional_usdt = float(
+        tca_data.get("notional_usdt")
+        or (tr_row["notional_usdt"] if tr_row and tr_row["notional_usdt"] else (margin_usdt * float(tr_row["leverage"] if tr_row and tr_row["leverage"] else 20.0)))
+        or 0.0
+    )
+    fee_funding_pct = ((fee_usdt + funding_usdt) / notional_usdt * 100.0) if notional_usdt > 0 else 0.0
+    realized_cost_pct = float(tca_data.get("realized_cost_pct") or (fee_funding_pct + max(0.0, float(slip_bps)) / 100.0))
+    assumed_cost_pct = float(tca_data.get("assumed_cost_pct", DEFAULT_ASSUMED_COST_PCT) or DEFAULT_ASSUMED_COST_PCT)
+    cost_drift_pct = realized_cost_pct - assumed_cost_pct
+
+    _append_tca_jsonl(
+        {
+            "event_type": "TCA_EXECUTION",
+            "exec_id": exec_id,
+            "trade_id": tca_data.get("trade_id"),
+            "symbol": sym,
+            "direction": direction,
+            "regime": regime,
+            "strategy_id": strategy_id,
+            "routing_used": str(tca_data.get("routing_used", "UNKNOWN")),
+            "arrival_slippage_bps": round(float(slip_bps), 3),
+            "fee_usdt": round(fee_usdt, 6),
+            "funding_usdt": round(funding_usdt, 6),
+            "net_pnl_usdt": round(net_pnl_usdt, 6),
+            "r_multiple_net": round(r_multiple_net, 4),
+            "realized_cost_pct": round(realized_cost_pct, 5),
+            "assumed_cost_pct": round(assumed_cost_pct, 5),
+            "cost_drift_pct": round(cost_drift_pct, 5),
+            "ts_ms": ts_ms,
+        },
+        db_path=db_path,
+    )
     return exec_id
 
 
@@ -929,6 +1043,373 @@ def get_tca_summary(limit: int = 50, db_path: Optional[str] = None) -> dict:
         "avg_markout_close_bps": round(sum(mc) / len(mc), 3) if mc else None,
         "by_routing": by_routing_out,
         "recent": rows[:25],
+    }
+
+
+def generate_daily_observability_report(
+    db_path: Optional[str] = None,
+    assumed_cost_pct: float = DEFAULT_ASSUMED_COST_PCT,
+    api_error_counts: Optional[Dict[str, int]] = None,
+    window_hours: int = 24,
+    cost_drift_threshold_pct: float = 0.04,
+) -> Dict[str, Any]:
+    """
+    Generate daily net-of-fees PnL, max drawdown, realized-vs-backtest cost-drift report,
+    and API error summary (`Gap #11`).
+    """
+    init_db(db_path)
+    now_ms = int(time.time() * 1000)
+    win_ms = max(1, int(window_hours)) * 3600_000
+
+    with get_db(db_path) as conn:
+        all_closed = conn.execute(
+            "SELECT * FROM trades WHERE closed_at IS NOT NULL ORDER BY closed_at ASC"
+        ).fetchall()
+        tca_rows = conn.execute("SELECT * FROM tca_executions ORDER BY ts_ms ASC").fetchall()
+
+    tca_by_trade: Dict[str, float] = {}
+    for tr in tca_rows:
+        tid = tr["trade_id"]
+        if tid:
+            tca_by_trade[str(tid)] = float(tr["arrival_slippage_bps"] or 0.0)
+
+    if all_closed:
+        cutoff_now = now_ms - win_ms
+        recent = [r for r in all_closed if int(r["closed_at"] or 0) >= cutoff_now]
+        if not recent:
+            max_ts = max(int(r["closed_at"] or 0) for r in all_closed)
+            recent = [r for r in all_closed if int(r["closed_at"] or 0) >= (max_ts - win_ms)]
+    else:
+        recent = []
+
+    err_map = {str(k): int(v) for k, v in (api_error_counts or {}).items() if v is not None}
+    err_total = sum(err_map.values())
+    assumed = float(assumed_cost_pct or DEFAULT_ASSUMED_COST_PCT)
+
+    trade_count = len(recent)
+    if trade_count == 0:
+        return {
+            "trade_count": 0,
+            "total_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "win_rate": 0.0,
+            "win_rate_pct": 0.0,
+            "gross_pnl_usdt": 0.0,
+            "net_pnl_usdt": 0.0,
+            "total_fee_usdt": 0.0,
+            "fee_usdt": 0.0,
+            "total_funding_usdt": 0.0,
+            "funding_usdt": 0.0,
+            "total_cost_usdt": 0.0,
+            "expectancy_r_net": 0.0,
+            "max_drawdown_usdt": 0.0,
+            "max_drawdown_r": 0.0,
+            "avg_arrival_slippage_bps": 0.0,
+            "avg_realized_cost_pct": 0.0,
+            "realized_cost_pct": 0.0,
+            "assumed_cost_pct": round(assumed, 4),
+            "cost_drift_pct": 0.0,
+            "cost_drift_ratio": 0.0,
+            "cost_drift_alert": False,
+            "api_error_counts": err_map,
+            "api_error_total": err_total,
+            "by_strategy": {},
+        }
+
+    net_pnls: List[float] = []
+    gross_pnls: List[float] = []
+    fees: List[float] = []
+    fundings: List[float] = []
+    r_nets: List[float] = []
+    slips_bps: List[float] = []
+    realized_costs_pct: List[float] = []
+    by_strategy: Dict[str, Dict[str, Any]] = {}
+
+    for r in recent:
+        tid = str(r["trade_id"])
+        net_p = float(r["net_pnl_usdt"] or 0.0)
+        fee_u = float(r["fee_usdt"] or 0.0)
+        fund_u = float(r["funding_usdt"] or 0.0)
+        gross_p = net_p + fee_u + fund_u
+        r_net = float(r["r_multiple_net"] or 0.0)
+        entry_px = float(r["entry_fill"] or r["entry_plan"] or 0.0)
+        qty = float(r["qty"] or 0.0)
+        lev = float(r["leverage"] or 20.0)
+        margin_u = float(r["margin_usdt"] or 0.0)
+        notional_u = float(r["notional_usdt"] or (qty * entry_px) or (margin_u * lev) or 0.0)
+
+        slip_b = float(tca_by_trade.get(tid, 0.0))
+        slips_bps.append(slip_b)
+        fee_fund_pct = ((fee_u + fund_u) / notional_u * 100.0) if notional_u > 0 else 0.0
+        rc_pct = fee_fund_pct + (max(0.0, slip_b) / 100.0)
+        realized_costs_pct.append(rc_pct)
+
+        net_pnls.append(net_p)
+        gross_pnls.append(gross_p)
+        fees.append(fee_u)
+        fundings.append(fund_u)
+        r_nets.append(r_net)
+
+        sid = str(r["strategy_id"] or "MANUAL")
+        sb = by_strategy.setdefault(sid, {"n": 0, "wins": 0, "net_pnl_usdt": 0.0, "gross_pnl_usdt": 0.0, "r_sum": 0.0})
+        sb["n"] += 1
+        if net_p > 0:
+            sb["wins"] += 1
+        sb["net_pnl_usdt"] = round(sb["net_pnl_usdt"] + net_p, 4)
+        sb["gross_pnl_usdt"] = round(sb["gross_pnl_usdt"] + gross_p, 4)
+        sb["r_sum"] = round(sb["r_sum"] + r_net, 4)
+
+    wins = sum(1 for p in net_pnls if p > 0)
+    losses = trade_count - wins
+    win_rate = round((wins / trade_count) * 100.0, 2)
+
+    cum_usd = 0.0
+    peak_usd = 0.0
+    max_dd_usd = 0.0
+    for p in net_pnls:
+        cum_usd += p
+        if cum_usd > peak_usd:
+            peak_usd = cum_usd
+        dd = peak_usd - cum_usd
+        if dd > max_dd_usd:
+            max_dd_usd = dd
+
+    cum_r = 0.0
+    peak_r = 0.0
+    max_dd_r = 0.0
+    for rv in r_nets:
+        cum_r += rv
+        if cum_r > peak_r:
+            peak_r = cum_r
+        ddr = peak_r - cum_r
+        if ddr > max_dd_r:
+            max_dd_r = ddr
+
+    avg_rc_pct = sum(realized_costs_pct) / trade_count
+    cost_drift = avg_rc_pct - assumed
+    cost_ratio = avg_rc_pct / max(assumed, 1e-9)
+    drift_alert = bool(cost_drift > float(cost_drift_threshold_pct) or avg_rc_pct > assumed * 1.5)
+
+    total_fee = round(sum(fees), 4)
+    total_fund = round(sum(fundings), 4)
+    return {
+        "trade_count": trade_count,
+        "total_trades": trade_count,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": win_rate,
+        "win_rate_pct": win_rate,
+        "gross_pnl_usdt": round(sum(gross_pnls), 4),
+        "net_pnl_usdt": round(sum(net_pnls), 4),
+        "total_fee_usdt": total_fee,
+        "fee_usdt": total_fee,
+        "total_funding_usdt": total_fund,
+        "funding_usdt": total_fund,
+        "total_cost_usdt": round(total_fee + total_fund, 4),
+        "expectancy_r_net": round(sum(r_nets) / trade_count, 4),
+        "max_drawdown_usdt": round(max_dd_usd, 4),
+        "max_drawdown_r": round(max_dd_r, 4),
+        "avg_arrival_slippage_bps": round(sum(slips_bps) / trade_count, 3),
+        "avg_realized_cost_pct": round(avg_rc_pct, 4),
+        "realized_cost_pct": round(avg_rc_pct, 4),
+        "assumed_cost_pct": round(assumed, 4),
+        "cost_drift_pct": round(cost_drift, 4),
+        "cost_drift_ratio": round(cost_ratio, 3),
+        "cost_drift_alert": drift_alert,
+        "api_error_counts": err_map,
+        "api_error_total": err_total,
+        "by_strategy": by_strategy,
+    }
+
+
+def format_daily_telegram_report(report: Dict[str, Any]) -> str:
+    """Format daily observability & cost-drift report into Telegram HTML message."""
+    n = int(report.get("trade_count", 0) or 0)
+    wr = float(report.get("win_rate", 0.0) or 0.0)
+    gross_pnl = float(report.get("gross_pnl_usdt", 0.0) or 0.0)
+    net_pnl = float(report.get("net_pnl_usdt", 0.0) or 0.0)
+    fee_u = float(report.get("total_fee_usdt", 0.0) or 0.0)
+    fund_u = float(report.get("total_funding_usdt", 0.0) or 0.0)
+    dd_u = float(report.get("max_drawdown_usdt", 0.0) or 0.0)
+    dd_r = float(report.get("max_drawdown_r", 0.0) or 0.0)
+    rc_pct = float(report.get("avg_realized_cost_pct", 0.0) or 0.0)
+    ac_pct = float(report.get("assumed_cost_pct", DEFAULT_ASSUMED_COST_PCT) or DEFAULT_ASSUMED_COST_PCT)
+    drift_pct = float(report.get("cost_drift_pct", 0.0) or 0.0)
+    drift_alert = bool(report.get("cost_drift_alert", False))
+    err_counts = report.get("api_error_counts") or {}
+    err_str = ", ".join(f"{k}={v}" for k, v in sorted(err_counts.items())) if err_counts else "None (0)"
+
+    lines = [
+        "📊 <b>PYROFUEL // DAILY OBSERVABILITY &amp; TCA REPORT</b>",
+        "────────────────────────",
+        f"📈 <b>Trades Closed:</b> {n} (Win Rate: <b>{wr:.1f}%</b>)",
+        f"💰 <b>Gross PnL:</b> ${gross_pnl:+.2f} USDT",
+        f"🧾 <b>Fees &amp; Funding:</b> -${fee_u:.2f} fee | -${fund_u:.2f} funding",
+        f"💎 <b>Net PnL (After Costs):</b> <b>${net_pnl:+.2f} USDT</b>",
+        f"📉 <b>Max Drawdown:</b> ${dd_u:.2f} USDT ({dd_r:.2f}R)",
+        "────────────────────────",
+        f"⚖️ <b>Realized vs Assumed Cost:</b> {rc_pct:.3f}% vs {ac_pct:.3f}% (Drift: {drift_pct:+.3f}%)",
+    ]
+    if drift_alert:
+        lines.append(
+            f"🚨 <b>COST DRIFT ALERT:</b> Realized friction ({rc_pct:.3f}%) significantly exceeds backtest assumption ({ac_pct:.3f}%)!"
+        )
+    lines.append(f"🛰️ <b>API Error Summary:</b> {err_str}")
+    return "\n".join(lines)
+
+
+def rotate_log_files(
+    log_dir: Optional[str] = None,
+    max_bytes: int = 20 * 1024 * 1024,
+    keep: int = 3,
+) -> List[str]:
+    """
+    Rotate `*.log` files in `log_dir` whose size >= `max_bytes`, keeping at most `keep` backups
+    (`.log.1` .. `.log.{keep}`) and truncating the active `.log` file in place (`Gap #8`).
+    """
+    target_dir = os.path.abspath(log_dir or os.path.join(BOT_DIR, "logs"))
+    if not os.path.isdir(target_dir):
+        return []
+
+    keep_n = max(1, int(keep))
+    threshold = max(1, int(max_bytes))
+    rotated: List[str] = []
+
+    for fname in sorted(os.listdir(target_dir)):
+        if not fname.endswith(".log"):
+            continue
+        log_path = os.path.join(target_dir, fname)
+        if not os.path.isfile(log_path):
+            continue
+        try:
+            size = os.path.getsize(log_path)
+        except OSError:
+            continue
+        if size < threshold:
+            continue
+
+        # Remove any generation >= keep_n and shift .k -> .(k+1)
+        for gen in range(keep_n, keep_n + 5):
+            old_gen = f"{log_path}.{gen}"
+            if os.path.exists(old_gen):
+                try:
+                    os.remove(old_gen)
+                except OSError:
+                    pass
+        for gen in range(keep_n - 1, 0, -1):
+            src_gen = f"{log_path}.{gen}"
+            dst_gen = f"{log_path}.{gen + 1}"
+            if os.path.exists(src_gen):
+                try:
+                    os.replace(src_gen, dst_gen)
+                except OSError:
+                    pass
+
+        try:
+            shutil.copy2(log_path, f"{log_path}.1")
+            with open(log_path, "r+", encoding="utf-8", errors="ignore") as lf:
+                lf.truncate(0)
+            rotated.append(log_path)
+        except OSError:
+            continue
+
+    return rotated
+
+
+def backup_state_and_journal(
+    db_path: Optional[str] = None,
+    results_dir: Optional[str] = None,
+    keep_days: int = 7,
+) -> Dict[str, Any]:
+    """
+    Perform atomic online SQLite backup (`src_conn.backup(dst_conn)`) to
+    `results/backups/journal_YYYYMMDD.db`, copy critical `results/*.json` state files,
+    and prune backups older than `keep_days` (`Gap #8`).
+    """
+    target_db = os.path.abspath(db_path or DB_PATH)
+    target_results = os.path.abspath(results_dir or os.path.dirname(target_db))
+    backups_dir = os.path.join(target_results, "backups")
+    os.makedirs(backups_dir, exist_ok=True)
+
+    init_db(target_db)
+    now_dt = datetime.now(timezone.utc)
+    day_str = now_dt.strftime("%Y%m%d")
+    backup_db_path = os.path.join(backups_dir, f"journal_{day_str}.db")
+
+    with contextlib.closing(sqlite3.connect(target_db, timeout=20)) as src_conn:
+        with contextlib.closing(sqlite3.connect(backup_db_path, timeout=20)) as dst_conn:
+            src_conn.backup(dst_conn)
+
+    copied_json: List[str] = []
+    if os.path.isdir(target_results):
+        for fname in sorted(os.listdir(target_results)):
+            if not fname.endswith(".json"):
+                continue
+            src_json = os.path.join(target_results, fname)
+            if not os.path.isfile(src_json):
+                continue
+            stem = fname[:-5]
+            dst_json = os.path.join(backups_dir, f"{stem}_{day_str}.json")
+            try:
+                shutil.copy2(src_json, dst_json)
+                copied_json.append(dst_json)
+            except OSError:
+                continue
+
+    pruned: List[str] = []
+    cutoff_ts = time.time() - (max(1, int(keep_days)) * 86400.0)
+    date_re = re.compile(r"_(\d{8})\.(?:db|json)$")
+
+    for bname in sorted(os.listdir(backups_dir)):
+        bpath = os.path.join(backups_dir, bname)
+        if not os.path.isfile(bpath) or os.path.abspath(bpath) == os.path.abspath(backup_db_path):
+            continue
+        should_prune = False
+        try:
+            if os.path.getmtime(bpath) < cutoff_ts:
+                should_prune = True
+        except OSError:
+            pass
+        if not should_prune:
+            m = date_re.search(bname)
+            if m:
+                try:
+                    file_dt = datetime.strptime(m.group(1), "%Y%m%d").replace(tzinfo=timezone.utc)
+                    if (now_dt - file_dt).days > int(keep_days):
+                        should_prune = True
+                except ValueError:
+                    pass
+        if should_prune:
+            try:
+                os.remove(bpath)
+                pruned.append(bpath)
+            except OSError:
+                pass
+
+    return {
+        "backup_db_path": backup_db_path,
+        "backups_dir": backups_dir,
+        "copied_json_files": copied_json,
+        "pruned_files": pruned,
+        "keep_days": int(keep_days),
+    }
+
+
+def backup_journal_and_rotate_logs(
+    db_path: Optional[str] = None,
+    results_dir: Optional[str] = None,
+    log_dir: Optional[str] = None,
+    keep_days: int = 7,
+    max_bytes: int = 20 * 1024 * 1024,
+    keep_logs: int = 3,
+) -> Dict[str, Any]:
+    """Combined convenience helper for daily SQLite/state backup and 20MB log rotation."""
+    bak = backup_state_and_journal(db_path=db_path, results_dir=results_dir, keep_days=keep_days)
+    rot = rotate_log_files(log_dir=log_dir, max_bytes=max_bytes, keep=keep_logs)
+    return {
+        **bak,
+        "rotated_logs": rot,
     }
 
 

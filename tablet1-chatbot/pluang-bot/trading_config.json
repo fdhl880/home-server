@@ -42,6 +42,7 @@
   "currency": "USDT",
   "auto_execute": true,
   "auto_execute_on_binance": true,
+  "enforce_backtest_gate": false,
   "trading_mode": "AI_QUANT_SOVEREIGN_V3",
   "updated_at": "2026-10-28 17:35:00 UTC",
   "note": "Pyrofuel v3.1 Sovereign Edition: Fixed 20x ISOLATED, ALL_IN (95% working balance), Sniper 75% Mode (TP1 +0.55R profit-lock), High-Water Mark Profit Vault, and Tri-State AlgoOrder SL protection."

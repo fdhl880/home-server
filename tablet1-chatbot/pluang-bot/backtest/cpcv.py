@@ -1,11 +1,13 @@
 """
-PYROFUEL BOT - PURGED WALK-FORWARD CV, BOOTSTRAP CI, & DEFLATED SHARPE RATIO (Task T1.3)
+PYROFUEL BOT - PURGED WALK-FORWARD CV, CSCV/PBO, BOOTSTRAP CI, & DEFLATED SHARPE RATIO (Task T1.3 / WP-6)
 Mengimplementasikan:
 1. Purged & Embargoed Walk-Forward Cross-Validation (Marcos Lopez de Prado)
-2. Non-Parametric Bootstrap 95% Confidence Intervals untuk E[R]_net
-3. Deflated Sharpe Ratio (DSR — Bailey & Lopez de Prado, 2014) yang mengoreksi
+2. Combinatorially Symmetric Cross-Validation (CSCV) & Probability of Backtest Overfitting (PBO)
+3. Non-Parametric Bootstrap 95% Confidence Intervals untuk E[R]_net
+4. Deflated Sharpe Ratio (DSR — Bailey & Lopez de Prado, 2014) yang mengoreksi
    multiple testing (K trials), skewness (gamma_3), dan fat-tails kurtosis (gamma_4).
 """
+import itertools
 import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
@@ -131,7 +133,7 @@ def purge_and_embargo_trades(
 ) -> List[Dict[str, Any]]:
     """
     Filter `train_trades` by removing any trade whose `[entry_idx, exit_idx]` overlaps
-    with `[test_start_idx - embargo_bars, test_end_idx + embargo_bars]`.
+    with `[test_start_idx, test_end_idx + embargo_bars]`.
     """
     clean_train: List[Dict[str, Any]] = []
     lower_bound = test_start_idx
@@ -143,6 +145,198 @@ def purge_and_embargo_trades(
             continue
         clean_train.append(tr)
     return clean_train
+
+
+def _score_matrix_columns(mat: np.ndarray, metric: str = "sharpe") -> np.ndarray:
+    """Compute column-wise performance metric (Sharpe or Mean) cleanly without NaN/div-zero."""
+    n_rows, n_cols = mat.shape
+    means = np.mean(mat, axis=0)
+    if metric == "mean" or n_rows < 2:
+        return means
+    stds = np.std(mat, axis=0, ddof=1)
+    scores = np.zeros(n_cols, dtype=np.float64)
+    for j in range(n_cols):
+        if stds[j] > 1e-12:
+            scores[j] = means[j] / stds[j]
+        elif means[j] > 1e-12:
+            scores[j] = 5.0
+        elif means[j] < -1e-12:
+            scores[j] = -5.0
+        else:
+            scores[j] = 0.0
+    return scores
+
+
+def _average_ranks(values: np.ndarray) -> np.ndarray:
+    """Compute 1-based ascending ranks (`1` = smallest, `N` = largest) with average tie handling."""
+    n = len(values)
+    order = np.argsort(values, kind="mergesort")
+    ranks = np.empty(n, dtype=np.float64)
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and abs(values[order[j + 1]] - values[order[i]]) <= 1e-12:
+            j += 1
+        avg_rank = 0.5 * (i + j) + 1.0
+        for k in range(i, j + 1):
+            ranks[order[k]] = avg_rank
+        i = j + 1
+    return ranks
+
+
+def compute_cpcv_pbo(
+    returns_matrix: Any,
+    n_splits: int = 8,
+    purge_bars: int = 0,
+    embargo_bars: int = 0,
+    metric: str = "sharpe",
+    max_combinations: int = 252,
+) -> Dict[str, Any]:
+    """
+    Bailey, Borwein, Lopez de Prado, & Zhu (2014/2017) Combinatorially Symmetric
+    Cross-Validation (CSCV) Probability of Backtest Overfitting (PBO).
+
+    Parameters
+    ----------
+    returns_matrix : 2D array-like `(T_observations, N_trials)` or `{name: Sequence[float]}`.
+    n_splits       : Even number of contiguous time blocks `S` (combinatorial C(S, S/2)).
+    purge_bars     : Boundary rows purged from IS blocks adjacent to OOS blocks.
+    embargo_bars   : Leading rows embargoed from OOS blocks immediately following IS blocks.
+    metric         : `"sharpe"` (default) or `"mean"`.
+    """
+    if isinstance(returns_matrix, dict):
+        cols = [np.asarray(v, dtype=np.float64) for v in returns_matrix.values()]
+        if not cols:
+            mat = np.zeros((0, 0), dtype=np.float64)
+        else:
+            min_len = min(len(c) for c in cols)
+            mat = np.column_stack([c[:min_len] for c in cols]) if min_len > 0 else np.zeros((0, len(cols)))
+    else:
+        mat = np.asarray(returns_matrix, dtype=np.float64)
+
+    if mat.ndim != 2 or mat.shape[0] < 4 or mat.shape[1] < 2:
+        t_obs = int(mat.shape[0]) if mat.ndim >= 1 else 0
+        n_tr = int(mat.shape[1]) if mat.ndim == 2 else 0
+        return {
+            "pbo": 1.0,
+            "n_splits": 0,
+            "n_combinations": 0,
+            "n_trials": n_tr,
+            "n_observations": t_obs,
+            "logits": [],
+            "median_logit": 0.0,
+            "prob_loss_oos": 1.0,
+            "is_best_oos_mean": 0.0,
+            "degradation_slope": 0.0,
+        }
+
+    t_obs, n_trials = mat.shape
+    s_blocks = max(2, int(n_splits))
+    if s_blocks % 2 != 0:
+        s_blocks -= 1
+    while s_blocks > 2 and (t_obs // s_blocks) < 2:
+        s_blocks -= 2
+
+    blocks = [b for b in np.array_split(np.arange(t_obs), s_blocks) if len(b) > 0]
+    if len(blocks) % 2 != 0:
+        blocks = blocks[:-1]
+    s_blocks = len(blocks)
+    if s_blocks < 2:
+        return {
+            "pbo": 1.0,
+            "n_splits": 0,
+            "n_combinations": 0,
+            "n_trials": n_trials,
+            "n_observations": t_obs,
+            "logits": [],
+            "median_logit": 0.0,
+            "prob_loss_oos": 1.0,
+            "is_best_oos_mean": 0.0,
+            "degradation_slope": 0.0,
+        }
+
+    half_s = s_blocks // 2
+    all_combos = list(itertools.combinations(range(s_blocks), half_s))
+    if len(all_combos) > max_combinations:
+        step = max(1, len(all_combos) // max_combinations)
+        all_combos = all_combos[::step][:max_combinations]
+
+    logits: List[float] = []
+    is_best_scores: List[float] = []
+    oos_selected_scores: List[float] = []
+    purge_n = max(0, int(purge_bars))
+    embargo_n = max(0, int(embargo_bars))
+
+    for is_set_tuple in all_combos:
+        is_set = set(is_set_tuple)
+        oos_set = set(range(s_blocks)) - is_set
+
+        is_indices_parts: List[np.ndarray] = []
+        for b_idx in sorted(is_set):
+            blk = blocks[b_idx]
+            start_cut = purge_n if ((b_idx - 1) in oos_set and len(blk) > purge_n + 1) else 0
+            end_cut = len(blk) - purge_n if ((b_idx + 1) in oos_set and (len(blk) - start_cut) > purge_n + 1) else len(blk)
+            is_indices_parts.append(blk[start_cut:end_cut])
+
+        oos_indices_parts: List[np.ndarray] = []
+        for b_idx in sorted(oos_set):
+            blk = blocks[b_idx]
+            start_cut = embargo_n if ((b_idx - 1) in is_set and len(blk) > embargo_n + 1) else 0
+            oos_indices_parts.append(blk[start_cut:])
+
+        is_idx = np.concatenate(is_indices_parts) if is_indices_parts else np.array([], dtype=int)
+        oos_idx = np.concatenate(oos_indices_parts) if oos_indices_parts else np.array([], dtype=int)
+        if len(is_idx) < 2 or len(oos_idx) < 2:
+            is_idx = np.concatenate([blocks[i] for i in sorted(is_set)])
+            oos_idx = np.concatenate([blocks[i] for i in sorted(oos_set)])
+
+        r_is = _score_matrix_columns(mat[is_idx], metric=metric)
+        r_oos = _score_matrix_columns(mat[oos_idx], metric=metric)
+
+        n_star = int(np.argmax(r_is))
+        oos_ranks = _average_ranks(r_oos)
+        omega_c = float(np.clip(oos_ranks[n_star] / (n_trials + 1.0), 1e-6, 1.0 - 1e-6))
+        lam_c = math.log(omega_c / (1.0 - omega_c))
+
+        logits.append(lam_c)
+        is_best_scores.append(float(r_is[n_star]))
+        oos_selected_scores.append(float(r_oos[n_star]))
+
+    if not logits:
+        return {
+            "pbo": 1.0,
+            "n_splits": s_blocks,
+            "n_combinations": 0,
+            "n_trials": n_trials,
+            "n_observations": t_obs,
+            "logits": [],
+            "median_logit": 0.0,
+            "prob_loss_oos": 1.0,
+            "is_best_oos_mean": 0.0,
+            "degradation_slope": 0.0,
+        }
+
+    pbo = float(sum(1 for l in logits if l <= 0.0) / len(logits))
+    prob_loss_oos = float(sum(1 for s in oos_selected_scores if s <= 0.0) / len(oos_selected_scores))
+
+    is_arr = np.asarray(is_best_scores, dtype=np.float64)
+    oos_arr = np.asarray(oos_selected_scores, dtype=np.float64)
+    is_centered = is_arr - np.mean(is_arr)
+    denom_var = float(np.dot(is_centered, is_centered))
+    slope = float(np.dot(is_centered, oos_arr - np.mean(oos_arr)) / denom_var) if denom_var > 1e-12 else 0.0
+
+    return {
+        "pbo": round(pbo, 4),
+        "n_splits": s_blocks,
+        "n_combinations": len(logits),
+        "n_trials": n_trials,
+        "n_observations": t_obs,
+        "logits": [round(float(x), 4) for x in logits],
+        "median_logit": round(float(np.median(logits)), 4),
+        "prob_loss_oos": round(prob_loss_oos, 4),
+        "is_best_oos_mean": round(float(np.mean(oos_arr)), 4),
+        "degradation_slope": round(slope, 4),
+    }
 
 
 def bootstrap_ci95(
@@ -215,7 +409,6 @@ def deflated_sharpe_ratio(
     if k_trials <= 1:
         sr0 = 0.0
     else:
-        # Under null hypothesis, standard error of per-trade SR across K trials is ~ 1 / sqrt(T)
         var_sr = float(sr_variance) if sr_variance is not None else (1.0 / max(t_len, 10))
         q1 = norm_ppf(1.0 - 1.0 / k_trials)
         q2 = norm_ppf(1.0 - 1.0 / (k_trials * math.e))

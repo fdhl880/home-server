@@ -13,8 +13,22 @@ const { createHub, WS_PATH } = require('./hub');
 
 const KEYS = ['FINNHUB_KEY', 'TWELVE_KEY', 'FRED_KEY', 'CRYPTOPANIC_KEY'];
 
-module.exports = (app, server) => {
-  const hub = createHub(server);
+function parseAllowedOrigins(extra) {
+  const raw = [
+    ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : []),
+    ...(Array.isArray(extra) ? extra : (extra ? [extra] : []))
+  ];
+  const set = new Set();
+  for (const item of raw) {
+    const s = String(item || '').trim().replace(/\/+$/, '').toLowerCase();
+    if (s) set.add(s);
+  }
+  return set;
+}
+
+module.exports = (app, server, opts = {}) => {
+  const hub = createHub(server, opts);
+  const allowedOrigins = parseAllowedOrigins(opts.allowedOrigins);
   // The existing server.js calls app.listen() after mounting and exposes no server handle: capture it.
   if (!server && typeof app.listen === 'function') {
     const orig = app.listen.bind(app);
@@ -22,11 +36,33 @@ module.exports = (app, server) => {
   }
 
   const r = express.Router();
-  r.use((req, res, next) => { res.set('Access-Control-Allow-Origin', '*'); res.set('Cache-Control', 'no-store'); next(); });
+  r.use((req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    res.set('Vary', 'Origin');
+    const origin = req.headers.origin;
+    if (origin) {
+      let originOk = false;
+      try {
+        const u = new URL(origin);
+        const host = String(req.get('host') || '').toLowerCase();
+        if ((u.protocol === 'http:' || u.protocol === 'https:') && ((host && u.host.toLowerCase() === host) || allowedOrigins.has(u.origin.toLowerCase()))) {
+          originOk = true;
+        }
+      } catch {}
+      if (!originOk) {
+        return res.status(403).json({ ok: false, source: 'hub', ts: Date.now(), mode: 'N/A', status: 'N/A', error: 'CORS origin denied', data: null });
+      }
+      res.set('Access-Control-Allow-Origin', origin);
+      res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Dash-Token');
+      res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      if (req.method === 'OPTIONS') return res.status(204).end();
+    }
+    next();
+  });
   r.use(U.rateLimit(120, 60000));
 
   const env = (source, data, extra) => Object.assign({ ok: true, source, ts: Date.now(), mode: 'LIVE', status: 'OK', error: null, data }, extra);
-  const fail = (res, source, e, code) => res.status(code || 502).json({ ok: false, source, ts: Date.now(), mode: 'N/A', status: 'N/A', error: String(e && e.message || e), data: null });
+  const fail = (res, source, e, code) => res.status(code || 502).json({ ok: false, source, ts: Date.now(), mode: 'N/A', status: 'N/A', error: U.redactSecrets(e && e.message || e), data: null });
   const wrap = (source, fn) => async (req, res) => { try { await fn(req, res); } catch (e) { fail(res, typeof source === 'function' ? source(req) : source, e, e.badRequest ? 400 : 502); } };
   const bad = m => { const e = new Error(m); e.badRequest = true; return e; };
   const srcOf = sym => (agg.isCrypto(sym) ? (U.classify(sym) === 'crypto-perp' ? 'binance-futures' : 'binance-spot') : 'yahoo');
@@ -116,8 +152,15 @@ module.exports = (app, server) => {
   }
   r.get('/health', wrap('hub', async (req, res) => {
     await Promise.race([probe(), new Promise(r2 => setTimeout(r2, 12000))]);
-    const providers = {}; for (const k of Object.keys(U.health)) providers[k] = U.health[k];
-    ['binance-spot', 'binance-futures', 'yahoo', 'finnhub', 'twelvedata', 'fred', 'news-rss', 'cryptopanic', 'calendar', 'feargreed'].forEach(k => { providers[k] = U.hp(k); });
+    const providers = {};
+    for (const k of Object.keys(U.health)) {
+      const h = U.health[k];
+      providers[k] = h ? { ...h, lastError: h.lastError ? U.redactSecrets(h.lastError) : null } : h;
+    }
+    ['binance-spot', 'binance-futures', 'yahoo', 'finnhub', 'twelvedata', 'fred', 'news-rss', 'cryptopanic', 'calendar', 'feargreed'].forEach(k => {
+      const h = U.hp(k);
+      providers[k] = h ? { ...h, lastError: h.lastError ? U.redactSecrets(h.lastError) : null } : h;
+    });
     const keys = {}; KEYS.forEach(k => { keys[k] = !!process.env[k]; });
     res.json(env('hub', Object.assign(hub.stats(), { wsPath: WS_PATH, providers, keys })));
   }));

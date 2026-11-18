@@ -584,6 +584,23 @@
 </head>
 <body>
 
+    <!-- Fail-Closed Token Auth Modal -->
+    <div id="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title" style="display:none; position:fixed; inset:0; z-index:99999; background:rgba(3,7,18,0.88); backdrop-filter:blur(10px); align-items:center; justify-content:center; padding:16px;">
+        <div style="width:100%; max-width:420px; background:#0f172a; border:1px solid rgba(16,185,129,0.5); border-radius:14px; padding:22px; box-shadow:0 20px 50px rgba(0,0,0,0.6); color:#f8fafc;">
+            <div id="auth-modal-title" style="font-size:15px; font-weight:700; color:#34d399; margin-bottom:8px;">🔒 Pluang AI Terminal — Token Required</div>
+            <p style="font-size:12px; color:#94a3b8; line-height:1.5; margin-bottom:14px;">
+                Enter the server <code style="color:#f8fafc; background:rgba(255,255,255,0.08); padding:1px 5px; border-radius:4px;">DASH_TOKEN</code> (from <code style="color:#f8fafc;">pluang-bot/.dash_token</code> on the host or environment) to unlock live endpoints and trade controls.
+            </p>
+            <form id="auth-modal-form" autocomplete="off">
+                <input id="auth-token-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste DASH_TOKEN..." style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:8px; border:1px solid rgba(255,255,255,0.16); background:#020617; color:#f8fafc; font-size:13px; outline:none;">
+                <div id="auth-modal-err" style="min-height:18px; margin-top:8px; font-size:12px; color:#f87171;"></div>
+                <div style="display:flex; justify-content:flex-end; margin-top:10px;">
+                    <button id="auth-submit-btn" type="submit" style="background:linear-gradient(135deg,#10b981,#059669); color:#fff; border:none; padding:9px 18px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer;">Authenticate</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- Header Sticky -->
     <header>
         <div class="logo-group">
@@ -915,96 +932,241 @@
 
     <!-- Client-side Logic -->
     <script>
+        const TOKEN_STORAGE_KEY = 'pyro_dash_token';
+        const _nativeFetch = window.fetch.bind(window);
         let currentSelectedSymbol = "BTC-USD";
         let lastCommitteeResult = null;
+        const _inFlight = {};
 
+        function esc(val) {
+            return String(val ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;')
+                .replace(/`/g, '&#96;');
+        }
+
+        function getDashToken() {
+            try { return (localStorage.getItem(TOKEN_STORAGE_KEY) || '').trim(); } catch { return ''; }
+        }
+
+        function setDashToken(tok) {
+            try {
+                const clean = String(tok || '').trim();
+                if (clean) localStorage.setItem(TOKEN_STORAGE_KEY, clean);
+                else localStorage.removeItem(TOKEN_STORAGE_KEY);
+            } catch {}
+        }
+
+        function showAuthModal(msg) {
+            const modal = document.getElementById('auth-modal');
+            const errEl = document.getElementById('auth-modal-err');
+            const inp = document.getElementById('auth-token-input');
+            if (!modal) return;
+            if (errEl && msg) errEl.textContent = String(msg);
+            if (modal.style.display !== 'flex') {
+                modal.style.display = 'flex';
+                if (inp) setTimeout(() => inp.focus(), 20);
+            }
+        }
+
+        function hideAuthModal() {
+            const modal = document.getElementById('auth-modal');
+            const errEl = document.getElementById('auth-modal-err');
+            if (modal) modal.style.display = 'none';
+            if (errEl) errEl.textContent = '';
+        }
+
+        function isSameOriginApiUrl(input) {
+            try {
+                const raw = typeof input === 'string' ? input : (input && input.url) || '';
+                if (!raw) return false;
+                const u = new URL(raw, location.origin);
+                return u.origin === location.origin && u.pathname.startsWith('/api/');
+            } catch {
+                return false;
+            }
+        }
+
+        async function apiFetch(url, opts = {}, timeoutMs = 12000) {
+            const ctrl = new AbortController();
+            let timedOut = false;
+            const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs);
+            try {
+                const headers = new Headers(opts.headers || {});
+                const tok = getDashToken();
+                if (tok && isSameOriginApiUrl(url) && !headers.has('X-Dash-Token') && !headers.has('Authorization')) {
+                    headers.set('X-Dash-Token', tok);
+                }
+                const res = await _nativeFetch(url, {
+                    cache: 'no-store',
+                    ...opts,
+                    headers,
+                    signal: ctrl.signal
+                });
+                if (res.status === 401 && isSameOriginApiUrl(url)) {
+                    showAuthModal('Session token missing or invalid (HTTP 401).');
+                }
+                return res;
+            } catch (err) {
+                if (timedOut) throw new Error(`Request timeout (${timeoutMs}ms)`);
+                throw err;
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
+        window.fetch = function(input, init = {}) {
+            if (!isSameOriginApiUrl(input)) return _nativeFetch(input, init);
+            const raw = typeof input === 'string' ? input : (input && input.url) || '';
+            const u = new URL(raw, location.origin);
+            if (u.pathname === '/api/auth/verify') return _nativeFetch(input, init);
+            return apiFetch(input, init, 15000);
+        };
+
+        document.getElementById('auth-modal-form')?.addEventListener('submit', async ev => {
+            ev.preventDefault();
+            const inp = document.getElementById('auth-token-input');
+            const errEl = document.getElementById('auth-modal-err');
+            const btn = document.getElementById('auth-submit-btn');
+            const tok = (inp ? inp.value : '').trim();
+            if (!tok) {
+                if (errEl) errEl.textContent = 'Token tidak boleh kosong.';
+                return;
+            }
+            if (btn) btn.disabled = true;
+            if (errEl) errEl.textContent = 'Memverifikasi token...';
+            try {
+                const res = await _nativeFetch('/api/auth/verify', {
+                    method: 'POST',
+                    cache: 'no-store',
+                    headers: { 'Content-Type': 'application/json', 'X-Dash-Token': tok },
+                    body: JSON.stringify({ token: tok })
+                });
+                if (!res.ok) {
+                    if (errEl) errEl.textContent = res.status === 429 ? 'Terlalu banyak percobaan. Tunggu sebentar.' : `Token ditolak (HTTP ${res.status}).`;
+                    return;
+                }
+                setDashToken(tok);
+                if (inp) inp.value = '';
+                hideAuthModal();
+                refreshAll(true);
+            } catch {
+                if (errEl) errEl.textContent = 'Gagal terhubung ke server.';
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        });
 
         async function checkStatus() {
+            if (_inFlight.status) return;
+            _inFlight.status = true;
             try {
-                const res = await fetch('/api/status');
+                const res = await apiFetch('/api/status', {}, 12000);
+                if (!res.ok) return;
                 const data = await res.json();
                 const badge = document.getElementById('pluang-status');
+                if (!badge) return;
+                badge.textContent = '';
+                const dot = document.createElement('span');
                 if (data.pluang_connected) {
-                    badge.innerHTML = `<span class="pulse-dot"></span> Pluang MCP Aktif`;
+                    dot.className = 'pulse-dot';
+                    badge.append(dot, ' Pluang MCP Aktif');
                 } else {
-                    badge.innerHTML = `<span style="color:#ef4444;">●</span> Pluang Belum Login`;
+                    dot.style.color = '#ef4444';
+                    dot.textContent = '●';
+                    badge.append(dot, ' Pluang Belum Login');
                 }
             } catch (e) {
                 console.error(e);
+            } finally {
+                _inFlight.status = false;
             }
         }
 
         async function loadWatchlist() {
+            if (_inFlight.watchlist) return;
+            _inFlight.watchlist = true;
             const container = document.getElementById('watchlist-container');
-            container.innerHTML = '<p style="color:var(--text-muted); font-size:13px;">Mengambil data live...</p>';
+            if (container && !container.children.length) {
+                container.innerHTML = '<p style="color:var(--text-muted); font-size:13px;">Mengambil data live...</p>';
+            }
             try {
-                const res = await fetch('/api/watchlist');
+                const res = await apiFetch('/api/watchlist', {}, 12000);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
                 const list = await res.json();
+                if (!container || !Array.isArray(list)) return;
                 container.innerHTML = '';
-                
+
                 list.forEach(item => {
-                    const isPos = item.change_24h >= 0;
+                    const isPos = Number(item.change_24h) >= 0;
                     const card = document.createElement('div');
                     card.className = `asset-card ${item.symbol === currentSelectedSymbol ? 'active' : ''}`;
-                    card.onclick = () => selectAsset(item.symbol, item.name);
-                    
+                    card.onclick = () => selectAsset(item.symbol, item.name, card);
+
                     card.innerHTML = `
                         <div class="asset-info">
-                            <h4>${item.symbol}</h4>
-                            <p>${item.name} • RSI: ${item.rsi}</p>
+                            <h4>${esc(item.symbol)}</h4>
+                            <p>${esc(item.name)} • RSI: ${esc(item.rsi)}</p>
                         </div>
                         <div class="asset-price-box">
-                            <div class="asset-price">$${Number(item.price).toLocaleString()}</div>
+                            <div class="asset-price">$${Number(item.price || 0).toLocaleString()}</div>
                             <div class="asset-change ${isPos ? 'positive' : 'negative'}">
-                                ${isPos ? '▲ +' : '▼ '}${item.change_24h}%
+                                ${isPos ? '▲ +' : '▼ '}${esc(item.change_24h)}%
                             </div>
                         </div>
                     `;
                     container.appendChild(card);
                 });
             } catch (e) {
-                container.innerHTML = '<p style="color:#ef4444;">Gagal memuat pasar.</p>';
+                if (container) container.innerHTML = '<p style="color:#ef4444;">Gagal memuat pasar.</p>';
+            } finally {
+                _inFlight.watchlist = false;
             }
         }
 
-        function selectAsset(symbol, name) {
+        function selectAsset(symbol, name, cardEl) {
             currentSelectedSymbol = symbol;
-            document.getElementById('active-symbol-title').innerText = `${symbol} (${name})`;
+            const titleEl = document.getElementById('active-symbol-title');
+            if (titleEl) titleEl.innerText = `${symbol} (${name})`;
             document.querySelectorAll('.asset-card').forEach(el => el.classList.remove('active'));
-            event.currentTarget.classList.add('active');
+            if (cardEl) cardEl.classList.add('active');
         }
 
         async function trigger5LayerScan() {
             const btn = document.getElementById('start-scan-btn');
+            const symSnap = currentSelectedSymbol;
             btn.disabled = true;
             btn.innerHTML = `<div class="spinner"></div> Menjalankan Audit...`;
 
-            document.getElementById('layer1-content').innerHTML = `<i>Memindai candle real-time ${currentSelectedSymbol}...</i>`;
+            document.getElementById('layer1-content').innerHTML = `<i>Memindai candle real-time ${esc(symSnap)}...</i>`;
             document.getElementById('layer2-content').innerHTML = `<i>Mencari pola setup trading...</i>`;
             document.getElementById('layer3-content').innerHTML = `<i>Menyusun rencana harga dan posisi...</i>`;
             document.getElementById('layer4-content').innerHTML = `<i>Mengaudit seluruh potensi bahaya...</i>`;
             document.getElementById('final-call-body').innerHTML = `<i>Hakim sedang menimbang konsensus...</i>`;
 
             try {
-                const res = await fetch('/api/scan', {
+                const res = await apiFetch('/api/scan', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ symbol: currentSelectedSymbol })
-                });
+                    body: JSON.stringify({ symbol: symSnap })
+                }, 65000);
                 const data = await res.json();
 
-                if (data.error) {
-                    alert("Error: " + data.error);
+                if (!res.ok || data.error) {
+                    alert("Error: " + (data.error || ('HTTP ' + res.status)));
                     return;
                 }
 
                 // Render Layer 1
-                const l1 = data.layer1_scanning;
+                const l1 = data.layer1_scanning || {};
                 document.getElementById('layer1-content').innerHTML = `
-                    <b>Harga:</b> $${l1.current_price?.toLocaleString()} (${l1.change_24h_pct}%) | 
-                    <b>RSI (14):</b> ${l1.rsi_14} | 
-                    <b>Tren:</b> ${l1.trend_ema} | 
-                    <b>24h High:</b> $${l1.high_24h?.toLocaleString()} | <b>24h Low:</b> $${l1.low_24h?.toLocaleString()}
+                    <b>Harga:</b> $${Number(l1.current_price || 0).toLocaleString()} (${esc(l1.change_24h_pct)}%) | 
+                    <b>RSI (14):</b> ${esc(l1.rsi_14)} | 
+                    <b>Tren:</b> ${esc(l1.trend_ema)} | 
+                    <b>24h High:</b> $${Number(l1.high_24h || 0).toLocaleString()} | <b>24h Low:</b> $${Number(l1.low_24h || 0).toLocaleString()}
                 `;
 
                 // Render Layer 2
@@ -1017,8 +1179,9 @@
                 document.getElementById('layer4-content').innerText = data.layer4_risk;
 
                 // Render Layer 5 (Final Call)
-                const fc = data.layer5_final_call;
+                const fc = data.layer5_final_call || {};
                 const isApproved = fc.status === "APPROVED";
+                const nominalSnap = Number(fc.nominal_idr || 50000);
 
                 document.getElementById('final-call-body').innerHTML = `
                     <div class="status-badge-big ${isApproved ? 'status-approved' : 'status-rejected'}">
@@ -1027,11 +1190,11 @@
                     <div class="metric-grid">
                         <div class="metric-item">
                             <span>Keyakinan</span>
-                            <strong>${fc.confidence_score}% (Min 65%)</strong>
+                            <strong>${esc(fc.confidence_score)}% (Min 65%)</strong>
                         </div>
                         <div class="metric-item">
                             <span>Risk / Reward</span>
-                            <strong>${fc.risk_reward_ratio} (Min 1:1.8)</strong>
+                            <strong>${esc(fc.risk_reward_ratio)} (Min 1:1.8)</strong>
                         </div>
                         <div class="metric-item">
                             <span>Target Profit</span>
@@ -1043,26 +1206,31 @@
                         </div>
                         <div class="metric-item">
                             <span>Modal Dikunci</span>
-                            <strong>Rp ${Number(fc.nominal_idr || 50000).toLocaleString()}</strong>
+                            <strong>Rp ${nominalSnap.toLocaleString()}</strong>
                         </div>
                     </div>
                     <p style="font-size:14px; line-height:1.6; margin-top:12px; color:#cbd5e1;">
-                        <b>Kesimpulan Hakim:</b> ${fc.final_reason}
+                        <b>Kesimpulan Hakim:</b> ${esc(fc.final_reason)}
                     </p>
                     ${isApproved ? `
                         <div class="action-row">
-                            <button class="btn-execute" onclick="executeTrade('${currentSelectedSymbol}', ${fc.nominal_idr})">
-                                🚀 Eksekusi Pluang (Rp ${Number(fc.nominal_idr).toLocaleString()})
+                            <button class="btn-execute" id="btn-execute-scan">
+                                🚀 Eksekusi Pluang (Rp ${nominalSnap.toLocaleString()})
                             </button>
-                            <button class="btn-reject" onclick="alert('Transaksi dibatalkan.')">
+                            <button class="btn-reject" id="btn-reject-scan">
                                 ❌ Tolak & Abaikan
                             </button>
                         </div>
                     ` : ''}
                 `;
 
+                if (isApproved) {
+                    document.getElementById('btn-execute-scan')?.addEventListener('click', () => executeTrade(symSnap, nominalSnap));
+                    document.getElementById('btn-reject-scan')?.addEventListener('click', () => alert('Transaksi dibatalkan.'));
+                }
+
             } catch (e) {
-                alert("Gagal scan: " + e);
+                alert("Gagal scan: " + (e && e.message ? e.message : e));
             } finally {
                 btn.disabled = false;
                 btn.innerHTML = `<span>🚀 Jalankan 5-Layer Audit</span>`;
@@ -1070,31 +1238,35 @@
         }
 
         async function executeTrade(symbol, amount) {
-            if (!confirm(`Konfirmasi eksekusi order draf di Pluang:\nAset: ${symbol}\nNominal: Rp ${amount.toLocaleString()}\n\nLanjutkan?`)) {
+            if (!confirm(`Konfirmasi eksekusi order draf di Pluang:\nAset: ${symbol}\nNominal: Rp ${Number(amount).toLocaleString()}\n\nLanjutkan?`)) {
                 return;
             }
             try {
-                const res = await fetch('/api/execute', {
+                const res = await apiFetch('/api/execute', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ symbol: symbol, amount_idr: amount })
-                });
+                }, 20000);
                 const result = await res.json();
-                if (result.success) {
+                if (res.ok && result.success) {
                     alert("✅ Sukses! " + result.message);
                 } else {
-                    alert("❌ Gagal: " + result.error);
+                    alert("❌ Gagal: " + (result.error || ('HTTP ' + res.status)));
                 }
             } catch (e) {
-                alert("Error eksekusi: " + e);
+                alert("Error eksekusi: " + (e && e.message ? e.message : e));
             }
         }
 
-        // Auto-refresh watchlist and status every 5 seconds
+        // Auto-refresh positions
         async function loadPositions() {
+            if (_inFlight.positions) return;
+            _inFlight.positions = true;
             try {
-                const res = await fetch('/api/positions');
+                const res = await apiFetch('/api/positions', {}, 12000);
+                if (!res.ok) return;
                 const data = await res.json();
+                if (!Array.isArray(data)) return;
                 const openPositions = data.filter(p => p.status === 'OPEN');
                 const posContainer = document.getElementById('positions-panel');
                 if (!posContainer) return;
@@ -1109,17 +1281,18 @@
                         const slRoi = Number(p.sl_roi_pct ?? -24.0).toFixed(1);
                         const slIdr = Math.round(Math.abs(Number(p.sl_pnl_idr ?? -12000))).toLocaleString('id-ID');
                         const slProfit = Number(p.sl_roi_pct || 0) > 0;
+                        const pnlPct = Number(p.pnl_pct || 0);
                         return `
                         <div style="padding:10px 14px; border-radius:10px; background:rgba(16,185,129,0.06); border:1px solid rgba(16,185,129,0.2); margin-bottom:8px;">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
                                 <div>
-                                    <b style="font-size:14px;">${p.symbol}</b>
-                                    <span style="font-size:12px; color:${p.direction === 'LONG' ? '#34d399' : '#f87171'}; margin-left:6px;">${p.direction} ${p.leverage}x</span>
-                                    <br><span style="font-size:10px; color:#a78bfa;">${p.margin_type || 'ISOLATED'} | ${p.order_type || 'MARKET'}</span>
+                                    <b style="font-size:14px;">${esc(p.symbol)}</b>
+                                    <span style="font-size:12px; color:${p.direction === 'LONG' ? '#34d399' : '#f87171'}; margin-left:6px;">${esc(p.direction)} ${esc(p.leverage)}x</span>
+                                    <br><span style="font-size:10px; color:#a78bfa;">${esc(p.margin_type || 'ISOLATED')} | ${esc(p.order_type || 'MARKET')}</span>
                                     <span style="font-size:10px; margin-left:4px; color:#34d399;">✅ Binance Live</span>
                                 </div>
                                 <div style="text-align:right;">
-                                    <span style="font-size:13px; color:${p.pnl_pct >= 0 ? '#34d399' : '#f87171'}; font-weight:700;">${p.pnl_pct >= 0 ? '+' : ''}${p.pnl_pct?.toFixed(2) || 0}% (Rp ${Math.round(Number(p.pnl_idr || 0)).toLocaleString('id-ID')})</span>
+                                    <span style="font-size:13px; color:${pnlPct >= 0 ? '#34d399' : '#f87171'}; font-weight:700;">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% (Rp ${Math.round(Number(p.pnl_idr || 0)).toLocaleString('id-ID')})</span>
                                     <br><span style="font-size:11px; color:var(--text-muted);">Margin: Rp ${Number(p.position_size_idr || 50000).toLocaleString('id-ID')} ($${Number(p.position_size_usd || 3.03).toFixed(2)})</span>
                                 </div>
                             </div>
@@ -1140,67 +1313,77 @@
                         </div>
                     `}).join('');
                 }
-            } catch(e) { console.error(e); }
+            } catch(e) { console.error(e); } finally {
+                _inFlight.positions = false;
+            }
         }
 
         async function loadPerformanceMetrics() {
+            if (_inFlight.perf) return;
+            _inFlight.perf = true;
             try {
-                const res = await fetch('/api/performance');
+                const res = await apiFetch('/api/performance', {}, 12000);
+                if (!res.ok) return;
                 const data = await res.json();
-                
+
                 // Win Rate
                 const wrEl = document.getElementById('kpi-winrate');
                 if (wrEl) {
-                    wrEl.innerText = `${data.win_rate_pct.toFixed(1)}%`;
+                    wrEl.innerText = `${Number(data.win_rate_pct || 0).toFixed(1)}%`;
                     wrEl.style.color = data.win_rate_pct >= 50 ? '#34d399' : (data.closed_trades === 0 ? '#34d399' : '#f87171');
                 }
                 const tcEl = document.getElementById('kpi-trades-count');
                 if (tcEl) {
-                    tcEl.innerText = `Menang: ${data.winning_trades} | Kalah: ${data.losing_trades} (Total: ${data.total_trades})`;
+                    tcEl.innerText = `Menang: ${data.winning_trades || 0} | Kalah: ${data.losing_trades || 0} (Total: ${data.total_trades || 0})`;
                 }
 
                 // Net Total PnL
                 const totEl = document.getElementById('kpi-total-pnl');
                 if (totEl) {
-                    const isPos = data.net_total_pnl_idr >= 0;
-                    totEl.innerText = `${isPos ? '+' : ''}Rp ${Math.abs(data.net_total_pnl_idr).toLocaleString()}`;
+                    const isPos = Number(data.net_total_pnl_idr || 0) >= 0;
+                    totEl.innerText = `${isPos ? '+' : ''}Rp ${Math.abs(Number(data.net_total_pnl_idr || 0)).toLocaleString()}`;
                     totEl.style.color = isPos ? '#34d399' : '#f87171';
                 }
                 const totUsdEl = document.getElementById('kpi-total-pnl-usd');
                 if (totUsdEl) {
-                    const isPos = data.net_total_pnl_usd >= 0;
-                    totUsdEl.innerText = `${isPos ? '+' : ''}$${data.net_total_pnl_usd.toFixed(2)} USD (Net Total)`;
+                    const isPos = Number(data.net_total_pnl_usd || 0) >= 0;
+                    totUsdEl.innerText = `${isPos ? '+' : ''}$${Number(data.net_total_pnl_usd || 0).toFixed(2)} USD (Net Total)`;
                 }
 
                 // Realized PnL
                 const realEl = document.getElementById('kpi-realized-pnl');
                 if (realEl) {
-                    const isPos = data.realized_pnl_idr >= 0;
-                    realEl.innerText = `${isPos ? '+' : ''}Rp ${Math.abs(data.realized_pnl_idr).toLocaleString()}`;
+                    const isPos = Number(data.realized_pnl_idr || 0) >= 0;
+                    realEl.innerText = `${isPos ? '+' : ''}Rp ${Math.abs(Number(data.realized_pnl_idr || 0)).toLocaleString()}`;
                     realEl.style.color = isPos ? '#34d399' : '#f87171';
                 }
                 const realUsdEl = document.getElementById('kpi-realized-usd');
                 if (realUsdEl) {
-                    realUsdEl.innerText = `${data.closed_trades} posisi selesai (${data.winning_trades}W / ${data.losing_trades}L)`;
+                    realUsdEl.innerText = `${data.closed_trades || 0} posisi selesai (${data.winning_trades || 0}W / ${data.losing_trades || 0}L)`;
                 }
 
                 // Floating PnL
                 const unEl = document.getElementById('kpi-unrealized-pnl');
                 if (unEl) {
-                    const isPos = data.unrealized_pnl_idr >= 0;
-                    unEl.innerText = `${isPos ? '+' : ''}Rp ${Math.abs(data.unrealized_pnl_idr).toLocaleString()}`;
+                    const isPos = Number(data.unrealized_pnl_idr || 0) >= 0;
+                    unEl.innerText = `${isPos ? '+' : ''}Rp ${Math.abs(Number(data.unrealized_pnl_idr || 0)).toLocaleString()}`;
                     unEl.style.color = isPos ? '#06b6d4' : '#f87171';
                 }
                 const openCountEl = document.getElementById('kpi-open-count');
                 if (openCountEl) {
-                    openCountEl.innerText = `${data.open_trades} posisi aktif terpantau AI`;
+                    openCountEl.innerText = `${data.open_trades || 0} posisi aktif terpantau AI`;
                 }
-            } catch(e) { console.error('Error loading performance:', e); }
+            } catch(e) { console.error('Error loading performance:', e); } finally {
+                _inFlight.perf = false;
+            }
         }
 
         async function loadBloombergDashboard() {
+            if (_inFlight.bloomberg) return;
+            _inFlight.bloomberg = true;
             try {
-                const res = await fetch('/api/quick-screen');
+                const res = await apiFetch('/api/quick-screen', {}, 12000);
+                if (!res.ok) return;
                 const data = await res.json();
                 const container = document.getElementById('bloomberg-content');
                 if (!container) return;
@@ -1208,24 +1391,29 @@
                     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px,1fr)); gap:8px;">
                         <div style="background:rgba(0,0,0,0.3); padding:8px; border-radius:8px; text-align:center;">
                             <span style="font-size:10px; color:var(--text-muted);">Alerts</span>
-                            <div style="font-size:14px; font-weight:700; color:#f59e0b;">${data.alerts?.length || 0}</div>
+                            <div style="font-size:14px; font-weight:700; color:#f59e0b;">${esc(data.alerts?.length || 0)}</div>
                         </div>
                         <div style="background:rgba(0,0,0,0.3); padding:8px; border-radius:8px; text-align:center;">
                             <span style="font-size:10px; color:var(--text-muted);">Screened</span>
-                            <div style="font-size:14px; font-weight:700; color:#34d399;">${data.screened || 0}</div>
+                            <div style="font-size:14px; font-weight:700; color:#34d399;">${esc(data.screened || 0)}</div>
                         </div>
                     </div>
                 `;
             } catch (e) {
                 console.error('Error loading Bloomberg data:', e);
+            } finally {
+                _inFlight.bloomberg = false;
             }
         }
 
         async function loadNewsSentiment() {
+            if (_inFlight.news) return;
+            _inFlight.news = true;
             try {
-                const res = await fetch('/api/news');
+                const res = await apiFetch('/api/news', {}, 12000);
+                if (!res.ok) return;
                 const data = await res.json();
-                
+
                 const badge = document.getElementById('news-sentiment-badge');
                 if (badge) {
                     badge.innerText = data.market_sentiment || 'NEUTRAL';
@@ -1246,12 +1434,17 @@
                     hl.innerText = data.latest_headline || 'Tidak ada berita baru';
                     hl.title = data.latest_headline || '';
                 }
-            } catch(e) { console.error('Error loading news:', e); }
+            } catch(e) { console.error('Error loading news:', e); } finally {
+                _inFlight.news = false;
+            }
         }
 
         async function loadAutoTraderStatus() {
+            if (_inFlight.autoTrader) return;
+            _inFlight.autoTrader = true;
             try {
-                const res = await fetch('/api/status');
+                const res = await apiFetch('/api/status', {}, 12000);
+                if (!res.ok) return;
                 const data = await res.json();
                 const statusEl = document.getElementById('autotrader-status');
                 if (!statusEl) return;
@@ -1260,51 +1453,30 @@
                     <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
                         <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px; text-align:center;">
                             <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">Scan Total</span>
-                            <div style="font-size:18px; font-weight:700; color:var(--accent-cyan);">${state.total_scans_done || 0}</div>
+                            <div style="font-size:18px; font-weight:700; color:var(--accent-cyan);">${esc(state.total_scans_done || 0)}</div>
                         </div>
                         <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px; text-align:center;">
                             <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">Approved</span>
-                            <div style="font-size:18px; font-weight:700; color:#34d399;">${state.signals_approved_count || 0}</div>
+                            <div style="font-size:18px; font-weight:700; color:#34d399;">${esc(state.signals_approved_count || 0)}</div>
                         </div>
                         <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:8px; text-align:center;">
                             <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">Rejected</span>
-                            <div style="font-size:18px; font-weight:700; color:#f87171;">${state.signals_rejected_count || 0}</div>
+                            <div style="font-size:18px; font-weight:700; color:#f87171;">${esc(state.signals_rejected_count || 0)}</div>
                         </div>
                     </div>
-                    <p style="font-size:11px; color:var(--text-sub); margin-top:8px;">Last scan: ${state.last_scan_time || 'N/A'} | Universe: ${state.universe_size || 39} coins</p>
+                    <p style="font-size:11px; color:var(--text-sub); margin-top:8px;">Last scan: ${esc(state.last_scan_time || 'N/A')} | Universe: ${esc(state.universe_size || 39)} coins</p>
                 `;
-            } catch(e) { console.error(e); }
+            } catch(e) { console.error(e); } finally {
+                _inFlight.autoTrader = false;
+            }
         }
 
-        // Init
-        checkStatus();
-        loadWatchlist();
-        loadPositions();
-        loadAutoTraderStatus();
-        loadPerformanceMetrics();
-        loadNewsSentiment();
-        loadFuturesSettings();
-        loadExecutionLog();
-        
-        // Auto-refresh every 5 seconds
-        setInterval(() => {
-            loadWatchlist();
-            checkStatus();
-            loadPositions();
-            loadAutoTraderStatus();
-            loadPerformanceMetrics();
-            loadFuturesSettings();
-        }, 5000);
-
-        // News & execution log refresh every 15 seconds
-        setInterval(() => {
-            loadNewsSentiment();
-            loadExecutionLog();
-        }, 15000);
-
         async function loadFuturesSettings() {
+            if (_inFlight.settings) return;
+            _inFlight.settings = true;
             try {
-                const res = await fetch('/api/futures/settings');
+                const res = await apiFetch('/api/futures/settings', {}, 12000);
+                if (!res.ok) return;
                 const cfg = await res.json();
                 const panel = document.getElementById('futures-settings-panel');
                 if (!panel) return;
@@ -1336,12 +1508,17 @@
                         <span style="font-size:12px; font-weight:700; color:#34d399;">🛡️ REAL-TIME</span>
                     </div>
                 `;
-            } catch(e) { console.error(e); }
+            } catch(e) { console.error(e); } finally {
+                _inFlight.settings = false;
+            }
         }
 
         async function loadExecutionLog() {
+            if (_inFlight.execLog) return;
+            _inFlight.execLog = true;
             try {
-                const res = await fetch('/api/execution-log?limit=10');
+                const res = await apiFetch('/api/execution-log?limit=10', {}, 12000);
+                if (!res.ok) return;
                 const data = await res.json();
                 const panel = document.getElementById('execution-log-panel');
                 if (!panel) return;
@@ -1354,14 +1531,16 @@
                     return `
                         <div style="padding:6px 8px; border-radius:6px; background:rgba(0,0,0,0.25); margin-bottom:4px; font-size:11px;">
                             <div style="display:flex; justify-content:space-between;">
-                                <span style="color:${isOk ? '#34d399' : '#f87171'}; font-weight:600;">${isOk ? '✅' : '❌'} ${log.direction || 'LONG'} ${log.symbol || '?'}</span>
-                                <span style="color:var(--text-sub);">${log.leverage || 5}x ${log.margin_type || ''}</span>
+                                <span style="color:${isOk ? '#34d399' : '#f87171'}; font-weight:600;">${isOk ? '✅' : '❌'} ${esc(log.direction || 'LONG')} ${esc(log.symbol || '?')}</span>
+                                <span style="color:var(--text-sub);">${esc(log.leverage || 5)}x ${esc(log.margin_type || '')}</span>
                             </div>
-                            <span style="color:var(--text-sub); font-size:9px;">${log.timestamp || ''}</span>
+                            <span style="color:var(--text-sub); font-size:9px;">${esc(log.timestamp || '')}</span>
                         </div>
                     `;
                 }).join('');
-            } catch(e) { console.error(e); }
+            } catch(e) { console.error(e); } finally {
+                _inFlight.execLog = false;
+            }
         }
 
         // ============================================================
@@ -1383,21 +1562,22 @@
             document.getElementById('committee-result').style.display = 'none';
 
             try {
-                const res = await fetch('/api/committee/run', {
+                const res = await apiFetch('/api/committee/run', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ symbol: currentSelectedSymbol })
-                });
+                }, 95000);
                 const d = await res.json();
 
-                if (d.error) {
-                    alert('Committee error: ' + d.error);
+                if (!res.ok || d.error) {
+                    alert('Committee error: ' + (d.error || ('HTTP ' + res.status)));
+                    document.getElementById('committee-idle').style.display = 'block';
                     return;
                 }
 
                 lastCommitteeResult = d;
 
-                // Update agent displays
+                // Update agent displays safely via textContent
                 const tech = d.technical_analyst || {};
                 const sent = d.sentiment_analyst || {};
                 const fund = d.fundamentals_agent || {};
@@ -1410,7 +1590,7 @@
 
                 const setAgent = (id, text) => {
                     const el = document.getElementById(`agent-${id}`);
-                    if (el) el.innerHTML = text;
+                    if (el) el.textContent = text;
                 };
 
                 setAgent('technical', tech.verdict || '—');
@@ -1430,14 +1610,14 @@
 
                 document.getElementById('comm-direction').innerHTML =
                     `<span style="color:${dirColor}">${direction === 'LONG' ? '📈 LONG' : direction === 'SHORT' ? '📉 SHORT' : '⏸ SKIP'}</span>`;
-                document.getElementById('comm-confidence').innerText = `${d.confidence_pct?.toFixed(1)}%`;
+                document.getElementById('comm-confidence').innerText = `${Number(d.confidence_pct || 0).toFixed(1)}%`;
 
                 const tp = d.trade_params;
                 if (tp) {
                     document.getElementById('comm-budget').innerText = `Rp ${Number(tp.budget_idr).toLocaleString()}`;
                     document.getElementById('comm-leverage').innerText = `${tp.leverage}x`;
-                    document.getElementById('comm-rrr').innerText = `1:${tp.actual_rrr?.toFixed(2)}`;
-                    document.getElementById('comm-var').innerText = `$${tp.var_95_usd?.toFixed(2)}`;
+                    document.getElementById('comm-rrr').innerText = `1:${Number(tp.actual_rrr || 0).toFixed(2)}`;
+                    document.getElementById('comm-var').innerText = `$${Number(tp.var_95_usd || 0).toFixed(2)}`;
                 } else {
                     ['comm-budget','comm-leverage','comm-rrr','comm-var'].forEach(id => {
                         const el = document.getElementById(id);
@@ -1448,11 +1628,11 @@
                 // Spread info (hummingbot)
                 const spread = d.spread_info || {};
                 document.getElementById('comm-spread-bar').innerHTML =
-                    `🔄 <b>hummingbot Spread:</b> ${spread.spread_pct}% | Bid: $${Number(spread.bid_price).toLocaleString()} | Ask: $${Number(spread.ask_price).toLocaleString()} | Mid: $${Number(spread.midpoint).toLocaleString()}`;
+                    `🔄 <b>hummingbot Spread:</b> ${esc(spread.spread_pct ?? '-')}% | Bid: $${Number(spread.bid_price || 0).toLocaleString()} | Ask: $${Number(spread.ask_price || 0).toLocaleString()} | Mid: $${Number(spread.midpoint || 0).toLocaleString()}`;
 
                 // PM decision
                 const pmEl = document.getElementById('comm-pm-decision');
-                pmEl.innerHTML = pm.decision || '—';
+                pmEl.textContent = pm.decision || '—';
                 pmEl.style.background = isApproved ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)';
                 pmEl.style.border = isApproved ? '1px solid rgba(16,185,129,0.3)' : '1px solid rgba(239,68,68,0.3)';
                 pmEl.style.color = isApproved ? '#34d399' : '#f87171';
@@ -1463,13 +1643,14 @@
 
                 // Render Multi-Round Collaboration Transcript
                 const transEl = document.getElementById('comm-transcript');
-                if (transEl && d.collaboration_transcript && d.collaboration_transcript.length > 0) {
+                if (transEl && Array.isArray(d.collaboration_transcript) && d.collaboration_transcript.length > 0) {
                     transEl.innerHTML = d.collaboration_transcript.map(t => {
-                        const col = t.speaker.includes('Bull') ? '#34d399' :
-                                    (t.speaker.includes('Bear') ? '#f87171' :
-                                    (t.speaker.includes('Trader') ? '#c084fc' :
-                                    (t.speaker.includes('Risk') ? '#fbbf24' : '#38bdf8')));
-                        return `<div style="margin-bottom:4px; padding-bottom:3px; border-bottom:1px solid rgba(255,255,255,0.05);"><span style="color:#64748b;">[R${t.round}]</span> <strong style="color:${col};">${t.speaker}</strong> <span style="color:#64748b;">(${t.role})</span>: <span>${t.content}</span></div>`;
+                        const sp = String(t.speaker || '');
+                        const col = sp.includes('Bull') ? '#34d399' :
+                                    (sp.includes('Bear') ? '#f87171' :
+                                    (sp.includes('Trader') ? '#c084fc' :
+                                    (sp.includes('Risk') ? '#fbbf24' : '#38bdf8')));
+                        return `<div style="margin-bottom:4px; padding-bottom:3px; border-bottom:1px solid rgba(255,255,255,0.05);"><span style="color:#64748b;">[R${esc(t.round)}]</span> <strong style="color:${col};">${esc(sp)}</strong> <span style="color:#64748b;">(${esc(t.role)})</span>: <span>${esc(t.content)}</span></div>`;
                     }).join('');
                 }
 
@@ -1484,7 +1665,7 @@
                 document.getElementById('committee-result').style.display = 'block';
 
             } catch(e) {
-                alert('Gagal memanggil committee: ' + e);
+                alert('Gagal memanggil committee: ' + (e && e.message ? e.message : e));
                 document.getElementById('committee-idle').style.display = 'block';
             } finally {
                 btn.disabled = false;
@@ -1503,7 +1684,7 @@
                 `Leverage: ${tp.leverage}x\nRRR: 1:${tp.actual_rrr}\n\nLanjutkan?`)) return;
 
             try {
-                const res = await fetch('/api/execute', {
+                const res = await apiFetch('/api/execute', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
@@ -1514,23 +1695,25 @@
                         tp_price: tp.tp1_price,
                         sl_price: tp.sl_price
                     })
-                });
+                }, 20000);
                 const result = await res.json();
-                if (result.success) {
+                if (res.ok && result.success) {
                     alert('✅ Committee trade berhasil dieksekusi!\n' + result.message);
                     loadPositions();
                 } else {
-                    alert('❌ Gagal: ' + result.error);
+                    alert('❌ Gagal: ' + (result.error || ('HTTP ' + res.status)));
                 }
             } catch(e) {
-                alert('Error eksekusi: ' + e);
+                alert('Error eksekusi: ' + (e && e.message ? e.message : e));
             }
         }
 
         // Auto-poll committee autonomous background status & active thesis
         async function pollAutoCommittee() {
+            if (_inFlight.committee) return;
+            _inFlight.committee = true;
             try {
-                const res = await fetch('/api/committee/auto-status');
+                const res = await apiFetch('/api/committee/auto-status', {}, 12000);
                 if (!res.ok) return;
                 const d = await res.json();
                 const stEl = document.getElementById('comm-auto-status');
@@ -1548,7 +1731,9 @@
                         }
                     }
                 }
-            } catch(e) {}
+            } catch(e) {} finally {
+                _inFlight.committee = false;
+            }
         }
 
         function renderAutoCommitteeData(sym, t) {
@@ -1558,7 +1743,7 @@
             document.getElementById('comm-bear-arg').innerText = t.bear_arg || '—';
             const pmEl = document.getElementById('comm-pm-decision');
             if (pmEl) {
-                pmEl.innerHTML = t.approved ? '✅ APPROVED (Autonomous Multi-Agent Consensus)' : '🛑 REJECTED: Resiko tidak memenuhi syarat';
+                pmEl.textContent = t.approved ? '✅ APPROVED (Autonomous Multi-Agent Consensus)' : '🛑 REJECTED: Resiko tidak memenuhi syarat';
                 pmEl.style.color = t.approved ? '#34d399' : '#f87171';
             }
             if (t.risk) {
@@ -1568,18 +1753,65 @@
                 document.getElementById('comm-var').innerText = '$' + (t.risk.var_95_usd || 0);
             }
             const transEl = document.getElementById('comm-transcript');
-            if (transEl && t.collaboration_transcript && t.collaboration_transcript.length > 0) {
+            if (transEl && Array.isArray(t.collaboration_transcript) && t.collaboration_transcript.length > 0) {
                 transEl.innerHTML = t.collaboration_transcript.map(item => {
-                    const col = item.speaker.includes('Bull') ? '#34d399' : (item.speaker.includes('Bear') ? '#f87171' : (item.speaker.includes('Trader') ? '#c084fc' : '#38bdf8'));
-                    return `<div style="margin-bottom:4px; padding-bottom:3px; border-bottom:1px solid rgba(255,255,255,0.05);"><span style="color:#64748b;">[R${item.round}]</span> <strong style="color:${col};">${item.speaker}</strong> <span style="color:#64748b;">(${item.role})</span>: <span>${item.content}</span></div>`;
+                    const sp = String(item.speaker || '');
+                    const col = sp.includes('Bull') ? '#34d399' : (sp.includes('Bear') ? '#f87171' : (sp.includes('Trader') ? '#c084fc' : '#38bdf8'));
+                    return `<div style="margin-bottom:4px; padding-bottom:3px; border-bottom:1px solid rgba(255,255,255,0.05);"><span style="color:#64748b;">[R${esc(item.round)}]</span> <strong style="color:${col};">${esc(sp)}</strong> <span style="color:#64748b;">(${esc(item.role)})</span>: <span>${esc(item.content)}</span></div>`;
                 }).join('');
             }
             document.getElementById('committee-result').style.display = 'block';
             document.getElementById('committee-idle').style.display = 'none';
         }
 
-        setInterval(pollAutoCommittee, 8000);
-        setTimeout(pollAutoCommittee, 2000);
+        function refreshAll(force = false) {
+            if (!force && document.hidden) return;
+            if (!getDashToken()) {
+                loadWatchlist();
+                loadNewsSentiment();
+                showAuthModal('Masukkan DASH_TOKEN untuk membuka fitur terautentikasi.');
+                return;
+            }
+            checkStatus();
+            loadWatchlist();
+            loadPositions();
+            loadAutoTraderStatus();
+            loadPerformanceMetrics();
+            loadNewsSentiment();
+            loadFuturesSettings();
+            loadExecutionLog();
+            pollAutoCommittee();
+        }
+
+        // Init
+        refreshAll(true);
+
+        // Auto-refresh every 5 seconds when visible and authenticated
+        setInterval(() => {
+            if (document.hidden || !getDashToken()) return;
+            loadWatchlist();
+            checkStatus();
+            loadPositions();
+            loadAutoTraderStatus();
+            loadPerformanceMetrics();
+            loadFuturesSettings();
+        }, 5000);
+
+        // News & execution log refresh every 15 seconds
+        setInterval(() => {
+            if (document.hidden) return;
+            loadNewsSentiment();
+            if (getDashToken()) loadExecutionLog();
+        }, 15000);
+
+        setInterval(() => {
+            if (document.hidden || !getDashToken()) return;
+            pollAutoCommittee();
+        }, 8000);
+
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && getDashToken()) refreshAll(true);
+        });
     </script>
 </body>
 </html>

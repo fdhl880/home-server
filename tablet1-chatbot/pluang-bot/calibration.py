@@ -21,10 +21,20 @@ Implements:
 """
 from __future__ import annotations
 
+import logging
 import math
+import os
+import threading
+import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+
+from state_io import atomic_write_json, get_file_lock, read_json_safe
+
+logger = logging.getLogger(__name__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_CALIBRATOR_PATH = os.path.join(BASE_DIR, "results", "calibrator_state.json")
 
 
 def _clip_prob(p: float, eps: float = 1e-4) -> float:
@@ -152,12 +162,15 @@ class ProbabilityCalibrator:
         min_ev_r: float = 0.20,
         min_edge_over_breakeven: float = 0.05,
         default_base_rate: float = 0.48,
+        state_path: Optional[str] = None,
     ):
         self.n0_prior = float(n0_prior)
         self.method = method.lower().strip()
         self.min_ev_r = float(min_ev_r)
         self.min_edge_over_breakeven = float(min_edge_over_breakeven)
         self.default_base_rate = _clip_prob(default_base_rate)
+        self.state_path = state_path
+        self._lock = get_file_lock(self.state_path) if self.state_path else threading.RLock()
 
         # Base-rate table keyed by (strategy_id, regime): {"p_base": float, "n": int}
         self.base_rates: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -174,46 +187,84 @@ class ProbabilityCalibrator:
         self._platt_b: float = 0.0
         self._is_fitted: bool = False
 
+        if self.state_path and os.path.exists(self.state_path):
+            self.load_state(self.state_path)
+
+    def load_state(self, path: Optional[str] = None) -> bool:
+        target = path or self.state_path or DEFAULT_CALIBRATOR_PATH
+        with get_file_lock(target):
+            with self._lock:
+                data = read_json_safe(target, default=None, strict_on_corrupt=False, expected_type=dict)
+                if not isinstance(data, dict):
+                    return False
+                try:
+                    p_raw = [float(x) for x in data.get("history_p_raw", [])][-300:]
+                    y_val = [1 if int(y) > 0 else 0 for y in data.get("history_y", [])][-300:]
+                    if p_raw and len(p_raw) == len(y_val):
+                        self.fit(p_raw, y_val)
+                        return True
+                except (TypeError, ValueError) as exc:
+                    logger.warning("Ignoring malformed calibrator state in %s: %s", target, exc)
+                return False
+
+    def save_state(self, path: Optional[str] = None) -> bool:
+        target = path or self.state_path or DEFAULT_CALIBRATOR_PATH
+        with get_file_lock(target):
+            with self._lock:
+                p_raw = [round(float(x), 5) for x in self.history_p_raw[-300:]]
+                y_val = [1 if int(y) > 0 else 0 for y in self.history_y[-300:]]
+                payload = {
+                    "history_p_raw": p_raw,
+                    "history_y": y_val,
+                    "n_samples": len(y_val),
+                    "is_fitted": bool(self._is_fitted),
+                    "updated_at": time.time(),
+                }
+            return atomic_write_json(target, payload, make_bak=True)
+
     def set_empirical_base_rate(
         self, strategy_id: str, regime: str, p_base: float, historical_n: int = 50
     ) -> None:
-        key = (str(strategy_id).upper().strip(), str(regime).upper().strip())
-        self.base_rates[key] = {
-            "p_base": _clip_prob(p_base),
-            "n": max(0, int(historical_n)),
-        }
+        with self._lock:
+            key = (str(strategy_id).upper().strip(), str(regime).upper().strip())
+            self.base_rates[key] = {
+                "p_base": _clip_prob(p_base),
+                "n": max(0, int(historical_n)),
+            }
 
     def get_empirical_base_rate(
         self, strategy_id: Optional[str] = None, regime: Optional[str] = None, explicit_p_base: Optional[float] = None
     ) -> float:
-        if explicit_p_base is not None:
-            return _clip_prob(explicit_p_base)
-        if strategy_id and regime:
-            key = (str(strategy_id).upper().strip(), str(regime).upper().strip())
-            if key in self.base_rates:
-                return float(self.base_rates[key]["p_base"])
-        if strategy_id:
-            s_key = str(strategy_id).upper().strip()
-            matches = [v["p_base"] for (s, _), v in self.base_rates.items() if s == s_key]
-            if matches:
-                return float(np.mean(matches))
-        if self.history_y:
-            return _clip_prob(float(np.mean(self.history_y)))
-        return self.default_base_rate
+        with self._lock:
+            if explicit_p_base is not None:
+                return _clip_prob(explicit_p_base)
+            if strategy_id and regime:
+                key = (str(strategy_id).upper().strip(), str(regime).upper().strip())
+                if key in self.base_rates:
+                    return float(self.base_rates[key]["p_base"])
+            if strategy_id:
+                s_key = str(strategy_id).upper().strip()
+                matches = [v["p_base"] for (s, _), v in self.base_rates.items() if s == s_key]
+                if matches:
+                    return float(np.mean(matches))
+            if self.history_y:
+                return _clip_prob(float(np.mean(self.history_y)))
+            return self.default_base_rate
 
     def fit(self, p_raw_seq: Sequence[float], y_true_seq: Sequence[int]) -> "ProbabilityCalibrator":
         """
         Fit Isotonic (PAVA) and Platt scaling parameters on historical (p_raw, y_true) pairs.
         """
-        if len(p_raw_seq) != len(y_true_seq):
-            raise ValueError("p_raw_seq and y_true_seq must have identical length")
-        self.history_p_raw = [_clip_prob(p) for p in p_raw_seq]
-        self.history_y = [1 if float(y) > 0.5 else 0 for y in y_true_seq]
-        self._refit_internal()
-        self.history_p_cal = [
-            self.calibrate(p, sample_count=len(self.history_y)) for p in self.history_p_raw
-        ]
-        return self
+        with self._lock:
+            if len(p_raw_seq) != len(y_true_seq):
+                raise ValueError("p_raw_seq and y_true_seq must have identical length")
+            self.history_p_raw = [_clip_prob(p) for p in p_raw_seq]
+            self.history_y = [1 if float(y) > 0.5 else 0 for y in y_true_seq]
+            self._refit_internal()
+            self.history_p_cal = [
+                self.calibrate(p, sample_count=len(self.history_y)) for p in self.history_p_raw
+            ]
+            return self
 
     def record_outcome(
         self,
@@ -226,16 +277,17 @@ class ProbabilityCalibrator:
         """
         Append a single realized trade outcome (e.g., hitting TP1 before SL) and refit online.
         """
-        p_r = _clip_prob(p_raw)
-        y_val = 1 if outcome_win else 0
-        if p_cal_used is None:
-            p_cal_used = self.calibrate(p_r, strategy_id=strategy_id, regime=regime)
+        with self._lock:
+            p_r = _clip_prob(p_raw)
+            y_val = 1 if outcome_win else 0
+            if p_cal_used is None:
+                p_cal_used = self.calibrate(p_r, strategy_id=strategy_id, regime=regime)
 
-        self.history_p_raw.append(p_r)
-        self.history_y.append(y_val)
-        self.history_p_cal.append(_clip_prob(p_cal_used))
-        self._refit_internal()
-        return float(p_cal_used)
+            self.history_p_raw.append(p_r)
+            self.history_y.append(y_val)
+            self.history_p_cal.append(_clip_prob(p_cal_used))
+            self._refit_internal()
+            return float(p_cal_used)
 
     def _refit_internal(self) -> None:
         n = len(self.history_y)
@@ -254,18 +306,19 @@ class ProbabilityCalibrator:
         """
         Evaluate p_hat_iso(p_raw) or p_hat_platt(p_raw) before Bayesian shrinkage.
         """
-        p_r = _clip_prob(p_raw)
-        if not self._is_fitted:
-            return p_r
+        with self._lock:
+            p_r = _clip_prob(p_raw)
+            if not self._is_fitted:
+                return p_r
 
-        p_iso = float(np.interp(p_r, self._iso_knots_x, self._iso_knots_y))
-        p_platt = _sigmoid(self._platt_a * _logit(p_r) + self._platt_b)
+            p_iso = float(np.interp(p_r, self._iso_knots_x, self._iso_knots_y))
+            p_platt = _sigmoid(self._platt_a * _logit(p_r) + self._platt_b)
 
-        if self.method == "platt":
-            return _clip_prob(p_platt)
-        elif self.method == "blend":
-            return _clip_prob(0.65 * p_iso + 0.35 * p_platt)
-        return _clip_prob(p_iso)
+            if self.method == "platt":
+                return _clip_prob(p_platt)
+            elif self.method == "blend":
+                return _clip_prob(0.65 * p_iso + 0.35 * p_platt)
+            return _clip_prob(p_iso)
 
     def calibrate(
         self,
@@ -279,21 +332,22 @@ class ProbabilityCalibrator:
         Compute calibrated probability with Empirical Base-Rate Bayesian Shrinkage:
           p_cal = (n * p_iso(p_raw) + n_0 * p_base) / (n + n_0)
         """
-        p_r = _clip_prob(p_raw)
-        n = len(self.history_y) if sample_count is None else max(0, int(sample_count))
-        p_base = self.get_empirical_base_rate(
-            strategy_id=strategy_id, regime=regime, explicit_p_base=explicit_p_base
-        )
+        with self._lock:
+            p_r = _clip_prob(p_raw)
+            n = len(self.history_y) if sample_count is None else max(0, int(sample_count))
+            p_base = self.get_empirical_base_rate(
+                strategy_id=strategy_id, regime=regime, explicit_p_base=explicit_p_base
+            )
 
-        if self._is_fitted and n >= 5:
-            p_iso = self.predict_unshrunk(p_r)
-        else:
-            # When live calibration sample is tiny, dampen extreme raw confidence toward base rate
-            p_iso = 0.5 * p_r + 0.5 * p_base
+            if self._is_fitted and n >= 5:
+                p_iso = self.predict_unshrunk(p_r)
+            else:
+                # When live calibration sample is tiny, dampen extreme raw confidence toward base rate
+                p_iso = 0.5 * p_r + 0.5 * p_base
 
-        n0 = max(1e-6, self.n0_prior)
-        p_cal = (n * p_iso + n0 * p_base) / (n + n0)
-        return _clip_prob(p_cal)
+            n0 = max(1e-6, self.n0_prior)
+            p_cal = (n * p_iso + n0 * p_base) / (n + n0)
+            return _clip_prob(p_cal)
 
     @staticmethod
     def compute_ev_and_rrr_net(
@@ -375,22 +429,23 @@ class ProbabilityCalibrator:
         """
         Compute Brier Score for raw vs calibrated predictions over recorded history.
         """
-        n = len(self.history_y)
-        if n == 0:
-            return {"n": 0, "brier_raw": 0.0, "brier_calibrated": 0.0, "improvement": 0.0}
-        y_arr = np.asarray(self.history_y, dtype=float)
-        raw_arr = np.asarray(self.history_p_raw, dtype=float)
-        cal_arr = np.asarray(
-            [self.calibrate(p, sample_count=n) for p in self.history_p_raw], dtype=float
-        )
-        bs_raw = float(np.mean((raw_arr - y_arr) ** 2))
-        bs_cal = float(np.mean((cal_arr - y_arr) ** 2))
-        return {
-            "n": n,
-            "brier_raw": bs_raw,
-            "brier_calibrated": bs_cal,
-            "improvement": bs_raw - bs_cal,
-        }
+        with self._lock:
+            n = len(self.history_y)
+            if n == 0:
+                return {"n": 0, "brier_raw": 0.0, "brier_calibrated": 0.0, "improvement": 0.0}
+            y_arr = np.asarray(self.history_y, dtype=float)
+            raw_arr = np.asarray(self.history_p_raw, dtype=float)
+            cal_arr = np.asarray(
+                [self.calibrate(p, sample_count=n) for p in self.history_p_raw], dtype=float
+            )
+            bs_raw = float(np.mean((raw_arr - y_arr) ** 2))
+            bs_cal = float(np.mean((cal_arr - y_arr) ** 2))
+            return {
+                "n": n,
+                "brier_raw": bs_raw,
+                "brier_calibrated": bs_cal,
+                "improvement": bs_raw - bs_cal,
+            }
 
     def calibrate_prob(self, p_raw: float, **kwargs) -> float:
         return self.calibrate(p_raw, **kwargs)

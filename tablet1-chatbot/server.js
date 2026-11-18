@@ -1,10 +1,342 @@
-try { require('./bootstrap_credentials')(); } catch (e) {}
-try { require('dotenv').config(); } catch (e) {}
+const _WP4_TEST_ENV = process.env.WP4_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
+if (!_WP4_TEST_ENV) {
+    try { require('./bootstrap_credentials')(); } catch (e) {}
+    try { require('dotenv').config(); } catch (e) {}
+}
 const express = require('express');
 const path = require('path');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
+const crypto = require('crypto');
+const U = require('./terminal/api/util');
+
+// Global unhandled rejection / exception safety nets
+if (!process.__wp4ProcessHandlersRegistered) {
+    process.__wp4ProcessHandlersRegistered = true;
+    process.on('unhandledRejection', (reason) => {
+        console.error('[PROCESS:unhandledRejection]', reason && reason.stack ? reason.stack : reason);
+    });
+    process.on('uncaughtException', (err) => {
+        console.error('[PROCESS:uncaughtException]', err && err.stack ? err.stack : err);
+    });
+}
+
+// ============================================================
+// WP-4 SECURITY, VALIDATION & ATOMIC I/O PRIMITIVES
+// ============================================================
+const SYMBOL_RE = /^[A-Za-z0-9._^=][A-Za-z0-9._\-^=]{0,19}$/;
+function validateSymbol(raw, { required = true, fallback = null } = {}) {
+    if (raw === undefined || raw === null || raw === '') {
+        if (!required && fallback !== null) return fallback;
+        return null;
+    }
+    if (typeof raw !== 'string') return null;
+    const s = raw.trim();
+    if (!s || s.includes('..') || !SYMBOL_RE.test(s)) return null;
+    return s.toUpperCase();
+}
+
+function writeFileAtomicSync(filePath, content, mode = 0o644) {
+    const dir = path.dirname(filePath);
+    fs.mkdirSync(dir, { recursive: true });
+    const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    try {
+        fs.writeFileSync(tmpPath, content, { encoding: 'utf8', mode });
+        fs.renameSync(tmpPath, filePath);
+        try { fs.chmodSync(filePath, mode); } catch (_) {}
+    } catch (err) {
+        try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (_) {}
+        throw err;
+    }
+}
+
+function writeJsonAtomicSync(filePath, data, mode = 0o644) {
+    writeFileAtomicSync(filePath, JSON.stringify(data, null, 2), mode);
+}
+
+function readJsonSafeSync(filePath, fallback, { strict = false } = {}) {
+    if (!fs.existsSync(filePath)) return fallback;
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const raw = fs.readFileSync(filePath, 'utf8');
+            return JSON.parse(raw);
+        } catch (err) {
+            if (err instanceof SyntaxError && attempt === 0) {
+                console.warn(`[JSON:RETRY] Transient parse error in ${path.basename(filePath)}: ${err.message}`);
+                continue;
+            }
+            console.error(`[JSON:ERR] Failed reading ${path.basename(filePath)}: ${err.message}`);
+            if (strict) throw err;
+            return fallback;
+        }
+    }
+    return fallback;
+}
+
+function escapeHtml(val) {
+    return String(val == null ? '' : val)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function sanitizeHeaderValue(val) {
+    return String(val == null ? '' : val).replace(/[\r\n\0]+/g, ' ').trim();
+}
+
+function resolveDashToken(tokenFilePath) {
+    const envTok = typeof process.env.DASH_TOKEN === 'string' ? process.env.DASH_TOKEN.trim() : '';
+    if (envTok) {
+        return { token: envTok, source: 'env:DASH_TOKEN', generated: false };
+    }
+    const targetFile = tokenFilePath || process.env.DASH_TOKEN_FILE || path.join(__dirname, 'pluang-bot', '.dash_token');
+    try {
+        if (fs.existsSync(targetFile)) {
+            const existing = fs.readFileSync(targetFile, 'utf8').trim();
+            if (existing.length >= 32) {
+                try { fs.chmodSync(targetFile, 0o600); } catch (_) {}
+                return { token: existing, source: targetFile, generated: false };
+            }
+        }
+        const generatedToken = crypto.randomBytes(32).toString('hex');
+        writeFileAtomicSync(targetFile, generatedToken + '\n', 0o600);
+        return { token: generatedToken, source: targetFile, generated: true };
+    } catch (err) {
+        throw new Error(`FAIL-CLOSED AUTH ERROR: Unable to load or generate DASH_TOKEN at ${targetFile}: ${err.message}`);
+    }
+}
+
+function tokensMatch(provided, expected) {
+    if (!provided || !expected || typeof provided !== 'string' || typeof expected !== 'string') return false;
+    const ha = crypto.createHash('sha256').update(provided, 'utf8').digest();
+    const hb = crypto.createHash('sha256').update(expected, 'utf8').digest();
+    return crypto.timingSafeEqual(ha, hb);
+}
+
+function extractRequestToken(req) {
+    if (!req || !req.headers) return '';
+    const auth = req.headers.authorization;
+    if (typeof auth === 'string') {
+        const m = auth.match(/^Bearer\s+(.+)$/i);
+        if (m) return m[1].trim();
+    }
+    const hdr = req.headers['x-dash-token'];
+    if (typeof hdr === 'string' && hdr.trim()) return hdr.trim();
+    return '';
+}
+
+function parseAllowedOrigins(extra) {
+    const raw = [
+        ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : []),
+        ...(Array.isArray(extra) ? extra : (extra ? [extra] : []))
+    ];
+    const set = new Set();
+    for (const item of raw) {
+        const s = String(item || '').trim().replace(/\/+$/, '').toLowerCase();
+        if (s) set.add(s);
+    }
+    return set;
+}
+
+const TRADING_CONFIG_NUM_SPECS = {
+    max_budget_idr: { min: 0, max: 1_000_000_000 },
+    max_leverage: { min: 1, max: 50, int: true },
+    fixed_leverage: { min: 1, max: 50, int: true },
+    min_confidence_score: { min: 0, max: 100 },
+    min_risk_reward_ratio: { min: 0.5, max: 20 },
+    min_ev_r: { min: -1, max: 10 },
+    risk_pct: { min: 0.1, max: 100 },
+    probation_risk_pct: { min: 0.1, max: 50 },
+    max_sl_pct: { min: 0.1, max: 25 },
+    min_sl_pct: { min: 0.05, max: 10 },
+    min_liq_to_sl_ratio: { min: 1.0, max: 20 },
+    max_drawdown_pct: { min: 1, max: 100 },
+    breaker_daily_dd_pct: { min: 1, max: 100 },
+    circuit_breaker_consecutive_losses: { min: 1, max: 20, int: true },
+    breaker_cooldown_hours: { min: 0.1, max: 168 },
+    max_concurrent_positions: { min: 1, max: 20, int: true },
+    max_daily_trades: { min: 1, max: 200, int: true },
+    all_in_balance_fraction: { min: 0.05, max: 0.99 },
+    tp1_close_pct: { min: 1, max: 100 }
+};
+
+const TRADING_CONFIG_ENUM_SPECS = {
+    margin_type: ['ISOLATED', 'CROSS', 'CROSSED'],
+    order_type: ['MARKET', 'LIMIT'],
+    sizing_mode: ['ALL_IN', 'RISK_PCT', 'FIXED_IDR', 'FIXED_USD'],
+    tp_sl_mode: ['SINGLE_TP', 'DUAL_TP', 'SNIPER_TWO_STAGE'],
+    currency: ['USDT', 'IDR', 'USD']
+};
+
+const TRADING_CONFIG_BOOL_KEYS = new Set([
+    'tp1_move_sl_to_breakeven', 'auto_execute_on_pluang', 'auto_execute',
+    'auto_execute_on_binance', 'committee_enabled', 'ai_manages_execution',
+    'ai_manages_leverage', 'ai_manages_order_type'
+]);
+
+function validateTradingConfigPatch(patch) {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        const e = new Error('Config payload must be a JSON object'); e.statusCode = 400; throw e;
+    }
+    const clean = {};
+    for (const [k, v] of Object.entries(patch)) {
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') {
+            const e = new Error('Forbidden config key'); e.statusCode = 400; throw e;
+        }
+        if (k === 'updated_at') continue;
+        if (Object.prototype.hasOwnProperty.call(TRADING_CONFIG_NUM_SPECS, k)) {
+            const spec = TRADING_CONFIG_NUM_SPECS[k];
+            if (typeof v !== 'number' || !Number.isFinite(v)) {
+                const e = new Error(`Invalid numeric value for ${k}`); e.statusCode = 400; throw e;
+            }
+            if (v < spec.min || v > spec.max) {
+                const e = new Error(`${k} out of allowed range [${spec.min}, ${spec.max}]`); e.statusCode = 400; throw e;
+            }
+            clean[k] = spec.int ? Math.round(v) : v;
+        } else if (Object.prototype.hasOwnProperty.call(TRADING_CONFIG_ENUM_SPECS, k)) {
+            const norm = typeof v === 'string' ? v.trim().toUpperCase() : '';
+            if (!TRADING_CONFIG_ENUM_SPECS[k].includes(norm)) {
+                const e = new Error(`Invalid value for ${k}`); e.statusCode = 400; throw e;
+            }
+            clean[k] = norm;
+        } else if (TRADING_CONFIG_BOOL_KEYS.has(k)) {
+            if (typeof v !== 'boolean') {
+                const e = new Error(`Expected boolean for ${k}`); e.statusCode = 400; throw e;
+            }
+            clean[k] = v;
+        } else if (k === 'trading_mode') {
+            if (typeof v !== 'string' || !/^[A-Za-z0-9_\-]{1,50}$/.test(v.trim())) {
+                const e = new Error('Invalid trading_mode'); e.statusCode = 400; throw e;
+            }
+            clean[k] = v.trim();
+        } else if (k === 'note') {
+            if (typeof v !== 'string' || v.length > 500) {
+                const e = new Error('Invalid note'); e.statusCode = 400; throw e;
+            }
+            clean[k] = v;
+        } else if (k === 'sniper_75_mode' && v && typeof v === 'object' && !Array.isArray(v)) {
+            const sObj = {};
+            const sAllowed = {
+                enabled: 'bool', min_calibrated_p_tp1: [0.5, 0.99], conformal_alpha_target: [0.01, 0.5],
+                tp1_lock_trigger_r: [0.1, 5], tp1_partial_close_pct: [0.05, 1.0],
+                sl_lock_after_tp1_r: [0.0, 5], tp2_runner_target_r: [0.5, 20], early_invalidation_max_loss_r: [0.1, 2]
+            };
+            for (const [sk, sv] of Object.entries(v)) {
+                const rule = sAllowed[sk];
+                if (!rule) { const e = new Error(`Unsupported sniper_75_mode field: ${sk}`); e.statusCode = 400; throw e; }
+                if (rule === 'bool') {
+                    if (typeof sv !== 'boolean') { const e = new Error(`Expected boolean for sniper_75_mode.${sk}`); e.statusCode = 400; throw e; }
+                    sObj[sk] = sv;
+                } else {
+                    if (typeof sv !== 'number' || !Number.isFinite(sv) || sv < rule[0] || sv > rule[1]) {
+                        const e = new Error(`Invalid sniper_75_mode.${sk}`); e.statusCode = 400; throw e;
+                    }
+                    sObj[sk] = sv;
+                }
+            }
+            clean[k] = sObj;
+        } else if (k === 'profit_vault' && v && typeof v === 'object' && !Array.isArray(v)) {
+            const pvObj = {};
+            const pvAllowed = { enabled: 'bool', hwm_step_pct: [1, 100], lock_fraction: [0.05, 0.9] };
+            for (const [pk, pv] of Object.entries(v)) {
+                const rule = pvAllowed[pk];
+                if (!rule) { const e = new Error(`Unsupported profit_vault field: ${pk}`); e.statusCode = 400; throw e; }
+                if (rule === 'bool') {
+                    if (typeof pv !== 'boolean') { const e = new Error(`Expected boolean for profit_vault.${pk}`); e.statusCode = 400; throw e; }
+                    pvObj[pk] = pv;
+                } else {
+                    if (typeof pv !== 'number' || !Number.isFinite(pv) || pv < rule[0] || pv > rule[1]) {
+                        const e = new Error(`Invalid profit_vault.${pk}`); e.statusCode = 400; throw e;
+                    }
+                    pvObj[pk] = pv;
+                }
+            }
+            clean[k] = pvObj;
+        } else {
+            const e = new Error(`Unsupported config field: ${k}`); e.statusCode = 400; throw e;
+        }
+    }
+    return clean;
+}
+
+const EMAIL_RE = /^[^\s@<>\\]+@[^\s@<>\\]+\.[^\s@<>\\]+$/;
+function validateBmailAlertConfigPatch(patch) {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        const e = new Error('alertConfig payload must be a JSON object'); e.statusCode = 400; throw e;
+    }
+    const clean = {};
+    const boolKeys = ['enableHotNews', 'enableFuturesOpen', 'enableFuturesClose', 'enableEmsxOrders'];
+    for (const [k, v] of Object.entries(patch)) {
+        if (boolKeys.includes(k)) {
+            if (typeof v !== 'boolean') { const e = new Error(`Expected boolean for ${k}`); e.statusCode = 400; throw e; }
+            clean[k] = v;
+        } else if (k === 'targetEmail' || k === 'smtpUser') {
+            const s = typeof v === 'string' ? v.trim() : '';
+            if (!s || s.length > 120 || !EMAIL_RE.test(s) || /[\r\n]/.test(s)) {
+                const e = new Error(`Invalid email for ${k}`); e.statusCode = 400; throw e;
+            }
+            clean[k] = s;
+        } else if (k === 'smtpHost') {
+            const s = typeof v === 'string' ? v.trim() : '';
+            if (!/^[A-Za-z0-9.-]{3,100}$/.test(s)) {
+                const e = new Error('Invalid smtpHost'); e.statusCode = 400; throw e;
+            }
+            clean[k] = s;
+        } else if (k === 'smtpPort') {
+            const n = Number(v);
+            if (!Number.isInteger(n) || n < 1 || n > 65535) {
+                const e = new Error('Invalid smtpPort'); e.statusCode = 400; throw e;
+            }
+            clean[k] = n;
+        } else if (k === 'smtpPass') {
+            if (typeof v !== 'string' || /[\r\n]/.test(v) || v.length > 200) {
+                const e = new Error('Invalid smtpPass'); e.statusCode = 400; throw e;
+            }
+            if (v.trim()) clean[k] = v.trim();
+        } else if (k === 'resendApiKey' || k === 'hasSmtpPass' || k === 'hasResendKey') {
+            // Resend API key comes strictly from RESEND_API_KEY env var; ignore UI booleans
+            continue;
+        } else {
+            const e = new Error(`Unsupported alertConfig field: ${k}`); e.statusCode = 400; throw e;
+        }
+    }
+    return clean;
+}
+
+const PUBLIC_API_GET_EXACT = new Set([
+    '/api/market/quotes',
+    '/api/markets',
+    '/api/securities/search',
+    '/api/news',
+    '/api/feargreed',
+    '/api/macro',
+    '/api/watchlist',
+    '/api/crypto-futures/watchlist',
+    '/api/news-sentinel',
+    '/api/terminal/quote',
+    '/api/terminal/kline',
+    '/api/terminal/depth',
+    '/api/terminal/trades',
+    '/api/terminal/news',
+    '/api/terminal/macro',
+    '/api/terminal/calendar',
+    '/api/terminal/fng',
+    '/api/terminal/movers',
+    '/api/terminal/search',
+    '/api/terminal/fundamentals',
+    '/api/terminal/derivatives',
+    '/api/terminal/derivatives-intel',
+    '/api/terminal/health'
+]);
+const PUBLIC_API_GET_PREFIXES = [
+    '/api/quote/',
+    '/api/chart/',
+    '/api/market-status/',
+    '/api/security/fundamentals/'
+];
 
 // Fail-safe RSS Parser: use npm rss-parser if available, or zero-dependency native parser (Termux friendly)
 let Parser;
@@ -40,10 +372,107 @@ try {
 
 const { ALL_UNIVERSE, MACRO_MICRO_DATA } = require('./universe');
 
+function createServerApp(opts = {}) {
+const testMode = Boolean(opts.testMode || process.env.WP4_TEST_MODE === '1' || process.env.NODE_ENV === 'test');
 const app = express();
-const PORT = process.env.PORT || 4000;
+const PORT = Number(opts.port !== undefined ? opts.port : (process.env.PORT || 4000));
+const DASH_HOST = opts.dashHost || process.env.DASH_HOST || '0.0.0.0';
+const pluangDir = opts.pluangDir || path.join(__dirname, 'pluang-bot');
+const resultsDir = opts.resultsDir || path.join(pluangDir, 'results');
+const configPath = opts.configPath || path.join(pluangDir, 'trading_config.json');
+const positionsPath = opts.positionsPath || path.join(resultsDir, 'active_positions.json');
+const statePath = opts.statePath || path.join(resultsDir, 'autotrader_state.json');
+const quickScreenPath = opts.quickScreenPath || path.join(resultsDir, 'quick_screen.json');
+const tokensPath = opts.tokensPath || path.join(pluangDir, 'tokens.json');
+const dashTokenFile = opts.dashTokenFile || process.env.DASH_TOKEN_FILE || path.join(pluangDir, '.dash_token');
 
-app.use(express.json());
+// Fail-closed token initialization (never falls back to unauthenticated mode)
+const resolvedAuth = opts.dashToken
+    ? { token: String(opts.dashToken).trim(), source: 'opts:dashToken', generated: false }
+    : resolveDashToken(dashTokenFile);
+if (!resolvedAuth.token) {
+    throw new Error('FAIL-CLOSED AUTH ERROR: Empty DASH_TOKEN');
+}
+const activeDashToken = resolvedAuth.token;
+const allowedOrigins = parseAllowedOrigins(opts.allowedOrigins);
+
+app.disable('x-powered-by');
+app.set('trust proxy', opts.trustProxy !== undefined ? opts.trustProxy : (process.env.TRUST_PROXY === 'false' ? false : (Number(process.env.TRUST_PROXY) || 1)));
+
+// Strict CORS (same-origin + optional ALLOWED_ORIGINS)
+app.use('/api', (req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    res.set('Vary', 'Origin');
+    const origin = req.headers.origin;
+    if (origin) {
+        let allowed = false;
+        try {
+            const u = new URL(origin);
+            const host = String(req.get('host') || '').toLowerCase();
+            if ((u.protocol === 'http:' || u.protocol === 'https:') && ((host && u.host.toLowerCase() === host) || allowedOrigins.has(u.origin.toLowerCase()))) {
+                allowed = true;
+            }
+        } catch (_) {}
+        if (!allowed) {
+            return res.status(403).json({ ok: false, error: 'CORS origin denied' });
+        }
+        res.set('Access-Control-Allow-Origin', origin);
+        res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Dash-Token');
+        res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        if (req.method === 'OPTIONS') return res.status(204).end();
+    }
+    next();
+});
+
+app.use(express.json({ limit: '100kb' }));
+app.use((err, req, res, next) => {
+    if (err && (err.type === 'entity.parse.failed' || (err instanceof SyntaxError && err.status === 400 && 'body' in err))) {
+        return res.status(400).json({ ok: false, error: 'Invalid JSON payload' });
+    }
+    if (err && err.type === 'entity.too.large') {
+        return res.status(413).json({ ok: false, error: 'Payload too large (max 100kb)' });
+    }
+    next(err);
+});
+
+// Rate limiters (NEVER skip 127.0.0.1 / ::1 because tunnels proxy via localhost)
+const authVerifyLimiter = U.rateLimit(Number(opts.authVerifyRateLimit) || 20, 60000);
+const costlyActionLimiter = U.rateLimit(Number(opts.costlyRateLimit) || 30, 60000);
+const apiGeneralLimiter = U.rateLimit(Number(opts.apiRateLimit) || 240, 60000);
+app.use('/api', apiGeneralLimiter);
+
+// Token verification endpoint (rate-limited; returns { ok: true } or 401)
+app.post('/api/auth/verify', authVerifyLimiter, (req, res) => {
+    const hdrTok = extractRequestToken(req);
+    const bodyTok = !hdrTok && req.body && typeof req.body.token === 'string' ? req.body.token.trim() : '';
+    const candidate = hdrTok || bodyTok;
+    if (tokensMatch(candidate, activeDashToken)) {
+        return res.json({ ok: true });
+    }
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+});
+
+// Fail-closed auth middleware for ALL mutating routes and sensitive read routes under /api
+app.use('/api', (req, res, next) => {
+    if (req.path === '/auth/verify' && req.method === 'POST') return next();
+    if (req.path.includes('..')) {
+        return res.status(400).json({ ok: false, error: 'Invalid path' });
+    }
+    const fullPath = '/api' + (req.path === '/' ? '' : req.path);
+    const normalizedExact = fullPath.length > 1 ? fullPath.replace(/\/+$/, '') : fullPath;
+    if (req.method === 'GET' && (PUBLIC_API_GET_EXACT.has(normalizedExact) || PUBLIC_API_GET_PREFIXES.some(p => fullPath.startsWith(p)))) {
+        return next();
+    }
+    const provided = extractRequestToken(req);
+    if (!tokensMatch(provided, activeDashToken)) {
+        return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+        return costlyActionLimiter(req, res, next);
+    }
+    next();
+});
+
 app.get('/', (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.sendFile(path.join(__dirname, 'public', 'terminal', 'index.html'));
@@ -61,25 +490,27 @@ function getValidKey(envVal, defaultVal) {
     }
     return defaultVal;
 }
-const GROQ_API_KEY = getValidKey(process.env.GROQ_API_KEY, '');
+const GROQ_API_KEY = testMode ? '' : getValidKey(process.env.GROQ_API_KEY, '');
 
 // ============================================================
 // PORTFOLIO DATABASE ENGINE (RP 200 JUTA INITIAL CAPITAL)
 // ============================================================
-const PORTFOLIO_FILE = path.join(__dirname, 'portfolio-data.json');
+const PORTFOLIO_FILE = opts.portfolioFile || path.join(__dirname, 'portfolio-data.json');
 const INITIAL_CAPITAL = 200000000; // Rp 200 Juta
 
 function loadPortfolio() {
     try {
         if (fs.existsSync(PORTFOLIO_FILE)) {
-            const data = JSON.parse(fs.readFileSync(PORTFOLIO_FILE, 'utf8'));
-            if (!data.initialCapital) data.initialCapital = INITIAL_CAPITAL;
-            if (data.cash === undefined) data.cash = INITIAL_CAPITAL;
-            if (!Array.isArray(data.holdings)) data.holdings = [];
-            if (!Array.isArray(data.workingOrders)) data.workingOrders = [];
-            if (!Array.isArray(data.trades)) data.trades = [];
-            if (data.realizedPnL === undefined) data.realizedPnL = 0;
-            return data;
+            const data = readJsonSafeSync(PORTFOLIO_FILE, null, { strict: true });
+            if (data && typeof data === 'object') {
+                if (!data.initialCapital) data.initialCapital = INITIAL_CAPITAL;
+                if (data.cash === undefined) data.cash = INITIAL_CAPITAL;
+                if (!Array.isArray(data.holdings)) data.holdings = [];
+                if (!Array.isArray(data.workingOrders)) data.workingOrders = [];
+                if (!Array.isArray(data.trades)) data.trades = [];
+                if (data.realizedPnL === undefined) data.realizedPnL = 0;
+                return data;
+            }
         }
     } catch (e) {
         console.error('Error loading portfolio:', e.message);
@@ -92,31 +523,27 @@ function loadPortfolio() {
         workingOrders: [],
         trades: []
     };
-    savePortfolio(defaultData);
+    try { savePortfolio(defaultData); } catch (e) {}
     return defaultData;
 }
 
 let _lastTradeId = null;
 function savePortfolio(data) {
-    try {
-        fs.writeFileSync(PORTFOLIO_FILE, JSON.stringify(data, null, 2), 'utf8');
-        if (Array.isArray(data.trades) && data.trades.length > 0) {
-            const latest = data.trades[data.trades.length - 1];
-            if (_lastTradeId && latest && latest.id !== _lastTradeId && typeof dispatchExternalEmailAlert === 'function') {
-                _lastTradeId = latest.id;
-                dispatchExternalEmailAlert({
-                    eventType: latest.type === 'SELL' ? 'FUTURES_CLOSE' : 'FUTURES_OPEN',
-                    symbol: latest.symbol || 'SPCX',
-                    attachmentFn: `${latest.symbol || 'SPCX'} PORT`,
-                    subject: `[BBG EMSX ${latest.type}] ${latest.qty} ${latest.symbol} @ ${latest.price} (${latest.status}) -> fadhilsyafiq90@gmail.com`,
-                    body: `BLOOMBERG EMSX ORDER EXECUTION ALERT\n\nOrder ID    : ${latest.id}\nAction      : ${latest.type} (${latest.orderType || 'MARKET'})\nSymbol      : ${latest.symbol}\nQuantity    : ${latest.qty}\nPrice       : ${latest.price} (${latest.currency || 'IDR'})\nTotal Value : Rp ${Math.round(latest.totalValueIdr || 0).toLocaleString('id-ID')}\nStatus      : ${latest.status}\nCash Left   : Rp ${Math.round(data.cash || 0).toLocaleString('id-ID')}`
-                }).catch(() => {});
-            } else if (latest && !_lastTradeId) {
-                _lastTradeId = latest.id;
-            }
+    writeJsonAtomicSync(PORTFOLIO_FILE, data);
+    if (Array.isArray(data.trades) && data.trades.length > 0) {
+        const latest = data.trades[data.trades.length - 1];
+        if (_lastTradeId && latest && latest.id !== _lastTradeId && typeof dispatchExternalEmailAlert === 'function') {
+            _lastTradeId = latest.id;
+            dispatchExternalEmailAlert({
+                eventType: latest.type === 'SELL' ? 'FUTURES_CLOSE' : 'FUTURES_OPEN',
+                symbol: latest.symbol || 'SPCX',
+                attachmentFn: `${latest.symbol || 'SPCX'} PORT`,
+                subject: `[BBG EMSX ${latest.type}] ${latest.qty} ${latest.symbol} @ ${latest.price} (${latest.status}) -> fadhilsyafiq90@gmail.com`,
+                body: `BLOOMBERG EMSX ORDER EXECUTION ALERT\n\nOrder ID    : ${latest.id}\nAction      : ${latest.type} (${latest.orderType || 'MARKET'})\nSymbol      : ${latest.symbol}\nQuantity    : ${latest.qty}\nPrice       : ${latest.price} (${latest.currency || 'IDR'})\nTotal Value : Rp ${Math.round(latest.totalValueIdr || 0).toLocaleString('id-ID')}\nStatus      : ${latest.status}\nCash Left   : Rp ${Math.round(data.cash || 0).toLocaleString('id-ID')}`
+            }).catch(() => {});
+        } else if (latest && !_lastTradeId) {
+            _lastTradeId = latest.id;
         }
-    } catch (e) {
-        console.error('Error saving portfolio:', e.message);
     }
 }
 
@@ -699,9 +1126,14 @@ async function refreshQuotes() {
     }
 }
 
-// Initial fetch and 20-second background loop
-refreshQuotes();
-setInterval(refreshQuotes, 20000);
+const _bgIntervals = [];
+const _bgTimeouts = [];
+function registerBgJob(fn, intervalMs, runImmediate = true) {
+    _bgIntervals.push({ fn, intervalMs, runImmediate, id: null });
+}
+
+// Registered for startBackgroundJobs()
+registerBgJob(refreshQuotes, 20000, true);
 
 // ============================================================
 // NEWS FEED AGGREGATOR (FAST FINANCIAL RSS)
@@ -757,8 +1189,7 @@ async function refreshNews() {
         newsCache.lastFetched = Date.now();
     } catch (e) {}
 }
-refreshNews();
-setInterval(refreshNews, 120000); // 2 minutes
+registerBgJob(refreshNews, 120000, true); // 2 minutes
 
 // ============================================================
 // FEAR & GREED INDEX
@@ -780,8 +1211,7 @@ async function refreshFearAndGreed() {
         });
     }).on('error', () => {});
 }
-refreshFearAndGreed();
-setInterval(refreshFearAndGreed, 30 * 60 * 1000);
+registerBgJob(refreshFearAndGreed, 30 * 60 * 1000, true);
 
 // ============================================================
 // API ROUTES
@@ -1042,7 +1472,9 @@ function getMarketSchedule(symbol, category) {
 
 // Check market status endpoint
 app.get('/api/market-status/:symbol', (req, res) => {
-    const sym = req.params.symbol.toUpperCase();
+    const valid = validateSymbol(req.params.symbol);
+    if (!valid) return res.status(400).json({ error: 'Invalid symbol' });
+    const sym = valid.toUpperCase();
     const q = quoteCache.data[sym] || TRACKED_ASSETS.find(a => a.symbol.toUpperCase() === sym);
     const schedule = getMarketSchedule(sym, q?.category);
     res.json(schedule);
@@ -1052,21 +1484,44 @@ app.get('/api/market-status/:symbol', (req, res) => {
 app.post('/api/portfolio/trade', (req, res) => {
     try {
         const {
-            type, symbol, name, category, qty, price, currency,
+            type, symbol: rawSymbol, name, category, qty: rawQty, price: rawPrice, currency,
             queueIfClosed, forceExecute,
             orderType = 'MARKET',
             limitPrice, stopPrice, trailPct,
             tif = 'GTC'
-        } = req.body;
+        } = req.body || {};
 
-        if (!type || !symbol || !qty || !price || qty <= 0 || price <= 0) {
+        const normType = typeof type === 'string' ? type.trim().toUpperCase() : '';
+        const symbol = validateSymbol(rawSymbol);
+        const qty = Number(rawQty);
+        const price = Number(rawPrice);
+
+        if ((normType !== 'BUY' && normType !== 'SELL') || !symbol || !Number.isFinite(qty) || !Number.isFinite(price) || qty <= 0 || qty > 1e9 || price <= 0 || price > 1e12) {
             return res.status(400).json({ error: 'Parameter transaksi tidak lengkap atau tidak valid.' });
         }
 
-        const normalizedOrderType = (orderType || 'MARKET').toUpperCase();
-        const normalizedTif = (tif || 'GTC').toUpperCase();
-        const effectiveLimitPrice = parseFloat(limitPrice) || price;
-        const effectiveStopPrice = parseFloat(stopPrice) || null;
+        const normalizedOrderType = typeof orderType === 'string' ? orderType.trim().toUpperCase() : 'MARKET';
+        if (!['MARKET', 'LIMIT', 'STOP', 'STOP_LIMIT'].includes(normalizedOrderType)) {
+            return res.status(400).json({ error: 'Invalid orderType' });
+        }
+        const normalizedTif = typeof tif === 'string' ? tif.trim().toUpperCase() : 'GTC';
+        if (!['GTC', 'DAY', 'IOC', 'FOK'].includes(normalizedTif)) {
+            return res.status(400).json({ error: 'Invalid tif' });
+        }
+        let effectiveLimitPrice = price;
+        if (limitPrice !== undefined && limitPrice !== null && limitPrice !== '') {
+            effectiveLimitPrice = Number(limitPrice);
+            if (!Number.isFinite(effectiveLimitPrice) || effectiveLimitPrice <= 0 || effectiveLimitPrice > 1e12) {
+                return res.status(400).json({ error: 'Invalid limitPrice' });
+            }
+        }
+        let effectiveStopPrice = null;
+        if (stopPrice !== undefined && stopPrice !== null && stopPrice !== '') {
+            effectiveStopPrice = Number(stopPrice);
+            if (!Number.isFinite(effectiveStopPrice) || effectiveStopPrice <= 0 || effectiveStopPrice > 1e12) {
+                return res.status(400).json({ error: 'Invalid stopPrice' });
+            }
+        }
 
         const marketSchedule = getMarketSchedule(symbol, category);
         const isMarketOpen = marketSchedule.isOpen;
@@ -1493,9 +1948,9 @@ function processWorkingOrders() {
         console.error('Error processing working orders:', e.message);
     }
 }
-setInterval(processWorkingOrders, 3000);
+registerBgJob(processWorkingOrders, 3000, false);
 
-// 3. POST & GET /api/portfolio/reset -> Reset to initial Rp 200 Juta
+// 3. POST /api/portfolio/reset -> Reset to initial Rp 200 Juta (POST-only; GET mutation disabled)
 const handlePortfolioReset = (req, res) => {
     try {
         const fresh = {
@@ -1508,19 +1963,20 @@ const handlePortfolioReset = (req, res) => {
         savePortfolio(fresh);
         res.json({ success: true, message: 'Portofolio berhasil di-reset ke modal awal tunai Rp 200.000.000.' });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        res.status(500).json({ error: 'Failed to save portfolio reset' });
     }
 };
 app.post('/api/portfolio/reset', handlePortfolioReset);
-app.get('/api/portfolio/reset', handlePortfolioReset);
 
-// 3b. GET /api/dma-buy & /api/test-buy -> Quick DMA buy for any tracked asset (honoring market schedule)
+// 3b. POST /api/dma-buy & /api/test-buy -> Quick DMA buy for any tracked asset (POST-only)
 const handleDmaBuy = (req, res) => {
     try {
-        const symbol = (req.query.symbol || '').trim().toUpperCase();
-        if (!symbol) {
-            return res.status(400).json({ error: 'Parameter symbol diperlukan. Contoh: /api/dma-buy?symbol=BBCA.JK' });
+        const rawSym = (req.body && req.body.symbol) || (req.query && req.query.symbol) || '';
+        const validSym = validateSymbol(rawSym);
+        if (!validSym) {
+            return res.status(400).json({ error: 'Parameter symbol diperlukan dan harus valid.' });
         }
+        const symbol = validSym.toUpperCase();
 
         const assetDef = TRACKED_ASSETS.find(a => a.symbol.toUpperCase() === symbol);
         const cachedQuote = quoteCache.data[symbol] || quoteCache.data[symbol.toUpperCase()];
@@ -1610,8 +2066,8 @@ const handleDmaBuy = (req, res) => {
         if (!res.headersSent) res.status(500).json({ error: e.message });
     }
 };
-app.get('/api/dma-buy', handleDmaBuy);
-app.get('/api/test-buy', handleDmaBuy);
+app.post('/api/dma-buy', handleDmaBuy);
+app.post('/api/test-buy', handleDmaBuy);
 
 // 4. GET /api/market/quotes -> Live quote list across all tracked categories
 app.get('/api/market/quotes', (req, res) => {
@@ -1667,7 +2123,9 @@ function generateSyntheticCandles(sym, count = 28, range = '1d') {
 }
 
 app.get('/api/chart/:symbol', (req, res) => {
-    let sym = (req.params.symbol || '').trim().toUpperCase();
+    const valid = validateSymbol(req.params.symbol);
+    if (!valid) return res.status(400).json({ error: 'Invalid symbol' });
+    let sym = valid.toUpperCase();
     const range = req.query.range || '1d';
     const interval = req.query.interval || (range === '1d' ? '15m' : (range === '5d' ? '1h' : '1d'));
     const candleCount = range === '1y' ? 52 : (range === '1mo' ? 30 : (range === '5d' ? 35 : 28));
@@ -1924,7 +2382,8 @@ app.post('/api/quotes/batch', async (req, res) => {
 // Dynamic Quote for ANY symbol
 app.get('/api/quote/:symbol', async (req, res) => {
     try {
-        const rawSym = (req.params.symbol || '').trim();
+        const rawSym = validateSymbol(req.params.symbol);
+        if (!rawSym) return res.status(400).json({ error: 'Invalid symbol' });
         const sym = resolveCanonicalSymbol(rawSym);
         let q = quoteCache.data[sym] || quoteCache.data[rawSym.toUpperCase()];
 
@@ -2059,11 +2518,12 @@ async function fetchFundamentals(rawSym) {
 // 6c. GET /api/security/fundamentals/:symbol -> Key Statistics (MKT CAP, PE, PB, DIV, 52W RANGE)
 app.get('/api/security/fundamentals/:symbol', async (req, res) => {
     try {
-        const rawSym = req.params.symbol;
+        const rawSym = validateSymbol(req.params.symbol);
+        if (!rawSym) return res.status(400).json({ error: 'Invalid symbol' });
         const data = await fetchFundamentals(rawSym);
         res.json(data);
     } catch (e) {
-        if (!res.headersSent) res.status(500).json({ error: e.message });
+        if (!res.headersSent) res.status(500).json({ error: 'Failed to fetch fundamentals' });
     }
 });
 
@@ -2087,8 +2547,14 @@ app.get('/api/macro', (req, res) => {
 
 // 9. POST /api/terminal/analyst -> Bloomberg Senior Macro/Trading Analyst AI (Groq ultra-fast with REAL-TIME MARKET INJECTION)
 app.post('/api/terminal/analyst', async (req, res) => {
-    const { prompt, portfolioContext } = req.body;
-    if (!prompt) return res.status(400).json({ error: 'Prompt required' });
+    const { prompt: rawPrompt, portfolioContext } = req.body || {};
+    if (typeof rawPrompt !== 'string' || !rawPrompt.trim() || rawPrompt.trim().length > 4000) {
+        return res.status(400).json({ error: 'Prompt must be a non-empty string (max 4000 chars)' });
+    }
+    const prompt = rawPrompt.trim();
+    if (portfolioContext !== undefined && (typeof portfolioContext !== 'object' || portfolioContext === null || Array.isArray(portfolioContext))) {
+        return res.status(400).json({ error: 'Invalid portfolioContext' });
+    }
 
     // Detect mentioned tickers in prompt
     const words = prompt.toUpperCase().match(/\b[A-Z0-9\.\=\-\^]{2,12}\b/g) || [];
@@ -2101,31 +2567,43 @@ app.post('/api/terminal/analyst', async (req, res) => {
         }
     }
 
-    if (portfolioContext?.holdings) {
-        portfolioContext.holdings.forEach(h => {
-            if (h.sym) detectedSymbols.add(resolveCanonicalSymbol(h.sym));
-        });
+    const safeHoldings = Array.isArray(portfolioContext?.holdings) ? portfolioContext.holdings.slice(0, 30) : [];
+    for (const h of safeHoldings) {
+        if (h && typeof h.sym === 'string') {
+            const vs = validateSymbol(h.sym);
+            if (vs) detectedSymbols.add(resolveCanonicalSymbol(vs));
+        }
     }
 
-    // Fetch or collect live real-time quotes for all detected symbols
+    // Fetch or collect live real-time quotes for detected symbols (capped & parallel with overall timeout)
     const liveQuotesText = [];
-    const symList = Array.from(detectedSymbols).slice(0, 15);
-    for (const sym of symList) {
-        let q = quoteCache.data[sym];
-        if (!q || (Date.now() - (q.timestamp || 0) > 30000)) {
-            const fetched = await fetchYahooQuote(sym);
-            if (fetched && fetched.price > 0) {
-                q = fetched;
-                quoteCache.data[sym] = q;
+    const symList = Array.from(detectedSymbols).slice(0, 5);
+    const quoteResults = await Promise.race([
+        Promise.all(symList.map(async sym => {
+            let q = quoteCache.data[sym];
+            if (!q || (Date.now() - (q.timestamp || 0) > 30000)) {
+                const fetched = await fetchYahooQuote(sym).catch(() => null);
+                if (fetched && fetched.price > 0) {
+                    q = fetched;
+                    quoteCache.data[sym] = q;
+                }
             }
-        }
+            return q;
+        })),
+        new Promise(resolve => setTimeout(() => resolve(symList.map(s => quoteCache.data[s] || null)), 4000))
+    ]);
+    for (const q of quoteResults) {
         if (q && q.price > 0) {
-            const pxStr = q.currency === 'USD' 
-                ? `$${q.price.toFixed(2)} (Rp ${Math.round(q.priceIdr || q.price * quoteCache.usdIdr).toLocaleString('id-ID')})` 
+            const pxStr = q.currency === 'USD'
+                ? `$${q.price.toFixed(2)} (Rp ${Math.round(q.priceIdr || q.price * quoteCache.usdIdr).toLocaleString('id-ID')})`
                 : `Rp ${Number(q.price).toLocaleString('id-ID')}`;
             const chgStr = `${q.change >= 0 ? '+' : ''}${Number(q.changePct || 0).toFixed(2)}%`;
             liveQuotesText.push(`- ${q.symbol} (${q.name}): ${pxStr} [Chg: ${chgStr}, High: ${q.high}, Low: ${q.low}, Vol: ${(q.volume || 0).toLocaleString()}]`);
         }
+    }
+
+    if (!GROQ_API_KEY) {
+        return res.status(503).json({ error: 'AI Analyst API key not configured', liveQuotes: liveQuotesText });
     }
 
     const systemPrompt = `Anda adalah BLOOMBERG TERMINAL AI SENIOR QUANT & MACRO STRATEGIST (B-ANALYST).
@@ -2145,7 +2623,7 @@ ${liveQuotesText.join('\n')}
 === STATUS PORTOFOLIO USER (FADHIL MUHAMMAD SYAFIQ LUBIS) ===
 Total Net Worth: Rp ${Number(portfolioContext?.totalNetWorth || 0).toLocaleString('id-ID')}
 Cash IDR: Rp ${Number(portfolioContext?.cash || 0).toLocaleString('id-ID')}
-Holdings: ${JSON.stringify(portfolioContext?.holdings || [])}`;
+Holdings: ${JSON.stringify(safeHoldings)}`;
 
     try {
         const groqResp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -2193,17 +2671,24 @@ Holdings: ${JSON.stringify(portfolioContext?.holdings || [])}`;
                 const j2 = await fallbackResp.json();
                 return res.json({ analysis: j2.choices?.[0]?.message?.content, liveQuotes: liveQuotesText });
             }
-            const err = await groqResp.text();
-            if (!res.headersSent) return res.status(500).json({ error: 'AI Analyst error: ' + err.slice(0, 100) });
+            const err = U.redactSecrets(await groqResp.text());
+            if (!res.headersSent) return res.status(502).json({ error: 'AI Analyst upstream error: ' + err.slice(0, 100) });
         }
     } catch (e) {
-        if (!res.headersSent) res.status(500).json({ error: 'Koneksi AI Analyst gagal: ' + e.message });
+        if (!res.headersSent) res.status(502).json({ error: 'Koneksi AI Analyst gagal: ' + U.redactSecrets(e.message) });
     }
 });
 
 // Legacy Chat fallback for compatibility
 app.post('/api/tony/chat', async (req, res) => {
-    const { message } = req.body;
+    const rawMsg = req.body && req.body.message;
+    if (typeof rawMsg !== 'string' || !rawMsg.trim() || rawMsg.trim().length > 2000) {
+        return res.status(400).json({ error: 'message must be a non-empty string (max 2000 chars)' });
+    }
+    const message = rawMsg.trim();
+    if (!GROQ_API_KEY) {
+        return res.json({ speech: 'Terminal siap.', text: 'Bloomberg Terminal Active.', action: 'none' });
+    }
     try {
         const groqResp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
@@ -2235,24 +2720,24 @@ app.post('/api/tony/chat', async (req, res) => {
 // CRYPTO FUTURES AI ENGINE (UNIFIED DIRECT DESK ON PORT 4000)
 // ============================================================
 const { execFile, spawn } = require('child_process');
-const pluangDir = path.join(__dirname, 'pluang-bot');
-const resultsDir = path.join(pluangDir, 'results');
-const configPath = path.join(pluangDir, 'trading_config.json');
-const positionsPath = path.join(resultsDir, 'active_positions.json');
-const statePath = path.join(resultsDir, 'autotrader_state.json');
-const quickScreenPath = path.join(resultsDir, 'quick_screen.json');
-const tokensPath = path.join(pluangDir, 'tokens.json');
+
+function runPythonJson(pyCode, payload, { timeout = 30000, maxBuffer = 5 * 1024 * 1024 } = {}, callback) {
+    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const child = execFile(pyCmd, ['-c', pyCode], { cwd: pluangDir, timeout, maxBuffer }, callback);
+    if (child.stdin) {
+        try {
+            child.stdin.write(JSON.stringify(payload ?? {}));
+            child.stdin.end();
+        } catch (_) {}
+    }
+    return child;
+}
 
 // Serve Glassmorphism Dashboard directly on Port 4000 under /pluang
 app.use('/pluang', express.static(path.join(pluangDir, 'static')));
 
 function getLocalTradingConfig() {
-    try {
-        if (fs.existsSync(configPath)) {
-            return JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        }
-    } catch (e) {}
-    return {
+    const fallback = {
         max_budget_idr: 0,
         max_leverage: 20,
         min_confidence_score: 45,
@@ -2264,20 +2749,19 @@ function getLocalTradingConfig() {
         tp1_move_sl_to_breakeven: true,
         auto_execute_on_pluang: true
     };
+    const loaded = readJsonSafeSync(configPath, null);
+    return (loaded && typeof loaded === 'object' && !Array.isArray(loaded)) ? loaded : fallback;
 }
 
 function saveLocalTradingConfig(newCfg) {
-    try {
-        const cur = getLocalTradingConfig();
-        const merged = { ...cur, ...newCfg, updated_at: new Date().toISOString() };
-        fs.writeFileSync(configPath, JSON.stringify(merged, null, 2));
-        return merged;
-    } catch (e) {
-        return getLocalTradingConfig();
-    }
+    const cleanPatch = validateTradingConfigPatch(newCfg);
+    const cur = getLocalTradingConfig();
+    const merged = { ...cur, ...cleanPatch, updated_at: new Date().toISOString() };
+    writeJsonAtomicSync(configPath, merged);
+    return merged;
 }
 
-const perfLedgerPath = path.join(resultsDir, 'performance_ledger.json');
+const perfLedgerPath = opts.perfLedgerPath || path.join(resultsDir, 'performance_ledger.json');
 
 function ensurePerformanceLedger() {
     const baseline = {
@@ -2294,38 +2778,39 @@ function ensurePerformanceLedger() {
     try {
         fs.mkdirSync(resultsDir, { recursive: true });
         if (fs.existsSync(perfLedgerPath)) {
-            const parsed = JSON.parse(fs.readFileSync(perfLedgerPath, 'utf8'));
+            const parsed = readJsonSafeSync(perfLedgerPath, null);
             if (parsed && typeof parsed === 'object') {
                 // Clear legacy synthetic 15-win / 989,000 IDR placeholder if no recorded real trade IDs exist
                 const hasRealTrades = Array.isArray(parsed.recorded_trade_ids) && parsed.recorded_trade_ids.length > 0;
                 if (!hasRealTrades && parsed.baseline_wins === 15 && parsed.realized_pnl_idr === 989000) {
-                    fs.writeFileSync(perfLedgerPath, JSON.stringify(baseline, null, 2));
+                    writeJsonAtomicSync(perfLedgerPath, baseline);
                     return baseline;
                 }
                 return parsed;
             }
         }
-        fs.writeFileSync(perfLedgerPath, JSON.stringify(baseline, null, 2));
+        if (!testMode) writeJsonAtomicSync(perfLedgerPath, baseline);
     } catch (e) {}
     return baseline;
 }
-ensurePerformanceLedger();
 
-// Load pluang-bot/.env into process.env so Node has direct access to Multi-Key AI Gateway pools
-try {
-    const botEnvPath = path.join(pluangDir, '.env');
-    if (fs.existsSync(botEnvPath)) {
-        const lines = fs.readFileSync(botEnvPath, 'utf8').split(/\r?\n/);
-        for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith('#') || !trimmed.includes('=')) continue;
-            const idx = trimmed.indexOf('=');
-            const k = trimmed.slice(0, idx).trim();
-            const v = trimmed.slice(idx + 1).trim().replace(/^['"]|['"]$/g, '');
-            if (k && !process.env[k]) process.env[k] = v;
+// Load pluang-bot/.env into process.env in production mode so Node has direct access to Multi-Key AI Gateway pools
+if (!testMode) {
+    try {
+        const botEnvPath = opts.envPath || path.join(pluangDir, '.env');
+        if (fs.existsSync(botEnvPath)) {
+            const lines = fs.readFileSync(botEnvPath, 'utf8').split(/\r?\n/);
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith('#') || !trimmed.includes('=')) continue;
+                const idx = trimmed.indexOf('=');
+                const k = trimmed.slice(0, idx).trim();
+                const v = trimmed.slice(idx + 1).trim().replace(/^['"]|['"]$/g, '');
+                if (k && !process.env[k]) process.env[k] = v;
+            }
         }
-    }
-} catch (e) {}
+    } catch (e) {}
+}
 
 // Real-Time Binance Futures Wallet & Position Sync (persisted + live polled via BinanceFuturesClient)
 let liveBinanceWalletCache = {
@@ -2343,11 +2828,11 @@ let liveBinancePositionsCache = {
 function getRealBinanceWallet() {
     try {
         if (fs.existsSync(statePath)) {
-            const st = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-            if (typeof st.binance_wallet_balance_usdt === 'number' && !isNaN(st.binance_wallet_balance_usdt)) {
+            const st = readJsonSafeSync(statePath, null);
+            if (st && typeof st.binance_wallet_balance_usdt === 'number' && !isNaN(st.binance_wallet_balance_usdt)) {
                 liveBinanceWalletCache.total_wallet_balance = Number(st.binance_wallet_balance_usdt);
             }
-            if (typeof st.binance_available_balance_usdt === 'number' && !isNaN(st.binance_available_balance_usdt)) {
+            if (st && typeof st.binance_available_balance_usdt === 'number' && !isNaN(st.binance_available_balance_usdt)) {
                 liveBinanceWalletCache.available_balance = Number(st.binance_available_balance_usdt);
             }
         }
@@ -2383,11 +2868,13 @@ function refreshRealBinanceState() {
                 liveBinanceWalletCache.cross_unrealized_pnl = Number((bal.cross_unrealized_pnl || 0).toFixed(4));
                 liveBinanceWalletCache.updated_at = new Date().toISOString();
                 if (fs.existsSync(statePath)) {
-                    const st = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-                    st.binance_wallet_balance_usdt = liveBinanceWalletCache.total_wallet_balance;
-                    st.binance_available_balance_usdt = liveBinanceWalletCache.available_balance;
-                    st.binance_unrealized_pnl_usdt = liveBinanceWalletCache.cross_unrealized_pnl;
-                    fs.writeFileSync(statePath, JSON.stringify(st, null, 2));
+                    const st = readJsonSafeSync(statePath, null);
+                    if (st && typeof st === 'object') {
+                        st.binance_wallet_balance_usdt = liveBinanceWalletCache.total_wallet_balance;
+                        st.binance_available_balance_usdt = liveBinanceWalletCache.available_balance;
+                        st.binance_unrealized_pnl_usdt = liveBinanceWalletCache.cross_unrealized_pnl;
+                        writeJsonAtomicSync(statePath, st);
+                    }
                 }
             }
             if (Array.isArray(parsed && parsed.pos)) {
@@ -2412,8 +2899,7 @@ function refreshRealBinanceState() {
         } catch (e) {}
     });
 }
-refreshRealBinanceState();
-setInterval(refreshRealBinanceState, 10000);
+registerBgJob(refreshRealBinanceState, 10000, true);
 
 function computeRoiPnlProjection({ entryPrice, tp1Price, tp2Price, slPrice, initSlPrice, direction = 'LONG', leverage = 20, marginIdr = 0, marginUsd = 0 }) {
     const entry = Number(entryPrice) || 0;
@@ -2636,30 +3122,30 @@ function getLocalPositions() {
     return [];
 }
 
-// Keep CLOSED_* history and synced OPEN positions on startup (never drop live auto-imported trades missing order_id)
-try {
-    if (fs.existsSync(positionsPath)) {
-        const raw = JSON.parse(fs.readFileSync(positionsPath, 'utf8'));
-        if (Array.isArray(raw)) {
-            const preserved = raw.filter(p => {
-                if (!p) return false;
-                if (String(p.status || '').startsWith('CLOSED')) return true;
-                return p.status === 'OPEN' && (p.binance_synced === true || p.pluang_synced === true);
-            });
-            fs.writeFileSync(positionsPath, JSON.stringify(preserved, null, 2));
+// Keep CLOSED_* history and synced OPEN positions on startup (only in runtime startup, never on test import)
+function pruneStartupPositions() {
+    try {
+        if (fs.existsSync(positionsPath)) {
+            const raw = readJsonSafeSync(positionsPath, null);
+            if (Array.isArray(raw)) {
+                const preserved = raw.filter(p => {
+                    if (!p) return false;
+                    if (String(p.status || '').startsWith('CLOSED')) return true;
+                    return p.status === 'OPEN' && (p.binance_synced === true || p.pluang_synced === true);
+                });
+                writeJsonAtomicSync(positionsPath, preserved);
+            }
         }
-    }
-} catch (e) {}
+    } catch (e) {}
+}
 
 function saveLocalPositions(positions) {
-    try {
-        fs.mkdirSync(resultsDir, { recursive: true });
-        // Preserve closed trades so history is never lost when updating open positions
-        const existingClosed = getAllStoredPositions().filter(p => p && String(p.status || '').startsWith('CLOSED'));
-        const newIds = new Set((positions || []).map(p => p && p.id).filter(Boolean));
-        const merged = [...(positions || []), ...existingClosed.filter(c => !newIds.has(c.id))];
-        fs.writeFileSync(positionsPath, JSON.stringify(merged, null, 2));
-    } catch (e) {}
+    fs.mkdirSync(resultsDir, { recursive: true });
+    // Preserve closed trades so history is never lost when updating open positions
+    const existingClosed = getAllStoredPositions().filter(p => p && String(p.status || '').startsWith('CLOSED'));
+    const newIds = new Set((positions || []).map(p => p && p.id).filter(Boolean));
+    const merged = [...(positions || []), ...existingClosed.filter(c => !newIds.has(c.id))];
+    writeJsonAtomicSync(positionsPath, merged);
 }
 
 function buildFallbackScan(symbol) {
@@ -3156,11 +3642,10 @@ function updateCryptoFuturesWatchlistCache() {
     }
 }
 
-// Initial populate and periodic background refresh every 3 seconds (plus live ticker poll)
-refreshCryptoFuturesTickers();
-setInterval(refreshCryptoFuturesTickers, 5000);
-updateCryptoFuturesWatchlistCache();
-setInterval(updateCryptoFuturesWatchlistCache, 3000);
+// Registered for startBackgroundJobs() (plus initial watchlist build in memory)
+registerBgJob(refreshCryptoFuturesTickers, 5000, true);
+if (!testMode) updateCryptoFuturesWatchlistCache();
+registerBgJob(updateCryptoFuturesWatchlistCache, 3000, false);
 
 function getInstantWatchlist() {
     if (cryptoFuturesWatchlistCache && cryptoFuturesWatchlistCache.length > 0) {
@@ -3242,57 +3727,77 @@ app.get('/api/crypto-futures/status', (req, res) => {
     });
 });
 
+// Single-flight + concurrency cap (max 2) for /scan & /committee/run
+const _activeScanPromises = new Map();
+let _activeScanCount = 0;
+const MAX_CONCURRENT_SCANS = 2;
+
+function runSingleFlightScan(key, runnerFn) {
+    if (_activeScanPromises.has(key)) {
+        return { joined: true, promise: _activeScanPromises.get(key) };
+    }
+    if (_activeScanCount >= MAX_CONCURRENT_SCANS) {
+        return { busy: true };
+    }
+    _activeScanCount++;
+    const p = Promise.resolve()
+        .then(() => runnerFn())
+        .finally(() => {
+            _activeScanPromises.delete(key);
+            _activeScanCount = Math.max(0, _activeScanCount - 1);
+        });
+    _activeScanPromises.set(key, p);
+    return { joined: false, promise: p };
+}
+
 // 3a. INSTANT CACHED/ENRICHED SCAN ENDPOINT (0ms latency for instant UI boot)
 app.get('/api/crypto-futures/scan-cached', (req, res) => {
-    const symbol = (req.query && req.query.symbol) ? req.query.symbol : "BTC-USD";
+    const rawSym = req.query && req.query.symbol;
+    const symbol = rawSym !== undefined && rawSym !== '' ? validateSymbol(rawSym) : 'BTC-USD';
+    if (!symbol) return res.status(400).json({ ok: false, error: 'Invalid symbol' });
     const cleanSym = symbol.replace(/[^a-zA-Z0-9]/g, '_');
     const resultFile = path.join(resultsDir, `${cleanSym}_latest.json`);
-    let cachedResult = null;
-    if (fs.existsSync(resultFile)) {
-        try { cachedResult = JSON.parse(fs.readFileSync(resultFile, 'utf8')); } catch (e) {}
-    }
+    const cachedResult = readJsonSafeSync(resultFile, null);
     return res.json(enrichScanWithMathAndRoi(cachedResult, symbol));
 });
 
-// 3. SCAN ENDPOINT (Direct Native Execution - NEVER THROWS FETCH FAILED)
-app.post('/api/crypto-futures/scan', (req, res) => {
-    const symbol = (req.body && req.body.symbol) ? req.body.symbol : "BTC-USD";
+// 3. SCAN ENDPOINT (Direct Native Execution - Validated + Single-Flight + Concurrency Cap)
+app.post('/api/crypto-futures/scan', async (req, res) => {
+    const rawSym = req.body && req.body.symbol;
+    const symbol = rawSym !== undefined && rawSym !== '' ? validateSymbol(rawSym) : 'BTC-USD';
+    if (!symbol) return res.status(400).json({ ok: false, error: 'Invalid symbol' });
     const cleanSym = symbol.replace(/[^a-zA-Z0-9]/g, '_');
     const resultFile = path.join(resultsDir, `${cleanSym}_latest.json`);
 
-    let cachedResult = null;
-    if (fs.existsSync(resultFile)) {
-        try {
-            cachedResult = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
-        } catch (e) {}
-    }
+    const flight = runSingleFlightScan(`scan:${cleanSym}`, () => new Promise((resolve) => {
+        const cachedResult = readJsonSafeSync(resultFile, null);
+        const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+        const pipelineScript = path.join(pluangDir, 'pipeline.py');
 
-    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
-    const pipelineScript = path.join(pluangDir, 'pipeline.py');
-
-    if (fs.existsSync(pipelineScript)) {
-        execFile(pyCmd, [pipelineScript, symbol], { cwd: pluangDir, timeout: 60000 }, (error, stdout, stderr) => {
-            if (fs.existsSync(resultFile)) {
-                try {
-                    const freshResult = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
-                    return res.json(enrichScanWithMathAndRoi(freshResult, symbol));
-                } catch (e) {}
-            }
-            if (cachedResult) {
-                return res.json(enrichScanWithMathAndRoi(cachedResult, symbol));
-            }
-            if (error) {
-                console.error(`[SCAN:ERR]`, error.message);
-                return res.json(enrichScanWithMathAndRoi(cachedResult, symbol));
-            }
+        if (!fs.existsSync(pipelineScript)) {
+            return resolve(enrichScanWithMathAndRoi(cachedResult, symbol));
+        }
+        execFile(pyCmd, [pipelineScript, symbol], { cwd: pluangDir, timeout: 60000 }, (error, stdout) => {
+            const freshResult = readJsonSafeSync(resultFile, null);
+            if (freshResult) return resolve(enrichScanWithMathAndRoi(freshResult, symbol));
+            if (cachedResult) return resolve(enrichScanWithMathAndRoi(cachedResult, symbol));
+            if (error) console.error('[SCAN:ERR]', error.message);
             try {
-                const jsonMatch = stdout.match(/\{[\s\S]*\}/);
-                if (jsonMatch) return res.json(enrichScanWithMathAndRoi(JSON.parse(jsonMatch[0]), symbol));
+                const jsonMatch = String(stdout || '').match(/\{[\s\S]*\}/);
+                if (jsonMatch) return resolve(enrichScanWithMathAndRoi(JSON.parse(jsonMatch[0]), symbol));
             } catch (e) {}
-            res.json(enrichScanWithMathAndRoi(cachedResult, symbol));
+            return resolve(enrichScanWithMathAndRoi(cachedResult, symbol));
         });
-    } else {
-        res.json(enrichScanWithMathAndRoi(cachedResult, symbol));
+    }));
+
+    if (flight.busy) {
+        return res.status(429).json({ ok: false, error: 'Scanner busy (max 2 concurrent scans)', retryAfterSec: 5 });
+    }
+    try {
+        const out = await flight.promise;
+        return res.json(out);
+    } catch (e) {
+        return res.status(500).json({ ok: false, error: 'Scan failed' });
     }
 });
 
@@ -3321,16 +3826,30 @@ app.get('/api/futures/wallet', (req, res) => {
 // 4b. CLOSE & SYNC-SL POSITION ENDPOINTS (Native on Port 4000, verified against Binance Futures)
 app.post(['/api/crypto-futures/positions/close', '/api/positions/close'], (req, res) => {
     const { id, symbol, direction, binance_pair } = req.body || {};
+    if (symbol !== undefined && symbol !== null && symbol !== '' && !validateSymbol(symbol)) {
+        return res.status(400).json({ success: false, error: 'Invalid symbol' });
+    }
+    if (binance_pair !== undefined && binance_pair !== null && binance_pair !== '' && !validateSymbol(binance_pair)) {
+        return res.status(400).json({ success: false, error: 'Invalid binance_pair' });
+    }
     const livePositions = getLocalPositions();
     const target = livePositions.find(p =>
         (id && p.id === id) ||
         (binance_pair && String(p.binance_pair).toUpperCase() === String(binance_pair).toUpperCase()) ||
         (symbol && (p.symbol === symbol || String(p.binance_pair).toUpperCase() === String(symbol).toUpperCase().replace('-USD', 'USDT').replace('.P', '')))
     );
-    const targetPair = (target && (target.binance_pair || String(target.symbol || '').replace('-USD', 'USDT')))
+    const rawPair = (target && (target.binance_pair || String(target.symbol || '').replace('-USD', 'USDT')))
         || (binance_pair && String(binance_pair).toUpperCase())
         || (symbol ? String(symbol).toUpperCase().replace('-USD', 'USDT').replace('.P', '') : '');
-    const targetDir = (target && target.direction) || direction || 'LONG';
+    const targetPair = validateSymbol(rawPair);
+    if (!targetPair) {
+        return res.status(400).json({ success: false, error: 'Missing or invalid position id / pair symbol' });
+    }
+    const rawDir = String((target && target.direction) || direction || 'LONG').trim().toUpperCase();
+    if (rawDir !== 'LONG' && rawDir !== 'SHORT') {
+        return res.status(400).json({ success: false, error: 'Invalid direction (must be LONG or SHORT)' });
+    }
+    const targetDir = rawDir;
 
     const finalizeLocalClose = (closeMeta = {}) => {
         const stored = getAllStoredPositions();
@@ -3344,28 +3863,21 @@ app.post(['/api/crypto-futures/positions/close', '/api/positions/close'], (req, 
             }
             return p;
         });
-        try {
-            fs.mkdirSync(resultsDir, { recursive: true });
-            fs.writeFileSync(positionsPath, JSON.stringify(updated, null, 2));
-        } catch (e) {}
-        refreshRealBinanceState();
+        writeJsonAtomicSync(positionsPath, updated);
+        if (!testMode) refreshRealBinanceState();
     };
 
-    if (!targetPair) {
-        return res.status(400).json({ success: false, error: 'Missing position id or pair symbol' });
-    }
-
-    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
     const pyCode = [
         "import sys, json; sys.path.insert(0, '.')",
         "from binance_futures import BinanceFuturesClient",
+        "p = json.loads(sys.stdin.read() or '{}')",
         "c = BinanceFuturesClient()",
-        `c.cancel_all_orders('${targetPair}')`,
-        `res = c.close_position('${targetPair}', '${targetDir}')`,
+        "c.cancel_all_orders(p['pair'])",
+        "res = c.close_position(p['pair'], p['direction'])",
         "print(json.dumps(res if isinstance(res, dict) else {'status': str(res)}))"
     ].join("; ");
 
-    execFile(pyCmd, ['-c', pyCode], { cwd: pluangDir, timeout: 20000 }, (err, stdout, stderr) => {
+    runPythonJson(pyCode, { pair: targetPair, direction: targetDir }, { timeout: 20000 }, (err, stdout) => {
         let parsed = null;
         try {
             const lines = String(stdout || '').trim().split(/\r?\n/);
@@ -3373,46 +3885,59 @@ app.post(['/api/crypto-futures/positions/close', '/api/positions/close'], (req, 
         } catch (e) {}
         const apiError = err ? err.message : (parsed && (parsed.error || (parsed.code && Number(parsed.code) < 0 ? parsed.msg : null)));
         if (apiError) {
-            return res.status(502).json({ success: false, error: `Binance close failed for ${targetPair}: ${apiError}`, binance: parsed });
+            return res.status(502).json({ success: false, error: `Binance close failed for ${targetPair}: ${U.redactSecrets(apiError)}`, binance: parsed });
         }
-        finalizeLocalClose({ close_response: parsed || {} });
+        try {
+            finalizeLocalClose({ close_response: parsed || {} });
+        } catch (saveErr) {
+            return res.status(500).json({ success: false, error: 'Failed to persist closed position state' });
+        }
         res.json({ success: true, message: `Position ${targetPair} closed at market & algo orders cancelled.`, binance: parsed });
     });
 });
 
 app.post(['/api/crypto-futures/positions/sync-sl', '/api/positions/sync-sl'], (req, res) => {
     const { symbol, binance_pair, direction, stop_loss } = req.body || {};
+    if (symbol !== undefined && symbol !== null && symbol !== '' && !validateSymbol(symbol)) {
+        return res.status(400).json({ success: false, error: 'Invalid symbol' });
+    }
+    if (binance_pair !== undefined && binance_pair !== null && binance_pair !== '' && !validateSymbol(binance_pair)) {
+        return res.status(400).json({ success: false, error: 'Invalid binance_pair' });
+    }
     const target = getLocalPositions().find(p =>
         (binance_pair && String(p.binance_pair).toUpperCase() === String(binance_pair).toUpperCase()) ||
         (symbol && (p.symbol === symbol || String(p.binance_pair).toUpperCase() === String(symbol).toUpperCase().replace('-USD', 'USDT').replace('.P', '')))
     );
-    const pair = (target && target.binance_pair) || String(binance_pair || symbol || '').toUpperCase().replace('-USD', 'USDT').replace('.P', '');
-    if (!pair) return res.status(400).json({ success: false, error: 'Missing pair symbol' });
+    const pair = validateSymbol((target && target.binance_pair) || String(binance_pair || symbol || '').toUpperCase().replace('-USD', 'USDT').replace('.P', ''));
+    if (!pair) return res.status(400).json({ success: false, error: 'Missing or invalid pair symbol' });
 
-    const dir = String((target && target.direction) || direction || 'LONG').toUpperCase();
+    const dir = String((target && target.direction) || direction || 'LONG').trim().toUpperCase();
+    if (dir !== 'LONG' && dir !== 'SHORT') {
+        return res.status(400).json({ success: false, error: 'Invalid direction' });
+    }
     const entryPx = Number((target && target.entry_price) || 0);
     const reqSl = Number(stop_loss || (target && target.stop_loss) || 0);
-    const safeSl = reqSl > 0 ? reqSl : (entryPx > 0 ? Number((entryPx * (dir === 'LONG' ? 0.98 : 1.02)).toPrecision(6)) : 0);
-    if (safeSl <= 0) return res.status(400).json({ success: false, error: 'Valid stop_loss price required' });
+    const safeSl = (Number.isFinite(reqSl) && reqSl > 0) ? reqSl : (entryPx > 0 ? Number((entryPx * (dir === 'LONG' ? 0.98 : 1.02)).toPrecision(6)) : 0);
+    if (!Number.isFinite(safeSl) || safeSl <= 0) return res.status(400).json({ success: false, error: 'Valid stop_loss price required' });
 
-    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
-    const oldAlgo = (target && target.sl_algo_id) ? `'${target.sl_algo_id}'` : 'None';
+    const oldAlgoId = (target && target.sl_algo_id != null) ? String(target.sl_algo_id) : null;
     const pyCode = [
         "import sys, json; sys.path.insert(0, '.')",
         "from binance_futures import BinanceFuturesClient",
+        "p = json.loads(sys.stdin.read() or '{}')",
         "c = BinanceFuturesClient()",
-        `res = c.amend_stop_loss('${pair}', '${dir}', ${safeSl}, old_algo_id=${oldAlgo})`,
+        "res = c.amend_stop_loss(p['pair'], p['direction'], p['stop_loss'], old_algo_id=p.get('old_algo_id'))",
         "print(json.dumps(res if isinstance(res, dict) else {'status': str(res)}))"
     ].join("; ");
 
-    execFile(pyCmd, ['-c', pyCode], { cwd: pluangDir, timeout: 15000 }, (err, stdout) => {
+    runPythonJson(pyCode, { pair, direction: dir, stop_loss: safeSl, old_algo_id: oldAlgoId }, { timeout: 15000 }, (err, stdout) => {
         let parsed = null;
         try {
             const lines = String(stdout || '').trim().split(/\r?\n/);
             parsed = JSON.parse(lines[lines.length - 1]);
         } catch (e) {}
         if (err || !parsed || parsed.error) {
-            return res.status(502).json({ success: false, error: (err && err.message) || (parsed && parsed.error) || 'Failed to sync SL on Binance' });
+            return res.status(502).json({ success: false, error: U.redactSecrets((err && err.message) || (parsed && parsed.error) || 'Failed to sync SL on Binance') });
         }
         try {
             const stored = getAllStoredPositions().map(p => {
@@ -3426,60 +3951,81 @@ app.post(['/api/crypto-futures/positions/sync-sl', '/api/positions/sync-sl'], (r
                 }
                 return p;
             });
-            fs.writeFileSync(positionsPath, JSON.stringify(stored, null, 2));
-        } catch (e) {}
-        refreshRealBinanceState();
+            writeJsonAtomicSync(positionsPath, stored);
+        } catch (e) {
+            return res.status(500).json({ success: false, error: 'Failed to save synced SL state' });
+        }
+        if (!testMode) refreshRealBinanceState();
         res.json({ success: true, pair, stop_loss: safeSl, sl_state: 'CONFIRMED', binance: parsed });
     });
 });
 
-// 4c. CLEAR ALL POSITIONS (Hapus Seluruh Posisi)
-app.all(['/api/crypto-futures/positions/clear', '/api/positions/clear'], (req, res) => {
-    saveLocalPositions([]);
-    res.json({ success: true, message: "Seluruh posisi aktif berhasil dibersihkan.", positions: [] });
+// 4c. CLEAR ALL POSITIONS (Hapus Seluruh Posisi — POST/DELETE only)
+app.post(['/api/crypto-futures/positions/clear', '/api/positions/clear'], (req, res) => {
+    try {
+        saveLocalPositions([]);
+        res.json({ success: true, message: "Seluruh posisi aktif berhasil dibersihkan.", positions: [] });
+    } catch (e) {
+        res.status(500).json({ success: false, error: 'Failed clearing positions' });
+    }
 });
 app.delete(['/api/crypto-futures/positions', '/api/positions'], (req, res) => {
-    saveLocalPositions([]);
-    res.json({ success: true, message: "Seluruh posisi aktif berhasil dibersihkan.", positions: [] });
+    try {
+        saveLocalPositions([]);
+        res.json({ success: true, message: "Seluruh posisi aktif berhasil dibersihkan.", positions: [] });
+    } catch (e) {
+        res.status(500).json({ success: false, error: 'Failed clearing positions' });
+    }
 });
 
 // 5. EXECUTE ENDPOINT (100% Native on Port 4000 -> Binance Futures)
 app.post('/api/crypto-futures/execute', (req, res) => {
-    const signal = req.body || {};
-    const symbol = signal.symbol || "SOL-USD";
-    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
-    
-    // Call python script to execute trade directly on Binance Futures (Institutional V2 28-Pillar)
+    const signal = (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? req.body : {};
+    const symbol = signal.symbol !== undefined && signal.symbol !== '' ? validateSymbol(signal.symbol) : 'SOL-USD';
+    if (!symbol) return res.status(400).json({ status: 'FAILED', success: false, error: 'Invalid symbol' });
+    if (signal.binance_pair !== undefined && signal.binance_pair !== null && signal.binance_pair !== '' && !validateSymbol(signal.binance_pair)) {
+        return res.status(400).json({ status: 'FAILED', success: false, error: 'Invalid binance_pair' });
+    }
+    if (signal.direction !== undefined && signal.direction !== null && signal.direction !== '') {
+        const d = String(signal.direction).trim().toUpperCase();
+        if (d !== 'LONG' && d !== 'SHORT') {
+            return res.status(400).json({ status: 'FAILED', success: false, error: 'Invalid direction' });
+        }
+    }
+
     const cfgNow = getLocalTradingConfig();
-    const pyCode = `
-import json, sys
-sys.path.append('${pluangDir.replace(/\\/g, '/')}')
-from binance_futures import BinanceFuturesClient
-client = BinanceFuturesClient()
-signal = ${JSON.stringify(signal)}
-config = ${JSON.stringify({
-        fixed_leverage: 20,
-        max_leverage: 20,
-        margin_type: 'ISOLATED',
-        sizing_mode: cfgNow.sizing_mode || 'ALL_IN',
-        all_in_balance_fraction: cfgNow.all_in_balance_fraction || 0.95,
-        order_type: signal.order_type || cfgNow.order_type || 'MARKET',
-        sniper_75_mode: cfgNow.sniper_75_mode || { enabled: true, min_calibrated_p_tp1: 0.76, tp1_lock_trigger_r: 0.55, sl_lock_after_tp1_r: 0.38 }
-    })}
-res = client.execute_full_trade(signal, config)
-print(json.dumps(res))
-`;
-    execFile(pyCmd, ['-c', pyCode], { cwd: pluangDir, timeout: 30000 }, (err, stdout) => {
+    const pyCode = [
+        "import json, sys",
+        "sys.path.insert(0, '.')",
+        "from binance_futures import BinanceFuturesClient",
+        "payload = json.loads(sys.stdin.read() or '{}')",
+        "client = BinanceFuturesClient()",
+        "res = client.execute_full_trade(payload.get('signal') or {}, payload.get('config') or {})",
+        "print(json.dumps(res))"
+    ].join("\n");
+    const execPayload = {
+        signal: { ...signal, symbol },
+        config: {
+            fixed_leverage: 20,
+            max_leverage: 20,
+            margin_type: 'ISOLATED',
+            sizing_mode: cfgNow.sizing_mode || 'ALL_IN',
+            all_in_balance_fraction: cfgNow.all_in_balance_fraction || 0.95,
+            order_type: signal.order_type || cfgNow.order_type || 'MARKET',
+            sniper_75_mode: cfgNow.sniper_75_mode || { enabled: true, min_calibrated_p_tp1: 0.76, tp1_lock_trigger_r: 0.55, sl_lock_after_tp1_r: 0.38 }
+        }
+    };
+    runPythonJson(pyCode, execPayload, { timeout: 30000 }, (err, stdout) => {
         let execRes = null;
         try {
-            const match = stdout.match(/\{[\s\S]*\}/);
+            const match = String(stdout || '').match(/\{[\s\S]*\}/);
             if (match) execRes = JSON.parse(match[0]);
         } catch (e) {}
 
         const isExecuted = !err && execRes && (execRes.status === 'EXECUTED' || execRes.binance_synced === true) && (execRes.order_id || (execRes.steps && execRes.steps.open_position && execRes.steps.open_position.orderId));
-        
+
         if (!isExecuted) {
-            const errorMsg = (execRes && (execRes.error || execRes.status)) || (err && err.message) || "Order ditolak atau gagal masuk ke Binance Futures";
+            const errorMsg = U.redactSecrets((execRes && (execRes.error || execRes.status)) || (err && err.message) || "Order ditolak atau gagal masuk ke Binance Futures");
             console.error(`[Binance Futures Execute Rejected]: ${errorMsg}`);
             return res.status(400).json({
                 status: "FAILED",
@@ -3525,8 +4071,12 @@ print(json.dumps(res))
             binance_execution: execRes,
             exchange: "BINANCE_FUTURES"
         };
-        const positions = [pos, ...getLocalPositions()];
-        saveLocalPositions(positions);
+        try {
+            const positions = [pos, ...getLocalPositions()];
+            saveLocalPositions(positions);
+        } catch (saveErr) {
+            return res.status(500).json({ status: 'FAILED', success: false, error: 'Order executed on exchange but failed saving locally' });
+        }
         res.json({
             status: "SUCCESS",
             success: true,
@@ -3543,8 +4093,13 @@ app.get('/api/crypto-futures/config', (req, res) => {
 });
 
 app.post('/api/crypto-futures/config', (req, res) => {
-    const updated = saveLocalTradingConfig(req.body || {});
-    res.json(updated);
+    try {
+        const updated = saveLocalTradingConfig(req.body);
+        res.json(updated);
+    } catch (e) {
+        const code = e.statusCode === 400 ? 400 : 500;
+        res.status(code).json({ ok: false, error: code === 400 ? e.message : 'Failed saving trading config' });
+    }
 });
 
 app.get('/api/crypto-futures/settings', (req, res) => {
@@ -3552,13 +4107,18 @@ app.get('/api/crypto-futures/settings', (req, res) => {
 });
 
 app.post('/api/crypto-futures/settings', (req, res) => {
-    const updated = saveLocalTradingConfig(req.body || {});
-    res.json(updated);
+    try {
+        const updated = saveLocalTradingConfig(req.body);
+        res.json(updated);
+    } catch (e) {
+        const code = e.statusCode === 400 ? 400 : 500;
+        res.status(code).json({ ok: false, error: code === 400 ? e.message : 'Failed saving trading settings' });
+    }
 });
 
-// Pluang Glassmorphism Terminal Page & Static Assets on Port 4000 (/pluang)
-app.use('/pluang', express.static(path.join(pluangDir, 'static')));
+// Pluang Glassmorphism Terminal Page (/pluang)
 app.get('/pluang', (req, res) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.sendFile(path.join(pluangDir, 'static', 'index.html'));
 });
 
@@ -3566,10 +4126,7 @@ app.get('/pluang', (req, res) => {
 app.get('/api/status', (req, res) => {
     const cfg = getLocalTradingConfig();
     const positions = getLocalPositions();
-    let state = {};
-    try {
-        if (fs.existsSync(statePath)) state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-    } catch (e) {}
+    const state = readJsonSafeSync(statePath, {}) || {};
     const hasTokens = fs.existsSync(tokensPath);
     res.json({
         status: "online",
@@ -3584,34 +4141,54 @@ app.get('/api/status', (req, res) => {
 
 app.get('/api/positions', (req, res) => res.json(getLocalPositions()));
 app.get('/api/config', (req, res) => res.json(getLocalTradingConfig()));
-app.post('/api/config', (req, res) => res.json(saveLocalTradingConfig(req.body || {})));
+app.post('/api/config', (req, res) => {
+    try {
+        res.json(saveLocalTradingConfig(req.body));
+    } catch (e) {
+        const code = e.statusCode === 400 ? 400 : 500;
+        res.status(code).json({ ok: false, error: code === 400 ? e.message : 'Failed saving config' });
+    }
+});
 
-app.post('/api/scan', (req, res) => {
-    const symbol = (req.body && req.body.symbol) ? req.body.symbol : "BTC-USD";
+app.post('/api/scan', async (req, res) => {
+    const rawSym = req.body && req.body.symbol;
+    const symbol = rawSym !== undefined && rawSym !== '' ? validateSymbol(rawSym) : 'BTC-USD';
+    if (!symbol) return res.status(400).json({ ok: false, error: 'Invalid symbol' });
     const cleanSym = symbol.replace(/[^a-zA-Z0-9]/g, '_');
     const resultFile = path.join(resultsDir, `${cleanSym}_latest.json`);
-    let cachedResult = null;
-    if (fs.existsSync(resultFile)) {
-        try { cachedResult = JSON.parse(fs.readFileSync(resultFile, 'utf8')); } catch (e) {}
-    }
-    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
-    const pipelineScript = path.join(pluangDir, 'pipeline.py');
-    if (fs.existsSync(pipelineScript)) {
-        execFile(pyCmd, [pipelineScript, symbol], { cwd: pluangDir, timeout: 60000 }, (error, stdout) => {
-            if (fs.existsSync(resultFile)) {
-                try { return res.json(enrichScanWithMathAndRoi(JSON.parse(fs.readFileSync(resultFile, 'utf8')), symbol)); } catch (e) {}
-            }
-            if (cachedResult) return res.json(enrichScanWithMathAndRoi(cachedResult, symbol));
-            res.json(buildFallbackScan(symbol));
+
+    const flight = runSingleFlightScan(`scan:${cleanSym}`, () => new Promise((resolve) => {
+        const cachedResult = readJsonSafeSync(resultFile, null);
+        const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+        const pipelineScript = path.join(pluangDir, 'pipeline.py');
+        if (!fs.existsSync(pipelineScript)) {
+            return resolve(enrichScanWithMathAndRoi(cachedResult, symbol));
+        }
+        execFile(pyCmd, [pipelineScript, symbol], { cwd: pluangDir, timeout: 60000 }, () => {
+            const freshResult = readJsonSafeSync(resultFile, null);
+            if (freshResult) return resolve(enrichScanWithMathAndRoi(freshResult, symbol));
+            if (cachedResult) return resolve(enrichScanWithMathAndRoi(cachedResult, symbol));
+            return resolve(buildFallbackScan(symbol));
         });
-    } else {
-        res.json(enrichScanWithMathAndRoi(cachedResult, symbol));
+    }));
+
+    if (flight.busy) {
+        return res.status(429).json({ ok: false, error: 'Scanner busy (max 2 concurrent scans)', retryAfterSec: 5 });
+    }
+    try {
+        return res.json(await flight.promise);
+    } catch (e) {
+        return res.status(500).json({ ok: false, error: 'Scan failed' });
     }
 });
 
 app.post('/api/execute', (req, res) => {
-    const body = req.body || {};
-    const symbol = body.symbol || "BTC-USD";
+    const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? req.body : {};
+    const symbol = body.symbol !== undefined && body.symbol !== '' ? validateSymbol(body.symbol) : 'BTC-USD';
+    if (!symbol) return res.status(400).json({ success: false, error: 'Invalid symbol' });
+    if (body.binance_pair !== undefined && body.binance_pair !== null && body.binance_pair !== '' && !validateSymbol(body.binance_pair)) {
+        return res.status(400).json({ success: false, error: 'Invalid binance_pair' });
+    }
     const pos = {
         id: `POS_${symbol.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}`,
         symbol: symbol,
@@ -3631,17 +4208,18 @@ app.post('/api/execute', (req, res) => {
         pnl_usd: 0,
         pnl_pct: 0.0
     };
-    const positions = [pos, ...getLocalPositions()];
-    saveLocalPositions(positions);
-    res.json({ success: true, message: `Order untuk ${symbol} berhasil didaftarkan.`, position: pos });
+    try {
+        const positions = [pos, ...getLocalPositions()];
+        saveLocalPositions(positions);
+        res.json({ success: true, message: `Order untuk ${symbol} berhasil didaftarkan.`, position: pos });
+    } catch (e) {
+        res.status(500).json({ success: false, error: 'Failed saving position' });
+    }
 });
 
 // 7. AUTO TOGGLE / PAUSE / RESUME (100% Authoritative Sync with auto_trader.py)
 app.post(['/api/crypto-futures/auto/toggle', '/api/crypto-futures/auto/pause', '/api/crypto-futures/auto/resume'], (req, res) => {
-    let state = {};
-    try {
-        if (fs.existsSync(statePath)) state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-    } catch (e) {}
+    const state = readJsonSafeSync(statePath, {}) || {};
     const curRunning = state.is_running !== false;
     let nextRunning = !curRunning;
     if (req.path.endsWith('/pause')) nextRunning = false;
@@ -3651,18 +4229,15 @@ app.post(['/api/crypto-futures/auto/toggle', '/api/crypto-futures/auto/pause', '
     state.is_running = nextRunning;
     state.control_updated_at = new Date().toISOString();
     try {
-        fs.mkdirSync(resultsDir, { recursive: true });
-        const tmpStatePath = statePath + '.tmp';
-        fs.writeFileSync(tmpStatePath, JSON.stringify(state, null, 2));
-        fs.renameSync(tmpStatePath, statePath);
+        writeJsonAtomicSync(statePath, state);
     } catch (e) {
-        try { fs.writeFileSync(statePath, JSON.stringify(state, null, 2)); } catch (_) {}
+        return res.status(500).json({ status: 'ERROR', error: 'Failed saving autotrader state' });
     }
 
     if (nextRunning) {
         const panicPath = path.join(resultsDir, 'panic_lock.json');
         try { if (fs.existsSync(panicPath)) fs.unlinkSync(panicPath); } catch (e) {}
-        startBackgroundAutoTrader();
+        if (!testMode) startBackgroundAutoTrader();
     }
     res.json({ status: "SUCCESS", is_running: state.is_running, autonomous_running: state.is_running });
 });
@@ -3682,15 +4257,10 @@ app.get('/api/crypto-futures/pluang/balance', (req, res) => {
     });
 });
 
-// Duplicate legacy /positions/close route removed — handled synchronously above with Binance Futures cancel_all_orders + close_position verification.
-
 // 9b. INSTITUTIONAL V2 ENDPOINTS: VAULT, PANIC KILL-SWITCH, & 28-PILLAR HEALTH
 app.get(['/api/crypto-futures/vault', '/api/vault'], (req, res) => {
     const vaultPath = path.join(resultsDir, 'vault_state.json');
-    let vault = { locked_profit_vault_usdt: 0, high_water_mark_equity: 0, ratchet_step_pct: 0.15, lock_fraction: 0.35 };
-    try {
-        if (fs.existsSync(vaultPath)) vault = JSON.parse(fs.readFileSync(vaultPath, 'utf8'));
-    } catch (e) {}
+    const vault = readJsonSafeSync(vaultPath, { locked_profit_vault_usdt: 0, high_water_mark_equity: 0, ratchet_step_pct: 0.15, lock_fraction: 0.35 });
     res.json({ status: "SUCCESS", vault });
 });
 
@@ -3699,44 +4269,49 @@ app.post(['/api/crypto-futures/panic', '/api/panic'], (req, res) => {
     const payload = {
         locked: true,
         triggered_at: new Date().toISOString(),
-        reason: (req.body && req.body.reason) || "Triggered via Dashboard /api/panic"
+        reason: (req.body && typeof req.body.reason === 'string' && req.body.reason.slice(0, 200)) || "Triggered via Dashboard /api/panic"
     };
     try {
-        fs.mkdirSync(resultsDir, { recursive: true });
-        fs.writeFileSync(panicPath, JSON.stringify(payload, null, 2));
-    } catch (e) {}
-    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
-    const pyCode = `
-import sys
-sys.path.append('${pluangDir.replace(/\\/g, '/')}')
-from binance_futures import BinanceFuturesClient
-c = BinanceFuturesClient()
-for p in (c.get_positions() or []):
-    sym = p.get('symbol')
-    if sym:
-        c.close_position(sym, p.get('direction', 'LONG'))
-        c.cancel_all_orders(sym)
-`;
-    execFile(pyCmd, ['-c', pyCode], { cwd: pluangDir, timeout: 20000 }, () => {});
-    saveLocalPositions([]);
+        writeJsonAtomicSync(panicPath, payload);
+    } catch (e) {
+        return res.status(500).json({ status: 'FAILED', success: false, error: 'Failed writing panic lock' });
+    }
+    const pyCode = [
+        "import sys",
+        "sys.path.insert(0, '.')",
+        "from binance_futures import BinanceFuturesClient",
+        "c = BinanceFuturesClient()",
+        "for p in (c.get_positions() or []):",
+        "    sym = p.get('symbol')",
+        "    if sym:",
+        "        c.close_position(sym, p.get('direction', 'LONG'))",
+        "        c.cancel_all_orders(sym)"
+    ].join("\n");
+    if (!testMode) {
+        runPythonJson(pyCode, {}, { timeout: 20000 }, () => {});
+    }
+    try { saveLocalPositions([]); } catch (e) {}
     res.json({ status: "PANIC_LOCKED", success: true, panic: payload });
 });
 
 app.post(['/api/crypto-futures/unpanic', '/api/unpanic'], (req, res) => {
+    if (!req.body || req.body.confirm !== 'CONFIRM_UNPANIC') {
+        return res.status(400).json({ ok: false, success: false, error: 'Confirmation required: send {"confirm":"CONFIRM_UNPANIC"}' });
+    }
     const panicPath = path.join(resultsDir, 'panic_lock.json');
     try {
         if (fs.existsSync(panicPath)) fs.unlinkSync(panicPath);
-    } catch (e) {}
+    } catch (e) {
+        return res.status(500).json({ ok: false, success: false, error: 'Failed clearing panic lock' });
+    }
     res.json({ status: "UNPANICKED", success: true });
 });
 
 app.get(['/api/crypto-futures/health', '/api/health'], (req, res) => {
     const hbPath = path.join(resultsDir, 'heartbeat.json');
     const panicPath = path.join(resultsDir, 'panic_lock.json');
-    let hb = null;
-    let panic = null;
-    try { if (fs.existsSync(hbPath)) hb = JSON.parse(fs.readFileSync(hbPath, 'utf8')); } catch (e) {}
-    try { if (fs.existsSync(panicPath)) panic = JSON.parse(fs.readFileSync(panicPath, 'utf8')); } catch (e) {}
+    const hb = readJsonSafeSync(hbPath, null);
+    const panic = readJsonSafeSync(panicPath, null);
     const cfg = getLocalTradingConfig();
     res.json({
         status: "HEALTHY",
@@ -3752,15 +4327,15 @@ app.get(['/api/crypto-futures/health', '/api/health'], (req, res) => {
 });
 
 app.get(['/api/crypto-futures/tca', '/api/tca'], (req, res) => {
-    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
-    const limit = Math.max(10, Math.min(200, Number(req.query.limit || 80)));
-    const pyCode = `
-import sys, json
-sys.path.append('${pluangDir.replace(/\\/g, '/')}')
-import journal
-print(json.dumps(journal.get_tca_summary(limit=${limit}), ensure_ascii=False))
-`;
-    execFile(pyCmd, ['-c', pyCode], { cwd: pluangDir, timeout: 8000 }, (err, stdout) => {
+    const limit = Math.max(10, Math.min(200, Math.floor(Number(req.query.limit) || 80)));
+    const pyCode = [
+        "import sys, json",
+        "sys.path.insert(0, '.')",
+        "import journal",
+        "p = json.loads(sys.stdin.read() or '{}')",
+        "print(json.dumps(journal.get_tca_summary(limit=int(p.get('limit', 80))), ensure_ascii=False))"
+    ].join("\n");
+    runPythonJson(pyCode, { limit }, { timeout: 8000 }, (err, stdout) => {
         if (!err && stdout) {
             try {
                 const summary = JSON.parse(stdout.trim());
@@ -3787,15 +4362,9 @@ print(json.dumps(journal.get_tca_summary(limit=${limit}), ensure_ascii=False))
 });
 
 app.get(['/api/crypto-futures/quant-health', '/api/quant-health'], (req, res) => {
-    const readJsonSafe = (fname, fb) => {
-        try {
-            const fp = path.join(resultsDir, fname);
-            if (fs.existsSync(fp)) return JSON.parse(fs.readFileSync(fp, 'utf8'));
-        } catch (e) {}
-        return fb;
-    };
+    const readJsonRel = (fname, fb) => readJsonSafeSync(path.join(resultsDir, fname), fb);
     const cfg = getLocalTradingConfig();
-    const breaker = readJsonSafe('risk_breaker_state.json', {
+    const breaker = readJsonRel('risk_breaker_state.json', {
         consecutive_losses: 0,
         breaker_consecutive_losses_limit: cfg.circuit_breaker_consecutive_losses || 2,
         breaker_active: false,
@@ -3818,13 +4387,13 @@ app.get(['/api/crypto-futures/quant-health', '/api/quant-health'], (req, res) =>
     } else {
         breaker.remaining_sec = 0;
     }
-    const adwin = readJsonSafe('adwin_state.json', { drift_count: 0, total_samples: 0, window: [] });
-    const ensemble = readJsonSafe('ensemble_weights.json', { weights: { ml: 0.4, knn: 0.25, llm: 0.35 } });
-    const tabMeta = readJsonSafe('tabular_meta_weights.json', { n_updates: 0, feature_dim: 15 });
-    const bandit = readJsonSafe('bandit_state.json', { arms: {} });
-    const degraded = readJsonSafe('degraded_strategies.json', {});
-    const episodes = readJsonSafe('episodic_memory.json', []);
-    const vault = readJsonSafe('vault_state.json', { locked_profit_vault_usdt: 0, high_water_mark_equity: 0 });
+    const adwin = readJsonRel('adwin_state.json', { drift_count: 0, total_samples: 0, window: [] });
+    const ensemble = readJsonRel('ensemble_weights.json', { weights: { ml: 0.4, knn: 0.25, llm: 0.35 } });
+    const tabMeta = readJsonRel('tabular_meta_weights.json', { n_updates: 0, feature_dim: 15 });
+    const bandit = readJsonRel('bandit_state.json', { arms: {} });
+    const degraded = readJsonRel('degraded_strategies.json', {});
+    const episodes = readJsonRel('episodic_memory.json', []);
+    const vault = readJsonRel('vault_state.json', { locked_profit_vault_usdt: 0, high_water_mark_equity: 0 });
 
     res.json({
         status: "SUCCESS",
@@ -3847,11 +4416,20 @@ app.get(['/api/crypto-futures/quant-health', '/api/quant-health'], (req, res) =>
 });
 
 app.post('/api/crypto-futures/risk-breaker/resume', (req, res) => {
+    if (!req.body || req.body.confirm !== 'CONFIRM_RESUME') {
+        return res.status(400).json({ ok: false, error: 'Confirmation required: send {"confirm":"CONFIRM_RESUME"}' });
+    }
     try {
         const cfg = getLocalTradingConfig();
         const fp = path.join(resultsDir, 'risk_breaker_state.json');
         let cur = {};
-        if (fs.existsSync(fp)) cur = JSON.parse(fs.readFileSync(fp, 'utf8')) || {};
+        if (fs.existsSync(fp)) {
+            const parsed = readJsonSafeSync(fp, null, { strict: true });
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                return res.status(500).json({ ok: false, error: 'Invalid risk_breaker_state.json format' });
+            }
+            cur = parsed;
+        }
         const eqNow = Number(cur.current_equity || 0);
         const updated = {
             ...cur,
@@ -3864,18 +4442,40 @@ app.post('/api/crypto-futures/risk-breaker/resume', (req, res) => {
             daily_dd_pct: 0,
             updated_at: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
         };
-        fs.writeFileSync(fp, JSON.stringify(updated, null, 2), 'utf8');
+        writeJsonAtomicSync(fp, updated);
         res.json({ ok: true, breaker: updated });
     } catch (e) {
-        res.status(500).json({ ok: false, error: e.message });
+        res.status(500).json({ ok: false, error: 'Failed to update risk breaker state' });
     }
 });
 
-// Auto-start background Auto-Trader worker if Python is present (Single-Instance Guard)
+// Auto-start background Auto-Trader worker if Python is present (Single-Instance Guard + Backoff + Clean Shutdown)
 let _autoTraderProc = null;
+let _autoTraderPid = null;
 let _autoTraderRestartTimer = null;
+let _autoTraderStopping = false;
+let _autoTraderBackoffMs = 2000;
+
+function stopBackgroundAutoTrader() {
+    _autoTraderStopping = true;
+    if (_autoTraderRestartTimer) {
+        clearTimeout(_autoTraderRestartTimer);
+        _autoTraderRestartTimer = null;
+    }
+    if (_autoTraderProc) {
+        const p = _autoTraderProc;
+        _autoTraderProc = null;
+        _autoTraderPid = null;
+        try { p.kill('SIGTERM'); } catch (_) {}
+        const killTimer = setTimeout(() => {
+            try { if (!p.killed) p.kill('SIGKILL'); } catch (_) {}
+        }, 2000);
+        if (typeof killTimer.unref === 'function') killTimer.unref();
+    }
+}
+
 function startBackgroundAutoTrader() {
-    if (_autoTraderProc || process.env.DISABLE_INTERNAL_AUTOTRADER === '1') return;
+    if (testMode || _autoTraderStopping || _autoTraderProc || process.env.DISABLE_INTERNAL_AUTOTRADER === '1') return;
     if (!fs.existsSync(pluangDir)) return;
     const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
     const autoTraderScript = path.join(pluangDir, 'auto_trader.py');
@@ -3883,30 +4483,51 @@ function startBackgroundAutoTrader() {
 
     try {
         console.log(`[PYROFUEL] Launching single-instance background Auto-Trader worker...`);
+        const startedAt = Date.now();
         const proc = spawn(pyCmd, ['-u', 'auto_trader.py'], {
             cwd: pluangDir,
             env: { ...process.env, PYTHONUNBUFFERED: '1' },
             stdio: ['ignore', 'pipe', 'pipe']
         });
         _autoTraderProc = proc;
-        proc.on('exit', (code) => {
-            console.log(`[AUTOTRADER] Worker exited with code ${code}. Auto-restarting in 5s...`);
+        _autoTraderPid = proc.pid || null;
+
+        proc.on('error', (err) => {
+            console.error('[AUTOTRADER:SPAWN_ERR]', err.message);
             _autoTraderProc = null;
-            if (!_autoTraderRestartTimer && process.env.DISABLE_INTERNAL_AUTOTRADER !== '1') {
+            _autoTraderPid = null;
+        });
+
+        proc.on('exit', (code) => {
+            _autoTraderProc = null;
+            _autoTraderPid = null;
+            if (_autoTraderStopping || process.env.DISABLE_INTERNAL_AUTOTRADER === '1') return;
+            const aliveMs = Date.now() - startedAt;
+            _autoTraderBackoffMs = aliveMs > 30000 ? 2000 : Math.min(60000, _autoTraderBackoffMs * 2);
+            const delayMs = _autoTraderBackoffMs;
+            console.log(`[AUTOTRADER] Worker exited with code ${code}. Auto-restarting in ${Math.round(delayMs / 1000)}s...`);
+            if (!_autoTraderRestartTimer) {
                 _autoTraderRestartTimer = setTimeout(() => {
                     _autoTraderRestartTimer = null;
                     startBackgroundAutoTrader();
-                }, 5000);
+                }, delayMs);
+                if (typeof _autoTraderRestartTimer.unref === 'function') _autoTraderRestartTimer.unref();
             }
         });
-        proc.stdout.on('data', d => {
-            const s = d.toString().trim();
-            if (s) console.log(`[AUTOTRADER] ${s}`);
-        });
-        proc.stderr.on('data', d => {
-            const s = d.toString().trim();
-            if (s) console.error(`[AUTOTRADER:ERR] ${s}`);
-        });
+        if (proc.stdout) {
+            proc.stdout.on('data', d => {
+                const s = d.toString().trim();
+                if (s) console.log(`[AUTOTRADER] ${s.slice(0, 500)}`);
+            });
+            proc.stdout.on('error', () => {});
+        }
+        if (proc.stderr) {
+            proc.stderr.on('data', d => {
+                const s = d.toString().trim();
+                if (s) console.error(`[AUTOTRADER:ERR] ${s.slice(0, 500)}`);
+            });
+            proc.stderr.on('error', () => {});
+        }
     } catch (e) {
         console.log('[PYROFUEL] Auto-trader background spawn skipped:', e.message);
     }
@@ -3941,7 +4562,7 @@ app.get('/api/performance', (req, res) => {
         ledger.closed_trades = (ledger.winning_trades || 0) + (ledger.losing_trades || 0);
         ledger.win_rate_pct = ledger.closed_trades > 0 ? Math.round(((ledger.winning_trades || 0) / ledger.closed_trades) * 10000) / 100 : 0;
         ledger.updated_at = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
-        try { fs.writeFileSync(perfLedgerPath, JSON.stringify(ledger, null, 2)); } catch (e) {}
+        try { writeJsonAtomicSync(perfLedgerPath, ledger); } catch (e) {}
     }
 
     const wins = ledger.winning_trades ?? 0;
@@ -3976,20 +4597,22 @@ app.get('/api/performance', (req, res) => {
 // MULTI-KEY AI GATEWAY TELEMETRY & KEY POOL MANAGER
 // ==============================================================
 function readPluangAiPool() {
-    const envPath = path.join(pluangDir, '.env');
+    const envPath = opts.envPath || path.join(pluangDir, '.env');
     const envMap = {};
-    try {
-        if (fs.existsSync(envPath)) {
-            for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
-                const s = line.trim();
-                if (!s || s.startsWith('#') || !s.includes('=')) continue;
-                const idx = s.indexOf('=');
-                const k = s.slice(0, idx).trim();
-                const v = s.slice(idx + 1).trim().replace(/^["']|["']$/g, '');
-                if (k) envMap[k] = v;
+    if (!testMode || opts.envPath) {
+        try {
+            if (fs.existsSync(envPath)) {
+                for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+                    const s = line.trim();
+                    if (!s || s.startsWith('#') || !s.includes('=')) continue;
+                    const idx = s.indexOf('=');
+                    const k = s.slice(0, idx).trim();
+                    const v = s.slice(idx + 1).trim().replace(/^["']|["']$/g, '');
+                    if (k) envMap[k] = v;
+                }
             }
-        }
-    } catch (e) {}
+        } catch (e) {}
+    }
 
     const pools = { groq: [], gemini: [], cerebras: [], mistral: [], openrouter: [], nvidia: [] };
     const pushKey = (fallbackProv, raw) => {
@@ -4012,12 +4635,12 @@ function readPluangAiPool() {
     ];
     for (const [prov, names] of specs) {
         for (const n of names) {
-            const val = envMap[n] || process.env[n] || '';
+            const val = envMap[n] || ((!testMode || opts.envPath) ? (process.env[n] || '') : '');
             for (const part of val.split(',')) pushKey(prov, part);
         }
         const base = names[names.length - 1];
         for (let i = 1; i <= 9; i++) {
-            const val = envMap[`${base}_${i}`] || process.env[`${base}_${i}`] || '';
+            const val = envMap[`${base}_${i}`] || ((!testMode || opts.envPath) ? (process.env[`${base}_${i}`] || '') : '');
             if (val) pushKey(prov, val);
         }
     }
@@ -4032,10 +4655,7 @@ function readPluangAiPool() {
 
 app.get('/api/crypto-futures/ai-gateway', (req, res) => {
     const ledgerFile = path.join(resultsDir, 'ai_budget_ledger.json');
-    let ledger = { utc_date: new Date().toISOString().slice(0, 10), total_calls_today: 0, total_tokens_today: 0, buckets: {} };
-    try {
-        if (fs.existsSync(ledgerFile)) ledger = JSON.parse(fs.readFileSync(ledgerFile, 'utf8'));
-    } catch (e) {}
+    const ledger = readJsonSafeSync(ledgerFile, { utc_date: new Date().toISOString().slice(0, 10), total_calls_today: 0, total_tokens_today: 0, buckets: {} });
     const { pools, totalBuckets, totalDailyTokenCapacity } = readPluangAiPool();
     const groqModels = ['llama-3.3-70b-versatile', 'qwen/qwen3-32b', 'deepseek-r1-distill-llama-70b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
     res.json({
@@ -4060,18 +4680,17 @@ app.get('/api/crypto-futures/ai-gateway', (req, res) => {
 
 app.post('/api/crypto-futures/ai-gateway/add-key', (req, res) => {
     const { provider = 'groq', apiKey = '', api_key = '' } = req.body || {};
-    const cleanKey = String(apiKey || api_key).trim().replace(/^["']|["']$/g, '');
-    if (!cleanKey || cleanKey.length < 12) {
+    const rawKeyInput = apiKey !== '' ? apiKey : api_key;
+    if (typeof rawKeyInput !== 'string') {
         return res.status(400).json({ ok: false, error: 'Invalid API key' });
+    }
+    const cleanKey = rawKeyInput.trim();
+    if (!/^[A-Za-z0-9._\-]{12,200}$/.test(cleanKey)) {
+        return res.status(400).json({ ok: false, error: 'Invalid API key format' });
     }
     if (cleanKey.startsWith('AQ.')) {
         return res.status(400).json({ ok: false, error: 'Token berawalan AQ. bukan Google AI Studio API Key (harus AIza...).' });
     }
-
-    let reqProv = String(provider || 'groq').trim().toLowerCase();
-    if (cleanKey.startsWith('AIza')) reqProv = 'gemini';
-    else if (cleanKey.startsWith('sk-or-')) reqProv = 'openrouter';
-    else if (cleanKey.startsWith('gsk_')) reqProv = 'groq';
 
     const varMap = {
         groq: 'GROQ_API_KEYS',
@@ -4081,31 +4700,54 @@ app.post('/api/crypto-futures/ai-gateway/add-key', (req, res) => {
         mistral: 'MISTRAL_API_KEYS',
         nvidia: 'NVIDIA_API_KEYS',
     };
-    const envVar = varMap[reqProv] || 'GROQ_API_KEYS';
-    const targetProv = varMap[reqProv] ? reqProv : 'groq';
+    let reqProv = typeof provider === 'string' ? provider.trim().toLowerCase() : 'groq';
+    if (!reqProv) reqProv = 'groq';
+    if (!varMap[reqProv]) {
+        return res.status(400).json({ ok: false, error: 'Unsupported AI provider' });
+    }
+    if (cleanKey.startsWith('AIza')) reqProv = 'gemini';
+    else if (cleanKey.startsWith('sk-or-')) reqProv = 'openrouter';
+    else if (cleanKey.startsWith('gsk_')) reqProv = 'groq';
+
+    const envVar = varMap[reqProv];
+    const targetProv = reqProv;
 
     const state = readPluangAiPool();
     if (!state.pools[targetProv].includes(cleanKey)) {
         state.pools[targetProv].push(cleanKey);
     }
 
-    // Rewrite clean provider _KEYS lines in pluang-bot/.env so misplaced keys (e.g. AIza in GROQ_API_KEYS) are also repaired
+    // Rewrite clean provider _KEYS lines in pluang-bot/.env atomically while preserving unrelated keys & comments
     try {
-        let txt = fs.existsSync(state.envPath) ? fs.readFileSync(state.envPath, 'utf8') : '';
-        const upsertEnv = (name, val) => {
-            const re = new RegExp(`^${name}=.*$`, 'm');
-            if (re.test(txt)) txt = txt.replace(re, `${name}=${val}`);
-            else txt += (txt.endsWith('\n') || !txt ? '' : '\n') + `${name}=${val}\n`;
-            process.env[name] = val;
-        };
+        const existingTxt = fs.existsSync(state.envPath) ? fs.readFileSync(state.envPath, 'utf8') : '';
+        const updates = new Map();
         for (const [pv, vName] of Object.entries(varMap)) {
             if (pv === targetProv || (state.pools[pv] && state.pools[pv].length > 0)) {
-                upsertEnv(vName, state.pools[pv].join(','));
+                const val = state.pools[pv].join(',');
+                updates.set(vName, val);
+                if (!testMode || opts.envPath) process.env[vName] = val;
             }
         }
-        fs.writeFileSync(state.envPath, txt, 'utf8');
+        const seenVars = new Set();
+        const lines = existingTxt ? existingTxt.split(/\r?\n/) : [];
+        const nextLines = lines.map(line => {
+            const m = line.match(/^\s*([A-Za-z0-9_]+)\s*=/);
+            if (m && updates.has(m[1])) {
+                seenVars.add(m[1]);
+                return `${m[1]}=${updates.get(m[1])}`;
+            }
+            return line;
+        });
+        while (nextLines.length > 0 && nextLines[nextLines.length - 1] === '') {
+            nextLines.pop();
+        }
+        for (const [k, v] of updates.entries()) {
+            if (!seenVars.has(k)) nextLines.push(`${k}=${v}`);
+        }
+        writeFileAtomicSync(state.envPath, nextLines.join('\n') + '\n', 0o600);
     } catch (e) {
-        return res.status(500).json({ ok: false, error: 'Failed writing .env: ' + e.message });
+        console.error('[AI-GATEWAY] .env write failed:', e.message);
+        return res.status(500).json({ ok: false, error: 'Failed to persist API key configuration' });
     }
 
     const updated = readPluangAiPool();
@@ -4194,109 +4836,122 @@ const committeePath   = path.join(pluangDir, 'multi_agent_committee.py');
 const committeeLogPath = path.join(resultsDir, 'committee_log.json');
 const thesisPath       = path.join(resultsDir, 'active_thesis.json');
 
-// Helper: run a Python committee script and return JSON result via callback
+// Helper: run a Python committee script via stdin JSON (never interpolate symbol into code)
 function runCommitteePy(symbol, positions, callback) {
-    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const validSym = validateSymbol(symbol);
+    if (!validSym) {
+        return callback(Object.assign(new Error('Invalid symbol'), { statusCode: 400 }), null);
+    }
     if (!fs.existsSync(committeePath)) {
         return callback(new Error('multi_agent_committee.py not found'), null);
     }
-    const posJson = JSON.stringify(positions || []);
-    const child = execFile(
-        pyCmd,
-        ['-c',
-         `import sys, json; sys.path.insert(0,'${pluangDir.replace(/\\/g,'/')}'); ` +
-         `from multi_agent_committee import run_multi_agent_committee; ` +
-         `result = run_multi_agent_committee('${symbol}', json.loads(sys.argv[1])); ` +
-         `print(json.dumps(result, ensure_ascii=False))`,
-         posJson],
-        { cwd: pluangDir, timeout: 90000, maxBuffer: 5 * 1024 * 1024 },
-        (error, stdout, stderr) => {
-            if (error && !stdout) return callback(error, null);
-            try {
-                const jsonMatch = stdout.match(/\{[\s\S]*\}/);
-                if (jsonMatch) return callback(null, JSON.parse(jsonMatch[0]));
-            } catch (e) {}
-            callback(new Error('No valid JSON from committee'), null);
-        }
-    );
+    const pyCode = [
+        "import sys, json",
+        "sys.path.insert(0, '.')",
+        "from multi_agent_committee import run_multi_agent_committee",
+        "p = json.loads(sys.stdin.read() or '{}')",
+        "result = run_multi_agent_committee(p['symbol'], p.get('positions', []))",
+        "print(json.dumps(result, ensure_ascii=False))"
+    ].join("\n");
+    runPythonJson(pyCode, { symbol: validSym, positions: positions || [] }, { timeout: 90000, maxBuffer: 5 * 1024 * 1024 }, (error, stdout) => {
+        if (error && !stdout) return callback(error, null);
+        try {
+            const jsonMatch = String(stdout || '').match(/\{[\s\S]*\}/);
+            if (jsonMatch) return callback(null, JSON.parse(jsonMatch[0]));
+        } catch (e) {}
+        callback(new Error('No valid JSON from committee'), null);
+    });
 }
 
-// POST /api/committee/run — jalankan unified 5-layer pipeline + 9-agent committee (Single Seamless Process)
-app.post('/api/committee/run', (req, res) => {
-    const symbol = (req.body || {}).symbol || 'BTC-USD';
+// POST /api/committee/run — jalankan unified 5-layer pipeline + 9-agent committee (Single-Flight + Cap)
+app.post('/api/committee/run', async (req, res) => {
+    const rawSym = req.body && req.body.symbol;
+    const symbol = rawSym !== undefined && rawSym !== '' ? validateSymbol(rawSym) : 'BTC-USD';
+    if (!symbol) return res.status(400).json({ error: 'Invalid symbol' });
     const cleanSym = symbol.replace(/[^a-zA-Z0-9]/g, '_');
     const resultFile = path.join(resultsDir, `${cleanSym}_latest.json`);
     const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
     const pipelineScript = path.join(pluangDir, 'pipeline.py');
 
-    if (fs.existsSync(pipelineScript)) {
-        execFile(pyCmd, [pipelineScript, symbol], { cwd: pluangDir, timeout: 60000 }, (error, stdout) => {
-            if (fs.existsSync(resultFile)) {
-                try {
-                    const fresh = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
-                    if (fresh.committee) return res.json(fresh.committee);
-                    return res.json(fresh);
-                } catch (e) {}
-            }
+    const flight = runSingleFlightScan(`committee:${cleanSym}`, () => new Promise((resolve, reject) => {
+        const fallbackCommittee = () => {
             const positions = getLocalPositions();
             runCommitteePy(symbol, positions, (err, result) => {
-                if (err) return res.status(500).json({ error: err.message });
-                res.json(result);
+                if (err) return reject(err);
+                resolve(result);
             });
-        });
-    } else {
-        const positions = getLocalPositions();
-        runCommitteePy(symbol, positions, (err, result) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json(result);
-        });
+        };
+        if (fs.existsSync(pipelineScript)) {
+            execFile(pyCmd, [pipelineScript, symbol], { cwd: pluangDir, timeout: 60000 }, () => {
+                const fresh = readJsonSafeSync(resultFile, null);
+                if (fresh) {
+                    return resolve(fresh.committee || fresh);
+                }
+                fallbackCommittee();
+            });
+        } else {
+            fallbackCommittee();
+        }
+    }));
+
+    if (flight.busy) {
+        return res.status(429).json({ ok: false, error: 'Committee scanner busy (max 2 concurrent)', retryAfterSec: 5 });
+    }
+    try {
+        res.json(await flight.promise);
+    } catch (err) {
+        res.status(err.statusCode === 400 ? 400 : 500).json({ error: err.message });
     }
 });
 
 // GET /api/committee/thesis — persistent thesis workspace (LangAlpha-inspired)
 app.get('/api/committee/thesis', (req, res) => {
-    const symbol = req.query.symbol;
+    const rawSym = req.query.symbol;
+    let symbol = null;
+    if (rawSym !== undefined && rawSym !== '') {
+        symbol = validateSymbol(rawSym);
+        if (!symbol) return res.status(400).json({ error: 'Invalid symbol' });
+    }
     if (!fs.existsSync(thesisPath)) return res.json(symbol ? {} : {});
     try {
-        const thesis = JSON.parse(fs.readFileSync(thesisPath, 'utf8'));
+        const thesis = readJsonSafeSync(thesisPath, {}, { strict: true });
         res.json(symbol ? (thesis[symbol] || { message: 'No thesis yet' }) : thesis);
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: 'Failed reading thesis store' }); }
 });
 
 // GET /api/committee/log — riwayat keputusan committee
 app.get('/api/committee/log', (req, res) => {
-    const limit = parseInt(req.query.limit || '50', 10);
+    const limit = Math.max(1, Math.min(200, parseInt(req.query.limit || '50', 10) || 50));
     if (!fs.existsSync(committeeLogPath)) return res.json({ count: 0, logs: [] });
     try {
-        const logs = JSON.parse(fs.readFileSync(committeeLogPath, 'utf8'));
+        const logs = readJsonSafeSync(committeeLogPath, [], { strict: true });
         res.json({ count: logs.length, logs: logs.slice(0, limit) });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: 'Failed reading committee log' }); }
 });
 
 // GET /api/committee/quick-screen — quick rule-based screening (tanpa AI)
 app.get('/api/committee/quick-screen', (req, res) => {
-    const limit = parseInt(req.query.limit || '20', 10);
-    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
-    execFile(
-        pyCmd,
-        ['-c',
-         `import sys, json; sys.path.insert(0,'${pluangDir.replace(/\\/g,'/')}'); ` +
-         `from multi_agent_committee import run_quick_committee; ` +
-         `from market_data import rank_universe_by_opportunity; ` +
-         `ranked = rank_universe_by_opportunity()[:${limit}]; ` +
-         `out=[run_quick_committee(c.get('symbol',c.get('pair','').replace('USDT','-USD')),c) for c in ranked]; ` +
-         `hits=[x for x in out if x.get('direction')!='SKIP']; ` +
-         `hits.sort(key=lambda x:x.get('confidence_pct',0),reverse=True); ` +
-         `print(json.dumps({'count':len(hits),'alerts':hits},ensure_ascii=False))`],
-        { cwd: pluangDir, timeout: 30000, maxBuffer: 2 * 1024 * 1024 },
-        (error, stdout) => {
-            try {
-                const m = stdout.match(/\{[\s\S]*\}/);
-                if (m) return res.json(JSON.parse(m[0]));
-            } catch (e) {}
-            res.json({ count: 0, alerts: [], error: error ? error.message : 'Parse error' });
-        }
-    );
+    const limit = Math.max(1, Math.min(50, parseInt(req.query.limit || '20', 10) || 20));
+    const pyCode = [
+        "import sys, json",
+        "sys.path.insert(0, '.')",
+        "from multi_agent_committee import run_quick_committee",
+        "from market_data import rank_universe_by_opportunity",
+        "p = json.loads(sys.stdin.read() or '{}')",
+        "lim = max(1, min(50, int(p.get('limit', 20))))",
+        "ranked = rank_universe_by_opportunity()[:lim]",
+        "out = [run_quick_committee(c.get('symbol', c.get('pair', '').replace('USDT', '-USD')), c) for c in ranked]",
+        "hits = [x for x in out if x.get('direction') != 'SKIP']",
+        "hits.sort(key=lambda x: x.get('confidence_pct', 0), reverse=True)",
+        "print(json.dumps({'count': len(hits), 'alerts': hits}, ensure_ascii=False))"
+    ].join("\n");
+    runPythonJson(pyCode, { limit }, { timeout: 30000, maxBuffer: 2 * 1024 * 1024 }, (error, stdout) => {
+        try {
+            const m = String(stdout || '').match(/\{[\s\S]*\}/);
+            if (m) return res.json(JSON.parse(m[0]));
+        } catch (e) {}
+        res.json({ count: 0, alerts: [], error: error ? error.message : 'Parse error' });
+    });
 });
 
 // GET /api/committee/status — info modul + source credits
@@ -4384,7 +5039,7 @@ app.get('/api/committee/auto-status', (req, res) => {
 // BLOOMBERG MAIL (MSG <GO> / BMAIL <GO> — @bloomberg.net & fadhilsyafiq90@gmail.com AUTO-DISPATCH)
 // ============================================================
 const tls = require('tls');
-const BMAIL_FILE = path.join(__dirname, 'bmail-store.json');
+const BMAIL_FILE = opts.bmailFile || path.join(__dirname, 'bmail-store.json');
 const DEFAULT_BMAIL = {
     account: {
         name: 'FADHIL MUHAMMAD SYAFIQ LUBIS',
@@ -4401,8 +5056,8 @@ const DEFAULT_BMAIL = {
         enableEmsxOrders: true,
         smtpHost: 'smtp.gmail.com',
         smtpPort: 465,
-        smtpUser: process.env.SMTP_USER || 'fadhilsyafiq90@gmail.com',
-        smtpPass: process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || ''
+        smtpUser: (!testMode && process.env.SMTP_USER) || 'fadhilsyafiq90@gmail.com',
+        smtpPass: (!testMode && (process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD)) || ''
     },
     alertLog: [
         {
@@ -4507,50 +5162,75 @@ const DEFAULT_BMAIL = {
 };
 
 function loadBmail() {
-    try {
-        if (fs.existsSync(BMAIL_FILE)) {
-            const parsed = JSON.parse(fs.readFileSync(BMAIL_FILE, 'utf8'));
-            if (!parsed.alertConfig) parsed.alertConfig = DEFAULT_BMAIL.alertConfig;
-            if (!Array.isArray(parsed.alertLog)) parsed.alertLog = DEFAULT_BMAIL.alertLog;
-            return parsed;
-        }
-    } catch (e) {}
+    const parsed = readJsonSafeSync(BMAIL_FILE, null);
+    if (parsed && typeof parsed === 'object') {
+        if (!parsed.alertConfig) parsed.alertConfig = { ...DEFAULT_BMAIL.alertConfig };
+        if (!Array.isArray(parsed.alertLog)) parsed.alertLog = [...DEFAULT_BMAIL.alertLog];
+        if (!Array.isArray(parsed.inbox)) parsed.inbox = [...DEFAULT_BMAIL.inbox];
+        if (!Array.isArray(parsed.sent)) parsed.sent = [];
+        if (!parsed.account) parsed.account = { ...DEFAULT_BMAIL.account };
+        if (!Array.isArray(parsed.directory)) parsed.directory = [...DEFAULT_BMAIL.directory];
+        return parsed;
+    }
     return JSON.parse(JSON.stringify(DEFAULT_BMAIL));
 }
 function saveBmail(data) {
-    try { fs.writeFileSync(BMAIL_FILE, JSON.stringify(data, null, 2), 'utf8'); } catch (e) {}
+    writeJsonAtomicSync(BMAIL_FILE, data, 0o600);
+}
+function sanitizeBmailStore(store) {
+    const copy = JSON.parse(JSON.stringify(store || DEFAULT_BMAIL));
+    const rawCfg = copy.alertConfig || {};
+    const hasSmtpPass = Boolean(
+        (rawCfg.smtpPass && String(rawCfg.smtpPass).trim()) ||
+        (!testMode && (process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD))
+    );
+    const hasResendKey = Boolean(
+        !testMode && process.env.RESEND_API_KEY && String(process.env.RESEND_API_KEY).trim().startsWith('re_')
+    );
+    delete rawCfg.smtpPass;
+    delete rawCfg.resendApiKey;
+    rawCfg.hasSmtpPass = hasSmtpPass;
+    rawCfg.hasResendKey = hasResendKey;
+    copy.alertConfig = rawCfg;
+    return copy;
 }
 
-// Resend API HTTPS Email Dispatcher (https://api.resend.com/emails -> fadhilsyafiq90@gmail.com)
-const _DEFAULT_RESEND_KEY = ['re_FDUY9BeF', 'BbMVFbzBAqpvCPXy7wSnKyLu'].join('_');
-async function sendResendEmail({ apiKey, to, subject, body, eventType = 'ALERT', symbol = 'BTCUSDT' }) {
-    const key = (apiKey || process.env.RESEND_API_KEY || _DEFAULT_RESEND_KEY || '').trim();
+// Resend API HTTPS Email Dispatcher (RESEND_API_KEY env var ONLY — never hardcoded)
+async function sendResendEmail({ to, subject, body, eventType = 'ALERT', symbol = 'BTCUSDT' }) {
+    const key = testMode ? '' : String(process.env.RESEND_API_KEY || '').trim();
     if (!key || !key.startsWith('re_')) return { ok: false, mode: 'NO_RESEND_KEY' };
     try {
+        const safeEvent = escapeHtml(eventType);
+        const safeSym = escapeHtml(symbol);
+        const safeTo = escapeHtml(to);
+        const safeBody = escapeHtml(body);
         const htmlBody = `<div style="background:#000000;color:#ffb000;font-family:'Consolas','Courier New',monospace;padding:18px;border:2px solid #ffb000;max-width:680px">
           <div style="background:#5c0808;color:#ffffff;padding:8px 12px;font-weight:bold;font-size:13px;border-bottom:1px solid #ffb000;display:flex;justify-content:space-between">
-            <span>BLOOMBERG PROFESSIONAL SERVICE // ${eventType}</span>
+            <span>BLOOMBERG PROFESSIONAL SERVICE // ${safeEvent}</span>
             <span style="color:#ffb000"> DESK: FADHIL M. S. LUBIS</span>
           </div>
           <div style="padding:12px 4px;color:#4da3ff;font-size:12px;border-bottom:1px solid #222">
-            <b>SECURITY:</b> ${symbol} &nbsp;|&nbsp; <b>TARGET:</b> ${to} &nbsp;|&nbsp; <b>TIME:</b> ${new Date().toISOString()}
+            <b>SECURITY:</b> ${safeSym} &nbsp;|&nbsp; <b>TARGET:</b> ${safeTo} &nbsp;|&nbsp; <b>TIME:</b> ${new Date().toISOString()}
           </div>
-          <pre style="white-space:pre-wrap;color:#ffb000;font-size:12.5px;line-height:1.55;background:#070707;padding:12px;border-left:3px solid #00d26a;margin:12px 0">${String(body).replace(/</g, '&lt;')}</pre>
+          <pre style="white-space:pre-wrap;color:#ffb000;font-size:12.5px;line-height:1.55;background:#070707;padding:12px;border-left:3px solid #00d26a;margin:12px 0">${safeBody}</pre>
           <div style="font-size:10.5px;color:#888;border-top:1px solid #222;padding-top:8px">
             DISPATCHED VIA BLOOMBERG B-MAIL &amp; RESEND TLS GATEWAY • PORTFOLIO BASE: Rp 200.000.000 (IDR 200 JUTA)
           </div>
         </div>`;
+        const cleanTo = sanitizeHeaderValue(to);
+        const cleanSub = sanitizeHeaderValue(subject);
         const r = await fetch('https://api.resend.com/emails', {
             method: 'POST',
+            signal: AbortSignal.timeout(9000),
             headers: {
                 'Authorization': `Bearer ${key}`,
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
                 from: 'Bloomberg Terminal <onboarding@resend.dev>',
-                to: [to],
-                subject: subject,
-                text: body,
+                to: [cleanTo],
+                subject: cleanSub,
+                text: String(body || ''),
                 html: htmlBody
             })
         });
@@ -4558,19 +5238,25 @@ async function sendResendEmail({ apiKey, to, subject, body, eventType = 'ALERT',
         if (r.ok && j && j.id) {
             return { ok: true, id: j.id, mode: `DELIVERED_RESEND_API (${j.id.slice(0, 8)})` };
         }
-        return { ok: false, mode: `RESEND_${r.status}: ${(j && j.message) || 'error'}` };
+        return { ok: false, mode: `RESEND_${r.status}: ${U.redactSecrets((j && j.message) || 'error')}` };
     } catch (e) {
-        return { ok: false, mode: 'RESEND_NET_ERR: ' + e.message };
+        return { ok: false, mode: 'RESEND_NET_ERR: ' + U.redactSecrets(e.message) };
     }
 }
 
 // Zero-dependency TLS SMTP sender for Gmail (smtp.gmail.com:465)
 function sendGmailSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, to, subject, body }) {
     return new Promise((resolve) => {
-        if (!user || !pass || pass.length < 8) {
+        if (testMode || !user || !pass || pass.length < 8) {
             return resolve({ ok: false, mode: 'QUEUED_NO_SMTP_APP_PASS' });
         }
-        const sock = tls.connect({ host, port, rejectUnauthorized: false }, () => {});
+        const safeUser = sanitizeHeaderValue(user);
+        const safeTo = sanitizeHeaderValue(to);
+        const safeSub = sanitizeHeaderValue(subject);
+        if (!EMAIL_RE.test(safeUser) || !EMAIL_RE.test(safeTo)) {
+            return resolve({ ok: false, mode: 'SMTP_INVALID_ADDR' });
+        }
+        const sock = tls.connect({ host, port, rejectUnauthorized: process.env.SMTP_INSECURE_TLS !== '1' }, () => {});
         let step = 0;
         let buffer = '';
         const timer = setTimeout(() => { try { sock.destroy(); } catch {} resolve({ ok: false, mode: 'SMTP_TIMEOUT' }); }, 9000);
@@ -4586,21 +5272,22 @@ function sendGmailSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, to, su
 
             if (step === 0 && code === 220) { step = 1; sendLine('EHLO bloomberg.terminal.local'); }
             else if (step === 1 && code === 250) { step = 2; sendLine('AUTH LOGIN'); }
-            else if (step === 2 && code === 334) { step = 3; sendLine(Buffer.from(user).toString('base64')); }
+            else if (step === 2 && code === 334) { step = 3; sendLine(Buffer.from(safeUser).toString('base64')); }
             else if (step === 3 && code === 334) { step = 4; sendLine(Buffer.from(pass.replace(/\s+/g, '')).toString('base64')); }
-            else if (step === 4 && code === 235) { step = 5; sendLine(`MAIL FROM:<${user}>`); }
-            else if (step === 5 && code === 250) { step = 6; sendLine(`RCPT TO:<${to}>`); }
+            else if (step === 4 && code === 235) { step = 5; sendLine(`MAIL FROM:<${safeUser}>`); }
+            else if (step === 5 && code === 250) { step = 6; sendLine(`RCPT TO:<${safeTo}>`); }
             else if (step === 6 && (code === 250 || code === 251)) { step = 7; sendLine('DATA'); }
             else if (step === 7 && code === 354) {
                 step = 8;
+                const safeBodyLines = String(body || '').replace(/\r?\n\.\r?\n/g, '\r\n..\r\n');
                 const msg = [
-                    `From: "Bloomberg Terminal Alert" <${user}>`,
-                    `To: <${to}>`,
-                    `Subject: ${subject}`,
+                    `From: "Bloomberg Terminal Alert" <${safeUser}>`,
+                    `To: <${safeTo}>`,
+                    `Subject: ${safeSub}`,
                     `MIME-Version: 1.0`,
                     `Content-Type: text/plain; charset=UTF-8`,
                     ``,
-                    body,
+                    safeBodyLines,
                     `.`
                 ].join('\r\n');
                 sendLine(msg);
@@ -4622,12 +5309,14 @@ function sendGmailSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, to, su
 
 // Mirror alert to Telegram Bot if configured
 async function sendTelegramMirror(text) {
+    if (testMode) return false;
     const token = process.env.TELEGRAM_BOT_TOKEN;
     const chatId = process.env.ALLOWED_TELEGRAM_CHAT_ID;
     if (!token || !chatId) return false;
     try {
         await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
             method: 'POST',
+            signal: AbortSignal.timeout(5000),
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chat_id: chatId, text: text.slice(0, 3900) })
         });
@@ -4635,14 +5324,13 @@ async function sendTelegramMirror(text) {
     } catch { return false; }
 }
 
-// Unified External Email & B-Mail Alert Dispatcher (-> fadhilsyafiq90@gmail.com)
+// Unified External Email & B-Mail Alert Dispatcher
 async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, symbol = 'BTCUSDT', attachmentFn = 'BTCUSDT BOT' }) {
     const store = loadBmail();
     const cfg = store.alertConfig || DEFAULT_BMAIL.alertConfig;
     const targetEmail = cfg.targetEmail || 'fadhilsyafiq90@gmail.com';
 
     const resendRes = await sendResendEmail({
-        apiKey: cfg.resendApiKey || process.env.RESEND_API_KEY || _DEFAULT_RESEND_KEY,
         to: targetEmail,
         subject,
         body,
@@ -4654,7 +5342,7 @@ async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, 
         host: cfg.smtpHost || 'smtp.gmail.com',
         port: cfg.smtpPort || 465,
         user: cfg.smtpUser || targetEmail,
-        pass: cfg.smtpPass || process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || '',
+        pass: cfg.smtpPass || (!testMode ? (process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || '') : ''),
         to: targetEmail,
         subject,
         body
@@ -4700,8 +5388,30 @@ async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, 
     return { entry, resendRes, smtpRes, store };
 }
 
+function getAllowedExternalRecipients(store) {
+    const out = new Set();
+    const candidates = [
+        store && store.account && store.account.externalEmail,
+        store && store.alertConfig && store.alertConfig.targetEmail,
+        !testMode && process.env.OWNER_EMAIL
+    ];
+    for (const c of candidates) {
+        if (typeof c === 'string' && EMAIL_RE.test(c.trim())) {
+            out.add(c.trim().toLowerCase());
+        }
+    }
+    return out;
+}
+
+function isPermittedBmailRecipient(addr, store) {
+    const s = String(addr || '').trim();
+    if (!s || /[\r\n]/.test(s) || !EMAIL_RE.test(s)) return false;
+    if (/^[A-Za-z0-9._%+\-]+@bloomberg\.net$/i.test(s)) return true;
+    return getAllowedExternalRecipients(store).has(s.toLowerCase());
+}
+
 app.get('/api/terminal/bmail', (req, res) => {
-    res.json({ ok: true, data: loadBmail() });
+    res.json({ ok: true, data: sanitizeBmailStore(loadBmail()) });
 });
 
 app.post('/api/terminal/bmail/read', (req, res) => {
@@ -4709,15 +5419,34 @@ app.post('/api/terminal/bmail/read', (req, res) => {
     const id = req.body && req.body.id;
     const msg = store.inbox.find(m => m.id === id);
     if (msg) msg.unread = false;
-    saveBmail(store);
-    res.json({ ok: true, data: store });
+    try {
+        saveBmail(store);
+        res.json({ ok: true, data: sanitizeBmailStore(store) });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: 'Failed saving B-Mail state' });
+    }
 });
 
 app.post('/api/terminal/bmail/alert-config', (req, res) => {
+    let cleanPatch;
+    try {
+        cleanPatch = validateBmailAlertConfigPatch(req.body);
+    } catch (e) {
+        return res.status(400).json({ ok: false, error: e.message });
+    }
     const store = loadBmail();
-    store.alertConfig = Object.assign({}, store.alertConfig || DEFAULT_BMAIL.alertConfig, req.body || {});
-    saveBmail(store);
-    res.json({ ok: true, data: store });
+    const prevCfg = store.alertConfig || DEFAULT_BMAIL.alertConfig;
+    store.alertConfig = {
+        ...prevCfg,
+        ...cleanPatch
+    };
+    delete store.alertConfig.resendApiKey;
+    try {
+        saveBmail(store);
+        res.json({ ok: true, data: sanitizeBmailStore(store) });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: 'Failed saving B-Mail alert config' });
+    }
 });
 
 app.post('/api/terminal/bmail/test-alert', async (req, res) => {
@@ -4751,22 +5480,36 @@ app.post('/api/terminal/bmail/test-alert', async (req, res) => {
             body: `BLOOMBERG TERMINAL BREAKING HOT NEWS ALERT\n\nRecipient : ${target}\nHeadline  : ${topHeadline}\nSource    : ${(newsCache && newsCache.items && newsCache.items[0] && newsCache.items[0].source) || 'Bloomberg Live Wire (BN)'}\nTimestamp : ${new Date().toISOString()}\n\nOpen TOP <GO> or N <GO> on your Bloomberg Terminal to read the full wire dispatch.`
         };
     }
-    const out = await dispatchExternalEmailAlert(payload);
-    res.json({ ok: true, entry: out.entry, smtp: out.smtpRes, data: out.store });
+    try {
+        const out = await dispatchExternalEmailAlert(payload);
+        res.json({ ok: true, entry: out.entry, smtp: out.smtpRes, data: sanitizeBmailStore(out.store) });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: 'Failed dispatching test alert' });
+    }
 });
 
 app.post('/api/terminal/bmail/send', async (req, res) => {
     const store = loadBmail();
     const { to = 'fadhilsyafiq90@gmail.com', cc = '', subject = 'INSTITUTIONAL DESK INQUIRY', priority = 'NORMAL', body = '', attachmentFn = '', attachmentLabel = '' } = req.body || {};
-    const cleanTo = String(to).trim();
+    const cleanTo = sanitizeHeaderValue(to);
+    const cleanCc = sanitizeHeaderValue(cc);
+    if (!cleanTo || !EMAIL_RE.test(cleanTo)) {
+        return res.status(400).json({ ok: false, error: 'Invalid recipient email' });
+    }
+    if (!isPermittedBmailRecipient(cleanTo, store)) {
+        return res.status(403).json({ ok: false, error: 'Recipient not permitted (open relay disabled)' });
+    }
+    if (cleanCc && !isPermittedBmailRecipient(cleanCc, store)) {
+        return res.status(403).json({ ok: false, error: 'CC recipient not permitted' });
+    }
 
+    const cleanSubject = sanitizeHeaderValue(subject) || 'BLOOMBERG TERMINAL DISPATCH';
     let deliveryStatus = 'DELIVERED VIA B-MAIL TLS';
-    if (!cleanTo.endsWith('@bloomberg.net')) {
+    if (!cleanTo.toLowerCase().endsWith('@bloomberg.net')) {
         const cfg = store.alertConfig || DEFAULT_BMAIL.alertConfig;
         const resendRes = await sendResendEmail({
-            apiKey: cfg.resendApiKey || process.env.RESEND_API_KEY || _DEFAULT_RESEND_KEY,
             to: cleanTo,
-            subject,
+            subject: cleanSubject,
             body,
             eventType: 'B-MAIL DISPATCH',
             symbol: attachmentFn ? attachmentFn.split(' ')[0] : 'BBG'
@@ -4775,12 +5518,12 @@ app.post('/api/terminal/bmail/send', async (req, res) => {
             host: cfg.smtpHost || 'smtp.gmail.com',
             port: cfg.smtpPort || 465,
             user: cfg.smtpUser || 'fadhilsyafiq90@gmail.com',
-            pass: cfg.smtpPass || process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || '',
+            pass: cfg.smtpPass || (!testMode ? (process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || '') : ''),
             to: cleanTo,
-            subject,
+            subject: cleanSubject,
             body
         });
-        await sendTelegramMirror(`📧 [B-MAIL -> ${cleanTo}]\n${subject}\n\n${body}`);
+        await sendTelegramMirror(`📧 [B-MAIL -> ${cleanTo}]\n${cleanSubject}\n\n${body}`);
         deliveryStatus = resendRes.ok
             ? `✓ DELIVERED TO ${cleanTo} VIA RESEND API [ID: ${resendRes.id}]`
             : smtpRes.ok ? `✓ DELIVERED TO ${cleanTo} (SMTP TLS)` : `DISPATCHED TO ${cleanTo} (${resendRes.mode})`;
@@ -4792,13 +5535,13 @@ app.post('/api/terminal/bmail/send', async (req, res) => {
         fromName: store.account.name,
         from: store.account.email,
         to: cleanTo,
-        cc: String(cc).trim(),
-        subject: String(subject).trim() || 'BLOOMBERG TERMINAL DISPATCH',
-        priority,
-        attachmentFn,
-        attachmentLabel,
+        cc: cleanCc,
+        subject: cleanSubject,
+        priority: priority === 'URGENT' ? 'URGENT' : 'NORMAL',
+        attachmentFn: String(attachmentFn || ''),
+        attachmentLabel: String(attachmentLabel || ''),
         status: deliveryStatus,
-        body: String(body)
+        body: String(body || '')
     };
     store.sent.unshift(sentMsg);
 
@@ -4812,15 +5555,19 @@ app.post('/api/terminal/bmail/send', async (req, res) => {
         from: cleanTo,
         to: store.account.email,
         subject: 'RE: ' + sentMsg.subject,
-        priority: priority === 'URGENT' ? 'URGENT' : 'NORMAL',
+        priority: sentMsg.priority,
         unread: true,
-        attachmentFn: attachmentFn || 'SPCX PORT',
+        attachmentFn: sentMsg.attachmentFn || 'SPCX PORT',
         attachmentLabel: 'DESK_RESPONSE_ACK.BBG',
         body: `AUTOMATED INSTITUTIONAL DESK ACKNOWLEDGEMENT // BLOOMBERG MAIL\n\nTo      : ${store.account.name} <${store.account.email}>\nFrom    : ${rec ? `${rec.name} (${rec.firm})` : cleanTo}\nStatus  : ${deliveryStatus} [Ref ${sentMsg.id}]\n\nDesk Snapshot:\n• Account Cash Balance : Rp ${Math.round(port.cash || 0).toLocaleString('id-ID')}\n• Active Positions     : ${(port.holdings || []).map(h => `${h.symbol} (${h.qty})`).join(', ') || '100% Cash'}\n\n--- Original Message ---\n${sentMsg.body}`
     };
     store.inbox.unshift(replyMsg);
-    saveBmail(store);
-    res.json({ ok: true, sent: sentMsg, reply: replyMsg, data: store });
+    try {
+        saveBmail(store);
+        res.json({ ok: true, sent: sentMsg, reply: replyMsg, data: sanitizeBmailStore(store) });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: 'Failed saving sent B-Mail' });
+    }
 });
 
 // Background Watchers for Automatic Email Alerts to fadhilsyafiq90@gmail.com:
@@ -4866,10 +5613,8 @@ function pollFuturesPositionsForEmailAlerts() {
         }
     } catch (e) {}
 }
-setInterval(pollFuturesPositionsForEmailAlerts, 8000);
-setTimeout(pollFuturesPositionsForEmailAlerts, 2000);
 
-// 2. Breaking / Hot News Sentinel Watcher (-> fadhilsyafiq90@gmail.com)
+// 2. Breaking Hot News Watcher
 const _seenHotNewsTitles = new Set();
 const HOT_NEWS_REGEX = /\b(breaking|urgent|fed|fomc|powell|rate cut|rate hike|tariff|recession|cpi|inflation|surge|plunge|crash|record high|sec|etf|war|sanction|opec|strait of hormuz|bankrupt|default)\b/i;
 function pollHotNewsForEmailAlerts() {
@@ -4888,6 +5633,10 @@ function pollHotNewsForEmailAlerts() {
         for (const it of items.slice(0, 8)) {
             if (!it || !it.title || _seenHotNewsTitles.has(it.title)) continue;
             _seenHotNewsTitles.add(it.title);
+            if (_seenHotNewsTitles.size > 500) {
+                const firstTitle = _seenHotNewsTitles.values().next().value;
+                if (firstTitle !== undefined) _seenHotNewsTitles.delete(firstTitle);
+            }
             if (HOT_NEWS_REGEX.test(it.title)) {
                 dispatchExternalEmailAlert({
                     eventType: 'HOT_NEWS',
@@ -4901,21 +5650,131 @@ function pollHotNewsForEmailAlerts() {
         }
     } catch (e) {}
 }
-setInterval(pollHotNewsForEmailAlerts, 60000);
-setTimeout(pollHotNewsForEmailAlerts, 5000);
+
+registerBgJob(pollFuturesPositionsForEmailAlerts, 8000, false);
+registerBgJob(pollHotNewsForEmailAlerts, 60000, false);
 
 // Mount PYRO / Bloomberg Terminal API & WebSocket Hub (/api/terminal/* and /terminal/ws)
-try { require('./terminal/api')(app); } catch (e) { console.error('[terminal] mount error:', e.message); }
+let terminalHub = null;
+try {
+    terminalHub = require('./terminal/api')(app, null, {
+        verifyToken: (tok) => tokensMatch(tok, activeDashToken),
+        allowedOrigins: opts.allowedOrigins,
+        maxWsPerIp: opts.maxWsPerIp
+    });
+} catch (e) { console.error('[terminal] mount error:', e.message); }
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`================================================================`);
-    console.log(`🏛️ BLOOMBERG PROFESSIONAL SERVICE - REAL-TIME TRADING DESK ON PORT ${PORT}`);
-    console.log(`💰 MODAL AWAL: Rp 200.000.000 (IDR 200 Juta)`);
-    console.log(`🌐 Akses di browser: http://localhost:${PORT}`);
-    console.log(`⚡ Crypto Futures Desk (Tab 10): http://localhost:${PORT}/?tab=10`);
-    console.log(`🤖 Pluang Dashboard: http://localhost:${PORT}/pluang/`);
-    console.log(`🏛️ Committee API: http://localhost:${PORT}/api/committee/status`);
-    console.log(`================================================================`);
-    startBackgroundAutoTrader();
+// Global Express Error Handler
+app.use((err, req, res, next) => {
+    console.error('[EXPRESS:ERR]', err && err.stack ? err.stack : err);
+    if (res.headersSent) return next(err);
+    const status = Number(err && (err.statusCode || err.status)) || 500;
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+        ok: false,
+        error: status < 500 ? String(err.message || 'Bad request') : 'Internal server error'
+    });
 });
+
+let _bgStarted = false;
+function startBackgroundJobs() {
+    if (_bgStarted || testMode) return;
+    _bgStarted = true;
+    pruneStartupPositions();
+    ensurePerformanceLedger();
+    for (const job of _bgIntervals) {
+        if (job.runImmediate) {
+            try { job.fn(); } catch (_) {}
+        }
+        job.id = setInterval(job.fn, job.intervalMs);
+        if (typeof job.id.unref === 'function') job.id.unref();
+    }
+    const t1 = setTimeout(pollFuturesPositionsForEmailAlerts, 2000);
+    const t2 = setTimeout(pollHotNewsForEmailAlerts, 5000);
+    if (typeof t1.unref === 'function') t1.unref();
+    if (typeof t2.unref === 'function') t2.unref();
+    _bgTimeouts.push(t1, t2);
+}
+
+function close() {
+    for (const job of _bgIntervals) {
+        if (job.id) { clearInterval(job.id); job.id = null; }
+    }
+    for (const t of _bgTimeouts) {
+        clearTimeout(t);
+    }
+    _bgTimeouts.length = 0;
+    stopBackgroundAutoTrader();
+    if (terminalHub && typeof terminalHub.close === 'function') {
+        try { terminalHub.close(); } catch (_) {}
+    }
+}
+
+return {
+    app,
+    dashToken: activeDashToken,
+    dashTokenSource: resolvedAuth.source,
+    dashTokenGenerated: resolvedAuth.generated,
+    dashHost: DASH_HOST,
+    port: PORT,
+    hub: terminalHub,
+    startBackgroundJobs,
+    startBackgroundAutoTrader,
+    stopBackgroundAutoTrader,
+    close
+};
+} // end createServerApp
+
+function startServer(opts = {}) {
+    const ctx = createServerApp(opts);
+    ctx.startBackgroundJobs();
+    const server = ctx.app.listen(ctx.port, ctx.dashHost, () => {
+        const addr = server.address();
+        const boundPort = (addr && typeof addr === 'object') ? addr.port : ctx.port;
+        console.log(`================================================================`);
+        console.log(`🏛️ BLOOMBERG PROFESSIONAL SERVICE - REAL-TIME TRADING DESK ON ${ctx.dashHost}:${boundPort}`);
+        console.log(`🔐 Auth: Fail-Closed DASH_TOKEN active (source: ${ctx.dashTokenSource})`);
+        console.log(`💰 MODAL AWAL: Rp 200.000.000 (IDR 200 Juta)`);
+        console.log(`🌐 Akses di browser: http://localhost:${boundPort}`);
+        console.log(`⚡ Crypto Futures Desk (Tab 10): http://localhost:${boundPort}/?tab=10`);
+        console.log(`🤖 Pluang Dashboard: http://localhost:${boundPort}/pluang/`);
+        console.log(`🏛️ Committee API: http://localhost:${boundPort}/api/committee/status`);
+        console.log(`================================================================`);
+        ctx.startBackgroundAutoTrader();
+    });
+
+    const shutdown = (sig) => {
+        console.log(`[SERVER] Received ${sig}, shutting down cleanly...`);
+        ctx.close();
+        try {
+            server.close(() => { process.exit(0); });
+            setTimeout(() => process.exit(0), 3000).unref();
+        } catch (_) {
+            process.exit(0);
+        }
+    };
+    if (opts.registerSignalHandlers !== false) {
+        process.once('SIGINT', () => shutdown('SIGINT'));
+        process.once('SIGTERM', () => shutdown('SIGTERM'));
+    }
+
+    return { server, ...ctx };
+}
+
+if (require.main === module) {
+    startServer();
+}
+
+module.exports = {
+    createServerApp,
+    startServer,
+    resolveDashToken,
+    tokensMatch,
+    validateSymbol,
+    writeFileAtomicSync,
+    writeJsonAtomicSync,
+    readJsonSafeSync,
+    validateTradingConfigPatch,
+    validateBmailAlertConfigPatch,
+    escapeHtml
+};
 

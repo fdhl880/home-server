@@ -8,14 +8,18 @@ SOTA Quantitative Regime & Online Drift Modules (Pure NumPy + Python stdlib, Ter
 """
 from __future__ import annotations
 
-import json
+import logging
 import math
 import os
-import threading
 import time
+from contextlib import nullcontext
 from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
+
+from state_io import CorruptedStateError, atomic_write_json, get_file_lock, read_json_safe
+
+logger = logging.getLogger(__name__)
 
 BOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS_DIR_DEFAULT = os.path.join(BOT_DIR, "results")
@@ -25,21 +29,6 @@ DEFAULT_ENSEMBLE_PATH = os.path.join(RESULTS_DIR_DEFAULT, "ensemble_weights.json
 DEFAULT_EPISODES_PATH = os.path.join(RESULTS_DIR_DEFAULT, "episodic_memory.json")
 DEFAULT_CALIBRATOR_PATH = os.path.join(RESULTS_DIR_DEFAULT, "calibrator_state.json")
 DEFAULT_CONFORMAL_PATH = os.path.join(RESULTS_DIR_DEFAULT, "conformal_state.json")
-
-
-def atomic_write_json(path: str, payload: Any) -> bool:
-    """Write JSON atomically using thread-safe temporary file + os.replace to avoid torn reads."""
-    try:
-        parent = os.path.dirname(os.path.abspath(path))
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, path)
-        return True
-    except Exception:
-        return False
 
 
 def extract_quant_feature_vector(
@@ -252,6 +241,7 @@ class ADWINDetector:
         self.max_window = int(max(20, max_window))
         self.min_subwindow = int(max(3, min_subwindow))
         self.state_path = state_path or DEFAULT_ADWIN_PATH
+        self._lock = get_file_lock(self.state_path)
         self.window: List[float] = []
         self.drift_count: int = 0
         self.total_samples: int = 0
@@ -259,69 +249,70 @@ class ADWINDetector:
         self._load()
 
     def _load(self) -> None:
-        if os.path.exists(self.state_path):
-            try:
-                with open(self.state_path, "r", encoding="utf-8") as f:
-                    d = json.load(f)
-                if isinstance(d, dict):
+        with self._lock:
+            d = read_json_safe(self.state_path, default=None, strict_on_corrupt=False, expected_type=dict)
+            if isinstance(d, dict):
+                try:
                     self.window = [float(x) for x in d.get("window", [])][-self.max_window:]
                     self.drift_count = int(d.get("drift_count", 0))
                     self.total_samples = int(d.get("total_samples", 0))
                     self.last_drift_ts = float(d.get("last_drift_ts", 0.0))
-            except Exception:
-                pass
+                except (TypeError, ValueError) as exc:
+                    logger.warning("Ignoring malformed ADWIN state fields in %s: %s", self.state_path, exc)
 
     def _save(self) -> None:
-        atomic_write_json(self.state_path, {
-            "delta": self.delta,
-            "window": [round(x, 5) for x in self.window[-self.max_window:]],
-            "drift_count": self.drift_count,
-            "total_samples": self.total_samples,
-            "last_drift_ts": self.last_drift_ts,
-        })
+        with self._lock:
+            atomic_write_json(self.state_path, {
+                "delta": self.delta,
+                "window": [round(x, 5) for x in self.window[-self.max_window:]],
+                "drift_count": self.drift_count,
+                "total_samples": self.total_samples,
+                "last_drift_ts": self.last_drift_ts,
+            }, make_bak=True)
 
     def update(self, value: float) -> Dict[str, Any]:
-        # Clip/scale R-multiple into [0, 1] scale using sigmoid or clamped band for bounded Hoeffding check
-        scaled = float(max(0.0, min(1.0, 0.5 + 0.25 * float(value))))
-        self.window.append(scaled)
-        if len(self.window) > self.max_window:
-            self.window = self.window[-self.max_window:]
-        self.total_samples += 1
+        with self._lock:
+            # Clip/scale R-multiple into [0, 1] scale using sigmoid or clamped band for bounded Hoeffding check
+            scaled = float(max(0.0, min(1.0, 0.5 + 0.25 * float(value))))
+            self.window.append(scaled)
+            if len(self.window) > self.max_window:
+                self.window = self.window[-self.max_window:]
+            self.total_samples += 1
 
-        n = len(self.window)
-        drift_detected = False
-        cut_index = 0
+            n = len(self.window)
+            drift_detected = False
+            cut_index = 0
 
-        if n >= self.min_subwindow * 2:
-            arr = np.asarray(self.window, dtype=float)
-            var_w = max(0.025, float(np.var(arr)))
-            ln_term = math.log(4.0 * float(n) / self.delta)
-            prefix_sum = np.cumsum(arr)
-            total_sum = float(prefix_sum[-1])
-            for k in range(self.min_subwindow, n - self.min_subwindow + 1):
-                n0 = float(k)
-                n1 = float(n - k)
-                mu0 = float(prefix_sum[k - 1]) / n0
-                mu1 = (total_sum - float(prefix_sum[k - 1])) / n1
-                m = 1.0 / (1.0 / n0 + 1.0 / n1)
-                eps_cut = math.sqrt((2.0 / m) * var_w * ln_term)
-                if abs(mu0 - mu1) > eps_cut:
-                    drift_detected = True
-                    cut_index = k
-            if drift_detected and cut_index > 0:
-                self.window = self.window[cut_index:]
-                self.drift_count += 1
-                self.last_drift_ts = time.time()
+            if n >= self.min_subwindow * 2:
+                arr = np.asarray(self.window, dtype=float)
+                var_w = max(0.025, float(np.var(arr)))
+                ln_term = math.log(4.0 * float(n) / self.delta)
+                prefix_sum = np.cumsum(arr)
+                total_sum = float(prefix_sum[-1])
+                for k in range(self.min_subwindow, n - self.min_subwindow + 1):
+                    n0 = float(k)
+                    n1 = float(n - k)
+                    mu0 = float(prefix_sum[k - 1]) / n0
+                    mu1 = (total_sum - float(prefix_sum[k - 1])) / n1
+                    m = 1.0 / (1.0 / n0 + 1.0 / n1)
+                    eps_cut = math.sqrt((2.0 / m) * var_w * ln_term)
+                    if abs(mu0 - mu1) > eps_cut:
+                        drift_detected = True
+                        cut_index = k
+                if drift_detected and cut_index > 0:
+                    self.window = self.window[cut_index:]
+                    self.drift_count += 1
+                    self.last_drift_ts = time.time()
 
-        self._save()
-        mean_recent = float(np.mean(self.window)) if self.window else 0.5
-        return {
-            "drift_detected": drift_detected,
-            "window_len": len(self.window),
-            "mean_recent_scaled": round(mean_recent, 4),
-            "drift_count": self.drift_count,
-            "total_samples": self.total_samples,
-        }
+            self._save()
+            mean_recent = float(np.mean(self.window)) if self.window else 0.5
+            return {
+                "drift_detected": drift_detected,
+                "window_len": len(self.window),
+                "mean_recent_scaled": round(mean_recent, 4),
+                "drift_count": self.drift_count,
+                "total_samples": self.total_samples,
+            }
 
 
 # ===========================================================================
@@ -333,30 +324,31 @@ def load_tabular_meta_model(path: Optional[str] = None, feature_dim: int = 15):
     from ai.hybrid_ensemble import TabularMetaModel
     target = path or DEFAULT_META_PATH
     model = TabularMetaModel(feature_dim=feature_dim)
-    if os.path.exists(target):
-        try:
-            with open(target, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            w = np.asarray(data.get("weights", []), dtype=float).ravel()
-            if w.size == feature_dim:
-                model.weights = w
-            model.bias = float(data.get("bias", 0.0))
-            model.n_updates = int(data.get("n_updates", 0))
-        except Exception:
-            pass
+    with get_file_lock(target):
+        data = read_json_safe(target, default=None, strict_on_corrupt=False, expected_type=dict)
+        if isinstance(data, dict):
+            try:
+                w = np.asarray(data.get("weights", []), dtype=float).ravel()
+                if w.size == feature_dim:
+                    model.weights = w
+                model.bias = float(data.get("bias", 0.0))
+                model.n_updates = int(data.get("n_updates", 0))
+            except (TypeError, ValueError) as exc:
+                logger.warning("Ignoring malformed tabular meta weights in %s: %s", target, exc)
     return model
 
 
 def save_tabular_meta_model(model, path: Optional[str] = None) -> bool:
     """Atomically persist TabularMetaModel online weights."""
     target = path or DEFAULT_META_PATH
-    return atomic_write_json(target, {
-        "feature_dim": int(getattr(model, "feature_dim", 15)),
-        "weights": [round(float(x), 6) for x in np.asarray(model.weights, dtype=float).tolist()],
-        "bias": round(float(getattr(model, "bias", 0.0)), 6),
-        "n_updates": int(getattr(model, "n_updates", 0)),
-        "updated_at": time.time(),
-    })
+    with get_file_lock(target):
+        return atomic_write_json(target, {
+            "feature_dim": int(getattr(model, "feature_dim", 15)),
+            "weights": [round(float(x), 6) for x in np.asarray(model.weights, dtype=float).tolist()],
+            "bias": round(float(getattr(model, "bias", 0.0)), 6),
+            "n_updates": int(getattr(model, "n_updates", 0)),
+            "updated_at": time.time(),
+        }, make_bak=True)
 
 
 def load_ensemble_weights(path: Optional[str] = None):
@@ -364,31 +356,32 @@ def load_ensemble_weights(path: Optional[str] = None):
     from ai.hybrid_ensemble import NeuroSymbolicEnsemble
     target = path or DEFAULT_ENSEMBLE_PATH
     ens = NeuroSymbolicEnsemble()
-    if os.path.exists(target):
-        try:
-            with open(target, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            w = data.get("weights")
-            if isinstance(w, dict) and all(k in w for k in ("ml", "knn", "llm")):
-                s = float(w["ml"]) + float(w["knn"]) + float(w["llm"])
-                if s > 0:
-                    ens.weights = {
-                        "ml": float(w["ml"]) / s,
-                        "knn": float(w["knn"]) / s,
-                        "llm": float(w["llm"]) / s,
-                    }
-        except Exception:
-            pass
+    with get_file_lock(target):
+        data = read_json_safe(target, default=None, strict_on_corrupt=False, expected_type=dict)
+        if isinstance(data, dict):
+            try:
+                w = data.get("weights")
+                if isinstance(w, dict) and all(k in w for k in ("ml", "knn", "llm")):
+                    s = float(w["ml"]) + float(w["knn"]) + float(w["llm"])
+                    if s > 0:
+                        ens.weights = {
+                            "ml": float(w["ml"]) / s,
+                            "knn": float(w["knn"]) / s,
+                            "llm": float(w["llm"]) / s,
+                        }
+            except (TypeError, ValueError) as exc:
+                logger.warning("Ignoring malformed ensemble weights in %s: %s", target, exc)
     return ens
 
 
 def save_ensemble_weights(ens, path: Optional[str] = None) -> bool:
     """Atomically persist NeuroSymbolicEnsemble brain weights."""
     target = path or DEFAULT_ENSEMBLE_PATH
-    return atomic_write_json(target, {
-        "weights": {k: round(float(v), 5) for k, v in getattr(ens, "weights", {}).items()},
-        "updated_at": time.time(),
-    })
+    with get_file_lock(target):
+        return atomic_write_json(target, {
+            "weights": {k: round(float(v), 5) for k, v in getattr(ens, "weights", {}).items()},
+            "updated_at": time.time(),
+        }, make_bak=True)
 
 
 def load_episodic_memory(path: Optional[str] = None, feature_dim: int = 15, max_episodes: int = 1500):
@@ -396,13 +389,12 @@ def load_episodic_memory(path: Optional[str] = None, feature_dim: int = 15, max_
     from ai.episodic_memory import EpisodicMarketMemory
     target = path or DEFAULT_EPISODES_PATH
     mem = EpisodicMarketMemory(feature_dim=feature_dim)
-    if os.path.exists(target):
-        try:
-            with open(target, "r", encoding="utf-8") as f:
-                rows = json.load(f)
-            if isinstance(rows, list):
-                for row in rows[-max_episodes:]:
-                    if isinstance(row, dict) and isinstance(row.get("vector"), list):
+    with get_file_lock(target):
+        rows = read_json_safe(target, default=[], strict_on_corrupt=False, expected_type=list)
+        if isinstance(rows, list):
+            for row in rows[-max_episodes:]:
+                if isinstance(row, dict) and isinstance(row.get("vector"), list):
+                    try:
                         mem.add_episode(
                             feature_vector=row["vector"],
                             r_multiple_net=float(row.get("r_multiple_net", 0.0)),
@@ -411,8 +403,8 @@ def load_episodic_memory(path: Optional[str] = None, feature_dim: int = 15, max_
                             strategy_id=str(row.get("strategy_id", "AI_SETUP")),
                             note=str(row.get("note", "")),
                         )
-        except Exception:
-            pass
+                    except (TypeError, ValueError) as exc:
+                        logger.warning("Skipping malformed episodic row in %s: %s", target, exc)
     return mem
 
 
@@ -428,32 +420,39 @@ def append_episodic_episode(
 ) -> bool:
     """Append a resolved trade episode to persistent episodic memory store."""
     target = path or DEFAULT_EPISODES_PATH
-    rows: List[Dict[str, Any]] = []
-    if os.path.exists(target):
+    with get_file_lock(target):
         try:
-            with open(target, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                if isinstance(loaded, list):
-                    rows = loaded
-        except Exception:
-            rows = []
+            loaded = read_json_safe(
+                target,
+                default=[],
+                strict_on_corrupt=True,
+                expected_type=list,
+            )
+        except CorruptedStateError as exc:
+            logger.error(
+                "Refusing to overwrite corrupt episodic memory at %s (%s)",
+                target,
+                exc,
+            )
+            return False
 
-    vec = [round(float(x), 5) for x in list(feature_vector)[:15]]
-    while len(vec) < 15:
-        vec.append(0.0)
-    win_flag = bool(r_multiple_net > 0) if outcome_win is None else bool(outcome_win)
-    rows.append({
-        "vector": vec,
-        "r_multiple_net": round(float(r_multiple_net), 4),
-        "outcome_win": 1 if win_flag else 0,
-        "regime": str(regime or "UNKNOWN"),
-        "strategy_id": str(strategy_id or "AI_SETUP"),
-        "note": str(note or ""),
-        "ts": time.time(),
-    })
-    if len(rows) > max_episodes:
-        rows = rows[-max_episodes:]
-    return atomic_write_json(target, rows)
+        rows: List[Dict[str, Any]] = list(loaded) if isinstance(loaded, list) else []
+        vec = [round(float(x), 5) for x in list(feature_vector)[:15]]
+        while len(vec) < 15:
+            vec.append(0.0)
+        win_flag = bool(r_multiple_net > 0) if outcome_win is None else bool(outcome_win)
+        rows.append({
+            "vector": vec,
+            "r_multiple_net": round(float(r_multiple_net), 4),
+            "outcome_win": 1 if win_flag else 0,
+            "regime": str(regime or "UNKNOWN"),
+            "strategy_id": str(strategy_id or "AI_SETUP"),
+            "note": str(note or ""),
+            "ts": time.time(),
+        })
+        if len(rows) > max_episodes:
+            rows = rows[-max_episodes:]
+        return atomic_write_json(target, rows, make_bak=True)
 
 
 def load_calibrator(path: Optional[str] = None):
@@ -461,31 +460,35 @@ def load_calibrator(path: Optional[str] = None):
     from calibration import ProbabilityCalibrator
     target = path or DEFAULT_CALIBRATOR_PATH
     cal = ProbabilityCalibrator()
-    if os.path.exists(target):
-        try:
-            with open(target, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            p_raw = [float(x) for x in data.get("history_p_raw", [])][-300:]
-            y_val = [1 if int(y) > 0 else 0 for y in data.get("history_y", [])][-300:]
-            if p_raw and len(p_raw) == len(y_val):
-                cal.fit(p_raw, y_val)
-        except Exception:
-            pass
+    with get_file_lock(target):
+        data = read_json_safe(target, default=None, strict_on_corrupt=False, expected_type=dict)
+        if isinstance(data, dict):
+            try:
+                p_raw = [float(x) for x in data.get("history_p_raw", [])][-300:]
+                y_val = [1 if int(y) > 0 else 0 for y in data.get("history_y", [])][-300:]
+                if p_raw and len(p_raw) == len(y_val):
+                    cal.fit(p_raw, y_val)
+            except (TypeError, ValueError) as exc:
+                logger.warning("Ignoring malformed calibrator state in %s: %s", target, exc)
     return cal
 
 
 def save_calibrator(cal, path: Optional[str] = None) -> bool:
     """Atomically persist ProbabilityCalibrator history across restarts."""
     target = path or DEFAULT_CALIBRATOR_PATH
-    p_raw = [round(float(x), 5) for x in getattr(cal, "history_p_raw", [])[-300:]]
-    y_val = [1 if int(y) > 0 else 0 for y in getattr(cal, "history_y", [])[-300:]]
-    return atomic_write_json(target, {
-        "history_p_raw": p_raw,
-        "history_y": y_val,
-        "n_samples": len(y_val),
-        "is_fitted": bool(getattr(cal, "_is_fitted", False)),
-        "updated_at": time.time(),
-    })
+    obj_lock = getattr(cal, "_lock", None) or nullcontext()
+    with get_file_lock(target):
+        with obj_lock:
+            p_raw = [round(float(x), 5) for x in getattr(cal, "history_p_raw", [])[-300:]]
+            y_val = [1 if int(y) > 0 else 0 for y in getattr(cal, "history_y", [])[-300:]]
+            is_fitted = bool(getattr(cal, "_is_fitted", False))
+        return atomic_write_json(target, {
+            "history_p_raw": p_raw,
+            "history_y": y_val,
+            "n_samples": len(y_val),
+            "is_fitted": is_fitted,
+            "updated_at": time.time(),
+        }, make_bak=True)
 
 
 def load_conformal_filter(path: Optional[str] = None, alpha_target: float = 0.18):
@@ -493,29 +496,33 @@ def load_conformal_filter(path: Optional[str] = None, alpha_target: float = 0.18
     from ai.conformal import AdaptiveConformalFilter
     target = path or DEFAULT_CONFORMAL_PATH
     filt = AdaptiveConformalFilter(alpha_target=float(alpha_target))
-    if os.path.exists(target):
-        try:
-            with open(target, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            scores = [float(x) for x in data.get("scores_window", [])]
-            if scores:
-                filt = AdaptiveConformalFilter(alpha_target=float(alpha_target), warm_start_scores=scores[-filt.window_size:])
-            if "alpha_t" in data:
-                filt.alpha_t = float(max(filt.alpha_min, min(filt.alpha_max, float(data["alpha_t"]))))
-            for e in data.get("error_history", [])[-500:]:
-                filt.error_history.append(1 if int(e) > 0 else 0)
-        except Exception:
-            pass
+    with get_file_lock(target):
+        data = read_json_safe(target, default=None, strict_on_corrupt=False, expected_type=dict)
+        if isinstance(data, dict):
+            try:
+                scores = [float(x) for x in data.get("scores_window", [])]
+                if scores:
+                    filt = AdaptiveConformalFilter(alpha_target=float(alpha_target), warm_start_scores=scores[-filt.window_size:])
+                if "alpha_t" in data:
+                    filt.alpha_t = float(max(filt.alpha_min, min(filt.alpha_max, float(data["alpha_t"]))))
+                for e in data.get("error_history", [])[-500:]:
+                    filt.error_history.append(1 if int(e) > 0 else 0)
+            except (TypeError, ValueError) as exc:
+                logger.warning("Ignoring malformed conformal state in %s: %s", target, exc)
     return filt
 
 
 def save_conformal_filter(filt, path: Optional[str] = None) -> bool:
     """Atomically persist AdaptiveConformalFilter scores window & adaptive alpha_t."""
     target = path or DEFAULT_CONFORMAL_PATH
-    return atomic_write_json(target, {
-        "alpha_t": round(float(getattr(filt, "alpha_t", 0.18)), 5),
-        "alpha_target": round(float(getattr(filt, "alpha_target", 0.18)), 5),
-        "scores_window": [round(float(x), 5) for x in list(getattr(filt, "scores_window", []))[-100:]],
-        "error_history": [int(x) for x in list(getattr(filt, "error_history", []))[-200:]],
-        "updated_at": time.time(),
-    })
+    obj_lock = getattr(filt, "_lock", None) or nullcontext()
+    with get_file_lock(target):
+        with obj_lock:
+            payload = {
+                "alpha_t": round(float(getattr(filt, "alpha_t", 0.18)), 5),
+                "alpha_target": round(float(getattr(filt, "alpha_target", 0.18)), 5),
+                "scores_window": [round(float(x), 5) for x in list(getattr(filt, "scores_window", []))[-100:]],
+                "error_history": [int(x) for x in list(getattr(filt, "error_history", []))[-200:]],
+                "updated_at": time.time(),
+            }
+        return atomic_write_json(target, payload, make_bak=True)

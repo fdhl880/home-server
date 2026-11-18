@@ -52,18 +52,25 @@ function lookup(host, opts, cb) {
   });
 }
 
-// ---------- health registry ----------
+// ---------- health registry & secret redaction ----------
+function redactSecrets(val) {
+  return String(val == null ? '' : val)
+    .replace(/([?&](?:token|api_?key|apikey|auth_token|access_token|secret|key|password|pass)=)[^&\s"'`]+/gi, '$1[REDACTED]')
+    .replace(/(Bearer\s+)[A-Za-z0-9._\-]+/gi, '$1[REDACTED]')
+    .replace(/\b(?:re_[A-Za-z0-9_]{8,}|gsk_[A-Za-z0-9_]{8,}|AIza[A-Za-z0-9_\-]{12,}|sk-or-[A-Za-z0-9_\-]{12,})\b/g, '[REDACTED]');
+}
+
 const health = {};
 const hubEvents = []; // listeners for status change
 function hp(name) { return health[name] || (health[name] = { status: 'UNKNOWN', latencyMs: null, lastOk: null, lastError: null, mode: null }); }
 function record(name, ok, latencyMs, err, mode) {
   const h = hp(name); const prev = h.status;
   if (ok) { h.status = 'UP'; h.lastOk = Date.now(); h.lastError = null; if (latencyMs != null) h.latencyMs = latencyMs; }
-  else { h.status = 'DOWN'; h.lastError = String(err && err.message || err || 'error').slice(0, 200); }
+  else { h.status = 'DOWN'; h.lastError = redactSecrets(err && err.message || err || 'error').slice(0, 200); }
   if (mode) h.mode = mode;
   if (prev !== h.status) hubEvents.forEach(f => { try { f(name, h.status); } catch (e) {} });
 }
-function setDisabled(name, why, mode) { const h = hp(name); h.status = 'DISABLED'; h.lastError = why; if (mode) h.mode = mode; }
+function setDisabled(name, why, mode) { const h = hp(name); h.status = 'DISABLED'; h.lastError = redactSecrets(why); if (mode) h.mode = mode; }
 
 // ---------- cache ----------
 const cache = new Map();
@@ -159,19 +166,40 @@ function tick(o) {
 }
 const na = (symbol, error, source) => ({ symbol, asset: classify(symbol), price: null, bid: null, ask: null, vol: null, ts: Date.now(), source: source || null, mode: 'N/A', status: 'N/A', error: String(error && error.message || error) });
 
-// ---------- inbound rate limit (per IP) ----------
-const buckets = new Map();
+// ---------- inbound rate limit (per IP; does NOT bypass localhost because tunnels arrive via 127.0.0.1) ----------
+function resolveRateLimitIp(req) {
+  return String((req && (req.ip || (req.socket && req.socket.remoteAddress))) || 'unknown');
+}
 function rateLimit(max = 5000, windowMs = 60000) {
+  const buckets = new Map();
+  const cleanupTimer = setInterval(() => {
+    const n = Date.now();
+    for (const [k, b] of buckets) if (b.reset < n) buckets.delete(k);
+  }, 60000);
+  if (typeof cleanupTimer.unref === 'function') cleanupTimer.unref();
+
   return (req, res, next) => {
-    const ip = req.ip || req.socket.remoteAddress || 'x';
-    if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') return next();
+    const ip = resolveRateLimitIp(req);
     const now = Date.now();
+    if (buckets.size > 10000) {
+      for (const [k, b] of buckets) {
+        if (b.reset < now) buckets.delete(k);
+      }
+      if (buckets.size > 10000) {
+        const firstKey = buckets.keys().next().value;
+        if (firstKey !== undefined) buckets.delete(firstKey);
+      }
+    }
     let b = buckets.get(ip);
     if (!b || b.reset < now) { b = { n: 0, reset: now + windowMs }; buckets.set(ip, b); }
-    if (++b.n > max) { res.status(429).json({ ok: false, source: 'hub', ts: now, status: 'N/A', error: 'rate_limited', retryAfterSec: Math.ceil((b.reset - now) / 1000) }); return; }
+    if (++b.n > max) {
+      const retryAfterSec = Math.max(1, Math.ceil((b.reset - now) / 1000));
+      res.set('Retry-After', String(retryAfterSec));
+      res.status(429).json({ ok: false, source: 'hub', ts: now, status: 'N/A', error: 'rate_limited', retryAfterSec });
+      return;
+    }
     next();
   };
 }
-setInterval(() => { const n = Date.now(); for (const [k, b] of buckets) if (b.reset < n) buckets.delete(k); }, 60000).unref();
 
-module.exports = { lookup, health, hp, record, setDisabled, hubEvents, cached, cget, cstale, cset, getText, getJson, getJsonFallback, tick, na, num, classify, rateLimit };
+module.exports = { lookup, health, hp, record, setDisabled, redactSecrets, hubEvents, cached, cget, cstale, cset, getText, getJson, getJsonFallback, tick, na, num, classify, rateLimit };

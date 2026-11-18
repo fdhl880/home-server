@@ -1,4 +1,8 @@
 """
+WARNING: Unused / offline-tested module — NOT imported by the live auto_trader/binance_futures path
+(only referenced for type annotations / optional `event_bus=None` hooks in `exec/thesis_monitor.py`
+and `exec/userstream.py`; `auto_trader.py` uses `_WS_WAKEUP_EVENT`).
+
 ===========================================================================
 PYROFUEL SUB-SECOND PRIORITY INTERRUPT EVENT BUS v3.0 (T6.5)
 ===========================================================================

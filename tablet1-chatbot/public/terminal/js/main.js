@@ -1,13 +1,13 @@
 import { $, h, fmtTime, LS } from './util.js';
-import { get, net, startHub } from './api.js';
+import { get, net, startHub, apiFetch, setDashToken, setAuthRequiredHandler } from './api.js';
 import { dev } from './dev-adapter.js';
 
-import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261117a';
-import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261116e';
-import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261116e';
-import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261116e';
-import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261118a';
-import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261118a';
+import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261118b';
+import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261118b';
+import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261118b';
+import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261118b';
+import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261118b';
+import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261118b';
 
 import { panels as newsPanels } from '../panels/news/index.js';
 import { panels as macroPanels } from '../panels/macro/index.js';
@@ -389,9 +389,16 @@ function mountSlot(idx) {
     },
     subscribe(topic, cb) {
       if (topic === 'news') {
+        let busy = false;
         const iv = setInterval(async () => {
-          const r = await get('news', { limit: 20 }, 15000);
-          if (r.ok && r.data) cb(r.data);
+          if ((typeof document !== 'undefined' && document.hidden) || busy) return;
+          busy = true;
+          try {
+            const r = await get('news', { limit: 20 }, 15000);
+            if (r.ok && r.data) cb(r.data);
+          } finally {
+            busy = false;
+          }
         }, 30000);
         cbs.push(() => clearInterval(iv));
         return () => clearInterval(iv);
@@ -399,7 +406,7 @@ function mountSlot(idx) {
       return () => {};
     },
     async fetchJson(path) {
-      const r = await fetch(path, { cache: 'no-store' });
+      const r = await apiFetch(path, { cache: 'no-store' }, 12000);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     },
@@ -551,11 +558,9 @@ cmdInput.addEventListener('keydown', e => {
   } else if (e.key === 'Enter') {
     e.preventDefault();
     const val = cmdInput.value.trim();
-    const picked = (acBox.style.display !== 'none' && acItems[acIndex] && !val.includes(' ')) ? null : null;
     acBox.style.display = 'none';
     cmdInput.value = '';
     if (val) executeCommand(val);
-    else if (picked) executeCommand(picked.cmd);
   } else if (e.key === 'Escape') {
     acBox.style.display = 'none';
     cmdInput.value = '';
@@ -680,23 +685,32 @@ hub.listeners.add(st => {
   }
 });
 
-async function pollHealth() {
-  const env = await get('health', {}, 10000);
-  const provEl = $('#prov');
-  if (!provEl || !env.ok || !env.data || !env.data.providers) return;
-  provEl.textContent = '';
-  for (const [name, p] of Object.entries(env.data.providers)) {
-    if (p.status === 'DISABLED') continue;
-    provEl.append(h('span', { title: `${name}: ${p.status} (${p.latencyMs ?? '-'}ms)` },
-      h('i', { class: 'dot ' + (p.status || 'UNKNOWN') }),
-      name.replace('binance-', 'bn-')
-    ));
+let healthInFlight = false;
+async function pollHealth(force = false) {
+  if (!force && typeof document !== 'undefined' && document.hidden) return;
+  if (healthInFlight) return;
+  healthInFlight = true;
+  try {
+    const env = await get('health', {}, 10000);
+    const provEl = $('#prov');
+    if (!provEl || !env.ok || !env.data || !env.data.providers) return;
+    provEl.textContent = '';
+    for (const [name, p] of Object.entries(env.data.providers)) {
+      if (p.status === 'DISABLED') continue;
+      provEl.append(h('span', { title: `${name}: ${p.status} (${p.latencyMs ?? '-'}ms)` },
+        h('i', { class: 'dot ' + (p.status || 'UNKNOWN') }),
+        name.replace('binance-', 'bn-')
+      ));
+    }
+  } finally {
+    healthInFlight = false;
   }
 }
-pollHealth();
-setInterval(pollHealth, 20000);
+pollHealth(true);
+setInterval(() => pollHealth(false), 20000);
 
-function updateClocks() {
+function updateClocks(force = false) {
+  if (!force && typeof document !== 'undefined' && document.hidden) return;
   const now = new Date();
   const fmt = tz => now.toLocaleTimeString('en-GB', { timeZone: tz, hour12: false });
   const el = $('#clocks');
@@ -704,8 +718,82 @@ function updateClocks() {
     el.innerHTML = `<b>WIB</b> ${fmt('Asia/Jakarta')} <b>UTC</b> ${fmt('UTC')} <b>NY</b> ${fmt('America/New_York')} <b>LDN</b> ${fmt('Europe/London')}`;
   }
 }
-updateClocks();
-setInterval(updateClocks, 1000);
+updateClocks(true);
+setInterval(() => updateClocks(false), 1000);
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      updateClocks(true);
+      pollHealth(true);
+    }
+  });
+}
+
+// Token Login Modal (Decision 3.B fail-closed remote access)
+const authModal = $('#authModal');
+const authForm = $('#authModalForm');
+const authInput = $('#authTokenInput');
+const authErr = $('#authModalErr');
+const authSubmit = $('#authSubmitBtn');
+let authVerifiedOnce = false;
+
+function showAuthModal(reason) {
+  if (!authModal) return;
+  if (authModal.style.display === 'flex') return;
+  authModal.style.display = 'flex';
+  if (authErr) authErr.textContent = reason && reason !== 'HTTP 401' ? String(reason) : 'Authentication required for protected feeds and actions.';
+  if (authInput) setTimeout(() => authInput.focus(), 20);
+}
+
+function hideAuthModal() {
+  if (!authModal) return;
+  authModal.style.display = 'none';
+  if (authErr) authErr.textContent = '';
+}
+
+setAuthRequiredHandler(reason => {
+  if (net.adapter) return;
+  showAuthModal(reason);
+});
+
+if (authForm) {
+  authForm.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const tok = (authInput ? authInput.value : '').trim();
+    if (!tok) {
+      if (authErr) authErr.textContent = 'Please enter DASH_TOKEN.';
+      return;
+    }
+    if (authSubmit) authSubmit.disabled = true;
+    if (authErr) authErr.textContent = 'Verifying token...';
+    try {
+      const res = await fetch('/api/auth/verify', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', 'X-Dash-Token': tok },
+        body: JSON.stringify({ token: tok }),
+      });
+      if (!res.ok) {
+        if (authErr) authErr.textContent = res.status === 429 ? 'Rate limited. Wait a moment and retry.' : 'Invalid token (HTTP ' + res.status + ').';
+        return;
+      }
+      setDashToken(tok);
+      if (authInput) authInput.value = '';
+      hideAuthModal();
+      authVerifiedOnce = true;
+      hub.reconnect();
+      pollHealth(true);
+      for (let i = 0; i < 4; i++) mountSlot(i);
+      const msgEl = $('#msg');
+      if (msgEl) msgEl.textContent = 'AUTHENTICATED';
+    } catch {
+      if (authErr) authErr.textContent = 'Network error verifying token.';
+    } finally {
+      if (authSubmit) authSubmit.disabled = false;
+    }
+  });
+}
 
 // Mount all 4 quadrants
 for (let i = 0; i < 4; i++) mountSlot(i);
@@ -713,4 +801,7 @@ setActiveSlot(0);
 const winParam = urlParams.get('win');
 if (winParam === '1' || winParam === '2' || winParam === '4') setWinMode(winParam);
 $('#msg').textContent = `READY (${CATALOG.length} FUNCTIONS LOADED)`;
+if (!net.adapter && hub.state === 'AUTH_REQUIRED' && !authVerifiedOnce) {
+  showAuthModal('Enter DASH_TOKEN to unlock terminal feeds.');
+}
 

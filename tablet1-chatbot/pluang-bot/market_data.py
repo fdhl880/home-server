@@ -13,15 +13,17 @@ UPGRADE v2.0:
 =============================================================
 """
 import requests
+import logging
 import math
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import socket
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------
 # T9.2: ISP DNS Poisoning / DPI Bypass via TTL-Cached DoH
@@ -34,10 +36,84 @@ _BINANCE_STATIC_IPS = {
     "fapi.binance.com": "65.8.76.49",
     "fapi1.binance.com": "65.8.76.14",
     "fapi2.binance.com": "65.8.76.6",
-    "fapi3.binance.com": "65.8.76.4",
     "fapi4.binance.com": "65.8.76.51",
     "api.binance.com": "65.8.76.49",
 }
+
+_MARKET_RATE_LIMIT_UNTIL = 0.0
+_MARKET_RATE_LIMIT_STREAK = 0
+_MARKET_RATE_LIMIT_LOCK = threading.Lock()
+
+
+def _parse_retry_after_sec(headers) -> float | None:
+    if not headers:
+        return None
+    try:
+        val = headers.get("Retry-After")
+        if val is None:
+            val = headers.get("retry-after")
+    except Exception:
+        return None
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        f = float(val)
+        return max(0.0, min(f, 600.0)) if math.isfinite(f) else None
+    if isinstance(val, str):
+        try:
+            f = float(val.strip())
+            return max(0.0, min(f, 600.0)) if math.isfinite(f) else None
+        except ValueError:
+            return None
+    return None
+
+
+def _public_get(url: str, timeout=8.0, headers: dict = None):
+    """
+    Execute TLS-verified HTTP GET for public market data while respecting 429/418 cooldowns.
+    Returns `(resp_or_None, rate_limited: bool)`.
+    """
+    global _MARKET_RATE_LIMIT_UNTIL, _MARKET_RATE_LIMIT_STREAK
+    now = time.time()
+    with _MARKET_RATE_LIMIT_LOCK:
+        if _MARKET_RATE_LIMIT_UNTIL > 0 and (_MARKET_RATE_LIMIT_UNTIL - now) > 3600.0:
+            # Guard against mocked past clocks in unit tests
+            _MARKET_RATE_LIMIT_UNTIL = 0.0
+            _MARKET_RATE_LIMIT_STREAK = 0
+        if now < _MARKET_RATE_LIMIT_UNTIL:
+            logger.warning(
+                "Market data 429/418 cooldown active (%.1fs left); skipping %s",
+                _MARKET_RATE_LIMIT_UNTIL - now,
+                url,
+            )
+            return None, True
+
+    kw = {"timeout": timeout, "verify": True}
+    if headers:
+        kw["headers"] = headers
+    resp = requests.get(url, **kw)
+    status = int(getattr(resp, "status_code", 0) or 0)
+    resp_headers = getattr(resp, "headers", None)
+
+    if status in (429, 418):
+        ra = _parse_retry_after_sec(resp_headers)
+        with _MARKET_RATE_LIMIT_LOCK:
+            streak = _MARKET_RATE_LIMIT_STREAK
+            _MARKET_RATE_LIMIT_STREAK = min(streak + 1, 6)
+            if ra is not None and ra > 0:
+                wait_sec = float(ra)
+            else:
+                base = 60.0 if status == 418 else 5.0
+                wait_sec = min(300.0, base * (2 ** min(streak, 5)))
+            _MARKET_RATE_LIMIT_UNTIL = time.time() + wait_sec
+        logger.warning("Public market data HTTP %s on %s; backing off %.1fs", status, url, wait_sec)
+        return resp, True
+
+    if status == 200:
+        with _MARKET_RATE_LIMIT_LOCK:
+            _MARKET_RATE_LIMIT_STREAK = 0
+            _MARKET_RATE_LIMIT_UNTIL = 0.0
+
+    return resp, False
+
 
 def _resolve_doh(domain: str):
     now = time.time()
@@ -49,7 +125,7 @@ def _resolve_doh(domain: str):
         f"https://dns.google/resolve?name={domain}&type=A",
     ]:
         try:
-            r = requests.get(doh_url, headers={"accept": "application/dns-json"}, timeout=2.0)
+            r = requests.get(doh_url, headers={"accept": "application/dns-json"}, timeout=2.0, verify=True)
             data = r.json()
             ips = [ans["data"] for ans in data.get("Answer", []) if ans.get("type") == 1]
             if ips:
@@ -57,7 +133,8 @@ def _resolve_doh(domain: str):
                 if not ip.startswith("202.3.") and not ip.startswith("36."):
                     _dns_cache[domain] = (ip, now + _DNS_TTL_SEC)
                     return ip
-        except Exception:
+        except Exception as exc:
+            logger.debug("DoH lookup failed for %s via %s: %s", domain, doh_url, exc)
             continue
     fallback_ip = _BINANCE_STATIC_IPS.get(domain, "65.8.76.49")
     _dns_cache[domain] = (fallback_ip, now + _DNS_TTL_SEC)
@@ -267,13 +344,14 @@ def get_usd_idr_rate():
 
     for url, extractor in sources:
         try:
-            r = requests.get(url, timeout=5)
+            r = requests.get(url, timeout=5, verify=True)
             if r.status_code == 200:
                 rate = extractor(r.json())
                 _FX_RATE_CACHE["usd_idr"] = rate
                 _FX_RATE_CACHE["last_fetch"] = now
                 return rate
-        except Exception:
+        except Exception as exc:
+            logger.debug("FX source failed (%s): %s", url, exc)
             continue
 
     return _FX_RATE_CACHE["usd_idr"]
@@ -320,15 +398,17 @@ def fetch_all_binance_futures_pairs():
         "https://fapi.binance.com",
         "https://fapi1.binance.com",
         "https://fapi2.binance.com",
-        "https://fapi3.binance.com",
+        "https://fapi4.binance.com",
     ]
 
     symbols_raw = None
     for base in endpoints:
         try:
             url = f"{base}/fapi/v1/exchangeInfo"
-            resp = requests.get(url, timeout=10, verify=False)
-            if resp.status_code == 200:
+            resp, rate_limited = _public_get(url, timeout=10)
+            if rate_limited:
+                break
+            if resp is not None and resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, dict) and "symbols" in data:
                     symbols_raw = [
@@ -338,7 +418,8 @@ def fetch_all_binance_futures_pairs():
                         and s.get("status") == "TRADING"
                     ]
                     break
-        except Exception:
+        except Exception as exc:
+            logger.warning("exchangeInfo fetch failed (%s): %s", base, exc)
             continue
 
     if not symbols_raw:
@@ -349,8 +430,10 @@ def fetch_all_binance_futures_pairs():
     for base in endpoints:
         try:
             url = f"{base}/fapi/v1/ticker/24hr"
-            t_resp = requests.get(url, timeout=10, verify=False)
-            if t_resp.status_code == 200:
+            t_resp, rate_limited = _public_get(url, timeout=10)
+            if rate_limited:
+                break
+            if t_resp is not None and t_resp.status_code == 200:
                 t_list = t_resp.json()
                 if isinstance(t_list, list):
                     for t in t_list:
@@ -358,7 +441,8 @@ def fetch_all_binance_futures_pairs():
                         if sym:
                             ticker_map[sym] = t
                     break
-        except Exception:
+        except Exception as exc:
+            logger.warning("24hr ticker fetch failed (%s): %s", base, exc)
             continue
 
     all_pairs = []
@@ -449,21 +533,24 @@ def get_full_universe():
 # SMART PRIORITIZATION: RANK BY MOVERS & OPPORTUNITY
 # ===================================================================
 def get_binance_24h_tickers():
-    """Get 24h ticker data for ALL Binance pairs at once (1 API call)"""
+    """Get 24h ticker data for ALL Binance Futures pairs at once (1 API call)."""
     endpoints = [
         "https://fapi.binance.com/fapi/v1/ticker/24hr",
         "https://fapi1.binance.com/fapi/v1/ticker/24hr",
         "https://fapi2.binance.com/fapi/v1/ticker/24hr",
-        "https://data-api.binance.vision/api/v3/ticker/24hr",
+        "https://fapi4.binance.com/fapi/v1/ticker/24hr",
     ]
     for url in endpoints:
         try:
-            resp = requests.get(url, timeout=8, verify=False)
-            if resp.status_code == 200:
+            resp, rate_limited = _public_get(url, timeout=8)
+            if rate_limited:
+                break
+            if resp is not None and resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, list) and len(data) > 0:
                     return data
-        except Exception:
+        except Exception as exc:
+            logger.warning("get_binance_24h_tickers failed (%s): %s", url, exc)
             continue
     return []
 
@@ -761,8 +848,8 @@ def get_binance_funding_rate(pair="BTCUSDT"):
     """Get real-time funding rate from Binance Futures"""
     try:
         url = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={pair}&limit=3"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 200:
+        resp, rate_limited = _public_get(url, timeout=5)
+        if not rate_limited and resp is not None and resp.status_code == 200:
             data = resp.json()
             if data:
                 latest = data[-1]
@@ -773,8 +860,8 @@ def get_binance_funding_rate(pair="BTCUSDT"):
                     "sentiment": "BEARISH_LONGS_PAY" if rate > 0.01 else ("BULLISH_SHORTS_PAY" if rate < -0.01 else "NEUTRAL"),
                     "timestamp": latest.get("fundingTime")
                 }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("get_binance_funding_rate failed for %s: %s", pair, exc)
     return {"funding_rate": 0, "sentiment": "UNAVAILABLE"}
 
 
@@ -782,15 +869,15 @@ def get_binance_open_interest(pair="BTCUSDT"):
     """Get open interest from Binance Futures"""
     try:
         url = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={pair}"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 200:
+        resp, rate_limited = _public_get(url, timeout=5)
+        if not rate_limited and resp is not None and resp.status_code == 200:
             data = resp.json()
             return {
                 "open_interest": float(data.get("openInterest", 0)),
                 "symbol": data.get("symbol", pair)
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("get_binance_open_interest failed for %s: %s", pair, exc)
     return {"open_interest": 0}
 
 
@@ -798,8 +885,8 @@ def get_binance_long_short_ratio(pair="BTCUSDT"):
     """Get Long/Short Account Ratio from Binance Futures"""
     try:
         url = f"https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol={pair}&period=1h&limit=5"
-        resp = requests.get(url, timeout=5, verify=False)
-        if resp.status_code == 200:
+        resp, rate_limited = _public_get(url, timeout=5)
+        if not rate_limited and resp is not None and resp.status_code == 200:
             data = resp.json()
             if data:
                 latest = data[-1]
@@ -812,8 +899,8 @@ def get_binance_long_short_ratio(pair="BTCUSDT"):
                     "short_pct": round(short_pct, 1),
                     "crowd_sentiment": "CROWD_LONG" if ratio > 1.5 else ("CROWD_SHORT" if ratio < 0.67 else "BALANCED")
                 }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("get_binance_long_short_ratio failed for %s: %s", pair, exc)
     return {"long_short_ratio": 1.0, "crowd_sentiment": "UNAVAILABLE"}
 
 
@@ -910,7 +997,7 @@ def get_crypto_fear_greed():
     """Get Fear & Greed Index (important macro context)"""
     try:
         url = "https://api.alternative.me/fng/?limit=1&format=json"
-        resp = requests.get(url, timeout=5)
+        resp = requests.get(url, timeout=5, verify=True)
         if resp.status_code == 200:
             data = resp.json()["data"][0]
             val = int(data["value"])
@@ -919,21 +1006,90 @@ def get_crypto_fear_greed():
                 "classification": data["value_classification"],
                 "signal": "EXTREME_FEAR_BUY" if val <= 20 else ("EXTREME_GREED_SELL" if val >= 80 else "NEUTRAL")
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("get_crypto_fear_greed failed: %s", exc)
     return {"value": 50, "classification": "Neutral", "signal": "UNAVAILABLE"}
+
+
+_INTERVAL_SECONDS_MAP = {
+    "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
+    "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600, "8h": 28800, "12h": 43200,
+    "1d": 86400, "3d": 259200, "1w": 604800,
+}
+
+
+def _interval_to_ms(interval: str) -> int:
+    sec = _INTERVAL_SECONDS_MAP.get(str(interval or "1h").lower().strip(), 3600)
+    return int(sec * 1000)
+
+
+def _validate_ohlcv_arrays(
+    opens: list,
+    highs: list,
+    lows: list,
+    closes: list,
+    volumes: list,
+    close_times: list,
+    forming_bar: dict | None,
+    interval: str,
+    now_ms: int,
+    check_freshness: bool = True,
+) -> tuple[bool, str]:
+    if not closes:
+        return False, "empty_closes"
+    n = len(closes)
+    if not (len(opens) == len(highs) == len(lows) == len(volumes) == n):
+        return False, "length_mismatch"
+
+    for i in range(n):
+        o, h, l, c, v = opens[i], highs[i], lows[i], closes[i], volumes[i]
+        if not (math.isfinite(o) and math.isfinite(h) and math.isfinite(l) and math.isfinite(c) and math.isfinite(v)):
+            return False, f"non_finite_at_{i}"
+        if o <= 0 or h <= 0 or l <= 0 or c <= 0:
+            return False, f"non_positive_price_at_{i}"
+        if h < l:
+            return False, f"high_below_low_at_{i}"
+        if v < 0:
+            return False, f"negative_volume_at_{i}"
+
+    if sum(volumes) <= 0.0:
+        return False, "all_zero_volume"
+
+    if forming_bar is not None:
+        fo, fh, fl, fc, fv = (
+            forming_bar["open"],
+            forming_bar["high"],
+            forming_bar["low"],
+            forming_bar["close"],
+            forming_bar["volume"],
+        )
+        if not (math.isfinite(fo) and math.isfinite(fh) and math.isfinite(fl) and math.isfinite(fc) and math.isfinite(fv)):
+            return False, "non_finite_forming_bar"
+        if fo <= 0 or fh <= 0 or fl <= 0 or fc <= 0 or fv < 0 or fh < fl:
+            return False, "invalid_forming_bar_ohlcv"
+
+    if check_freshness:
+        if forming_bar is not None:
+            open_ms = int(forming_bar.get("open_time", 0) or 0)
+            if open_ms > now_ms + 60_000:
+                return False, "forming_bar_future_timestamp"
+        elif close_times:
+            last_ct = int(close_times[-1])
+            max_age_ms = max(_interval_to_ms(interval) * 2, 180_000)
+            if (now_ms - last_ct) > max_age_ms:
+                return False, f"stale_candle_age_ms={now_ms - last_ct}"
+
+    return True, "OK"
 
 
 # ===================================================================
 # BINANCE KLINES (T3.1: STRICT CLOSED-BAR INTEGRITY, NO LOOKAHEAD)
 # ===================================================================
-def get_binance_klines(pair="BTCUSDT", interval="1h", limit=120, closed_only=True):
+def get_binance_klines(pair="BTCUSDT", interval="1h", limit=120, closed_only=True, check_freshness=True):
     """
-    Fetch klines from Binance Futures API with multi-endpoint failover.
-    T3.1 Fix: By default (closed_only=True), inspects closeTime (k[6]) of the last bar.
-    If the last bar is still forming (closeTime > now_ms), excludes it from the indicator
-    arrays (opens, highs, lows, closes, volumes, taker_buy_quote) and stores it separately
-    in 'forming_bar' so indicators never suffer from intra-bar volume/wick contamination!
+    Fetch klines from Binance Futures API with multi-endpoint failover (no Spot fallback).
+    T3.1 / C-8: Excludes unclosed forming bar when `closed_only=True`, enforces TLS `verify=True`,
+    respects 429/418 cooldown, and validates finite/positive OHLCV, non-zero volume, and freshness.
     """
     pair = normalize_symbol_to_pair(pair)
     req_limit = min(1500, int(limit) + 1) if closed_only else int(limit)
@@ -942,12 +1098,13 @@ def get_binance_klines(pair="BTCUSDT", interval="1h", limit=120, closed_only=Tru
         f"https://fapi1.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={req_limit}",
         f"https://fapi2.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={req_limit}",
         f"https://fapi4.binance.com/fapi/v1/klines?symbol={pair}&interval={interval}&limit={req_limit}",
-        f"https://data-api.binance.vision/api/v3/klines?symbol={pair}&interval={interval}&limit={req_limit}",
     ]
     for url in endpoints:
         try:
-            resp = requests.get(url, timeout=(3.05, 8.0), verify=False)
-            if resp.status_code != 200:
+            resp, rate_limited = _public_get(url, timeout=(3.05, 8.0))
+            if rate_limited:
+                break
+            if resp is None or resp.status_code != 200:
                 continue
 
             data = resp.json()
@@ -995,6 +1152,30 @@ def get_binance_klines(pair="BTCUSDT", interval="1h", limit=120, closed_only=Tru
             taker_buy_base = [float(k[9]) if len(k) > 9 else 0.0 for k in closed_rows]
             taker_buy_quote = [float(k[10]) if len(k) > 10 else 0.0 for k in closed_rows]
 
+            if not all(
+                math.isfinite(x) and x >= 0.0
+                for arr in (quote_volumes, taker_buy_base, taker_buy_quote)
+                for x in arr
+            ):
+                logger.warning("Rejected klines for %s (%s): non-finite or negative volume metadata", pair, url)
+                continue
+
+            ok_valid, valid_reason = _validate_ohlcv_arrays(
+                opens,
+                highs,
+                lows,
+                closes,
+                volumes,
+                close_times,
+                forming_bar,
+                interval=interval,
+                now_ms=now_ms,
+                check_freshness=check_freshness,
+            )
+            if not ok_valid:
+                logger.warning("Rejected klines for %s (%s): %s", pair, interval, valid_reason)
+                continue
+
             live_price = forming_bar["close"] if forming_bar else (closes[-1] if closes else 0.0)
 
             return {
@@ -1012,7 +1193,8 @@ def get_binance_klines(pair="BTCUSDT", interval="1h", limit=120, closed_only=Tru
                 "closed_only": closed_only,
                 "count": len(closes),
             }
-        except Exception:
+        except Exception as exc:
+            logger.warning("get_binance_klines error for %s (%s): %s", pair, url, exc)
             continue
     return None
 
@@ -1034,8 +1216,10 @@ def get_market_indicators_fast(binance_pair="BTCUSDT", yahoo_symbol=None):
     highs = klines["highs"]
     lows = klines["lows"]
     volumes = klines["volumes"]
-    
-    current_price = closes[-1]
+
+    # Prefer live forming-bar price over stale closed 1h candle close (B-10)
+    raw_live_px = klines.get("live_price")
+    current_price = float(raw_live_px) if (raw_live_px is not None and float(raw_live_px) > 0) else closes[-1]
     
     # === CORE INDICATORS ===
     rsi_14 = calculate_rsi(closes, 14)
@@ -1104,6 +1288,8 @@ def get_market_indicators_fast(binance_pair="BTCUSDT", yahoo_symbol=None):
         "binance_pair": binance_pair,
         "currency": "USD",
         "current_price": round(current_price, 6),
+        "live_price": round(current_price, 6),
+        "closed_candle_price": round(closes[-1], 6),
         "current_price_idr": price_idr,
         "change_4h_pct": change_4h,
         "change_24h_pct": change_24h,
@@ -1171,7 +1357,7 @@ def get_market_indicators(symbol="BTC-USD"):
     headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
-        resp = requests.get(url, headers=headers, timeout=8)
+        resp = requests.get(url, headers=headers, timeout=8, verify=True)
         if resp.status_code != 200:
             raise Exception(f"HTTP Error {resp.status_code}")
 
@@ -1179,15 +1365,18 @@ def get_market_indicators(symbol="BTC-USD"):
         meta = data["meta"]
         quotes = data["indicators"]["quote"][0]
 
-        # Filter None values
-        valid_indices = [i for i, c in enumerate(quotes["close"]) if c is not None]
-        closes = [quotes["close"][i] for i in valid_indices]
-        highs = [quotes["high"][i] for i in valid_indices if quotes["high"][i] is not None]
-        lows = [quotes["low"][i] for i in valid_indices if quotes["low"][i] is not None]
-        volumes = [quotes["volume"][i] for i in valid_indices if quotes["volume"][i] is not None]
+        # Filter None / non-finite / non-positive values
+        valid_indices = [
+            i for i, c in enumerate(quotes["close"])
+            if c is not None and math.isfinite(float(c)) and float(c) > 0
+        ]
+        closes = [float(quotes["close"][i]) for i in valid_indices]
+        highs = [float(quotes["high"][i]) for i in valid_indices if quotes["high"][i] is not None and math.isfinite(float(quotes["high"][i])) and float(quotes["high"][i]) > 0]
+        lows = [float(quotes["low"][i]) for i in valid_indices if quotes["low"][i] is not None and math.isfinite(float(quotes["low"][i])) and float(quotes["low"][i]) > 0]
+        volumes = [max(0.0, float(quotes["volume"][i])) for i in valid_indices if quotes["volume"][i] is not None and math.isfinite(float(quotes["volume"][i]))]
 
-        if not closes:
-            raise Exception("No valid price data")
+        if not closes or (volumes and sum(volumes) <= 0.0):
+            raise Exception("No valid price/volume data")
 
         current_price = closes[-1]
 
@@ -1380,8 +1569,8 @@ def batch_quick_scan(pairs_list, max_workers=5):
             try:
                 pair, data = future.result()
                 results[pair] = data
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("batch_quick_scan future failed: %s", exc)
     
     return results
 

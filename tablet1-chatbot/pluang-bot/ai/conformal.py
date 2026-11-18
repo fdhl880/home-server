@@ -24,10 +24,20 @@ uncertainty quantification under regime shifts:
 """
 from __future__ import annotations
 
+import logging
+import os
+import threading
+import time
 from collections import deque
 from typing import Any, Deque, Dict, Optional, Sequence, Set, Tuple
 
 import numpy as np
+
+from state_io import atomic_write_json, get_file_lock, read_json_safe
+
+logger = logging.getLogger(__name__)
+BOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_CONFORMAL_PATH = os.path.join(BOT_DIR, "results", "conformal_state.json")
 
 
 class AdaptiveConformalFilter:
@@ -44,6 +54,7 @@ class AdaptiveConformalFilter:
         alpha_max: float = 0.45,
         decay_weight: float = 0.985,
         warm_start_scores: Optional[Sequence[float]] = None,
+        state_path: Optional[str] = None,
     ):
         self.alpha_target = float(alpha_target)
         self.alpha_t = float(np.clip(alpha_target, alpha_min, alpha_max))
@@ -52,6 +63,8 @@ class AdaptiveConformalFilter:
         self.alpha_min = float(alpha_min)
         self.alpha_max = float(alpha_max)
         self.decay_weight = float(decay_weight)
+        self.state_path = state_path
+        self._lock = get_file_lock(self.state_path) if self.state_path else threading.RLock()
 
         self.scores_window: Deque[float] = deque(maxlen=self.window_size)
         self.error_history: Deque[int] = deque(maxlen=500)
@@ -66,6 +79,48 @@ class AdaptiveConformalFilter:
             for s in default_prior:
                 self.scores_window.append(float(s))
 
+        if self.state_path and os.path.exists(self.state_path):
+            self.load_state(self.state_path)
+
+    def load_state(self, path: Optional[str] = None) -> bool:
+        target = path or self.state_path or DEFAULT_CONFORMAL_PATH
+        with get_file_lock(target):
+            with self._lock:
+                data = read_json_safe(target, default=None, strict_on_corrupt=False, expected_type=dict)
+                if not isinstance(data, dict):
+                    return False
+                try:
+                    scores = [float(x) for x in data.get("scores_window", [])]
+                    if scores:
+                        self.scores_window = deque(
+                            (float(np.clip(s, 0.0, 1.0)) for s in scores[-self.window_size:]),
+                            maxlen=self.window_size,
+                        )
+                    if "alpha_t" in data:
+                        self.alpha_t = float(max(self.alpha_min, min(self.alpha_max, float(data["alpha_t"]))))
+                    if "error_history" in data:
+                        self.error_history = deque(
+                            (1 if int(e) > 0 else 0 for e in data.get("error_history", [])[-500:]),
+                            maxlen=500,
+                        )
+                    return True
+                except (TypeError, ValueError) as exc:
+                    logger.warning("Ignoring malformed conformal state in %s: %s", target, exc)
+                    return False
+
+    def save_state(self, path: Optional[str] = None) -> bool:
+        target = path or self.state_path or DEFAULT_CONFORMAL_PATH
+        with get_file_lock(target):
+            with self._lock:
+                payload = {
+                    "alpha_t": round(float(self.alpha_t), 5),
+                    "alpha_target": round(float(self.alpha_target), 5),
+                    "scores_window": [round(float(x), 5) for x in list(self.scores_window)[-100:]],
+                    "error_history": [int(x) for x in list(self.error_history)[-200:]],
+                    "updated_at": time.time(),
+                }
+            return atomic_write_json(target, payload, make_bak=True)
+
     @staticmethod
     def nonconformity_score(p_cal: float, outcome_win: bool) -> float:
         """
@@ -78,39 +133,41 @@ class AdaptiveConformalFilter:
         """
         Compute time-weighted (1 - alpha_t) quantile q_hat_t over recent non-conformity scores.
         """
-        if not self.scores_window:
-            return 1.0 - self.alpha_t
+        with self._lock:
+            if not self.scores_window:
+                return 1.0 - self.alpha_t
 
-        scores = np.asarray(self.scores_window, dtype=float)
-        n = scores.size
-        q_level = float(np.clip(1.0 - self.alpha_t, 0.01, 0.99))
+            scores = np.asarray(self.scores_window, dtype=float)
+            n = scores.size
+            q_level = float(np.clip(1.0 - self.alpha_t, 0.01, 0.99))
 
-        if self.decay_weight >= 0.9999 or n < 5:
-            return float(np.quantile(scores, q_level))
+            if self.decay_weight >= 0.9999 or n < 5:
+                return float(np.quantile(scores, q_level))
 
-        # Exponentially time-weighted quantile
-        exponents = np.arange(n - 1, -1, -1, dtype=float)
-        weights = np.power(self.decay_weight, exponents)
-        order = np.argsort(scores, kind="mergesort")
-        sorted_scores = scores[order]
-        sorted_weights = weights[order]
-        cdf = np.cumsum(sorted_weights) / np.sum(sorted_weights)
-        idx = int(np.searchsorted(cdf, q_level, side="left"))
-        idx = min(max(idx, 0), n - 1)
-        return float(sorted_scores[idx])
+            # Exponentially time-weighted quantile
+            exponents = np.arange(n - 1, -1, -1, dtype=float)
+            weights = np.power(self.decay_weight, exponents)
+            order = np.argsort(scores, kind="mergesort")
+            sorted_scores = scores[order]
+            sorted_weights = weights[order]
+            cdf = np.cumsum(sorted_weights) / np.sum(sorted_weights)
+            idx = int(np.searchsorted(cdf, q_level, side="left"))
+            idx = min(max(idx, 0), n - 1)
+            return float(sorted_scores[idx])
 
     def predict_set(self, p_cal: float) -> Set[str]:
         """
         Construct conformal prediction set C_hat_t(p_cal) subset of {"WIN", "LOSS"}.
         """
-        p = float(np.clip(p_cal, 1e-4, 1.0 - 1e-4))
-        q_hat = self.compute_quantile()
-        pred_set: Set[str] = set()
-        if (1.0 - p) <= q_hat + 1e-12:
-            pred_set.add("WIN")
-        if p <= q_hat + 1e-12:
-            pred_set.add("LOSS")
-        return pred_set
+        with self._lock:
+            p = float(np.clip(p_cal, 1e-4, 1.0 - 1e-4))
+            q_hat = self.compute_quantile()
+            pred_set: Set[str] = set()
+            if (1.0 - p) <= q_hat + 1e-12:
+                pred_set.add("WIN")
+            if p <= q_hat + 1e-12:
+                pred_set.add("LOSS")
+            return pred_set
 
     def evaluate_gate(self, p_cal: float) -> Tuple[bool, str, Dict[str, Any]]:
         """
@@ -118,20 +175,21 @@ class AdaptiveConformalFilter:
         Allows trade ONLY if C_hat_t == {"WIN"}.
         Vetoes whenever C_hat_t != {"WIN"} with skip_reason = "SKIP_CONFORMAL_AMBIGUITY".
         """
-        q_hat = self.compute_quantile()
-        c_hat = self.predict_set(p_cal)
-        is_singleton_win = c_hat == {"WIN"}
-        skip_reason = "" if is_singleton_win else "SKIP_CONFORMAL_AMBIGUITY"
-        info = {
-            "p_cal": float(p_cal),
-            "alpha_t": float(self.alpha_t),
-            "alpha_target": float(self.alpha_target),
-            "q_hat": float(q_hat),
-            "prediction_set": sorted(list(c_hat)),
-            "allowed": is_singleton_win,
-            "skip_reason": skip_reason,
-        }
-        return is_singleton_win, skip_reason, info
+        with self._lock:
+            q_hat = self.compute_quantile()
+            c_hat = self.predict_set(p_cal)
+            is_singleton_win = c_hat == {"WIN"}
+            skip_reason = "" if is_singleton_win else "SKIP_CONFORMAL_AMBIGUITY"
+            info = {
+                "p_cal": float(p_cal),
+                "alpha_t": float(self.alpha_t),
+                "alpha_target": float(self.alpha_target),
+                "q_hat": float(q_hat),
+                "prediction_set": sorted(list(c_hat)),
+                "allowed": is_singleton_win,
+                "skip_reason": skip_reason,
+            }
+            return is_singleton_win, skip_reason, info
 
     def update(self, p_cal: float, outcome_win: bool) -> Dict[str, Any]:
         """
@@ -140,34 +198,35 @@ class AdaptiveConformalFilter:
           alpha_{t+1} = clip(alpha_t + gamma * (alpha_target - err_t), 0.05, 0.45)
         Then appends realized non-conformity score s_t to rolling window.
         """
-        true_label = "WIN" if outcome_win else "LOSS"
-        c_hat = self.predict_set(p_cal)
-        err_t = 0 if true_label in c_hat else 1
+        with self._lock:
+            true_label = "WIN" if outcome_win else "LOSS"
+            c_hat = self.predict_set(p_cal)
+            err_t = 0 if true_label in c_hat else 1
 
-        alpha_prev = self.alpha_t
-        self.alpha_t = float(
-            np.clip(
-                self.alpha_t + self.gamma * (self.alpha_target - float(err_t)),
-                self.alpha_min,
-                self.alpha_max,
+            alpha_prev = self.alpha_t
+            self.alpha_t = float(
+                np.clip(
+                    self.alpha_t + self.gamma * (self.alpha_target - float(err_t)),
+                    self.alpha_min,
+                    self.alpha_max,
+                )
             )
-        )
-        s_t = self.nonconformity_score(p_cal, outcome_win)
-        self.scores_window.append(float(s_t))
-        self.error_history.append(int(err_t))
+            s_t = self.nonconformity_score(p_cal, outcome_win)
+            self.scores_window.append(float(s_t))
+            self.error_history.append(int(err_t))
 
-        empirical_coverage = (
-            1.0 - float(np.mean(self.error_history)) if self.error_history else 1.0 - self.alpha_target
-        )
-        return {
-            "true_label": true_label,
-            "prediction_set": sorted(list(c_hat)),
-            "err_t": err_t,
-            "s_t": s_t,
-            "alpha_prev": alpha_prev,
-            "alpha_next": self.alpha_t,
-            "empirical_coverage": empirical_coverage,
-        }
+            empirical_coverage = (
+                1.0 - float(np.mean(self.error_history)) if self.error_history else 1.0 - self.alpha_target
+            )
+            return {
+                "true_label": true_label,
+                "prediction_set": sorted(list(c_hat)),
+                "err_t": err_t,
+                "s_t": s_t,
+                "alpha_prev": alpha_prev,
+                "alpha_next": self.alpha_t,
+                "empirical_coverage": empirical_coverage,
+            }
 
 
 class SplitConformalGate(AdaptiveConformalFilter):

@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>BLOOMBERG PROFESSIONAL</title>
-<link rel="stylesheet" href="/terminal/css/terminal.css?v=20261116a">
+<link rel="stylesheet" href="/terminal/css/terminal.css?v=20261118b">
 </head>
 <body>
 <div id="app">
@@ -40,7 +40,22 @@
     <select id="wsel" title="Bloomberg Launchpad Workspaces (BLP)"></select>
   </footer>
 </div>
+<div id="authModal" role="dialog" aria-modal="true" aria-labelledby="authModalTitle" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.88);align-items:center;justify-content:center;font-family:var(--font, monospace);">
+  <div style="width:420px;max-width:92vw;background:var(--panel,#0d1016);border:1px solid var(--amber,#ff9900);padding:16px 18px;color:#e8eaed;box-shadow:0 8px 32px rgba(0,0,0,0.75);">
+    <div id="authModalTitle" style="color:var(--amber,#ff9900);font-weight:700;font-size:12px;letter-spacing:0.8px;border-bottom:1px solid var(--border,#262b33);padding-bottom:8px;margin-bottom:10px;">TERMINAL SECURITY // AUTHENTICATION REQUIRED</div>
+    <div style="font-size:11px;line-height:1.45;color:var(--label,#9aa4b2);margin-bottom:10px;">
+      Enter the server <code style="color:#fff;">DASH_TOKEN</code> (from host <code style="color:#fff;">pluang-bot/.dash_token</code> or environment) to unlock authenticated feeds, WS streaming, and execution controls.
+    </div>
+    <form id="authModalForm" autocomplete="off">
+      <input id="authTokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="Enter DASH_TOKEN..." style="width:100%;box-sizing:border-box;background:#05070a;color:#fff;border:1px solid var(--border,#333b48);padding:7px 9px;font-family:inherit;font-size:12px;outline:none;">
+      <div id="authModalErr" style="color:var(--dn,#ff4d4f);font-size:11px;min-height:16px;margin-top:6px;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px;">
+        <button id="authSubmitBtn" type="submit" style="background:var(--amber,#ff9900);color:#000;border:none;padding:6px 14px;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:0.5px;">AUTHENTICATE</button>
+      </div>
+    </form>
+  </div>
+</div>
 <script src="/terminal/vendor/lightweight-charts.standalone.production.js"></script>
-<script type="module" src="/terminal/js/main.js?v=20261118a"></script>
+<script type="module" src="/terminal/js/main.js?v=20261118b"></script>
 </body>
 </html>

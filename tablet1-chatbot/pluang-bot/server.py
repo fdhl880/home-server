@@ -17,8 +17,14 @@ import os
 import sys
 import json
 import time
+import logging
 from datetime import datetime, timezone
 from flask import Flask, jsonify, request, send_from_directory
+
+from state_io import CorruptedStateError, atomic_write_json, get_file_lock, read_json_safe
+from config_schema import ConfigValidationError
+
+logger = logging.getLogger(__name__)
 
 if hasattr(sys.stdout, 'reconfigure'):
     try:
@@ -99,23 +105,11 @@ def get_status():
         except Exception:
             pass
 
-    # Read active positions
-    positions = []
-    if os.path.exists(POSITIONS_FILE):
-        try:
-            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
-                positions = json.load(f)
-        except Exception:
-            pass
+    # Read active positions safely via state_io
+    positions = read_json_safe(POSITIONS_FILE, default=[], strict_on_corrupt=False, expected_type=list)
 
-    # Read state
-    state = {}
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                state = json.load(f)
-        except Exception:
-            pass
+    # Read state safely via state_io
+    state = read_json_safe(STATE_FILE, default={}, strict_on_corrupt=False, expected_type=dict)
 
     # Read Binance Futures Balance
     bn_connected = False
@@ -171,7 +165,10 @@ def get_status():
 def handle_config():
     if request.method == "POST":
         data = request.get_json() or {}
-        new_cfg = save_trading_config(data)
+        try:
+            new_cfg = save_trading_config(data)
+        except (ConfigValidationError, ValueError) as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
         return jsonify({"success": True, "config": new_cfg})
     return jsonify(get_trading_config())
 
@@ -293,25 +290,13 @@ def scan_symbol():
 
 @app.route("/api/positions", methods=["GET"])
 def get_positions():
-    positions = []
-    if os.path.exists(POSITIONS_FILE):
-        try:
-            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
-                positions = json.load(f)
-        except Exception:
-            positions = []
+    positions = read_json_safe(POSITIONS_FILE, default=[], strict_on_corrupt=False, expected_type=list)
     return jsonify(positions)
 
 @app.route("/api/performance")
 def get_performance():
     """Consolidated performance metrics: Win Rate, Realized PnL, Floating PnL, Total Trades"""
-    positions = []
-    if os.path.exists(POSITIONS_FILE):
-        try:
-            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
-                positions = json.load(f)
-        except Exception:
-            positions = []
+    positions = read_json_safe(POSITIONS_FILE, default=[], strict_on_corrupt=False, expected_type=list)
 
     closed_pos = [p for p in positions if str(p.get("status", "")).startswith("CLOSED")]
     open_pos = [p for p in positions if p.get("status") == "OPEN"]
@@ -371,7 +356,9 @@ def execute_order():
     direction = data.get("direction", "LONG")
     amount_idr = float(data.get("amount_idr", 0))
     leverage = int(data.get("leverage", 1))
-    margin_type = data.get("margin_type", "ISOLATED").upper()
+    margin_type = str(data.get("margin_type", "ISOLATED")).upper().strip()
+    if margin_type == "CROSS":
+        margin_type = "CROSSED"
     order_type = data.get("order_type", "MARKET").upper()
     tp_price = float(data.get("tp_price") or data.get("take_profit") or data.get("tp1_price") or data.get("tp2_price", 0))
     sl_price = float(data.get("sl_price") or data.get("stop_loss", 0))
@@ -393,8 +380,8 @@ def execute_order():
             "error": f"Leverage {leverage}x ditolak! Melebihi batas {MAX_LEVERAGE}x."
         }), 400
 
-    if margin_type not in ("CROSS", "ISOLATED"):
-        return jsonify({"success": False, "error": "Margin type harus CROSS atau ISOLATED"}), 400
+    if margin_type not in ("CROSSED", "ISOLATED"):
+        return jsonify({"success": False, "error": "Margin type harus CROSSED (atau CROSS) atau ISOLATED"}), 400
 
     if order_type not in ("MARKET", "LIMIT", "STOP_MARKET", "TAKE_PROFIT_MARKET"):
         return jsonify({"success": False, "error": "Order type tidak valid"}), 400
@@ -430,15 +417,7 @@ def execute_order():
         except Exception as e:
             pluang_result = {"error": str(e)}
 
-    # Record position
-    positions = []
-    if os.path.exists(POSITIONS_FILE):
-        try:
-            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
-                positions = json.load(f)
-        except Exception:
-            pass
-
+    # Record position atomically via state_io
     new_pos = {
         "id": f"POS_{symbol}_{int(time.time())}",
         "symbol": symbol,
@@ -459,12 +438,15 @@ def execute_order():
         "pluang_synced": pluang_active and pluang_result and "error" not in pluang_result,
         "pluang_execution": pluang_result
     }
-    positions.append(new_pos)
     try:
-        with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
-            json.dump(positions, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+        with get_file_lock(POSITIONS_FILE):
+            positions = read_json_safe(POSITIONS_FILE, default=[], strict_on_corrupt=True, expected_type=list)
+            positions.append(new_pos)
+            if not atomic_write_json(POSITIONS_FILE, positions, make_bak=True):
+                return jsonify({"success": False, "error": "Gagal menyimpan POSITIONS_FILE secara atomik"}), 500
+    except CorruptedStateError as cse:
+        logger.error("Corrupt POSITIONS_FILE in /api/execute: %s", cse)
+        return jsonify({"success": False, "error": f"POSITIONS_FILE corrupt: {cse}"}), 500
 
     return jsonify({
         "success": True,
@@ -475,19 +457,16 @@ def execute_order():
 
 @app.route("/api/auto/toggle", methods=["POST"])
 def toggle_auto():
-    state = {}
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                state = json.load(f)
-        except Exception:
-            pass
-    state["is_running"] = not state.get("is_running", True)
     try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+        with get_file_lock(STATE_FILE):
+            state = read_json_safe(STATE_FILE, default={}, strict_on_corrupt=True, expected_type=dict)
+            state["is_running"] = not state.get("is_running", True)
+            state["control_updated_at"] = datetime.now(timezone.utc).isoformat()
+            if not atomic_write_json(STATE_FILE, state, make_bak=True):
+                return jsonify({"success": False, "error": "Gagal menyimpan STATE_FILE secara atomik"}), 500
+    except CorruptedStateError as cse:
+        logger.error("Corrupt STATE_FILE in /api/auto/toggle: %s", cse)
+        return jsonify({"success": False, "error": f"STATE_FILE corrupt: {cse}"}), 500
     return jsonify({"autonomous_running": state["is_running"]})
 
 @app.route("/api/futures/settings", methods=["GET", "POST"])
@@ -496,50 +475,59 @@ def futures_settings():
     if request.method == "POST":
         data = request.get_json() or {}
         cfg = get_trading_config()
-        
-        # Validate and update
-        if "margin_type" in data:
-            mt = data["margin_type"].upper()
-            if mt in ("CROSS", "ISOLATED"):
+
+        try:
+            # Validate and update
+            if "margin_type" in data:
+                mt = str(data["margin_type"]).upper().strip()
+                if mt == "CROSS":
+                    mt = "CROSSED"
+                if mt not in ("CROSSED", "ISOLATED"):
+                    raise ConfigValidationError(f"Invalid margin_type: {data['margin_type']!r}")
                 cfg["margin_type"] = mt
-        if "order_type" in data:
-            ot = data["order_type"].upper()
-            if ot in ("MARKET", "LIMIT", "STOP_MARKET", "TAKE_PROFIT_MARKET"):
-                cfg["order_type"] = ot
-        if "max_leverage" in data:
-            lev = int(data["max_leverage"])
-            if 1 <= lev <= 125:
+            if "order_type" in data:
+                ot = str(data["order_type"]).upper().strip()
+                if ot in ("MARKET", "LIMIT", "STOP_MARKET", "TAKE_PROFIT_MARKET"):
+                    cfg["order_type"] = ot
+            if "max_leverage" in data:
+                lev = int(data["max_leverage"])
+                if not (1 <= lev <= 125):
+                    raise ConfigValidationError(f"max_leverage out of range: {lev}")
                 cfg["max_leverage"] = lev
-        if "tp_sl_mode" in data:
-            mode = data["tp_sl_mode"].upper()
-            if mode in ("SINGLE_TP", "DUAL_TP", "TRAILING"):
-                cfg["tp_sl_mode"] = mode
-        if "tp1_close_pct" in data:
-            pct = int(data["tp1_close_pct"])
-            if 10 <= pct <= 100:
-                cfg["tp1_close_pct"] = pct
-        if "tp1_move_sl_to_breakeven" in data:
-            cfg["tp1_move_sl_to_breakeven"] = bool(data["tp1_move_sl_to_breakeven"])
-        if "max_concurrent_positions" in data:
-            mcp = int(data["max_concurrent_positions"])
-            if 1 <= mcp <= 20:
+            if "tp_sl_mode" in data:
+                mode = str(data["tp_sl_mode"]).upper().strip()
+                if mode in ("SINGLE_TP", "DUAL_TP", "TRAILING"):
+                    cfg["tp_sl_mode"] = mode
+            if "tp1_close_pct" in data:
+                pct = int(data["tp1_close_pct"])
+                if 10 <= pct <= 100:
+                    cfg["tp1_close_pct"] = pct
+            if "tp1_move_sl_to_breakeven" in data:
+                cfg["tp1_move_sl_to_breakeven"] = bool(data["tp1_move_sl_to_breakeven"])
+            if "max_concurrent_positions" in data:
+                mcp = int(data["max_concurrent_positions"])
+                if not (1 <= mcp <= 20):
+                    raise ConfigValidationError(f"max_concurrent_positions out of range: {mcp}")
                 cfg["max_concurrent_positions"] = mcp
-        if "max_daily_trades" in data:
-            mdt = int(data["max_daily_trades"])
-            if 1 <= mdt <= 100:
+            if "max_daily_trades" in data:
+                mdt = int(data["max_daily_trades"])
+                if not (1 <= mdt <= 100):
+                    raise ConfigValidationError(f"max_daily_trades out of range: {mdt}")
                 cfg["max_daily_trades"] = mdt
-        if "auto_execute_on_pluang" in data:
-            cfg["auto_execute_on_pluang"] = bool(data["auto_execute_on_pluang"])
-        if "max_budget_idr" in data:
-            cfg["max_budget_idr"] = int(data["max_budget_idr"])
-        if "min_confidence_score" in data:
-            cfg["min_confidence_score"] = int(data["min_confidence_score"])
-        if "min_risk_reward_ratio" in data:
-            cfg["min_risk_reward_ratio"] = float(data["min_risk_reward_ratio"])
-        
-        new_cfg = save_trading_config(cfg)
+            if "auto_execute_on_pluang" in data:
+                cfg["auto_execute_on_pluang"] = bool(data["auto_execute_on_pluang"])
+            if "max_budget_idr" in data:
+                cfg["max_budget_idr"] = int(data["max_budget_idr"])
+            if "min_confidence_score" in data:
+                cfg["min_confidence_score"] = int(data["min_confidence_score"])
+            if "min_risk_reward_ratio" in data:
+                cfg["min_risk_reward_ratio"] = float(data["min_risk_reward_ratio"])
+
+            new_cfg = save_trading_config(cfg)
+        except (ConfigValidationError, ValueError, TypeError) as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
         return jsonify({"success": True, "config": new_cfg})
-    
+
     return jsonify(get_trading_config())
 
 @app.route("/api/pluang/status")
@@ -608,7 +596,9 @@ def set_margin():
     """Manually set margin type for a symbol"""
     data = request.get_json() or {}
     symbol = data.get("symbol")
-    margin_type = data.get("margin_type", "ISOLATED")
+    margin_type = str(data.get("margin_type", "ISOLATED")).upper().strip()
+    if margin_type == "CROSS":
+        margin_type = "CROSSED"
     client = get_pluang_client()
     if not client:
         return jsonify({"error": "Pluang not connected"}), 503
@@ -638,13 +628,7 @@ def run_committee():
         return jsonify({"error": "Multi-agent committee module tidak tersedia"}), 503
     data = request.get_json() or {}
     symbol = data.get("symbol", "BTC-USD")
-    positions = []
-    if os.path.exists(POSITIONS_FILE):
-        try:
-            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
-                positions = json.load(f)
-        except Exception:
-            pass
+    positions = read_json_safe(POSITIONS_FILE, default=[], strict_on_corrupt=False, expected_type=list)
     try:
         result = run_multi_agent_committee(symbol, positions)
         return jsonify(result)

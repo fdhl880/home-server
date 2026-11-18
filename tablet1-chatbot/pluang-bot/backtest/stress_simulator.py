@@ -1,11 +1,13 @@
 """
-PYROFUEL BOT - ADVERSARIAL TAIL-RISK, FLASH-CRASH & LATENCY STRESS SIMULATOR (Task T1.4)
-Menguji ketahanan sistem 20x ALL-IN terhadap 3 skenario Black Swan + Stationary Block-Bootstrap:
+PYROFUEL BOT - ADVERSARIAL TAIL-RISK, FLASH-CRASH & $20 ACCOUNT MONTE CARLO SIMULATOR (Task T1.4 / WP-6)
+Menguji ketahanan sistem 20x ALL-IN terhadap 3 skenario Black Swan + Stationary Block-Bootstrap
++ Simulasi Ruin Monte Carlo Akun Nyata $20 (minNotional $5-$100, 20x ALL-IN, Circuit-Breaker 2 Loss):
 1. S-1 (`simulate_flash_wick_stop_hunt`): Flash-Wick -3.5% selama 15 detik vs Mark Price + SL Shield.
 2. S-2 (`simulate_unmitigated_cascade_10pct`): Kejatuhan beruntun -10% tanpa pantulan ->
    Optimal Stopping / SL Cap + Circuit-Breaker 2 Loss + High-Water Mark Profit Vault tetap utuh 100%.
 3. S-3 (`simulate_api_latency_storm`): Badai timeout API 10 detik pasca-entry ->
    Tri-State `UNKNOWN` tidak membunuh posisi secara prematur dan berhasil rekonsiliasi saat pulih.
+4. `simulate_account_ruin_monte_carlo`: Probabilitas ruin & median ekuitas akhir pada akun $20.
 """
 from typing import Any, Dict, List, Optional, Sequence
 import numpy as np
@@ -51,6 +53,184 @@ def stationary_block_bootstrap(
         "median_cum_r": round(float(np.median(cum_r_end)), 4),
         "p05_cum_r": round(float(np.percentile(cum_r_end, 5.0)), 4),
         "max_dd_p95_r": round(float(np.percentile(max_dds, 95.0)), 4),
+    }
+
+
+def simulate_account_ruin_monte_carlo(
+    r_series: Sequence[float],
+    initial_equity: float = 20.0,
+    leverage: int = 20,
+    all_in_fraction: float = 0.95,
+    min_notional: float = 5.0,
+    breaker_losses: int = 2,
+    n_paths: int = 1000,
+    n_trades_per_path: int = 100,
+    sl_distance_pct: float = 1.0,
+    ruin_equity_threshold: Optional[float] = None,
+    avg_block_len: float = 4.0,
+    breaker_cooldown_skip_trades: int = 1,
+    vault_enabled: bool = False,
+    vault_hwm_step_pct: float = 15.0,
+    vault_lock_fraction: float = 0.35,
+    seed: int = 42,
+) -> Dict[str, Any]:
+    """
+    Monte Carlo Ruin & Equity Trajectory Simulator for a real small account (`$20` default)
+    at `20x` Isolated leverage, `ALL_IN` (`0.95` working balance), `minNotional` (`$5`–`$100`),
+    and `2-loss` circuit breaker cooldown skipping.
+    """
+    arr = np.asarray(r_series, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+
+    init_eq = max(0.0, float(initial_equity))
+    lev = max(1, int(leverage))
+    frac = float(np.clip(all_in_fraction, 0.01, 0.98))
+    min_not = max(0.0, float(min_notional))
+    min_req_equity = min_not / max(lev * frac, 1e-9)
+    ruin_thresh = (
+        float(ruin_equity_threshold)
+        if ruin_equity_threshold is not None
+        else max(min_req_equity, init_eq * 0.10)
+    )
+
+    if len(arr) == 0:
+        immediate_lockout = init_eq * frac * lev < min_not
+        return {
+            "initial_equity": round(init_eq, 4),
+            "leverage": lev,
+            "all_in_fraction": frac,
+            "min_notional": min_not,
+            "min_equity_required_for_min_notional": round(min_req_equity, 4),
+            "breaker_losses": int(breaker_losses),
+            "sl_distance_pct": float(sl_distance_pct),
+            "n_paths": 0,
+            "n_trades_per_path": int(n_trades_per_path),
+            "ruin_probability": 1.0 if immediate_lockout else 0.0,
+            "min_notional_lockout_probability": 1.0 if immediate_lockout else 0.0,
+            "double_equity_probability": 0.0,
+            "median_final_equity": round(init_eq, 4),
+            "mean_final_equity": round(init_eq, 4),
+            "p05_final_equity": round(init_eq, 4),
+            "p25_final_equity": round(init_eq, 4),
+            "p75_final_equity": round(init_eq, 4),
+            "p95_final_equity": round(init_eq, 4),
+            "median_max_drawdown_pct": 0.0,
+            "p95_max_drawdown_pct": 0.0,
+            "avg_breaker_triggers_per_path": 0.0,
+            "avg_trades_executed_per_path": 0.0,
+        }
+
+    rng = np.random.default_rng(seed)
+    paths = max(20, int(n_paths))
+    horizon = max(1, int(n_trades_per_path))
+    n_src = len(arr)
+    p_geom = 1.0 / max(1.0, float(avg_block_len)) if avg_block_len > 1.0 else 1.0
+    sl_frac = max(0.001, float(sl_distance_pct) / 100.0)
+    brk_limit = max(1, int(breaker_losses))
+    skip_on_break = max(0, int(breaker_cooldown_skip_trades))
+
+    final_equities = np.empty(paths, dtype=np.float64)
+    max_dd_pcts = np.empty(paths, dtype=np.float64)
+    ruined_flags = np.zeros(paths, dtype=bool)
+    lockout_flags = np.zeros(paths, dtype=bool)
+    breaker_counts = np.zeros(paths, dtype=np.float64)
+    exec_counts = np.zeros(paths, dtype=np.float64)
+
+    for p_idx in range(paths):
+        equity = init_eq
+        locked_vault = 0.0
+        hwm_vault = init_eq
+        peak_eq = init_eq
+        max_dd_pct = 0.0
+        consec_losses = 0
+        cooldown_skips = 0
+        executed = 0
+        brks = 0
+        src_idx = int(rng.integers(0, n_src))
+
+        for _ in range(horizon):
+            r_t = float(arr[src_idx])
+            if p_geom >= 1.0 or rng.random() < p_geom:
+                src_idx = int(rng.integers(0, n_src))
+            else:
+                src_idx = (src_idx + 1) % n_src
+
+            working_eq = max(0.0, equity - locked_vault)
+            margin_usdt = working_eq * frac
+            notional_usdt = margin_usdt * lev
+
+            if notional_usdt < min_not or equity <= 1e-6:
+                lockout_flags[p_idx] = True
+                ruined_flags[p_idx] = True
+                break
+
+            if cooldown_skips > 0:
+                cooldown_skips -= 1
+                continue
+
+            executed += 1
+            risk_usdt = notional_usdt * sl_frac
+            raw_pnl = r_t * risk_usdt
+            # Isolated margin bounds loss to at most -margin_usdt (liquidation floor)
+            pnl_usdt = max(-margin_usdt, raw_pnl)
+            equity = max(0.0, equity + pnl_usdt)
+
+            if vault_enabled and equity >= hwm_vault * (1.0 + float(vault_hwm_step_pct) / 100.0):
+                gain = equity - hwm_vault
+                locked_vault += gain * float(vault_lock_fraction)
+                hwm_vault = equity
+
+            if equity > peak_eq:
+                peak_eq = equity
+            if peak_eq > 0.0:
+                dd_pct = (peak_eq - equity) / peak_eq * 100.0
+                if dd_pct > max_dd_pct:
+                    max_dd_pct = dd_pct
+
+            if r_t <= 0.0:
+                consec_losses += 1
+                if consec_losses >= brk_limit:
+                    brks += 1
+                    consec_losses = 0
+                    cooldown_skips = skip_on_break
+            else:
+                consec_losses = 0
+
+            if equity <= ruin_thresh:
+                ruined_flags[p_idx] = True
+            if (max(0.0, equity - locked_vault) * frac * lev) < min_not:
+                lockout_flags[p_idx] = True
+                ruined_flags[p_idx] = True
+                break
+
+        final_equities[p_idx] = equity
+        max_dd_pcts[p_idx] = max_dd_pct
+        breaker_counts[p_idx] = brks
+        exec_counts[p_idx] = executed
+
+    return {
+        "initial_equity": round(init_eq, 4),
+        "leverage": lev,
+        "all_in_fraction": frac,
+        "min_notional": min_not,
+        "min_equity_required_for_min_notional": round(min_req_equity, 4),
+        "breaker_losses": brk_limit,
+        "sl_distance_pct": float(sl_distance_pct),
+        "n_paths": paths,
+        "n_trades_per_path": horizon,
+        "ruin_probability": round(float(np.mean(ruined_flags)), 4),
+        "min_notional_lockout_probability": round(float(np.mean(lockout_flags)), 4),
+        "double_equity_probability": round(float(np.mean(final_equities >= 2.0 * init_eq)), 4),
+        "median_final_equity": round(float(np.median(final_equities)), 4),
+        "mean_final_equity": round(float(np.mean(final_equities)), 4),
+        "p05_final_equity": round(float(np.percentile(final_equities, 5.0)), 4),
+        "p25_final_equity": round(float(np.percentile(final_equities, 25.0)), 4),
+        "p75_final_equity": round(float(np.percentile(final_equities, 75.0)), 4),
+        "p95_final_equity": round(float(np.percentile(final_equities, 95.0)), 4),
+        "median_max_drawdown_pct": round(float(np.median(max_dd_pcts)), 2),
+        "p95_max_drawdown_pct": round(float(np.percentile(max_dd_pcts, 95.0)), 2),
+        "avg_breaker_triggers_per_path": round(float(np.mean(breaker_counts)), 2),
+        "avg_trades_executed_per_path": round(float(np.mean(exec_counts)), 2),
     }
 
 
@@ -119,7 +299,6 @@ def simulate_unmitigated_cascade_10pct(
     trades_executed = 0
     liquidations = 0
 
-    # Roundtrip fee + slippage on notional
     rt_cost_pct = 0.10
 
     for _ in range(cascade_attempts):
@@ -131,13 +310,11 @@ def simulate_unmitigated_cascade_10pct(
         margin_used = working_equity * all_in_fraction
         notional = margin_used * float(leverage)
 
-        # Effective loss % of price: either early thesis invalidation (-0.30R) or full SL (-1.0R)
         if early_thesis_scratch_r is not None:
             realized_price_loss_pct = abs(float(early_thesis_scratch_r)) * sl_distance_pct + rt_cost_pct
         else:
             realized_price_loss_pct = sl_distance_pct + rt_cost_pct
 
-        # Check liquidation distance (~4.6% on 20x Isolated)
         if sl_distance_pct >= 4.6:
             liquidations += 1
             loss_usdt = margin_used
@@ -189,11 +366,8 @@ def simulate_api_latency_storm(
         reconcile_attempts += 1
         network_healthy = elapsed >= outage_duration_sec
         if not network_healthy:
-            # During network storm, verify_stop_loss_active returns "UNKNOWN"
-            # Rule T0.4: NEVER close position on "UNKNOWN"!
             sl_state = "UNKNOWN"
         else:
-            # Network recovered -> Reconcile Guard places/confirms SL on exchange
             sl_state = "CONFIRMED"
             break
         elapsed += reconcile_interval_sec
@@ -209,12 +383,13 @@ def simulate_api_latency_storm(
 
 
 def run_all_stress_scenarios(sample_r_series: Optional[Sequence[float]] = None) -> Dict[str, Any]:
-    """Run all 3 adversarial stress scenarios + Stationary Block-Bootstrap."""
+    """Run all 3 adversarial stress scenarios + Stationary Block-Bootstrap + $20 Account Ruin MC."""
     s1 = simulate_flash_wick_stop_hunt()
     s2 = simulate_unmitigated_cascade_10pct()
     s3 = simulate_api_latency_storm()
     r_seq = sample_r_series if sample_r_series is not None else [0.55, 0.55, -0.65, 1.60, 0.55, -0.35, 0.55, 1.65]
     boot = stationary_block_bootstrap(r_seq)
+    mc_20 = simulate_account_ruin_monte_carlo(r_seq)
 
     all_passed = bool(s1["passed"] and s2["passed"] and s3["passed"])
     return {
@@ -223,4 +398,5 @@ def run_all_stress_scenarios(sample_r_series: Optional[Sequence[float]] = None) 
         "S2_UNMITIGATED_CASCADE_10PCT": s2,
         "S3_API_LATENCY_STORM": s3,
         "BLOCK_BOOTSTRAP": boot,
+        "MONTE_CARLO_20_ACCOUNT": mc_20,
     }

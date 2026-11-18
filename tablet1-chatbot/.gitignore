@@ -1,0 +1,7 @@
+.dash_token
+pluang-bot/.dash_token
+.env
+.env.*
+!.env.example
+node_modules/
+*.log

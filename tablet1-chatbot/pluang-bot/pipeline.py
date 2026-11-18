@@ -14,14 +14,18 @@ SEMUA LAPISAN HARUS LOLOS. SATU GAGAL = SELURUH TRADE DITOLAK.
 import os
 import sys
 import json
+import logging
+import math
 import re
 import time
 import requests
 import socket
-import urllib3
 from datetime import datetime, timezone
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import state_io
+from state_io import atomic_write_json
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Universal Anti-Blocking & ISP DNS Poisoning Bypass via DNS-over-HTTPS (DoH)
@@ -168,53 +172,39 @@ OPENROUTER_FREE_MODELS = [
     "liquid/lfm-2.5-2.6b:free",
 ]
 
+from config_schema import (
+    load_trading_config as _load_validated_trading_config,
+    save_validated_trading_config as _save_validated_trading_config,
+)
+
 # ===== LEVERAGE CONFIG — FIXED AT 20x (USER MANDATE) =====
 FIXED_LEVERAGE = 20  # Immutable — AI cannot override this
 
 CONFIG_FILE = os.path.join(BASE_DIR, "trading_config.json")
 
 def get_trading_config():
-    cfg = {
-        "max_budget_idr": 0,           # 0 = AI uses dynamic wallet-based Kelly sizing
-        "max_leverage": FIXED_LEVERAGE,  # LOCKED AT 20x — user mandate, AI cannot override
-        "fixed_leverage": FIXED_LEVERAGE,
-        "min_confidence_score": 45,
-        "min_risk_reward_ratio": 1.5,
-        "max_drawdown_pct": 5.0
-    }
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-                cfg.update(saved)
-        except Exception:
-            pass
+    cfg = _load_validated_trading_config(CONFIG_FILE)
     # Always enforce 20x fixed — never allow config file to override
     cfg["max_leverage"] = FIXED_LEVERAGE
     cfg["fixed_leverage"] = FIXED_LEVERAGE
     return cfg
 
 def save_trading_config(new_config: dict):
-    cfg = get_trading_config()
-    cfg.update(new_config)
-    # Enforce fixed leverage — never save AI-overridden values
-    cfg["max_leverage"] = FIXED_LEVERAGE
-    cfg["fixed_leverage"] = FIXED_LEVERAGE
-    cfg["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2)
-    except Exception:
-        pass
-    return cfg
+    updates = dict(new_config or {})
+    updates["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return _save_validated_trading_config(
+        updates,
+        config_path=CONFIG_FILE,
+        enforce_fixed_leverage=FIXED_LEVERAGE,
+    )
 
 # Initial config
 _cfg = get_trading_config()
 MAX_BUDGET_IDR = _cfg.get("max_budget_idr", 0)       # 0 = dynamic wallet-based
 MAX_LEVERAGE = 20                                     # FIXED 20x — user mandate
-MIN_CONFIDENCE_SCORE = _cfg.get("min_confidence_score", 45)
+MIN_CONFIDENCE_SCORE = _cfg.get("min_confidence_score", 68)
 MIN_RISK_REWARD_RATIO = _cfg.get("min_risk_reward_ratio", 1.5)
-MAX_DRAWDOWN_PCT = _cfg.get("max_drawdown_pct", 5.0)
+MAX_DRAWDOWN_PCT = _cfg.get("max_drawdown_pct", 25.0)
 
 
 # Circuit breaker: if Groq daily limit hit, skip Groq for 6 hours then retry
@@ -972,11 +962,11 @@ def _fetch_live_l2_orderbook(symbol: str) -> dict:
     try:
         from market_data import normalize_symbol_to_pair
         pair = normalize_symbol_to_pair(symbol)
-        r = requests.get(f"https://fapi.binance.com/fapi/v1/depth?symbol={pair}&limit=20", timeout=3.0, verify=False)
+        r = requests.get(f"https://fapi.binance.com/fapi/v1/depth?symbol={pair}&limit=20", timeout=3.0, verify=True)
         if r.status_code == 200:
             return r.json()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("_fetch_live_l2_orderbook failed for %s: %s", symbol, exc)
     return {}
 
 
@@ -986,12 +976,12 @@ _OPTIONS_SURFACE_CACHE = {}
 def _fetch_live_agg_trades(pair: str, limit: int = 80) -> list:
     """Fetch recent aggregated futures trades for Hawkes liquidation/cascade intensity tracking."""
     try:
-        r = requests.get(f"https://fapi.binance.com/fapi/v1/aggTrades?symbol={pair}&limit={int(limit)}", timeout=2.5, verify=False)
+        r = requests.get(f"https://fapi.binance.com/fapi/v1/aggTrades?symbol={pair}&limit={int(limit)}", timeout=2.5, verify=True)
         if r.status_code == 200:
             data = r.json()
             return data if isinstance(data, list) else []
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("_fetch_live_agg_trades failed for %s: %s", pair, exc)
     return []
 
 
@@ -1001,14 +991,14 @@ def _fetch_oi_history(pair: str, period: str = "15m", limit: int = 40) -> list:
         r = requests.get(
             f"https://fapi.binance.com/futures/data/openInterestHist?symbol={pair}&period={period}&limit={int(limit)}",
             timeout=2.5,
-            verify=False,
+            verify=True,
         )
         if r.status_code == 200:
             rows = r.json()
             if isinstance(rows, list):
                 return [float(row.get("sumOpenInterestValue") or row.get("sumOpenInterest") or 0.0) for row in rows]
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("_fetch_oi_history failed for %s: %s", pair, exc)
     return []
 
 
@@ -1025,8 +1015,8 @@ def _fetch_cached_options_surface(symbol: str, realized_vol_pct: float = 45.0) -
         if isinstance(surf, dict):
             _OPTIONS_SURFACE_CACHE[curr] = (now, surf)
             return surf
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("_fetch_cached_options_surface failed for %s: %s", symbol, exc)
     return {"currency": curr, "dealer_gamma_regime": "UNKNOWN", "veto_aggressive_long": False, "veto_aggressive_short": False}
 
 
@@ -1049,8 +1039,8 @@ def _fetch_terminal_news_and_macro() -> dict:
                     "latest_headline": data.get("latest_headline", ""),
                     "top_headlines": [a.get("title", "") for a in data.get("top_articles", [])[:5] if isinstance(a, dict)],
                 }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Local terminal news endpoint unavailable: %s", exc)
     try:
         from news_sentinel import get_news_sentiment_summary
         ns = get_news_sentiment_summary()
@@ -1111,7 +1101,7 @@ def layer1_scanning(symbol: str):
     try:
         from market_data import normalize_symbol_to_pair
         pair = normalize_symbol_to_pair(symbol)
-        kr = requests.get(f"https://fapi.binance.com/fapi/v1/klines?symbol={pair}&interval=15m&limit=120", timeout=3.0, verify=False)
+        kr = requests.get(f"https://fapi.binance.com/fapi/v1/klines?symbol={pair}&interval=15m&limit=120", timeout=3.0, verify=True)
         if kr.status_code == 200:
             kl_15m = kr.json() or []
             closes_15m = [float(x[4]) for x in kl_15m if len(x) > 4]
@@ -1123,8 +1113,8 @@ def layer1_scanning(symbol: str):
             reg_obj = detect_market_regime(kl_15m)
             if isinstance(reg_obj, dict) and reg_obj.get("regime"):
                 stat_regime = reg_obj["regime"]
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("15m regime klines enrichment failed for %s: %s", symbol, exc)
 
     # Bloomberg Terminal Live News & Macro Sentiment
     news_macro = _fetch_terminal_news_and_macro()
@@ -1269,9 +1259,11 @@ def layer1_scanning(symbol: str):
     }
 
     # Generate scan summary for AI consumption (lean, high signal-to-noise ratio)
+    live_scan_px = data_1h.get("live_price") or data_1h.get("current_price")
     scan_summary = {
         "symbol": symbol,
-        "price": data_1h.get("current_price"),
+        "price": live_scan_px,
+        "live_price": live_scan_px,
         "change_4h": data_1h.get("change_4h_pct"),
         "change_24h": data_1h.get("change_24h_pct"),
         "rsi_14_1h": data_1h.get("rsi_14"),
@@ -1524,20 +1516,28 @@ def predict_tp_time(current_price: float, take_profit: float,
 # ===========================================================================
 def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_data: dict):
     """Build precise trading plan — strict SL/TP to prevent margin calls"""
-    current_price = market_data.get("current_price", 0)
+    current_price = float(
+        market_data.get("live_price")
+        or scan_data.get("live_price")
+        or market_data.get("current_price")
+        or scan_data.get("price")
+        or 0
+    )
     atr = market_data.get("atr_14", 0)
     atr_pct = market_data.get("atr_pct", 0) or (atr / current_price * 100 if current_price else 1.5)
     direction = setup_result.get("direction", "LONG")
 
     # Pre-compute safe SL/TP bounds (hard constraint — AI cannot override)
+    safe_sl_pct = min(2.20, max(atr_pct * 1.5, 0.8, 0.45))
+    safe_tp_pct = max(atr_pct * 3.0, safe_sl_pct * 1.8, 1.5)
     if direction == "LONG":
-        sl_safe = round(current_price * (1 - max(atr_pct * 1.5, 0.8) / 100), 6)
-        tp_safe = round(current_price * (1 + max(atr_pct * 3.0, 1.5) / 100), 6)
+        sl_safe = round(current_price * (1 - safe_sl_pct / 100), 6)
+        tp_safe = round(current_price * (1 + safe_tp_pct / 100), 6)
     else:
-        sl_safe = round(current_price * (1 + max(atr_pct * 1.5, 0.8) / 100), 6)
-        tp_safe = round(current_price * (1 - max(atr_pct * 3.0, 1.5) / 100), 6)
-    sl_dist_pct = abs(current_price - sl_safe) / current_price * 100
-    tp_dist_pct = abs(tp_safe - current_price) / current_price * 100
+        sl_safe = round(current_price * (1 + safe_sl_pct / 100), 6)
+        tp_safe = round(current_price * (1 - safe_tp_pct / 100), 6)
+    sl_dist_pct = abs(current_price - sl_safe) / current_price * 100 if current_price else safe_sl_pct
+    tp_dist_pct = abs(tp_safe - current_price) / current_price * 100 if current_price else safe_tp_pct
 
     support1 = (scan_data.get("levels") or {}).get("support_1", sl_safe)
     resist1  = (scan_data.get("levels") or {}).get("resistance_1", tp_safe)
@@ -1927,8 +1927,8 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
             if rrr_val is not None and rrr_val < current_min_rrr:
                 result["status"] = "REJECTED"
                 reasons.append(f"Risk-to-Reward 1:{rrr_val:.2f} di bawah rasio minimum 1:{current_min_rrr}")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Gate 8 RRR check error: %s", exc)
 
     # Gate 9: Quant score veto (only extreme contradictions)
     quant_matrix = scan_data.get("quant_factors") or market_data.get("quant_factors")
@@ -1952,8 +1952,8 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
             if sl_dist_pct > max_sl:
                 result["status"] = "REJECTED"
                 reasons.append(f"SL distance {sl_dist_pct:.2f}% melebihi batas likuidasi 20x ({max_sl}%)")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Gate 10 SL distance check error: %s", exc)
 
     # Gate 11: ATR Volatility Gate for 20x leverage
     try:
@@ -1961,8 +1961,8 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
         if atr_pct > 2.5:
             result["status"] = "REJECTED"
             reasons.append(f"Volatilitas ATR {atr_pct:.2f}% terlalu liar untuk 20x (risiko likuidasi)")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Gate 11 ATR volatility check error: %s", exc)
 
     # Gate 12: Institutional Sniper Anti-Trap Vetoes (Retail Crowd Trap + L2 Orderbook Wall + Random Walk Chop)
     try:
@@ -2064,8 +2064,8 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
                 elif rec_dist_pct > float(cfg.get("max_sl_pct", 2.5)):
                     result["status"] = "REJECTED"
                     reasons.append(f"SL (${sl_px:.4f}) sits in Stop-Hunt Liq Magnet and safe SL exceeds max_sl_pct ({rec_dist_pct:.2f}%)")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Gate 12 institutional anti-trap check error: %s", exc)
 
     # Append rejection reasons if any
     if reasons:
@@ -2106,7 +2106,25 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
         if setup_result.get("setup_name") == "NO_CLEAR_SETUP" or setup_result.get("direction") in ("NONE", "SKIP", None):
             mp_fallback = scan_summary.get("math_proof") or market_data.get("math_proof") or {}
             pref_dir = mp_fallback.get("preferred_direction", "LONG")
-            px_now = float(scan_summary.get("price") or market_data.get("current_price") or 100.0)
+            raw_px_now = (
+                market_data.get("live_price")
+                or scan_summary.get("live_price")
+                or scan_summary.get("price")
+                or market_data.get("current_price")
+            )
+            try:
+                px_now = float(raw_px_now) if raw_px_now is not None else 0.0
+            except (TypeError, ValueError):
+                px_now = 0.0
+            if not math.isfinite(px_now) or px_now <= 0.0:
+                logger.error("Invalid or missing live price for %s (%r); failing pipeline safely.", symbol, raw_px_now)
+                return {
+                    "pipeline_id": pipeline_id,
+                    "symbol": symbol,
+                    "error": f"INVALID_OR_MISSING_PRICE ({raw_px_now})",
+                    "status": "FAILED",
+                    "execution_time_sec": round(time.time() - start_time, 2),
+                }
             atr_p = max(0.6, float(market_data.get("atr_pct") or 1.2))
             sl_d = max(0.008, min(0.02, (atr_p / 100.0) * 1.1))
             tp1_d = sl_d * 0.55
@@ -2208,8 +2226,8 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                         if isinstance(comb, dict) and comb.get("p_hybrid"):
                             raw_p = float(comb["p_hybrid"])
                             s_hybrid_pct = round(raw_p * 100.0, 2)
-                    except Exception:
-                        pass
+                    except Exception as ens_exc:
+                        logger.warning("Fallback NeuroSymbolicEnsemble failed: %s", ens_exc)
                 if quant_feat_vec is not None:
                     final_call["_quant_feature_vector"] = [round(float(x), 5) for x in quant_feat_vec]
                 if knn_note:
@@ -2223,8 +2241,8 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                         _cal_iso = _cal_obj.calibrate_prob(raw_p)
                         _w_cal = min(0.50, len(_cal_obj.history_y) / 30.0)
                         cal_p = round((1.0 - _w_cal) * raw_p + _w_cal * _cal_iso, 4)
-                except Exception:
-                    pass
+                except Exception as cal_exc:
+                    logger.warning("Calibrator loading/evaluation failed: %s", cal_exc)
 
                 conformal_ok = True
                 conformal_set = ["WIN"] if cal_p >= float(sniper_cfg.get("min_calibrated_p_tp1", 0.74)) else ["WIN", "LOSS"]
@@ -2234,8 +2252,8 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                     _c_ok, _c_reason, _c_info = sg.evaluate_gate(cal_p)
                     conformal_ok = bool(_c_ok)
                     conformal_set = list(_c_info.get("prediction_set") or [])
-                except Exception:
-                    pass
+                except Exception as conf_exc:
+                    logger.warning("Conformal filter evaluation failed: %s", conf_exc)
 
                 # T3.15: Dynamic Funding & Macro Shock Shield (fixed key check: block_new_entries / shield_active)
                 macro_shield = {"blocked": False, "block_new_entries": False, "reason": "CLEAR"}
@@ -2251,8 +2269,8 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                         final_call["status"] = "REJECTED"
                         ev_name = macro_shield.get("active_event") or macro_shield.get("reason") or "HIGH_IMPACT_MACRO"
                         final_call["final_reason"] = f"{final_call.get('final_reason', '')} [MACRO SHIELD: {ev_name}]"
-                except Exception:
-                    pass
+                except Exception as macro_exc:
+                    logger.warning("Macro shield check failed: %s", macro_exc)
 
                 # Gate 13: Hybrid Math x AI x First-Passage Time Sniper Veto
                 if final_call.get("status") == "APPROVED":
@@ -2307,7 +2325,13 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 final_call["tp_time_prediction"] = plan_result.get("tp_time_prediction")
 
                 # Compute ROI (%) & PnL (USD & IDR) Projection sized against live Binance Futures wallet
-                _entry_px = float(final_call.get("entry_price") or plan_result.get("entry_price") or market_data.get("current_price") or 0)
+                _entry_px = float(
+                    final_call.get("entry_price")
+                    or plan_result.get("entry_price")
+                    or market_data.get("live_price")
+                    or market_data.get("current_price")
+                    or 0
+                )
                 _sl_px = float(final_call.get("stop_loss") or plan_result.get("stop_loss") or 0)
                 _tp2_px = float(final_call.get("take_profit_2") or final_call.get("take_profit") or plan_result.get("take_profit_2") or plan_result.get("take_profit") or 0)
                 _tp1_px = float(final_call.get("take_profit_1") or plan_result.get("take_profit_1") or 0)
@@ -2509,14 +2533,16 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
     # Save result to file for dashboard consumption
     try:
         result_file = os.path.join(RESULTS_DIR, f"{symbol.replace('-', '_')}_latest.json")
-        with open(result_file, "w", encoding="utf-8") as f:
-            json.dump(result, f, indent=2, ensure_ascii=False)
+        if not state_io.atomic_write_json(result_file, result):
+            result["save_error"] = f"atomic_write_json failed for {result_file}"
+            logger.error("Failed atomic write for %s", result_file)
 
         # Also save to history
         history_file = os.path.join(RESULTS_DIR, f"history_{symbol.replace('-', '_')}.jsonl")
         with open(history_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(result, ensure_ascii=False) + "\n")
     except Exception as e:
+        logger.error("Failed saving pipeline output for %s: %s", symbol, e)
         result["save_error"] = str(e)
 
     return result
@@ -2558,10 +2584,9 @@ def scan_all_watchlist():
                 "price": v.get("layer1_scanning", {}).get("current_price", 0),
             } for k, v in results.items()}
         }
-        with open(summary_file, "w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+        state_io.atomic_write_json(summary_file, summary)
+    except Exception as exc:
+        logger.warning("Failed writing watchlist_summary.json: %s", exc)
 
     return results
 

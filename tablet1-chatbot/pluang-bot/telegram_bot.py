@@ -26,12 +26,17 @@ import os
 import sys
 import time
 import json
+import logging
 import threading
 import requests
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from state_io import CorruptedStateError, atomic_write_json, get_file_lock, read_json_safe
+
+logger = logging.getLogger(__name__)
 
 if hasattr(sys.stdout, 'reconfigure'):
     try:
@@ -294,13 +299,11 @@ def execute_trade_with_binance(symbol: str, chat_id: int, callback_query_id: str
     order_type = cfg.get("order_type", "MARKET")
 
     # 0. Check duplicate active position
-    positions = []
-    if os.path.exists(POSITIONS_FILE):
-        try:
-            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
-                positions = json.load(f)
-        except Exception:
-            positions = []
+    try:
+        positions = read_json_safe(POSITIONS_FILE, default=[], strict_on_corrupt=True, expected_type=list)
+    except CorruptedStateError as cse:
+        send_telegram_message(chat_id, f"❌ <b>Error POSITIONS_FILE korup:</b> <code>{_esc_html(cse)}</code>")
+        return False
     existing_open = [p for p in positions if (p.get("symbol") == raw_sym or p.get("binance_pair") == pair) and p.get("status") == "OPEN"]
     if existing_open:
         last_pos = existing_open[-1]
@@ -401,46 +404,55 @@ def execute_trade_with_binance(symbol: str, chat_id: int, callback_query_id: str
         is_synced = execution_result.get("binance_synced", False)
 
         if is_synced:
-            # Record position in active_positions.json
-            positions = []
-            if os.path.exists(POSITIONS_FILE):
-                try:
-                    with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
-                        positions = json.load(f)
-                except Exception:
-                    positions = []
-
+            # Record position in active_positions.json atomically via state_io
             open_res = execution_result.get("steps", {}).get("open_position", {})
             order_id = open_res.get("orderId") or execution_result.get("order_id") or "LIVE_EXECUTED"
+            eff_entry = float(execution_result.get("entry_price") or entry_price)
+            eff_lev = int(execution_result.get("leverage") or leverage)
+            eff_mt = str(execution_result.get("margin_type") or margin_type).upper()
+            eff_size_usd = float(execution_result.get("position_size_usdt") or pos_usd)
+            eff_size_idr = convert_usd_to_idr(eff_size_usd)
 
             new_pos = {
                 "id": f"POS_{raw_sym}_{int(time.time())}",
                 "symbol": raw_sym,
                 "binance_pair": pair,
                 "direction": direction,
-                "entry_price": entry_price,
-                "entry_price_idr": convert_usd_to_idr(entry_price),
-                "take_profit": tp,
+                "entry_price": eff_entry,
+                "entry_price_idr": convert_usd_to_idr(eff_entry),
+                "take_profit": execution_result.get("take_profit") or tp,
                 "take_profit_1": tp,
-                "take_profit_2": tp,
-                "stop_loss": sl,
-                "leverage": leverage,
-                "margin_type": margin_type,
+                "take_profit_2": execution_result.get("take_profit") or tp,
+                "stop_loss": execution_result.get("stop_loss") or sl,
+                "init_stop_loss": execution_result.get("stop_loss") or sl,
+                "sl_algo_id": execution_result.get("sl_algo_id"),
+                "tp_algo_id": execution_result.get("tp_algo_id"),
+                "sl_state": execution_result.get("sl_state", "CONFIRMED"),
+                "quantity": execution_result.get("quantity"),
+                "leverage": eff_lev,
+                "margin_type": eff_mt,
                 "order_type": order_type,
                 "limit_price": limit_price,
-                "position_size_idr": pos_idr,
-                "position_size_usd": pos_usd,
-                "position_size_usdt": pos_usd,
+                "position_size_idr": eff_size_idr,
+                "position_size_usd": eff_size_usd,
+                "position_size_usdt": eff_size_usd,
                 "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "opened_ts": time.time(),
                 "status": "OPEN",
                 "exchange": "BINANCE_FUTURES",
                 "binance_synced": True,
                 "order_id": order_id,
                 "execution_details": execution_result
             }
-            positions.append(new_pos)
-            with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
-                json.dump(positions, f, indent=2, ensure_ascii=False)
+            with get_file_lock(POSITIONS_FILE):
+                try:
+                    positions = read_json_safe(POSITIONS_FILE, default=[], strict_on_corrupt=True, expected_type=list)
+                except CorruptedStateError as cse:
+                    logger.error("Corrupt POSITIONS_FILE during Telegram trade save (%s); refusing overwrite.", cse)
+                    send_telegram_message(chat_id, f"❌ <b>Order masuk bursa tapi POSITIONS_FILE korup:</b> <code>{_esc_html(cse)}</code>")
+                    return False
+                positions.append(new_pos)
+                atomic_write_json(POSITIONS_FILE, positions, make_bak=True)
 
             if callback_query_id:
                 answer_callback(callback_query_id, f"Order {pair} berhasil dibuka di Binance Futures!", show_alert=False)
@@ -681,13 +693,7 @@ def handle_wallet_command(chat_id):
     send_telegram_message(chat_id, "\n".join(lines))
 
 def get_system_status():
-    positions = []
-    if os.path.exists(POSITIONS_FILE):
-        try:
-            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
-                positions = json.load(f)
-        except Exception:
-            positions = []
+    positions = read_json_safe(POSITIONS_FILE, default=[], strict_on_corrupt=False, expected_type=list)
 
     open_pos = [p for p in positions if p.get("status") == "OPEN"]
     cfg = get_trading_config()
@@ -854,13 +860,7 @@ def handle_convert_command(chat_id, args):
 
 def handle_pnl_command(chat_id):
     """Calculate and report Win Rate, Realized PnL, and Floating PnL to Telegram"""
-    positions = []
-    if os.path.exists(POSITIONS_FILE):
-        try:
-            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
-                positions = json.load(f)
-        except Exception:
-            positions = []
+    positions = read_json_safe(POSITIONS_FILE, default=[], strict_on_corrupt=False, expected_type=list)
 
     closed_pos = [p for p in positions if str(p.get("status", "")).startswith("CLOSED")]
     open_pos = [p for p in positions if p.get("status") == "OPEN"]
@@ -1061,6 +1061,228 @@ def handle_audit_command(chat_id):
     except Exception as e:
         send_telegram_message(chat_id, f"❌ Audit error: {e}")
 
+
+def _resolve_vault_instance(initial_equity: float = 0.0):
+    import risk.vault as rv
+
+    default_prod_vault = os.path.normcase(os.path.abspath(os.path.join(BASE_DIR, "results", "vault_state.json")))
+    cur_default_vault = os.path.normcase(os.path.abspath(rv.DEFAULT_VAULT_STATE_PATH))
+    cur_results_dir = os.path.normcase(os.path.abspath(RESULTS_DIR))
+    default_results_dir = os.path.normcase(os.path.abspath(os.path.join(BASE_DIR, "results")))
+    state_path = None
+    if cur_default_vault == default_prod_vault and cur_results_dir != default_results_dir:
+        state_path = os.path.join(RESULTS_DIR, "vault_state.json")
+    return rv.get_profit_vault(initial_equity=float(initial_equity or 0.0), state_path=state_path, persist=True)
+
+
+def handle_panic_command(chat_id):
+    """
+    A-3 & C-5 Emergency Kill-Switch (/panic):
+    1) Close positions FIRST.
+    2) Verify each symbol is truly flat via get_positions(sym).
+    3) ONLY AFTER flat verified -> cancel all standard & algo orders (verifying get_open_algo_orders empty)
+       and mark verified flat symbols closed in POSITIONS_FILE via state_io.
+    4) Persist panic_lock.json atomically via state_io.
+    5) Report honest per-symbol results and alert prominently if any close failed.
+    """
+    bn_c = get_binance_client()
+    closed_syms = []
+    failed_syms = []
+    verified_flat_pairs = set()
+    cancel_warnings = []
+
+    if bn_c:
+        try:
+            live_p = bn_c.get_positions()
+        except Exception as pe:
+            live_p = {"isError": True, "error": str(pe)}
+
+        if not isinstance(live_p, list):
+            err_msg = live_p.get("error", str(live_p)) if isinstance(live_p, dict) else str(live_p)
+            failed_syms.append(f"GET_POSITIONS_ERROR ({err_msg})")
+        else:
+            for lp in live_p:
+                sym_p = str(lp.get("symbol", "") or "").upper()
+                raw_amt = float(lp.get("position_amount", lp.get("positionAmt", 0)) or 0)
+                if not sym_p or abs(raw_amt) <= 0:
+                    continue
+                dir_p = str(lp.get("direction") or ("LONG" if raw_amt >= 0 else "SHORT")).upper()
+
+                # 1. Close FIRST
+                try:
+                    close_res = bn_c.close_position(sym_p, dir_p)
+                except Exception as ce:
+                    close_res = {"isError": True, "error": str(ce)}
+
+                if not isinstance(close_res, dict) or close_res.get("isError"):
+                    err_txt = close_res.get("error", str(close_res)) if isinstance(close_res, dict) else str(close_res)
+                    failed_syms.append(f"{sym_p} ({dir_p}): {err_txt}")
+                    continue
+
+                # 2. Verify truly flat via get_positions(sym_p)
+                flat_ok = False
+                fail_reason = ""
+                try:
+                    post_p = bn_c.get_positions(sym_p)
+                except Exception as ge:
+                    post_p = {"isError": True, "error": str(ge)}
+
+                if isinstance(post_p, list):
+                    still_open = [
+                        p for p in post_p
+                        if (not p.get("symbol") or str(p.get("symbol")).upper() == sym_p)
+                        and abs(float(p.get("position_amount", p.get("positionAmt", 0)) or 0)) > 0
+                    ]
+                    if not still_open:
+                        flat_ok = True
+                    else:
+                        rem_qty = abs(float(still_open[0].get("position_amount", still_open[0].get("positionAmt", 0)) or 0))
+                        fail_reason = f"masih terbuka qty={rem_qty}"
+                else:
+                    fail_reason = f"gagal verifikasi flat ({post_p.get('error', post_p) if isinstance(post_p, dict) else post_p})"
+
+                if not flat_ok:
+                    # Keep SL intact — NEVER cancel orders on unverified/open position!
+                    failed_syms.append(f"{sym_p} ({dir_p}): {fail_reason}")
+                    continue
+
+                # 3. ONLY AFTER flat confirmed -> cancel all standard & algo orders
+                try:
+                    bn_c.cancel_all_orders(sym_p)
+                    if hasattr(bn_c, "get_open_algo_orders"):
+                        chk = bn_c.get_open_algo_orders(sym_p)
+                        if isinstance(chk, tuple) and len(chk) == 2 and chk[0] and isinstance(chk[1], list):
+                            for ao in chk[1]:
+                                if isinstance(ao, dict) and ao.get("algoId") is not None and hasattr(bn_c, "cancel_algo_order"):
+                                    bn_c.cancel_algo_order(sym_p, int(ao["algoId"]))
+                except Exception as cae:
+                    cancel_warnings.append(f"{sym_p}: {cae}")
+
+                verified_flat_pairs.add(sym_p)
+                closed_syms.append(f"{sym_p} ({dir_p})")
+
+    # Update local POSITIONS_FILE atomically ONLY for verified flat symbols
+    if verified_flat_pairs:
+        try:
+            with get_file_lock(POSITIONS_FILE):
+                positions = read_json_safe(POSITIONS_FILE, default=[], strict_on_corrupt=True, expected_type=list)
+                changed = False
+                now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                for p in positions:
+                    if isinstance(p, dict) and p.get("status") == "OPEN":
+                        bp = str(p.get("binance_pair") or p.get("symbol", "").replace("-USD", "USDT")).upper()
+                        if bp in verified_flat_pairs:
+                            p["status"] = "CLOSED_PANIC"
+                            p["closed_at"] = now_str
+                            p["close_reason"] = "Manual /panic command"
+                            changed = True
+                if changed:
+                    atomic_write_json(POSITIONS_FILE, positions, make_bak=True)
+        except CorruptedStateError as cse:
+            logger.error("POSITIONS_FILE corrupt during /panic update (%s); refusing overwrite.", cse)
+        except Exception as exc:
+            logger.error("Failed updating POSITIONS_FILE during /panic: %s", exc)
+
+    # Write panic_lock.json atomically via state_io
+    panic_path = os.path.join(RESULTS_DIR, "panic_lock.json")
+    panic_payload = {
+        "locked": True,
+        "triggered_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "triggered_by": chat_id,
+        "reason": "Manual /panic command",
+        "closed_symbols": closed_syms,
+        "failed_symbols": failed_syms,
+        "all_flat_verified": len(failed_syms) == 0,
+    }
+    try:
+        atomic_write_json(panic_path, panic_payload, make_bak=True)
+    except Exception as exc:
+        logger.error("Failed writing panic_lock.json: %s", exc)
+
+    if failed_syms:
+        closed_txt = ", ".join(closed_syms) if closed_syms else "Tidak ada"
+        failed_txt = "\n".join(f"  • <code>{_esc_html(fs)}</code>" for fs in failed_syms)
+        warn_line = f"\n• Peringatan cancel order: <code>{_esc_html('; '.join(cancel_warnings))}</code>" if cancel_warnings else ""
+        send_telegram_message(
+            chat_id,
+            f"🚨 <b>[T7.1 EMERGENCY PANIC — GAGAL TUTUP SEBAGIAN/SEMUA POSISI!]</b>\n\n"
+            f"❌ <b>Gagal ditutup / belum terverifikasi flat (SL DIPERTAHANKAN):</b>\n{failed_txt}\n\n"
+            f"✅ <b>Berhasil ditutup &amp; order dibatalkan:</b> <b>{closed_txt}</b>{warn_line}\n"
+            f"🔒 <b>Status Bot:</b> <b>LOCKED (entry baru diblokir via panic_lock.json)</b>\n"
+            f"⚠️ <i>Segera cek aplikasi Binance atau ulangi <code>/panic</code> untuk menutup posisi tersisa!</i>"
+        )
+    else:
+        warn_line = f"\n• Peringatan cancel order: <code>{_esc_html('; '.join(cancel_warnings))}</code>" if cancel_warnings else ""
+        send_telegram_message(
+            chat_id,
+            f"🚨 <b>[T7.1 EMERGENCY PANIC KILL-SWITCH AKTIF]</b>\n\n"
+            f"• Posisi ditutup &amp; order dibatalkan: <b>{', '.join(closed_syms) if closed_syms else 'Tidak ada posisi terbuka'}</b>{warn_line}\n"
+            f"• Status Bot: <b>LOCKED (panic_lock.json aktif)</b>\n"
+            f"• Ketik <code>/unpanic</code> untuk membuka kembali kunci trading."
+        )
+    return panic_payload
+
+
+def handle_unpanic_command(chat_id):
+    panic_path = os.path.join(RESULTS_DIR, "panic_lock.json")
+    try:
+        with get_file_lock(panic_path):
+            if os.path.exists(panic_path):
+                os.remove(panic_path)
+    except Exception as exc:
+        logger.warning("Failed removing panic_lock.json: %s", exc)
+    send_telegram_message(
+        chat_id,
+        "🟢 <b>[PANIC LOCK DIBUKA]</b>\n"
+        "Autonomous scanner &amp; eksekusi trading telah diaktifkan kembali."
+    )
+
+
+def handle_vault_command(chat_id):
+    bn_c = get_binance_client()
+    eq = 0.0
+    if bn_c:
+        try:
+            b = bn_c.get_balance()
+            if isinstance(b, dict) and not b.get("isError"):
+                eq = float(b.get("total_wallet_balance", 0) or 0)
+        except Exception as exc:
+            logger.warning("/vault get_balance error: %s", exc)
+    vault_info = {
+        "high_water_mark_equity": eq,
+        "locked_profit_vault_usdt": 0.0,
+        "working_balance_usdt": eq,
+    }
+    try:
+        pv = _resolve_vault_instance(initial_equity=eq)
+        if eq > 0:
+            vault_info = pv.update_equity(eq)
+        else:
+            vault_info = pv.get_status()
+    except Exception as exc:
+        logger.warning("/vault get_profit_vault fallback to vault_state.json: %s", exc)
+        v_file = os.path.join(RESULTS_DIR, "vault_state.json")
+        v_disk = read_json_safe(v_file, default=None, strict_on_corrupt=False, expected_type=dict)
+        if isinstance(v_disk, dict):
+            vault_info = v_disk
+
+    locked_v = float(vault_info.get("locked_profit_vault_usdt", vault_info.get("locked_vault_usdt", 0.0)) or 0.0)
+    hwm_v = float(vault_info.get("high_water_mark_equity", vault_info.get("hwm_equity", eq)) or eq)
+    wb = float(vault_info.get("working_balance_usdt", max(0.0, (eq if eq > 0 else hwm_v) - locked_v)) or 0.0)
+    send_telegram_message(
+        chat_id,
+        f"🏦 <b>[T7.3 HIGH-WATER MARK PROFIT VAULT]</b>\n"
+        f"────────────────────────\n"
+        f"💰 <b>Total Wallet Balance:</b> ${eq:.4f} USDT\n"
+        f"📈 <b>High-Water Mark (HWM):</b> ${hwm_v:.4f} USDT\n"
+        f"🔒 <b>Locked Profit Vault:</b> ${locked_v:.4f} USDT\n"
+        f"⚡ <b>Working Balance (Aktif):</b> ${wb:.4f} USDT\n"
+        f"🎯 <b>ALL-IN 95% Margin (20x):</b> ${wb * 0.95:.4f} USDT (Notional: ${wb * 0.95 * 20:.2f} USDT)\n"
+        f"────────────────────────\n"
+        f"<i>Setiap kenaikan HWM +15%, 35% profit dikunci otomatis agar tidak ikut ter-all-in.</i>"
+    )
+    return {"eq": eq, "hwm_equity": hwm_v, "locked_vault_usdt": locked_v, "working_balance_usdt": wb}
+
 def start_bot_listener():
     print(f"[*] Menjalankan Telegram Bot v3.0 - Full Universe Crypto Futures (@idrisginting_bot)...", flush=True)
     cb_thread = threading.Thread(target=start_callback_server, daemon=True)
@@ -1221,13 +1443,7 @@ def start_bot_listener():
                         handle_audit_command(chat_id)
 
                     elif msg_lower.startswith("/auto"):
-                        state = {}
-                        if os.path.exists(STATE_FILE):
-                            try:
-                                with open(STATE_FILE, "r", encoding="utf-8") as f:
-                                    state = json.load(f)
-                            except Exception:
-                                pass
+                        state = read_json_safe(STATE_FILE, default={}, strict_on_corrupt=False, expected_type=dict) or {}
                         
                         text = (
                             f"⚙️ <b>STATUS AUTONOMOUS TRADER v3.0:</b>\n"
@@ -1324,94 +1540,13 @@ def start_bot_listener():
                         handle_news_command(chat_id)
 
                     elif msg_lower in ["/panic", "panic", "/kill"]:
-                        bn_c = get_binance_client()
-                        closed_syms = []
-                        if bn_c:
-                            try:
-                                live_p = bn_c.get_positions()
-                                if isinstance(live_p, list):
-                                    for lp in live_p:
-                                        sym_p = lp.get("symbol", "")
-                                        dir_p = lp.get("direction", "LONG")
-                                        if sym_p:
-                                            bn_c.close_position(sym_p, dir_p)
-                                            bn_c.cancel_all_orders(sym_p)
-                                            closed_syms.append(f"{sym_p} ({dir_p})")
-                            except Exception as pe:
-                                closed_syms.append(f"Err: {pe}")
-                        panic_path = os.path.join(RESULTS_DIR, "panic_lock.json")
-                        try:
-                            with open(panic_path, "w", encoding="utf-8") as pf:
-                                json.dump({
-                                    "locked": True,
-                                    "triggered_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-                                    "triggered_by": chat_id,
-                                    "reason": "Manual /panic command",
-                                }, pf, indent=2)
-                        except Exception:
-                            pass
-                        send_telegram_message(
-                            chat_id,
-                            f"🚨 <b>[T7.1 EMERGENCY PANIC KILL-SWITCH AKTIF]</b>\n\n"
-                            f"• Posisi ditutup & order dibatalkan: <b>{', '.join(closed_syms) if closed_syms else 'Tidak ada posisi terbuka'}</b>\n"
-                            f"• Status Bot: <b>LOCKED (panic_lock.json aktif)</b>\n"
-                            f"• Ketik <code>/unpanic</code> untuk membuka kembali kunci trading."
-                        )
+                        handle_panic_command(chat_id)
 
                     elif msg_lower in ["/unpanic", "unpanic", "/resume"]:
-                        panic_path = os.path.join(RESULTS_DIR, "panic_lock.json")
-                        try:
-                            if os.path.exists(panic_path):
-                                os.remove(panic_path)
-                        except Exception:
-                            pass
-                        send_telegram_message(
-                            chat_id,
-                            "🟢 <b>[PANIC LOCK DIBUKA]</b>\n"
-                            "Autonomous scanner & eksekusi trading telah diaktifkan kembali."
-                        )
+                        handle_unpanic_command(chat_id)
 
                     elif msg_lower in ["/vault", "vault"]:
-                        bn_c = get_binance_client()
-                        eq = 0.0
-                        if bn_c:
-                            try:
-                                b = bn_c.get_balance()
-                                if isinstance(b, dict):
-                                    eq = float(b.get("total_wallet_balance", 0))
-                            except Exception:
-                                pass
-                        vault_info = {"hwm_equity": eq, "locked_vault_usdt": 0.0, "working_balance_usdt": eq}
-                        try:
-                            from risk.vault import ProfitVault
-                            pv = ProfitVault()
-                            if eq > 0:
-                                vault_info = pv.update_equity(eq)
-                            else:
-                                vault_info = pv.get_status()
-                        except Exception:
-                            v_file = os.path.join(RESULTS_DIR, "profit_vault.json")
-                            if os.path.exists(v_file):
-                                try:
-                                    with open(v_file, "r", encoding="utf-8") as vf:
-                                        vault_info = json.load(vf)
-                                except Exception:
-                                    pass
-                        wb = float(vault_info.get("working_balance_usdt", eq))
-                        locked_v = float(vault_info.get("locked_vault_usdt", 0.0))
-                        hwm_v = float(vault_info.get("hwm_equity", eq))
-                        send_telegram_message(
-                            chat_id,
-                            f"🏦 <b>[T7.3 HIGH-WATER MARK PROFIT VAULT]</b>\n"
-                            f"────────────────────────\n"
-                            f"💰 <b>Total Wallet Balance:</b> ${eq:.4f} USDT\n"
-                            f"📈 <b>High-Water Mark (HWM):</b> ${hwm_v:.4f} USDT\n"
-                            f"🔒 <b>Locked Profit Vault:</b> ${locked_v:.4f} USDT\n"
-                            f"⚡ <b>Working Balance (Aktif):</b> ${wb:.4f} USDT\n"
-                            f"🎯 <b>ALL-IN 95% Margin (20x):</b> ${wb * 0.95:.4f} USDT (Notional: ${wb * 0.95 * 20:.2f} USDT)\n"
-                            f"────────────────────────\n"
-                            f"<i>Setiap kenaikan HWM +15%, 35% profit dikunci otomatis agar tidak ikut ter-all-in.</i>"
-                        )
+                        handle_vault_command(chat_id)
 
                     elif msg_lower in ["/health", "health", "/diag"]:
                         hb_file = os.path.join(RESULTS_DIR, "heartbeat.json")

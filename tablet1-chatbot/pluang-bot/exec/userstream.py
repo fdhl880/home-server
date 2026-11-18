@@ -22,11 +22,15 @@ Real-time Binance USDⓈ-M Futures User Data Stream handler:
 from __future__ import annotations
 
 import json
+import logging
+import math
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
 from exec.event_bus import EventPriority, PriorityEventBus
+
+logger = logging.getLogger(__name__)
 
 
 class UserDataStreamManager:
@@ -41,20 +45,41 @@ class UserDataStreamManager:
         client: Optional[Any] = None,
         event_bus: Optional[PriorityEventBus] = None,
         journal_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        reconcile_callback: Optional[Callable[[str], Any]] = None,
     ):
         self.client = client
         self.event_bus = event_bus
         self.journal_callback = journal_callback
+        self.reconcile_callback = reconcile_callback
 
         self._lock = threading.RLock()
         self.listen_key: Optional[str] = None
         self.last_keepalive_ts: float = 0.0
+        self.last_listen_key_expired_ts: float = 0.0
+        self.last_reconcile_ts: float = 0.0
+        self.reconnect_requested = threading.Event()
 
         # In-memory state synchronized from user stream
         self.wallet_balance_usdt: float = 0.0
         self.cross_wallet_balance_usdt: float = 0.0
         self.active_positions: Dict[str, Dict[str, Any]] = {}
         self.closed_trades_log: List[Dict[str, Any]] = []
+
+    def set_reconcile_callback(self, callback: Optional[Callable[[str], Any]]) -> None:
+        self.reconcile_callback = callback
+
+    def trigger_reconnect_reconcile(self, reason: str = "WS_RECONNECT") -> Dict[str, Any]:
+        """Invoke registered post-reconnect REST reconciliation callback safely."""
+        self.last_reconcile_ts = time.time()
+        cb = self.reconcile_callback
+        if cb is None:
+            return {"triggered": False, "reason": reason}
+        try:
+            cb_res = cb(reason)
+            return {"triggered": True, "reason": reason, "result": cb_res}
+        except Exception as exc:
+            logger.warning("UserDataStream reconcile callback failed (%s): %s", reason, exc)
+            return {"triggered": False, "reason": reason, "error": str(exc)}
 
     def create_listen_key(self) -> Optional[str]:
         if self.client is None:
@@ -64,7 +89,9 @@ class UserDataStreamManager:
             with self._lock:
                 self.listen_key = str(res["listenKey"])
                 self.last_keepalive_ts = time.time()
+                self.reconnect_requested.clear()
             return self.listen_key
+        logger.warning("Failed creating Futures listenKey: %s", res)
         return None
 
     def keepalive_listen_key(self) -> bool:
@@ -75,6 +102,10 @@ class UserDataStreamManager:
             with self._lock:
                 self.last_keepalive_ts = time.time()
             return True
+        logger.warning("Futures listenKey keepalive failed (%s); requesting reconnect", res)
+        with self._lock:
+            self.listen_key = None
+            self.reconnect_requested.set()
         return False
 
     def close_listen_key(self) -> bool:
@@ -140,11 +171,50 @@ class UserDataStreamManager:
             res = self._handle_algo_update(msg)
         elif event_type == "ACCOUNT_UPDATE":
             res = self._handle_account_update(msg)
+        elif event_type == "LISTENKEYEXPIRED":
+            res = self._handle_listen_key_expired(msg)
+        elif event_type == "ACCOUNT_CONFIG_UPDATE":
+            res = {"handled": True, "event_type": "ACCOUNT_CONFIG_UPDATE", "data": msg.get("ac") or msg}
         else:
             res = {"handled": False, "event_type": event_type}
 
         res["processing_ms"] = (time.perf_counter() - t0) * 1000.0
         return res
+
+    def _handle_listen_key_expired(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+        with self._lock:
+            self.listen_key = None
+            self.last_listen_key_expired_ts = time.time()
+            self.reconnect_requested.set()
+        logger.warning("Binance UserDataStream listenKeyExpired received; refreshing key and reconciling.")
+
+        new_key = None
+        if self.client is not None:
+            try:
+                new_key = self.create_listen_key()
+                # Preserve reconnect_requested so active WS loop breaks to connect with new key
+                self.reconnect_requested.set()
+            except Exception as exc:
+                logger.warning("Failed refreshing listenKey after listenKeyExpired: %s", exc)
+
+        rec_out = self.trigger_reconnect_reconcile(reason="listenKeyExpired")
+
+        if self.event_bus is not None:
+            self.event_bus.publish(
+                "CRITICAL_POSITION_INTERRUPT",
+                payload={"event_type": "listenKeyExpired", "new_listen_key_created": bool(new_key)},
+                priority=int(EventPriority.CRITICAL_POSITION_INTERRUPT),
+            )
+
+        return {
+            "handled": True,
+            "event_type": "listenKeyExpired",
+            "reconnect_required": True,
+            "reconcile_required": True,
+            "new_listen_key_created": bool(new_key),
+            "listen_key": new_key,
+            "reconcile": rec_out,
+        }
 
     def _handle_order_trade_update(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         o = msg.get("o", {})
@@ -266,33 +336,56 @@ class UserDataStreamManager:
 
     def _handle_algo_update(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         o = msg.get("o", msg)
+        if not isinstance(o, dict):
+            o = msg
         symbol = str(o.get("s") or o.get("symbol") or "").upper().strip()
         algo_id = str(o.get("aid") or o.get("algoId") or "")
         status = str(o.get("X") or o.get("algoStatus") or "").upper().strip()
-        order_type = str(o.get("o") or o.get("orderType") or "STOP_MARKET").upper().strip()
-        trigger_px = float(o.get("tp") or o.get("triggerPrice") or 0.0)
+        order_type = str(o.get("o") or o.get("ot") or o.get("orderType") or "STOP_MARKET").upper().strip()
+        pos_side = str(o.get("ps") or o.get("positionSide") or "BOTH").upper().strip()
+        raw_tp = o.get("tp") if o.get("tp") not in (None, "") else o.get("triggerPrice", 0.0)
+        try:
+            trigger_px = float(raw_tp or 0.0)
+            if not math.isfinite(trigger_px):
+                trigger_px = 0.0
+        except (TypeError, ValueError):
+            trigger_px = 0.0
 
         new_sl_state = "UNKNOWN"
         if status in ("NEW", "WORKING"):
             new_sl_state = "CONFIRMED"
-        elif status in ("CANCELED", "EXPIRED", "REJECTED"):
+        elif status in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED"):
             new_sl_state = "MISSING"
         elif status in ("TRIGGERED", "FINISHED", "FILLED"):
             new_sl_state = "TRIGGERED"
 
+        is_tp_order = "TAKE_PROFIT" in order_type
+        is_sl_order = ("STOP" in order_type or "TRAILING" in order_type) and not is_tp_order
+
         with self._lock:
             pos = self.active_positions.get(symbol)
-            if pos and "STOP" in order_type:
+            if pos and is_sl_order:
                 pos["sl_state"] = new_sl_state
                 if algo_id:
                     pos["sl_algo_id"] = algo_id
                 if trigger_px > 0:
                     pos["sl_price"] = trigger_px
+            elif pos and is_tp_order:
+                pos["tp_state"] = new_sl_state
+                if algo_id:
+                    pos["tp_algo_id"] = algo_id
+                if trigger_px > 0:
+                    pos["tp_price"] = trigger_px
 
-        if new_sl_state == "MISSING" and self.event_bus is not None:
+        if new_sl_state in ("MISSING", "TRIGGERED") and self.event_bus is not None:
             self.event_bus.publish(
                 "CRITICAL_POSITION_INTERRUPT",
-                payload={"symbol": symbol, "sl_state": "MISSING", "algo_id": algo_id},
+                payload={
+                    "symbol": symbol,
+                    "sl_state": new_sl_state,
+                    "algo_id": algo_id,
+                    "order_type": order_type,
+                },
                 priority=int(EventPriority.CRITICAL_POSITION_INTERRUPT),
             )
 
@@ -300,8 +393,10 @@ class UserDataStreamManager:
             "handled": True,
             "event_type": "ALGO_UPDATE",
             "symbol": symbol,
+            "position_side": pos_side,
             "algo_id": algo_id,
             "algo_status": status,
+            "order_type": order_type,
             "sl_state": new_sl_state,
             "trigger_price": trigger_px,
         }
