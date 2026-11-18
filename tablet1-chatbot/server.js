@@ -88,13 +88,19 @@ function sanitizeHeaderValue(val) {
     return String(val == null ? '' : val).replace(/[\r\n\0]+/g, ' ').trim();
 }
 
-function resolveDashToken(tokenFilePath) {
+const DEFAULT_USER_DASH_TOKEN = 'Frz080307';
+
+function resolveDashToken(tokenFilePath, { preferUserDefault = false } = {}) {
     const envTok = typeof process.env.DASH_TOKEN === 'string' ? process.env.DASH_TOKEN.trim() : '';
     if (envTok) {
         return { token: envTok, source: 'env:DASH_TOKEN', generated: false };
     }
     const targetFile = tokenFilePath || process.env.DASH_TOKEN_FILE || path.join(__dirname, 'pluang-bot', '.dash_token');
     try {
+        if (preferUserDefault) {
+            writeFileAtomicSync(targetFile, DEFAULT_USER_DASH_TOKEN + '\n', 0o600);
+            return { token: DEFAULT_USER_DASH_TOKEN, source: targetFile, generated: false };
+        }
         if (fs.existsSync(targetFile)) {
             const existing = fs.readFileSync(targetFile, 'utf8').trim();
             if (existing.length >= 6) {
@@ -102,7 +108,7 @@ function resolveDashToken(tokenFilePath) {
                 return { token: existing, source: targetFile, generated: false };
             }
         }
-        const generatedToken = (!tokenFilePath && !_WP4_TEST_ENV) ? 'Frz080307' : crypto.randomBytes(32).toString('hex');
+        const generatedToken = crypto.randomBytes(32).toString('hex');
         writeFileAtomicSync(targetFile, generatedToken + '\n', 0o600);
         return { token: generatedToken, source: targetFile, generated: true };
     } catch (err) {
@@ -386,11 +392,12 @@ const statePath = opts.statePath || path.join(resultsDir, 'autotrader_state.json
 const quickScreenPath = opts.quickScreenPath || path.join(resultsDir, 'quick_screen.json');
 const tokensPath = opts.tokensPath || path.join(pluangDir, 'tokens.json');
 const dashTokenFile = opts.dashTokenFile || process.env.DASH_TOKEN_FILE || path.join(pluangDir, '.dash_token');
+const useDefaultUserToken = !testMode && !opts.dashToken && !opts.dashTokenFile && !process.env.DASH_TOKEN && !process.env.DASH_TOKEN_FILE;
 
 // Fail-closed token initialization (never falls back to unauthenticated mode)
 const resolvedAuth = opts.dashToken
     ? { token: String(opts.dashToken).trim(), source: 'opts:dashToken', generated: false }
-    : resolveDashToken(dashTokenFile);
+    : resolveDashToken(dashTokenFile, { preferUserDefault: useDefaultUserToken });
 if (!resolvedAuth.token) {
     throw new Error('FAIL-CLOSED AUTH ERROR: Empty DASH_TOKEN');
 }
