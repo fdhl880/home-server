@@ -1916,13 +1916,21 @@ def check_wallet_and_position_guard():
         try:
             cfg_g = _get_config()
             r_eng = load_hard_risk_engine(cfg_g, current_equity=total_usdt if total_usdt > 0 else None)
+            was_tripped = bool(r_eng.breaker_until_ts > 0 or r_eng.breaker_reason)
             max_dt = int(cfg_g.get("max_daily_trades", 10) or 10)
             if r_eng.is_circuit_breaker_active():
                 should_pause = True
-                reason = f"HARD RISK CIRCUIT BREAKER AKTIF ({r_eng.breaker_reason}) — entry baru ditahan otomatis."
-            elif getattr(r_eng, "_daily_trades_count", 0) >= max_dt:
-                should_pause = True
-                reason = f"BATAS TRADE HARIAN TERCAPAI ({r_eng._daily_trades_count}/{max_dt}) — berhenti sampai 00:00 UTC."
+                _rem_sec = max(0, int(r_eng.breaker_until_ts - time.time()))
+                _rem_h, _rem_m = _rem_sec // 3600, (_rem_sec % 3600) // 60
+                reason = f"HARD RISK CIRCUIT BREAKER AKTIF ({r_eng.breaker_reason}) — buka lagi ~{_rem_h}j {_rem_m}m lagi."
+            else:
+                if was_tripped:
+                    save_hard_risk_engine(r_eng)
+                    print("[RISK BREAKER] Cooldown selesai — loss counter direset 0/2. Scanner siap kembali.", flush=True)
+                    send_telegram("✅ <b>[RISK BREAKER COOLDOWN SELESAI]</b>\n\nCooldown 12 jam selesai — loss counter direset <code>0/2</code>. Bot otomatis lanjut mencari setup baru.")
+                if getattr(r_eng, "_daily_trades_count", 0) >= max_dt:
+                    should_pause = True
+                    reason = f"BATAS TRADE HARIAN TERCAPAI ({r_eng._daily_trades_count}/{max_dt}) — berhenti sampai 00:00 UTC."
         except Exception:
             pass
 
@@ -2855,15 +2863,16 @@ def start_loop():
                 
                 if not was_in_all_in_mode:
                     was_in_all_in_mode = True
-                    syms = ", ".join([f"<code>{p.get('symbol')}</code>" for p in guard["open_positions"]])
-                    send_telegram(
-                        f"🛡️ <b>[AI SENTINEL] MODE ALL-IN MONITOR POSITION AKTIF!</b>\n\n"
-                        f"💰 <b>Saldo Terpakai:</b> Saldo telah dialokasikan penuh ke posisi aktif (Sisa: ${guard['available_usdt']:.2f} USDT).\n"
-                        f"💎 <b>Posisi Dikawal:</b> {syms}\n\n"
-                        f"⏸️ <b>Scanner 524 Koin & 9 Agent Committee:</b> <b>DIHENTIKAN SEMENTARA</b>\n"
-                        f"🎯 <i>Semua sumber daya AI kini 100% all-in mengawal posisi aktif secara real-time hingga Take Profit / Stop Loss tercapai!</i>"
-                    )
-                    print(f"\n[SENTINEL ALL-IN] 🛡️ {guard['reason']}", flush=True)
+                    if guard.get("open_positions"):
+                        syms = ", ".join([f"<code>{p.get('symbol')}</code>" for p in guard["open_positions"]])
+                        send_telegram(
+                            f"🛡️ <b>[AI SENTINEL] MODE ALL-IN MONITOR POSITION AKTIF!</b>\n\n"
+                            f"💰 <b>Saldo Terpakai:</b> Saldo telah dialokasikan penuh ke posisi aktif (Sisa: ${guard['available_usdt']:.2f} USDT).\n"
+                            f"💎 <b>Posisi Dikawal:</b> {syms}\n\n"
+                            f"⏸️ <b>Scanner 524 Koin & 9 Agent Committee:</b> <b>DIHENTIKAN SEMENTARA</b>\n"
+                            f"🎯 <i>Semua sumber daya AI kini 100% all-in mengawal posisi aktif secara real-time hingga Take Profit / Stop Loss tercapai!</i>"
+                        )
+                    print(f"\n[SENTINEL GUARD] 🛡️ {guard['reason']}", flush=True)
                 
                 # In all-in mode, skip scanning! Focus 100% on the open position with <50ms WS wake-up.
                 _WS_WAKEUP_EVENT.wait(timeout=8)
@@ -2878,13 +2887,13 @@ def start_loop():
                     state["all_in_focus_positions"] = []
                     save_state()
                     send_telegram(
-                        f"🚀 <b>POSISI SELESAI & SALDO TELAH PULIH!</b>\n\n"
-                        f"✅ Posisi sebelumnya telah selesai (Take Profit / Stop Loss tereksekusi).\n"
-                        f"💰 <b>Saldo Tersedia:</b> ${guard['available_usdt']:.2f} USDT (Modal kembali cair ke wallet).\n\n"
-                        f"🔄 <b>Scanner 524 Koin & 9 Agent Committee:</b> <b>KEMBALI AKTIF!</b>\n"
+                        f"🚀 <b>SCANNER AKTIF KEMBALI!</b>\n\n"
+                        f"✅ Tidak ada posisi terbuka & seluruh Risk Guard aman.\n"
+                        f"💰 <b>Saldo Tersedia:</b> ${guard['available_usdt']:.2f} USDT.\n\n"
+                        f"🔄 <b>Scanner & Pipeline AI:</b> <b>KEMBALI AKTIF!</b>\n"
                         f"<i>Memulai pemindaian radar penuh untuk mencari setup peluang terbaik berikutnya...</i>"
                     )
-                    print(f"\n[SENTINEL RESUME] 🚀 Posisi selesai. Melanjutkan full scan 524 pairs...", flush=True)
+                    print(f"\n[SENTINEL RESUME] 🚀 Guard bebas / posisi selesai. Melanjutkan full scan...", flush=True)
                     # Trigger scan immediately!
                     last_full_scan = 0
                     last_quick_scan = 0

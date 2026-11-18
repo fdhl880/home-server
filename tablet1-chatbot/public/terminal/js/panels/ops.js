@@ -882,7 +882,27 @@ export function mountBOT(body, ctx) {
       h('div', { class: 'k', text: 'LIVE BINANCE FUTURES WALLET' }),
       h('div', { class: 'v am sym', text: `$${fmtNum(realWalletUsdt, 2)} USDT (${fmtIdr(realWalletUsdt * 16500)}) • AVAIL MARGIN: $${fmtNum(availWalletUsdt, 2)} USDT` }),
       h('div', { class: 'k', text: 'RISK BREAKER & QUANT HEALTH (BTCA)' }),
-      h('div', { class: 'v sym ' + (brk.breaker_active ? 'dn' : 'up'), text: `${brk.breaker_active ? 'TRIPPED' : 'ARMED'} • LOSSES: ${brk.consecutive_losses || 0}/${brk.breaker_consecutive_losses_limit || 2} • TRADES: ${brk.daily_trades_count || 0}/${brk.max_daily_trades || 10} • ADWIN DRIFTS: ${adw.drift_count || 0} • ML=${Math.round((ews.ml ?? 0.4) * 100)}%/kNN=${Math.round((ews.knn ?? 0.25) * 100)}%/LLM=${Math.round((ews.llm ?? 0.35) * 100)}%` })
+      (() => {
+        const remSec = Number(brk.remaining_sec || (brk.breaker_until_ts ? Math.max(0, Number(brk.breaker_until_ts) - Date.now() / 1000) : 0));
+        const unlockWib = brk.breaker_until_ts ? new Date(Number(brk.breaker_until_ts) * 1000).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' }) + ' WIB' : '';
+        const remTxt = remSec > 0 ? ` (~${Math.floor(remSec / 3600)}j ${Math.floor((remSec % 3600) / 60)}m lagi / buka ${unlockWib})` : '';
+        const brkTag = brk.breaker_active ? `TRIPPED${remTxt}` : 'ARMED';
+        const rowChildren = [
+          h('span', { text: `${brkTag} • LOSSES: ${brk.consecutive_losses || 0}/${brk.breaker_consecutive_losses_limit || 2} • TRADES: ${brk.daily_trades_count || 0}/${brk.max_daily_trades || 10} • ADWIN DRIFTS: ${adw.drift_count || 0} • ML=${Math.round((ews.ml ?? 0.4) * 100)}%/kNN=${Math.round((ews.knn ?? 0.25) * 100)}%/LLM=${Math.round((ews.llm ?? 0.35) * 100)}%` })
+        ];
+        if (brk.breaker_active) {
+          rowChildren.push(h('button', {
+            style: 'margin-left:8px;padding:0 6px;font-size:10px;color:#ffb000;border-color:#ffb00088;background:#241800;font-weight:bold',
+            text: '🔓 RESET BREAKER',
+            onclick: async () => {
+              if (!window.confirm('Reset Risk Breaker 12 jam lebih cepat? Pastikan kamu sudah evaluasi alasan 2 loss sebelumnya terlebih dahulu.')) return;
+              const rr = await fetch('/api/crypto-futures/risk-breaker/resume', { method: 'POST' });
+              if (rr.ok) load();
+            }
+          }));
+        }
+        return h('div', { class: 'v sym ' + (brk.breaker_active ? 'dn' : 'up') }, ...rowChildren);
+      })()
     );
     sc.append(kv);
 

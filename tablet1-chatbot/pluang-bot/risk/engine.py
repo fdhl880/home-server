@@ -175,8 +175,12 @@ class HardRiskEngine:
         if self.breaker_until_ts > now:
             return True
         if self.breaker_until_ts > 0 and self.breaker_until_ts <= now:
+            prior_reason = str(self.breaker_reason or "")
             self.breaker_until_ts = 0.0
             self.breaker_reason = None
+            self.consecutive_losses = 0
+            if prior_reason.startswith("DAILY_DRAWDOWN") and self.current_equity > 0:
+                self.daily_start_equity = self.current_equity
         return False
 
     def estimate_liquidation_price(self, entry_price: float, direction: str) -> float:

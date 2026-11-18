@@ -1927,6 +1927,9 @@ export function mountBTCA(body, ctx) {
     const fmtMk = (v) => (v == null ? 'PENDING' : `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)} bps`);
     const mkCls = (v) => (v == null ? 'mu' : Number(v) >= 0 ? 'up' : 'dn');
     const brkActive = Boolean(brk.breaker_active);
+    const remSec = Number(brk.remaining_sec || (brk.breaker_until_ts ? Math.max(0, Number(brk.breaker_until_ts) - Date.now() / 1000) : 0));
+    const unlockWib = brk.breaker_until_ts ? new Date(Number(brk.breaker_until_ts) * 1000).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' }) + ' WIB' : '';
+    const brkCdTxt = brkActive && remSec > 0 ? ` • UNLOCKS ${unlockWib} (~${Math.floor(remSec / 3600)}j ${Math.floor((remSec % 3600) / 60)}m)` : '';
 
     sc.append(
       h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border);padding:6px 8px' },
@@ -1937,7 +1940,7 @@ export function mountBTCA(body, ctx) {
         h('div', { class: 'k', text: 'FEE DRAG (% ROE) & POST-TRADE MARKOUTS' }),
         h('div', { class: 'v sym am', text: `FEE DRAG: ${fmtNum(tca.avg_fee_drag_roe_pct || 0, 2)}% ROE  •  +1m: ${fmtMk(tca.avg_markout_1m_bps)}  •  +5m: ${fmtMk(tca.avg_markout_5m_bps)}  •  Close: ${fmtMk(tca.avg_markout_close_bps)}` }),
         h('div', { class: 'k', text: 'HARD RISK CIRCUIT BREAKER & VAULT' }),
-        h('div', { class: 'v sym ' + (brkActive ? 'dn' : 'up'), text: `${brkActive ? 'TRIPPED (' + (brk.breaker_reason || 'COOLDOWN') + ')' : 'ARMED CLEAR'}  •  LOSSES: ${brk.consecutive_losses || 0}/${brk.breaker_consecutive_losses_limit || 2}  •  DAILY TRADES: ${brk.daily_trades_count || 0}/${brk.max_daily_trades || 10}  •  VAULT: $${fmtNum(vlt.locked_profit_vault_usdt || 0, 2)}` }),
+        h('div', { class: 'v sym ' + (brkActive ? 'dn' : 'up'), text: `${brkActive ? 'TRIPPED (' + (brk.breaker_reason || 'COOLDOWN') + brkCdTxt + ')' : 'ARMED CLEAR'}  •  LOSSES: ${brk.consecutive_losses || 0}/${brk.breaker_consecutive_losses_limit || 2}  •  DAILY TRADES: ${brk.daily_trades_count || 0}/${brk.max_daily_trades || 10}  •  VAULT: $${fmtNum(vlt.locked_profit_vault_usdt || 0, 2)}` }),
         h('div', { class: 'k', text: '3-BRAIN WEIGHTS & ADWIN DRIFT' }),
         h('div', { class: 'v lb sym', text: `ML=${((ew.ml || 0.4) * 100).toFixed(0)}% / kNN=${((ew.knn || 0.25) * 100).toFixed(0)}% / LLM=${((ew.llm || 0.35) * 100).toFixed(0)}%  •  TABULAR=${br.tabular_updates || 0}  •  EPISODES=${br.episodic_count || 0}  •  ADWIN DRIFTS=${adw.drift_count || 0} (W=${adw.window_len || 0})` }),
         h('div', { class: 'k', text: 'AI GATEWAY KEY POOL & DAILY BUDGET' }),

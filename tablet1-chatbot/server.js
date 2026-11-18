@@ -3800,11 +3800,24 @@ app.get(['/api/crypto-futures/quant-health', '/api/quant-health'], (req, res) =>
         breaker_consecutive_losses_limit: cfg.circuit_breaker_consecutive_losses || 2,
         breaker_active: false,
         breaker_reason: null,
+        breaker_until_ts: 0,
         daily_trades_count: 0,
         max_daily_trades: cfg.max_daily_trades || 10,
         daily_dd_pct: 0,
         breaker_daily_dd_limit_pct: cfg.breaker_daily_dd_pct || 15.0
     });
+    const nowSec = Date.now() / 1000;
+    if (breaker.breaker_until_ts && Number(breaker.breaker_until_ts) <= nowSec) {
+        breaker.breaker_active = false;
+        breaker.breaker_until_ts = 0;
+        breaker.breaker_reason = null;
+        breaker.consecutive_losses = 0;
+        breaker.remaining_sec = 0;
+    } else if (breaker.breaker_active && breaker.breaker_until_ts) {
+        breaker.remaining_sec = Math.max(0, Math.round(Number(breaker.breaker_until_ts) - nowSec));
+    } else {
+        breaker.remaining_sec = 0;
+    }
     const adwin = readJsonSafe('adwin_state.json', { drift_count: 0, total_samples: 0, window: [] });
     const ensemble = readJsonSafe('ensemble_weights.json', { weights: { ml: 0.4, knn: 0.25, llm: 0.35 } });
     const tabMeta = readJsonSafe('tabular_meta_weights.json', { n_updates: 0, feature_dim: 15 });
@@ -3831,6 +3844,31 @@ app.get(['/api/crypto-futures/quant-health', '/api/quant-health'], (req, res) =>
         degraded_strategies: degraded,
         vault
     });
+});
+
+app.post('/api/crypto-futures/risk-breaker/resume', (req, res) => {
+    try {
+        const cfg = getLocalTradingConfig();
+        const fp = path.join(resultsDir, 'risk_breaker_state.json');
+        let cur = {};
+        if (fs.existsSync(fp)) cur = JSON.parse(fs.readFileSync(fp, 'utf8')) || {};
+        const eqNow = Number(cur.current_equity || 0);
+        const updated = {
+            ...cur,
+            consecutive_losses: 0,
+            breaker_consecutive_losses_limit: cfg.circuit_breaker_consecutive_losses || 2,
+            breaker_until_ts: 0,
+            breaker_active: false,
+            breaker_reason: null,
+            daily_start_equity: eqNow > 0 ? eqNow : (cur.daily_start_equity || 0),
+            daily_dd_pct: 0,
+            updated_at: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
+        };
+        fs.writeFileSync(fp, JSON.stringify(updated, null, 2), 'utf8');
+        res.json({ ok: true, breaker: updated });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: e.message });
+    }
 });
 
 // Auto-start background Auto-Trader worker if Python is present (Single-Instance Guard)
