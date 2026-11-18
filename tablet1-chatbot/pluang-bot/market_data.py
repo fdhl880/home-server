@@ -1207,9 +1207,9 @@ def get_market_indicators_fast(binance_pair="BTCUSDT", yahoo_symbol=None):
     klines = get_binance_klines(binance_pair, "1h", 120)
     
     if not klines or not klines["closes"]:
-        # Fallback to Yahoo
+        # Fallback to Yahoo without re-entering get_market_indicators_fast (prevents mutual recursion)
         if yahoo_symbol:
-            return get_market_indicators(yahoo_symbol)
+            return get_market_indicators(yahoo_symbol, _skip_fast=True)
         return {"symbol": binance_pair, "error": "No data available", "data_quality": "FAILED"}
     
     closes = klines["closes"]
@@ -1338,7 +1338,7 @@ def get_market_indicators_fast(binance_pair="BTCUSDT", yahoo_symbol=None):
     }
 
 
-def get_market_indicators(symbol="BTC-USD"):
+def get_market_indicators(symbol="BTC-USD", _skip_fast=False):
     """
     Mengambil data market real-time & indikator teknikal komprehensif.
     KHUSUS CRYPTO - data dari Yahoo Finance + Binance Futures.
@@ -1347,10 +1347,11 @@ def get_market_indicators(symbol="BTC-USD"):
     pair_map = {item["symbol"]: item["pair"] for item in CRYPTO_FUTURES_WATCHLIST}
     binance_pair = pair_map.get(symbol, symbol.replace("-USD", "USDT").replace("20947", ""))
     
-    # Try Binance first (faster)
-    result = get_market_indicators_fast(binance_pair, symbol)
-    if result.get("data_quality") != "FAILED":
-        return result
+    # Try Binance first (faster) unless already falling back from get_market_indicators_fast
+    if not _skip_fast:
+        result = get_market_indicators_fast(binance_pair, symbol)
+        if result.get("data_quality") != "FAILED":
+            return result
 
     # === Yahoo Finance 1H Data (5 day range) - FALLBACK ===
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1h&range=5d"
