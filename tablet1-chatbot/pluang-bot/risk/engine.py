@@ -175,9 +175,12 @@ class HardRiskEngine:
         self.breaker_reason = str(reason)
 
     def resume_circuit_breaker(self) -> None:
+        prior_reason = str(self.breaker_reason or "")
         self.breaker_until_ts = 0.0
         self.breaker_reason = None
         self.consecutive_losses = 0
+        if prior_reason.startswith("DAILY_DRAWDOWN") and self.current_equity > 0:
+            self.daily_start_equity = self.current_equity
 
     def is_circuit_breaker_active(self, now_ts: Optional[float] = None) -> bool:
         now = now_ts if now_ts is not None else time.time()

@@ -485,7 +485,15 @@ def _norm_pos_side(item: dict) -> str:
     ps = str(item.get("position_side") or item.get("positionSide") or "").upper().strip()
     if ps in ("LONG", "SHORT"):
         return ps
-    amt_raw = item.get("position_amount", item.get("positionAmt"))
+    # Check explicit direction BEFORE numeric amount: BinanceFuturesClient.get_positions()
+    # stores unsigned abs(amt) in `position_amount` alongside `position_side="BOTH"`.
+    d = str(item.get("direction") or "").upper().strip()
+    if d in ("LONG", "SHORT"):
+        return d
+    # Fallback for raw Binance /fapi/v2/positionRisk payloads that only have signed `positionAmt`.
+    amt_raw = item.get("positionAmt")
+    if amt_raw is None:
+        amt_raw = item.get("position_amount")
     if amt_raw is not None:
         try:
             amt_f = float(amt_raw)
@@ -495,8 +503,7 @@ def _norm_pos_side(item: dict) -> str:
                 return "SHORT"
         except (TypeError, ValueError):
             pass
-    d = str(item.get("direction") or "").upper().strip()
-    return d if d in ("LONG", "SHORT") else "BOTH"
+    return "BOTH"
 
 
 def _get_open_ws_mark_streams() -> list:
@@ -950,6 +957,13 @@ def record_position(signal: dict):
     if dd_eval.get("breaker_active"):
         if dd_eval.get("tripped_now"):
             save_hard_risk_engine(risk_eng)
+            send_telegram(
+                f"🛑 <b>[HARD RISK BREAKER TRIPPED — LIVE DAILY DD]</b>\n\n"
+                f"⚠️ Drawdown Hari Ini: <b>{dd_eval['daily_dd_pct']:.2f}%</b> "
+                f"(Batas: {risk_eng.breaker_daily_dd_pct:.1f}%)\n"
+                f"💰 Live Equity: ${live_equity_usdt:.2f} (Start Hari: ${risk_eng.daily_start_equity:.2f})\n"
+                f"❄️ Entry baru dikunci selama {cfg.get('breaker_cooldown_hours', 12)} jam."
+            )
         print(f"[RISK BREAKER] 🛑 Live equity DD breaker active ({risk_eng.breaker_reason}). Entry blocked.", flush=True)
         return None
 
@@ -1959,6 +1973,7 @@ def _build_synced_binance_pos(lp: dict, bn_client, fx_rate: float) -> dict:
         "symbol": sym.replace("USDT", "-USD"),
         "binance_pair": sym,
         "direction": dir_str,
+        "position_side": str(lp.get("position_side") or lp.get("positionSide") or "BOTH").upper(),
         "entry_price": entry_px,
         "entry_price_idr": round(entry_px * fx_rate, 2),
         "current_price": mark_px,
@@ -2500,9 +2515,10 @@ def _finalize_exchange_closed_position(
     ticker_map: dict,
     fx_rate: float,
     bal_info: dict = None,
-) -> dict:
+):
     """
     A-4 Canonical Exchange-Side Close Handler (shared by monitor and guard):
+    0. Direct single-symbol flat confirmation via get_positions(pair) (prevents false TP/SL & accidental SL cancel)
     1. Realized PnL / commission / funding / liquidation-or-ADL lookup (C-6)
     2. _record_trade_close_in_journal() -> HardRiskEngine + closed-loop learners
     3. ProfitVault.update_equity() via get_profit_vault()
@@ -2511,7 +2527,64 @@ def _finalize_exchange_closed_position(
     6. Telegram notification
     """
     pair = pos.get("binance_pair") or pos.get("symbol", "").replace("-USD", "USDT")
+    pair_u = str(pair or "").upper()
     direction = str(pos.get("direction", "LONG")).upper()
+    pos_side_u = _norm_pos_side(pos)
+
+    # 0. Defense-in-depth: Re-confirm position is genuinely flat on Binance BEFORE closing,
+    # cancelling SL/TP orders, recording losses into HardRiskEngine, or alerting Telegram!
+    if bn_client is not None and hasattr(bn_client, "get_positions") and not _is_unmocked_bf_method(bn_client, "get_positions"):
+        try:
+            try:
+                verify_pos = bn_client.get_positions(pair)
+            except TypeError:
+                verify_pos = bn_client.get_positions()
+        except Exception as v_exc:
+            verify_pos = {"isError": True, "error": str(v_exc)}
+
+        if not isinstance(verify_pos, list):
+            logger.warning(
+                "[CLOSE GUARD] Cannot verify flat on Binance for %s (%s) — aborting exchange close & keeping OPEN/SL intact.",
+                pair,
+                verify_pos,
+            )
+            print(
+                f"[CLOSE GUARD] ⚠️ Cannot verify flat on Binance for {pair} ({verify_pos}) — keeping OPEN & SL intact.",
+                flush=True,
+            )
+            return None
+
+        for vp in verify_pos:
+            if not isinstance(vp, dict):
+                continue
+            vp_sym = str(vp.get("symbol") or pair_u).upper()
+            if vp_sym != pair_u:
+                continue
+            vp_amt = abs(float(vp.get("position_amount", vp.get("positionAmt", 0)) or 0))
+            if vp_amt <= 0:
+                continue
+            vp_side = _norm_pos_side(vp)
+            vp_raw_ps = str(vp.get("position_side") or vp.get("positionSide") or "").upper().strip()
+            same_leg = (
+                vp_side == pos_side_u
+                or vp_side == "BOTH"
+                or pos_side_u == "BOTH"
+                or vp_raw_ps == "BOTH"
+            )
+            if same_leg:
+                logger.warning(
+                    "[CLOSE GUARD] FALSE CLOSE PREVENTED for %s (%s): Binance still reports live position qty=%s (side=%s).",
+                    pair,
+                    direction,
+                    vp_amt,
+                    vp_side,
+                )
+                print(
+                    f"[CLOSE GUARD] 🛡️ FALSE CLOSE PREVENTED for {pair} ({direction}): Binance still has live qty={vp_amt} — keeping OPEN & SL intact!",
+                    flush=True,
+                )
+                return None
+
     entry_price = float(pos.get("entry_price", 0) or 0)
     leverage = float(pos.get("leverage", 20) or 20)
     pos_idr = float(pos.get("position_size_idr", 50000) or 50000)
@@ -2530,6 +2603,25 @@ def _finalize_exchange_closed_position(
         fx_rate=fx_rate,
         fallback_price=(ticker_map or {}).get(pair, entry_price),
     )
+    # Give live Binance matching engine a brief retry window if userTrades hasn't indexed the close fill yet
+    if (
+        not metrics.get("used_exchange_fills")
+        and isinstance(bn_client, BinanceFuturesClient)
+        and type(bn_client) is BinanceFuturesClient
+    ):
+        time.sleep(0.4)
+        metrics = _fetch_exchange_close_metrics(
+            pair=pair,
+            direction=direction,
+            pos=pos,
+            bn_client=bn_client,
+            ticker_map=ticker_map or {},
+            entry_price=entry_price,
+            pos_usd=pos_usd,
+            leverage=leverage,
+            fx_rate=fx_rate,
+            fallback_price=(ticker_map or {}).get(pair, entry_price),
+        )
 
     curr_px = float(metrics["exit_price"])
     gross_pnl_usd = float(metrics["gross_pnl_usd"])
@@ -2563,6 +2655,22 @@ def _finalize_exchange_closed_position(
     pos["commission_usd"] = round(commission_usd, 6)
     pos["funding_usd"] = round(funding_usd, 6)
     pos["close_source"] = "EXCHANGE_SYNC"
+    pos["pnl_is_estimated"] = not bool(metrics.get("used_exchange_fills"))
+
+    # Refresh post-close wallet balance before HardRiskEngine + ProfitVault updates so neither reads stale cached equity
+    fresh_bal = bal_info
+    if fresh_bal is None and bn_client and hasattr(bn_client, "get_balance") and not _is_unmocked_bf_method(bn_client, "get_balance"):
+        try:
+            fresh_bal = bn_client.get_balance()
+        except Exception as b_exc:
+            logger.warning("Post-close balance refresh failed for %s: %s", pair, b_exc)
+            fresh_bal = None
+    if isinstance(fresh_bal, dict) and not fresh_bal.get("isError") and fresh_bal.get("total_wallet_balance") is not None:
+        tot_eq_now = float(fresh_bal["total_wallet_balance"])
+        if tot_eq_now > 0:
+            state["binance_wallet_balance_usdt"] = round(tot_eq_now, 4)
+            if fresh_bal.get("available_balance") is not None:
+                state["binance_available_balance_usdt"] = round(float(fresh_bal["available_balance"]), 4)
 
     _record_trade_close_in_journal(
         pos,
@@ -2573,7 +2681,7 @@ def _finalize_exchange_closed_position(
         funding_usd=funding_usd,
         gross_pnl_usd=gross_pnl_usd,
     )
-    _update_vault_on_close(bn_client, bal_info=bal_info)
+    _update_vault_on_close(bn_client, bal_info=fresh_bal)
     _cancel_all_orders_and_verify(bn_client, pair)
 
     try:
@@ -2581,12 +2689,13 @@ def _finalize_exchange_closed_position(
     except CorruptedStateError as cse:
         print(f"[CLOSE] ❌ POSITIONS_FILE corrupt during merge write ({cse}) — refusing overwrite.", flush=True)
 
+    est_note = "\nℹ️ <i>Catatan: fill exchange sedang tersinkronisasi (PnL estimasi harga pasar).</i>" if pos.get("pnl_is_estimated") else ""
     send_telegram(
         f"⚡ <b>[BINANCE LIVE] POSISI {pos.get('symbol')} TELAH DITUTUP!</b>\n\n"
         f"🎯 <b>Status:</b> <b>{event_type} TEREKSEKUSI DI EXCHANGE</b>\n"
         f"💎 <b>Aset:</b> <code>{pos.get('symbol')}</code> ({direction} {leverage}x)\n"
         f"💰 <b>Hasil PnL Net:</b> {final_pnl_pct:+.2f}% ({final_pnl_idr:+,.0f} IDR / ${final_pnl_usd:+.4f} USDT)\n"
-        f"📍 <b>Entry:</b> ${entry_price:,.4f} ➔ <b>Exit Fill:</b> ${curr_px:,.4f}\n\n"
+        f"📍 <b>Entry:</b> ${entry_price:,.4f} ➔ <b>Exit Fill:</b> ${curr_px:,.4f}{est_note}\n\n"
         f"<i>Margin posisi kini telah kembali utuh ke saldo wallet.</i>"
     )
     return pos
@@ -2831,8 +2940,9 @@ def _monitor_and_update_positions_impl():
                         live_item = v_lp
                         break
             if live_item is None:
-                _finalize_exchange_closed_position(pos, bn_client=bn_client, ticker_map=ticker_map, fx_rate=fx_rate)
-                updated = True
+                closed_res = _finalize_exchange_closed_position(pos, bn_client=bn_client, ticker_map=ticker_map, fx_rate=fx_rate)
+                if closed_res is not None:
+                    updated = True
                 continue
             else:
                 # Still open on Binance — sync official entry, mark price, liquidation price, margin and unrealized PnL
@@ -3683,6 +3793,7 @@ def check_wallet_and_position_guard():
     avail_usdt = float(state.get("binance_available_balance_usdt", 0.0))
     total_usdt = float(state.get("binance_wallet_balance_usdt", 0.0))
     cross_upnl_usdt = float(state.get("binance_unrealized_pnl_usdt", 0.0) or 0.0)
+    bal_fresh_ok = False
 
     if bn_client:
         try:
@@ -3692,6 +3803,7 @@ def check_wallet_and_position_guard():
                 avail_usdt = float(bal.get("available_balance", 0))
                 total_usdt = float(bal.get("total_wallet_balance", 0))
                 cross_upnl_usdt = float(bal.get("cross_unrealized_pnl", 0) or 0)
+                bal_fresh_ok = True
                 state["binance_wallet_balance_usdt"] = round(total_usdt, 4)
                 state["binance_available_balance_usdt"] = round(avail_usdt, 4)
                 state["binance_unrealized_pnl_usdt"] = round(cross_upnl_usdt, 4)
@@ -3737,14 +3849,17 @@ def check_wallet_and_position_guard():
                                     ticker_map_g = {}
                             if fx_g is None:
                                 fx_g = get_fx_info().get("usd_idr", 16500)
-                            _finalize_exchange_closed_position(
+                            closed_g = _finalize_exchange_closed_position(
                                 p,
                                 bn_client=bn_client,
                                 ticker_map=ticker_map_g,
                                 fx_rate=fx_g,
                                 bal_info=bal if isinstance(bal, dict) and not bal.get("isError") else None,
                             )
-                            dirty = True
+                            if closed_g is None:
+                                valid_open_pos.append(p)
+                            else:
+                                dirty = True
                         else:
                             valid_open_pos.append(p)
 
@@ -3813,7 +3928,7 @@ def check_wallet_and_position_guard():
                 or existing_brk_disk.get("daily_date") != today_g
                 or float(existing_brk_disk.get("daily_start_equity", 0.0) or 0.0) <= 0.0
             )
-            eq_arg = live_equity_usdt if (live_equity_usdt > 0 or total_usdt > 0) else None
+            eq_arg = live_equity_usdt if (bal_fresh_ok and (live_equity_usdt > 0 or total_usdt > 0)) else None
             r_eng = load_hard_risk_engine(cfg_g, current_equity=eq_arg)
             was_tripped = bool(r_eng.breaker_until_ts > 0 or r_eng.breaker_reason)
             max_dt = int(cfg_g.get("max_daily_trades", 10) or 10)
