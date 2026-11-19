@@ -4224,6 +4224,8 @@ _TOKEN_TRACKER = {
     "cycles_done": 0,
     "last_reset": time.time(),
 }
+_RECENT_REJECT_TS = {}
+_RECENT_REJECT_COOLDOWN_SEC = 720.0  # 12-min soft deprioritization so scanner rotates past repeating rejects
 
 def _estimate_tokens_this_cycle(n_coins_ai):
     """Estimasi token yang akan dipakai siklus ini."""
@@ -4311,10 +4313,12 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=N
         elif opp_norm >= 4.5:
             score += 1.0
 
-        # 3b. Intraday high-low range squeeze/expansion activity
+        # 3b. Intraday high-low range: reward clean 20x-tradable expansion, penalize extreme wick-trap whipsaw
         hl_range = float(coin.get("high_low_range_pct", 0) or 0)
-        if hl_range >= 4.0:
+        if 3.0 <= hl_range <= 18.0:
             score += 1.0
+        elif hl_range > 24.0:
+            score -= 2.0  # Extreme 24%+ intraday whipsaw blows through 20x 2.25% SL / fails setup clarity
 
         # 4. Crowded funding squeeze potential
         if funding_abs >= 0.0003:
@@ -4323,6 +4327,11 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=N
         # 5. Small tie-breaker for CORE liquidity (never drowns out strong dynamic alts)
         if sym.upper() in core_symbols:
             score += 0.25
+
+        # 6. Soft rotation cooldown for recently rejected pairs so scanner covers fresh setups
+        rej_ts = _RECENT_REJECT_TS.get(str(pair or "").upper(), 0.0)
+        if rej_ts > 0 and (time.time() - rej_ts) < _RECENT_REJECT_COOLDOWN_SEC:
+            score -= 1.5
 
         if score >= 2.0:
             candidates.append((score, opp_norm, coin))
@@ -4383,12 +4392,11 @@ def run_full_scan_cycle():
           f"Avg 24h: {regime_info['avg_abs_change_24h']:.2f}%", flush=True)
 
     # Adjust agresivitas scan berdasarkan regime (fokus ke koin terbaik demi efisiensi kuota AI)
-    if regime == "VOLATILE":
-        max_coins = 3
-    elif regime == "SIDEWAYS":
-        max_coins = 4
+    _comm_on = bool(cfg.get("committee_enabled", False) or os.getenv("COMMITTEE_ENABLED", "false").lower() == "true")
+    if _comm_on:
+        max_coins = 3 if regime == "VOLATILE" else 4
     else:
-        max_coins = 4
+        max_coins = 5  # Layer 1-5 tanpa committee hemat ~70% token -> cukup untuk 5 kandidat bersih/siklus
 
     # Live ranked Binance pairs FIRST so real volume/change/opportunity metrics are preserved!
     seen_pairs_pf = set()
@@ -4642,6 +4650,7 @@ def run_full_scan_cycle():
                 "p_knn": _ns_meta.get("brain2_episodic_knn_prob"),
                 "p_llm": _ns_meta.get("brain3_llm_meta_prob"),
                 "calibrated_prob": fc.get("calibrated_prob"),
+                "p_tp1": fc.get("p_tp1"),
                 "conformal_set": fc.get("conformal_set"),
                 "quant_feature_vector": fc.get("_quant_feature_vector"),
                 "estimated_time_horizon": (
@@ -4697,6 +4706,7 @@ def run_full_scan_cycle():
 
             # ONLY broadcast "TRADE EXECUTED" when Binance has verified order execution
             if pos and pos.get("binance_synced"):
+                _RECENT_REJECT_TS.pop(str(pair or "").upper(), None)
                 approved_signals.append({"symbol": sym, "pos": pos, "fc": exec_plan, "name": name})
                 order_id_str = f" (Order #{pos.get('order_id')})" if pos.get('order_id') else ""
                 exchange_status = f"✅ EXECUTED ON BINANCE FUTURES{order_id_str}"
@@ -4787,6 +4797,7 @@ def run_full_scan_cycle():
                     f"ℹ️ <b>Status:</b> Posisi <b>TIDAK DIBUKA</b> dan <b>TIDAK TERCATAT</b> di portofolio. Modal 100% aman dalam cash USDT."
                 )
         else:
+            _RECENT_REJECT_TS[str(pair or "").upper()] = time.time()
             reason_short = (com_res.get("portfolio_manager", {}).get("decision") if com_res else fc.get("final_reason", ""))[:70]
             print(f"REJECTED {sym}: {reason_short}...", flush=True)
             state["signals_rejected_count"] += 1

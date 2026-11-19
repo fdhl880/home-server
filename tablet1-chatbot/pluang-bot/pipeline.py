@@ -2021,12 +2021,19 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
             reasons.append(f"Hawkes Buy-Squeeze Acceleration ({hk.get('state')}, ratio+={hk.get('ratio_plus')})")
 
         opt = micro_risk.get("options") or {}
-        if direction == "LONG" and opt.get("veto_aggressive_long"):
+        _opt_skew = float(opt.get("skew_25d", 0.0) or 0.0)
+        _opt_gamma = str(opt.get("dealer_gamma_regime") or "NEUTRAL").upper()
+        _opt_panic = (
+            _opt_gamma == "NEGATIVE_GAMMA_TREND_ACCELERATION"
+            or bool(opt.get("vol_expansion_alert"))
+            or abs(_opt_skew) >= 12.0
+        )
+        if direction == "LONG" and opt.get("veto_aggressive_long") and _opt_panic:
             result["status"] = "REJECTED"
-            reasons.append(f"Options Dealer Gamma Veto LONG ({opt.get('dealer_gamma_regime')}, DVOL={opt.get('dvol')})")
-        elif direction == "SHORT" and opt.get("veto_aggressive_short"):
+            reasons.append(f"Options Dealer Gamma Veto LONG ({opt.get('dealer_gamma_regime')}, DVOL={opt.get('dvol')}, skew={_opt_skew:+.1f}%)")
+        elif direction == "SHORT" and opt.get("veto_aggressive_short") and _opt_panic:
             result["status"] = "REJECTED"
-            reasons.append(f"Options Dealer Gamma Veto SHORT ({opt.get('dealer_gamma_regime')}, DVOL={opt.get('dvol')})")
+            reasons.append(f"Options Dealer Gamma Veto SHORT ({opt.get('dealer_gamma_regime')}, DVOL={opt.get('dvol')}, skew={_opt_skew:+.1f}%)")
 
         vp = micro_risk.get("vpin") or {}
         if direction == "LONG" and vp.get("veto_maker_long") and obi_20 < 0.05:
@@ -2294,6 +2301,13 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                         final_call["status"] = "REJECTED"
                         final_call["final_reason"] = f"{final_call.get('final_reason', '')} [SNIPER MATH VETO: {'; '.join(_veto_reasons)}]"
 
+                _tp_pred_for_ptp1 = plan_result.get("tp_time_prediction") or {}
+                _p_tp1_fp_raw = float(_tp_pred_for_ptp1.get("p_hit_tp1_before_sl_pct", 0.0) or 0.0)
+                if _p_tp1_fp_raw > 0.0:
+                    _p_tp1_est = round(max(cal_p, min(0.95, 0.50 * cal_p + 0.50 * (_p_tp1_fp_raw / 100.0))), 4)
+                else:
+                    _p_tp1_est = round(cal_p, 4)
+
                 mp["p_ai_pct"] = round(p_ai_pct, 2)
                 mp["s_hybrid_pct"] = round(s_hybrid_pct, 2)
                 final_call["math_score_pct"] = p_math_pct
@@ -2301,6 +2315,7 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 final_call["hybrid_score_pct"] = s_hybrid_pct
                 final_call["confidence_score"] = int(round(s_hybrid_pct))
                 final_call["calibrated_prob"] = round(cal_p, 4)
+                final_call["p_tp1"] = _p_tp1_est
                 final_call["conformal_set"] = conformal_set
                 final_call["macro_shield"] = macro_shield
                 final_call["neuro_symbolic_3brain"] = {

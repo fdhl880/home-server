@@ -536,5 +536,122 @@ class TestStaleBalanceCacheDailyDDGuard(unittest.TestCase):
         self.assertFalse(dd_after["breaker_active"])
 
 
+class TestEntryStarvationFixes(unittest.TestCase):
+    def test_options_gamma_veto_only_hard_rejects_under_actual_panic_not_neutral_skew(self):
+        """Neutral options regime (DVOL=44, skew=-6.1%, vol_expansion_alert=False) MUST NOT blanket-ban all LONGs."""
+        import pipeline as pl
+
+        plan = {
+            "entry_price": 100.0,
+            "stop_loss": 98.8,
+            "take_profit": 102.6,
+            "take_profit_1": 100.66,
+            "take_profit_2": 102.6,
+            "risk_reward_ratio": "1:2.2",
+        }
+        risk_ok = {"checks_passed": 8, "total_checks": 10}
+
+        # Case 1: Calm/NEUTRAL dealer gamma with structural -6.1% put skew -> LONG stays APPROVED
+        mkt_neutral = {
+            "ema_trend": "BULLISH",
+            "atr_pct": 1.0,
+            "math_proof": {"p_math_pct": 78.0, "obi_weighted_20": 0.25},
+            "_micro_risk": {
+                "hawkes": {"block_long": False, "block_short": False},
+                "options": {
+                    "dealer_gamma_regime": "NEUTRAL",
+                    "dvol": 44.45,
+                    "skew_25d": -6.1,
+                    "vol_expansion_alert": False,
+                    "veto_aggressive_long": True,
+                    "veto_aggressive_short": False,
+                },
+                "vpin": {"veto_maker_long": False, "veto_maker_short": False},
+                "hmm": {"p_transition_to_cascade": 0.15},
+            },
+        }
+        setup_ok = {"setup_name": "EMA_PULLBACK_ENTRY", "direction": "LONG", "probability_pct": 82, "confluence_count": 3}
+        scan_ok = {"ema_trend": "BULLISH", "rsi_14": 55.0, "atr_pct": 1.0}
+        res_ok = pl._apply_safety_gates(
+            {"status": "APPROVED", "direction": "LONG", "confidence_score": 82, "final_reason": ""},
+            setup_ok,
+            plan,
+            risk_ok,
+            scan_ok,
+            mkt_neutral,
+        )
+        self.assertEqual(res_ok["status"], "APPROVED", f"Neutral put skew should not veto LONG: {res_ok}")
+
+        # Case 2: Actual NEGATIVE_GAMMA_TREND_ACCELERATION panic -> LONG IS rejected
+        mkt_panic = dict(mkt_neutral)
+        mkt_panic["_micro_risk"] = {
+            **mkt_neutral["_micro_risk"],
+            "options": {
+                "dealer_gamma_regime": "NEGATIVE_GAMMA_TREND_ACCELERATION",
+                "dvol": 68.0,
+                "skew_25d": -9.5,
+                "vol_expansion_alert": True,
+                "veto_aggressive_long": True,
+                "veto_aggressive_short": False,
+            },
+        }
+        res_rej = pl._apply_safety_gates(
+            {"status": "APPROVED", "direction": "LONG", "confidence_score": 82, "final_reason": ""},
+            setup_ok,
+            plan,
+            risk_ok,
+            scan_ok,
+            mkt_panic,
+        )
+        self.assertEqual(res_rej["status"], "REJECTED")
+        self.assertIn("Options Dealer Gamma Veto LONG", res_rej.get("final_reason", ""))
+
+    def test_pre_filter_penalizes_extreme_whipsaw_and_rotates_recent_rejects(self):
+        """Pre-filter prefers clean 20x-tradable ranges (hl 3-18%) over 39% whipsaw traps and rotates rejected coins."""
+        import auto_trader as at
+
+        old_rej = dict(at._RECENT_REJECT_TS)
+        try:
+            at._RECENT_REJECT_TS.clear()
+            coins = [
+                {"pair": "WHIPSAWUSDT", "symbol": "WHIPSAW-USD", "price_change_24h_pct": 3.2, "volume_24h_usd": 80_000_000, "opportunity_score": 6.0, "high_low_range_pct": 39.5},
+                {"pair": "CLEAN1USDT", "symbol": "CLEAN1-USD", "price_change_24h_pct": 3.8, "volume_24h_usd": 80_000_000, "opportunity_score": 5.2, "high_low_range_pct": 9.5},
+                {"pair": "CLEAN2USDT", "symbol": "CLEAN2-USD", "price_change_24h_pct": 3.5, "volume_24h_usd": 75_000_000, "opportunity_score": 5.0, "high_low_range_pct": 8.0},
+            ]
+            picks1 = at._technical_pre_filter(coins, max_ai_coins=2, available_balance_usdt=36.0)
+            self.assertEqual([c["pair"] for c in picks1], ["CLEAN1USDT", "CLEAN2USDT"])
+
+            # After CLEAN1USDT was rejected recently, CLEAN2USDT rotates to #1
+            at._RECENT_REJECT_TS["CLEAN1USDT"] = time.time()
+            picks2 = at._technical_pre_filter(coins, max_ai_coins=2, available_balance_usdt=36.0)
+            self.assertEqual(picks2[0]["pair"], "CLEAN2USDT")
+        finally:
+            at._RECENT_REJECT_TS.clear()
+            at._RECENT_REJECT_TS.update(old_rej)
+
+    def test_hard_risk_accepts_conformal_win_with_propagated_p_tp1(self):
+        """Signal with cal_p=0.745 (Conformal WIN) and First-Passage blended p_tp1=0.78 passes HardRiskEngine."""
+        from risk.engine import HardRiskEngine
+
+        eng = HardRiskEngine(config=_cfg())
+        res = eng.validate_and_size(
+            decision={
+                "decision": "TRADE",
+                "symbol": "ZROUSDT",
+                "direction": "LONG",
+                "entry_price": 2.0,
+                "sl_price": 1.976,
+                "tp_price": 2.055,
+                "p_cal": 0.745,
+                "p_hybrid": 0.745,
+                "p_tp1": 0.78,
+                "conformal_set": ["WIN"],
+            },
+            account_state={"available_balance_usdt": 36.0, "live_equity": 36.0, "consecutive_losses": 0, "open_positions_count": 0},
+            market_state={"min_notional": 5.0, "step_size": 0.1, "min_qty": 0.1, "quantity_precision": 1},
+        )
+        self.assertTrue(res["allowed"], f"Expected allowed with p_tp1=0.78: {res}")
+
+
 if __name__ == "__main__":
     unittest.main()
