@@ -1353,7 +1353,7 @@ export function mountBOT(body, ctx) {
               h('td', { class: 'l mu', text: s.timestamp || s.time || '-' }),
               h('td', { class: 'l sym am', text: s.symbol || '-' }),
               h('td', { class: sDir === 'LONG' ? 'up sym' : sDir === 'SHORT' ? 'dn sym' : 'mu', text: (sDir === 'LONG' || sDir === 'SHORT') ? `${sDir} 20x` : (s.status || 'REJECTED') }),
-              h('td', { class: 'am sym', text: (s.confidence_pct || s.probability_pct || 0) + '%' }),
+              h('td', { class: 'am sym', text: (s.confidence_pct ?? s.confidence ?? s.confidence_score ?? s.probability_pct ?? 0) + '%' }),
               h('td', { text: sEntry > 0 ? fmtPx(sEntry) : '-' }),
               h('td', { style: 'color:#00e5ff;font-weight:bold', text: sEntry > 0 && sTp1 > 0 ? `${fmtPx(sTp1)} (+${mTp1Sig.roi_pct}%)` : '-' }),
               h('td', { class: 'up sym', text: sEntry > 0 && sTp2 > 0 ? `${fmtPx(sTp2)} (+${mTp2Sig.roi_pct}% | +$${fmtNum(mTp2Sig.pnl_usd, 2)})` : '-' }),

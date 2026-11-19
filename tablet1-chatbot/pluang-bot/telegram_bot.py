@@ -708,10 +708,14 @@ def run_radar_scan(chat_id):
     if approved_count == 0:
         summary_lines = []
         for sym, res in results:
-            fc = res.get("layer5_final_call", {})
-            reason = fc.get("final_reason", "Pasar sideways tanpa setup directional yang jelas")
+            if not isinstance(res, dict) or res.get("error") or res.get("status") == "FAILED":
+                err_txt = _esc_html(str((res or {}).get("error") or "Pipeline gagal dijalankan")[:140])
+                summary_lines.append(f"• <b>{_esc_html(sym)}</b>: ⚠️ FAILED\n  <i>{err_txt}</i>")
+                continue
+            fc = res.get("layer5_final_call") or {}
+            reason = _esc_html(str(fc.get("final_reason") or "Pasar sideways tanpa setup directional yang jelas")[:140])
             conf = fc.get("confidence_score", 0)
-            summary_lines.append(f"• <b>{sym}</b>: REJECTED ({conf}%)\n  <i>{reason[:120]}</i>")
+            summary_lines.append(f"• <b>{_esc_html(sym)}</b>: REJECTED ({conf}%)\n  <i>{reason}</i>")
 
         summary = (
             f"🛡️ <b>HASIL RADAR SCAN (TOP 3 AKTIF):</b>\n"

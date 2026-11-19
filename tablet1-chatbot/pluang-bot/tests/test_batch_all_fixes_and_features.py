@@ -373,6 +373,46 @@ class TestFeaturesAutoTraderAndTelegram(unittest.TestCase):
             tb.handle_convert_command(123, ["50.5", "usd"])
         self.assertTrue(sent_msgs and "$50.5000 USD" in sent_msgs[0], f"Decimal USD must not become 505: {sent_msgs}")
 
+    def test_ai_budget_ledger_auto_clears_stale_v1_cooldowns_on_upgrade(self):
+        import ai_gateway as ag
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            lp = os.path.join(tmp, "ai_budget_ledger.json")
+            key = "gsk_test_upgrade_key"
+            bid = f"groq:qwen/qwen3.8-27b:{ag._hash_key(key)}"
+            stale_v1 = {
+                "utc_date": ag._utc_today_str(),
+                "buckets": {
+                    bid: {
+                        "provider": "groq",
+                        "model": "qwen/qwen3.8-27b",
+                        "key_hash": ag._hash_key(key),
+                        "status": "INVALID_OR_UNPAID",
+                        "tokens_used_today": 1000,
+                        "tpd_limit": 200000,
+                        "cooldown_until": time.time() + 80000.0,
+                        "calls_today": 2,
+                        "last_error": "HTTP 400 old json_object failure",
+                    }
+                },
+                "total_calls_today": 2,
+                "total_tokens_today": 1000,
+            }
+            with open(lp, "w", encoding="utf-8") as f:
+                json.dump(stale_v1, f)
+
+            gw = ag.AIGateway(
+                ledger_path=lp,
+                provider_keys={"groq": [key]},
+                discover_groq_models=False,
+                persist_ledger=True,
+            )
+            self.assertEqual(gw.ledger.get("schema_version"), ag.LEDGER_SCHEMA_VERSION)
+            self.assertTrue(
+                gw.is_bucket_available("groq", "qwen/qwen3.8-27b", key),
+                "Upgrade from legacy v1 ledger must auto-clear stale error cooldowns",
+            )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

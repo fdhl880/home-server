@@ -37,6 +37,7 @@ import requests
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_LEDGER_PATH = os.path.join(BASE_DIR, "results", "ai_budget_ledger.json")
+LEDGER_SCHEMA_VERSION = 2
 
 MANDATORY_USER_AGENT = "PyrofuelQuantBot/3.0"
 DEFAULT_GROQ_TPD_LIMIT = 200_000
@@ -386,11 +387,11 @@ class AIGateway:
             "chat_url": "https://openrouter.ai/api/v1/chat/completions",
             "models_url": "https://openrouter.ai/api/v1/models",
             "default_models": [
-                "google/gemma-4-31b-it:free",
-                "google/gemma-4-26b-a4b-it:free",
                 "nvidia/nemotron-3-ultra-550b-a55b:free",
                 "nvidia/nemotron-3.5-super-vl:free",
                 "particle-ai/particle-1:free",
+                "google/gemma-4-31b-it:free",
+                "google/gemma-4-26b-a4b-it:free",
             ],
             "tpd_limit": 300_000,
             "env_keys": ("OPENROUTER_API_KEYS", "OPENROUTER_API_KEY"),
@@ -431,6 +432,7 @@ class AIGateway:
         }
 
         self.ledger: Dict[str, Any] = {
+            "schema_version": LEDGER_SCHEMA_VERSION,
             "utc_date": _utc_today_str(),
             "buckets": {},
             "total_calls_today": 0,
@@ -531,6 +533,7 @@ class AIGateway:
         today = _utc_today_str(now_ts)
         if self.ledger.get("utc_date") != today:
             self.ledger = {
+                "schema_version": LEDGER_SCHEMA_VERSION,
                 "utc_date": today,
                 "buckets": {},
                 "total_calls_today": 0,
@@ -546,7 +549,19 @@ class AIGateway:
                 with open(self.ledger_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, dict) and data.get("utc_date") == _utc_today_str():
-                    self.ledger = data
+                    schema_ver = int(data.get("schema_version") or 1)
+                    if schema_ver < LEDGER_SCHEMA_VERSION:
+                        # Auto-clear stale error cooldowns from older AI gateway builds on upgrade
+                        for _bid, b in (data.get("buckets") or {}).items():
+                            if isinstance(b, dict) and b.get("status") != "EXHAUSTED_TPD":
+                                b["status"] = "ACTIVE"
+                                b["cooldown_until"] = 0.0
+                                b["last_error"] = None
+                        data["schema_version"] = LEDGER_SCHEMA_VERSION
+                        self.ledger = data
+                        self._save_ledger()
+                    else:
+                        self.ledger = data
             except Exception:
                 pass
 
@@ -743,8 +758,8 @@ class AIGateway:
             if resp.status_code == 200:
                 data = resp.json()
                 pref_order = (
-                    "gemma-4-31b", "gemma-4-26b", "nemotron-3-ultra", "nemotron-3.5-super",
-                    "particle-1", "gpt-oss-120b", "llama-3.3-70b", "qwen3", "deepseek",
+                    "nemotron-3-ultra", "nemotron-3.5-super", "particle-1",
+                    "gemma-4-31b", "gemma-4-26b", "gpt-oss-120b", "llama-3.3-70b", "qwen3", "deepseek",
                     "nemotron-3-nano", "gpt-oss-20b", "gemma", "mistral", "llama",
                 )
                 excl = ("safety", "guard", "code", "embed", "whisper", "tts", "1.7b", "flint", "note-preview")
