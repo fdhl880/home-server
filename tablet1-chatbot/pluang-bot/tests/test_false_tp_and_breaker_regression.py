@@ -549,7 +549,7 @@ class TestEntryStarvationFixes(unittest.TestCase):
             "take_profit_2": 102.6,
             "risk_reward_ratio": "1:2.2",
         }
-        risk_ok = {"checks_passed": 8, "total_checks": 10}
+        risk_ok = {"total_score": 7, "max_score": 8, "checks_passed": 8, "total_checks": 10}
 
         # Case 1: Calm/NEUTRAL dealer gamma with structural -6.1% put skew -> LONG stays APPROVED
         mkt_neutral = {

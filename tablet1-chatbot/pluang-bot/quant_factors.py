@@ -208,10 +208,10 @@ def evaluate_pillar1_momentum(closes: np.ndarray, highs: np.ndarray, lows: np.nd
         signals.append(1.0 if hl > 0 else -1.0)
         signals.append(factors[f"macd_{name}_hist_increasing"])
 
-    # 6. Directional Movement Index (DMI) & ADX across 4 horizons (16 factors)
+    # 6. Directional Movement Index (DMI) & ADX across 4 horizons (16 factors) — C5 Fix: use LATEST 60 bars
     for adx_p in [7, 10, 14, 21]:
         tr_list, dm_pos_list, dm_neg_list = [], [], []
-        for i in range(1, min(n, 60)):
+        for i in range(max(1, n - 60), n):
             h = highs[i]
             l = lows[i]
             pc = closes[i - 1]
@@ -255,18 +255,31 @@ def evaluate_pillar1_momentum(closes: np.ndarray, highs: np.ndarray, lows: np.nd
         factors[f"aroon_osc_{ar_p}"] = round(aroon_osc, 2)
         signals.append(max(min(aroon_osc / 80.0, 1.0), -1.0))
 
-    # 8. Supertrend Indicator across 6 configurations (12 factors)
+    # 8. Supertrend Indicator across 6 configurations (12 factors) — C5 Fix: true trailing band flip
     st_configs = [(7, 2.0), (10, 2.5), (10, 3.0), (14, 2.0), (14, 3.0), (20, 3.0)]
     for st_p, st_mult in st_configs:
         recent_trs = [max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
                       for i in range(max(1, n - st_p), n)]
-        atr_val = np.mean(recent_trs) if recent_trs else curr * 0.02
-        hl2 = (highs[-1] + lows[-1]) / 2.0
-        upper_band = hl2 + st_mult * atr_val
-        lower_band = hl2 - st_mult * atr_val
-        st_bullish = curr > lower_band
+        atr_val = float(np.mean(recent_trs)) if recent_trs else curr * 0.02
+        # Walk trailing Supertrend over the latest window so downtrends flip bearish accurately
+        start_idx = max(1, n - max(st_p * 2, 24))
+        final_upper = (highs[start_idx] + lows[start_idx]) / 2.0 + st_mult * atr_val
+        final_lower = (highs[start_idx] + lows[start_idx]) / 2.0 - st_mult * atr_val
+        st_bullish = bool(closes[start_idx] >= (highs[start_idx] + lows[start_idx]) / 2.0)
+        for i in range(start_idx + 1, n):
+            hl2_i = (highs[i] + lows[i]) / 2.0
+            bu = hl2_i + st_mult * atr_val
+            bl = hl2_i - st_mult * atr_val
+            prev_c = closes[i - 1]
+            final_upper = bu if (bu < final_upper or prev_c > final_upper) else final_upper
+            final_lower = bl if (bl > final_lower or prev_c < final_lower) else final_lower
+            if st_bullish and closes[i] < final_lower:
+                st_bullish = False
+            elif (not st_bullish) and closes[i] > final_upper:
+                st_bullish = True
+        active_band = final_lower if st_bullish else final_upper
         factors[f"supertrend_{st_p}_{st_mult}_state"] = 1.0 if st_bullish else -1.0
-        factors[f"supertrend_{st_p}_{st_mult}_dist"] = round(((curr - lower_band) / curr) * 100.0, 4) if curr > 0 else 0.0
+        factors[f"supertrend_{st_p}_{st_mult}_dist"] = round(((curr - active_band) / curr) * 100.0, 4) if curr > 0 else 0.0
         signals.append(1.0 if st_bullish else -1.0)
 
     # 9. Linear Regression Slope, R-Squared, & t-statistic (12 factors)
@@ -949,8 +962,13 @@ def evaluate_pillar5_derivatives_smc(
 
     # 6. Derivatives Funding Rate Dynamics (12 factors)
     funding_rate = 0.0001
-    if funding_data:
-        funding_rate = float(funding_data.get("funding_rate_raw", funding_data.get("funding_rate", 0.01) / 100.0))
+    if funding_data and isinstance(funding_data, dict):
+        fr_raw_q = funding_data.get("funding_rate_raw", funding_data.get("rate", funding_data.get("current_rate")))
+        if fr_raw_q is not None:
+            funding_rate = float(fr_raw_q or 0.0)
+        else:
+            fr_pct_q = float(funding_data.get("funding_rate_pct", funding_data.get("funding_rate", 0.01)) or 0.0)
+            funding_rate = (fr_pct_q / 100.0) if abs(fr_pct_q) >= 0.005 else fr_pct_q
     ann_funding = funding_rate * 3 * 365 * 100.0
     factors["deriv_funding_rate_raw"] = round(funding_rate, 6)
     factors["deriv_annualized_funding_pct"] = round(ann_funding, 2)
@@ -969,18 +987,21 @@ def evaluate_pillar5_derivatives_smc(
         factors["deriv_funding_sentiment"] = "NEUTRAL"
         signals.append(0.0)
 
-    # 7. Open Interest (OI) & Price-OI Divergence Matrix (10 factors)
+    # 7. Open Interest (OI) & Price-OI Divergence Matrix (10 factors) — C5 Fix: neutral 0.0 when oi_change == 0
     oi_val = 0.0
     oi_change = 0.0
-    if open_interest_data:
-        oi_val = float(open_interest_data.get("open_interest", 0.0))
-        oi_change = float(open_interest_data.get("oi_change_24h", 0.0))
+    if open_interest_data and isinstance(open_interest_data, dict):
+        oi_val = float(open_interest_data.get("open_interest", 0.0) or 0.0)
+        oi_change = float(open_interest_data.get("oi_change_24h", open_interest_data.get("oi_delta_pct", 0.0)) or 0.0)
     factors["deriv_open_interest"] = round(oi_val, 2)
     factors["deriv_oi_change_pct"] = round(oi_change, 2)
     price_change_recent = ((curr - closes[-5]) / closes[-5]) * 100.0 if n >= 5 and closes[-5] > 0 else 0.0
     factors["deriv_price_change_5b"] = round(price_change_recent, 3)
 
-    if price_change_recent > 0 and oi_change > 0:
+    if abs(oi_change) < 1e-6:
+        oi_regime = "NEUTRAL_OI"
+        signals.append(0.0)
+    elif price_change_recent > 0 and oi_change > 0:
         oi_regime = "INSTITUTIONAL_LONG_ACCUMULATION"
         signals.append(1.5)
     elif price_change_recent < 0 and oi_change > 0:
@@ -1092,6 +1113,8 @@ def evaluate_all_quant_factors(
             "pillar5_derivatives_smc": {"score": score5, "weight": 0.20, "factor_count": len(f5)},
         },
         "regime": f4.get("regime_classification", "NORMAL_REGIME"),
+        "adx_14": f1.get("adx_14", 0.0),
+        "supertrend_10_2.5_state": f1.get("supertrend_10_2.5_state", 0.0),
         "smc_summary": {
             "liquidity_sweep": f5.get("smc_liquidity_sweep", "NONE"),
             "market_structure": f5.get("smc_market_structure", "NEUTRAL"),

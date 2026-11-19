@@ -249,6 +249,7 @@ class IntrabarThesisMonitor:
             "mu_drift": mu_t,
             "p_survive": p_survive,
             "consecutive_breaches": consec,
+            "min_elapsed_met": bool(float(elapsed_sec) >= self.min_elapsed_sec),
             "structural_reversal": is_reversed,
             "reversal_details": rev_details,
             "trigger_emergency_review": trigger_emergency,

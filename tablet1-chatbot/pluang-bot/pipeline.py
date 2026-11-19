@@ -462,11 +462,10 @@ def call_ai(prompt: str, system_prompt: str, max_tokens: int = 1500, temperature
         tag = f"-K{k_idx+1}" if len(groq_keys) > 1 else ""
         _gh = {"Authorization": f"Bearer {g_key}", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
         for _n, _m, _eff, _jo, _to in [
-            (f"Groq{tag}-Llama70B", "llama-3.3-70b-versatile", None, False, 30),
-            (f"Groq{tag}-Qwen32B", "qwen/qwen3-32b", None, False, 30),
-            (f"Groq{tag}-DeepSeek70B", "deepseek-r1-distill-llama-70b", None, False, 30),
-            (f"Groq{tag}-GPT120B", "openai/gpt-oss-120b", None, False, 30),
-            (f"Groq{tag}-GPT20B", "openai/gpt-oss-20b", None, False, 25),
+            (f"Groq{tag}-Qwen3.8", "qwen/qwen3.8-27b", "none", False, 30),
+            (f"Groq{tag}-GPT120B", "openai/gpt-oss-120b", "low", False, 30),
+            (f"Groq{tag}-GPT20B", "openai/gpt-oss-20b", "low", False, 25),
+            (f"Groq{tag}-Allam7B", "allam-2-7b", None, False, 25),
         ]:
             providers.append({
                 "name": _n, "type": "openai_compat",
@@ -1116,6 +1115,32 @@ def layer1_scanning(symbol: str):
     except Exception as exc:
         logger.warning("15m regime klines enrichment failed for %s: %s", symbol, exc)
 
+    # Feature #3: Compute 15m Micro-Timing Exhaustion Indicators (zero extra API calls, uses kl_15m)
+    micro_15m = {"rsi_15m": 50.0, "ema20_15m": 0.0, "atr_15m": 0.0, "dist_ema20_atr_15m": 0.0, "available": False}
+    try:
+        if len(closes_15m) >= 22 and len(highs_15m) == len(closes_15m) and len(lows_15m) == len(closes_15m):
+            from market_data import calculate_rsi, calculate_ema, calculate_atr
+            rsi_15 = float(calculate_rsi(closes_15m, 14))
+            ema20_15 = float(calculate_ema(closes_15m, 20))
+            atr_15 = float(calculate_atr(highs_15m, lows_15m, closes_15m, 14))
+            if atr_15 <= 0 and closes_15m[-1] > 0:
+                trs_15 = [
+                    max(highs_15m[i] - lows_15m[i], abs(highs_15m[i] - closes_15m[i - 1]), abs(lows_15m[i] - closes_15m[i - 1]))
+                    for i in range(max(1, len(closes_15m) - 14), len(closes_15m))
+                ]
+                atr_15 = sum(trs_15) / max(1, len(trs_15))
+            px_15 = float(closes_15m[-1])
+            dist_atr_15 = ((px_15 - ema20_15) / atr_15) if atr_15 > 1e-12 else 0.0
+            micro_15m = {
+                "rsi_15m": round(rsi_15, 2),
+                "ema20_15m": round(ema20_15, 6),
+                "atr_15m": round(atr_15, 6),
+                "dist_ema20_atr_15m": round(dist_atr_15, 3),
+                "available": True,
+            }
+    except Exception as m15_exc:
+        logger.debug("15m micro-timing calc skipped for %s: %s", symbol, m15_exc)
+
     # Bloomberg Terminal Live News & Macro Sentiment
     news_macro = _fetch_terminal_news_and_macro()
 
@@ -1128,10 +1153,23 @@ def layer1_scanning(symbol: str):
     vol_tr = str((data_1h.get("volume_profile") or {}).get("volume_trend", "NEUTRAL")).upper()
     ls_ratio = float((data_1h.get("long_short_ratio") or {}).get("long_short_ratio", 1.0) or 1.0)
     news_score = float(news_macro.get("sentiment_score", 50.0) or 50.0)
-    fr_raw = (data_1h.get("funding_rate") or {}).get("funding_rate_pct", 0.0)
+    # C6 Fix: Extract BOTH decimal funding_rate_raw (for HMM/ML) and percent funding_pct (for prompts)
+    _fr_dict = data_1h.get("funding_rate") if isinstance(data_1h.get("funding_rate"), dict) else {}
+    _fr_dec = _fr_dict.get("funding_rate_raw", _fr_dict.get("rate", _fr_dict.get("current_rate")))
     try:
-        funding_pct = float(fr_raw or 0.0)
+        if _fr_dec is not None:
+            funding_raw = float(_fr_dec or 0.0)
+            funding_pct = round(funding_raw * 100.0, 4)
+        else:
+            _fr_p = float(_fr_dict.get("funding_rate_pct", _fr_dict.get("funding_rate", 0.0)) or 0.0)
+            if abs(_fr_p) >= 0.005:
+                funding_pct = round(_fr_p, 4)
+                funding_raw = _fr_p / 100.0
+            else:
+                funding_raw = _fr_p
+                funding_pct = round(_fr_p * 100.0, 4)
     except Exception:
+        funding_raw = 0.0
         funding_pct = 0.0
 
     # Directional Math Edge calculation
@@ -1177,17 +1215,34 @@ def layer1_scanning(symbol: str):
     try:
         if len(closes_15m) >= 24:
             from features.hmm_drift import GaussianHMM3Regime
-            hmm_info = GaussianHMM3Regime().fit_and_predict(closes_15m, oi_series=oi_series, funding_rate=funding_pct)
+            hmm_info = GaussianHMM3Regime().fit_and_predict(closes_15m, oi_series=oi_series, funding_rate=funding_raw)
     except Exception:
         pass
 
+    # H3 Fix: data_1h["volatility"] is a string label (e.g. "MODERATE"), not a dict — compute real annualized vol
     vol_pct_24h = 45.0
     try:
-        vol_obj = data_1h.get("volatility") or {}
+        vol_obj = data_1h.get("volatility")
         atr_v = float(data_1h.get("atr_pct") or 1.2)
-        vol_pct_24h = float(vol_obj.get("annualized_vol_pct") or min(140.0, max(20.0, atr_v * 38.0)))
+        if isinstance(vol_obj, dict) and vol_obj.get("annualized_vol_pct") is not None:
+            vol_pct_24h = float(vol_obj["annualized_vol_pct"])
+        elif len(closes_15m) >= 20:
+            log_rets_15m = [
+                math.log(closes_15m[i] / closes_15m[i - 1])
+                for i in range(1, len(closes_15m))
+                if closes_15m[i - 1] > 0 and closes_15m[i] > 0
+            ]
+            if len(log_rets_15m) >= 10:
+                mean_r = sum(log_rets_15m) / len(log_rets_15m)
+                var_r = sum((r - mean_r) ** 2 for r in log_rets_15m) / max(1, len(log_rets_15m) - 1)
+                # 96 bars/day * 365 days = 35040 15m bars/year
+                vol_pct_24h = round(min(180.0, max(15.0, math.sqrt(var_r * 35040.0) * 100.0)), 2)
+            else:
+                vol_pct_24h = round(min(140.0, max(20.0, atr_v * 38.0)), 2)
+        else:
+            vol_pct_24h = round(min(140.0, max(20.0, atr_v * 38.0)), 2)
     except Exception:
-        pass
+        vol_pct_24h = 45.0
     options_info = _fetch_cached_options_surface(symbol, realized_vol_pct=vol_pct_24h)
 
     liq_heatmap = {"nearest_long_liq_magnet": None, "nearest_short_liq_magnet": None}
@@ -1207,6 +1262,9 @@ def layer1_scanning(symbol: str):
     crowd_penalty = -10.0 if (math_dir == "LONG" and ls_ratio > 2.6 and "DISTRIBUTION" in vol_tr) else 0.0
 
     p_math_score = round(max(25.0, min(96.0, 52.0 + base_edge * 0.65 + ofi_bonus + hurst_bonus + mtf_bonus + news_bonus + crowd_penalty)), 2)
+    _qf_root = data_1h.get("quant_factors") or {}
+    _qf_factors_map = _qf_root.get("factors") or _qf_root.get("sample_factors") or {}
+    _adx_14_val = float(_qf_root.get("adx_14") if _qf_root.get("adx_14") is not None else (_qf_factors_map.get("adx_14", 0.0) or 0.0))
 
     math_proof = {
         "p_math_pct": p_math_score,
@@ -1216,6 +1274,12 @@ def layer1_scanning(symbol: str):
         "variance_ratio_q4": round(vr_q, 4),
         "variance_ratio_z": round(vr_z, 3),
         "statistical_regime": stat_regime,
+        "adx_14": round(_adx_14_val, 2),
+        "realized_vol_ann_pct": round(vol_pct_24h, 2),
+        "funding_rate_raw": round(funding_raw, 6),
+        "funding_rate_pct": round(funding_pct, 4),
+        "rsi_15m": micro_15m.get("rsi_15m"),
+        "dist_ema20_atr_15m": micro_15m.get("dist_ema20_atr_15m"),
         "obi_weighted_20": round(obi_20, 4),
         "micro_price": round(float(ofi_info.get("micro_price", 0) or 0), 6),
         "micro_divergence": round(float(ofi_info.get("micro_divergence", 0) or 0), 4),
@@ -1231,6 +1295,13 @@ def layer1_scanning(symbol: str):
         "hmm_squeeze_score": hmm_info.get("squeeze_risk_score", 15.0),
         "options_dvol": options_info.get("dvol"),
         "options_vrp": options_info.get("vrp"),
+        "options_skew_25d": options_info.get("skew_25d"),
+        "options_surface": {
+            "dvol": options_info.get("dvol"),
+            "vrp": options_info.get("vrp"),
+            "skew_25d": options_info.get("skew_25d"),
+            "dealer_gamma_regime": options_info.get("dealer_gamma_regime", "UNKNOWN"),
+        },
         "options_dealer_gamma": options_info.get("dealer_gamma_regime", "UNKNOWN"),
         "nearest_long_liq_magnet": liq_heatmap.get("nearest_long_liq_magnet"),
         "nearest_short_liq_magnet": liq_heatmap.get("nearest_short_liq_magnet"),
@@ -1244,6 +1315,7 @@ def layer1_scanning(symbol: str):
     }
     data_1h["math_proof"] = math_proof
     data_1h["news_macro"] = news_macro
+    data_1h["_micro_15m"] = micro_15m
     data_1h["_micro_risk"] = {
         "vpin": vpin_info,
         "hawkes": hawkes_info,
@@ -1310,7 +1382,7 @@ def layer2_setup_hunter(symbol: str, scan_data: dict):
         "atr_pct": scan_data.get("atr_pct"),
         "vol_trend": (scan_data.get("volume") or {}).get("volume_trend"),
         "vol_ratio": (scan_data.get("volume") or {}).get("volume_ratio"),
-        "fund_rate": (scan_data.get("funding_rate") or {}).get("rate"),
+        "fund_rate_pct": (scan_data.get("funding_rate") or {}).get("funding_rate_pct", (scan_data.get("funding_rate") or {}).get("funding_rate", 0.0)),
         "fund_sent": (scan_data.get("funding_rate") or {}).get("sentiment"),
         "support1": (scan_data.get("levels") or {}).get("support_1"),
         "resist1": (scan_data.get("levels") or {}).get("resistance_1"),
@@ -1403,8 +1475,9 @@ def predict_tp_time(current_price: float, take_profit: float,
         m += 0.28
     elif rsi > 54 or rsi < 46:
         m += 0.12
-    if macd_hist and atr_pct > 0:
-        m += min(macd_hist / (atr_pct * 0.1 + 0.001), 1.4) * 0.18
+    if macd_hist and atr_pct > 0 and current_price > 0:
+        macd_hist_pct = (macd_hist / current_price) * 100.0
+        m += min(macd_hist_pct / (atr_pct * 0.1 + 0.001), 1.4) * 0.18
     if vol_ratio > 1.4:
         m += 0.25
     elif vol_ratio > 1.15:
@@ -1581,6 +1654,7 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
                 "position_size_idr": 0,
                 "sl_distance_pct": sl_dist_pct,
                 "tp_distance_pct": tp_dist_pct,
+                "ai_fallback": True,
                 "reasoning": f"500-Factor Quant plan ({setup_result.get('setup_name')})"
             }
         else:
@@ -1678,7 +1752,8 @@ def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_res
     rsi = scan_data.get("rsi_14_1h", 50)
     vol_trend = (scan_data.get("volume") or {}).get("volume_trend", "N/A")
     ema = scan_data.get("ema_trend_1h", "NEUTRAL")
-    fr_rate = (scan_data.get("funding_rate") or {}).get("rate", 0)
+    _fr_l4 = scan_data.get("funding_rate") or {}
+    fr_rate = _fr_l4.get("funding_rate_pct", _fr_l4.get("funding_rate", 0.0))
     atr_pct = scan_data.get("atr_pct", 0)
     news_sent = (scan_data.get("news_macro") or {}).get("market_sentiment", "NEUTRAL")
 
@@ -1722,6 +1797,7 @@ def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_res
                 "max_drawdown_pct": round(sl_dist_pct, 2),
                 "risk_verdict": "LOW_RISK" if score >= 6 else "HIGH_RISK",
                 "recommendation": "PROCEED" if score >= 6 else "REJECT",
+                "ai_fallback": True,
                 "reasoning": f"Quant Risk Audit (RRR=1:{rrr_val}, SL={sl_dist_pct:.2f}%)"
             }
         else:
@@ -1788,12 +1864,13 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
         result = _ai_json(prompt, system, 300, 0.05, f"Layer5 {symbol}")
     except Exception as e_l5:
         if "ALL_AI_FAILED" in str(e_l5) or isinstance(e_l5, AIUnavailable) or setup_result.get("ai_fallback"):
-            print(f"[AI FALLBACK] Final judgment synthesized via Quant Engine for {symbol}...", flush=True)
-            is_app = prob >= min_conf and risk_score >= 6
+            # H2 Fix: Strict AI-Only mandate — NEVER emit APPROVED when AI is unavailable in Layer 5!
+            print(f"[AI-ONLY BLOCK] Layer 5 AI unavailable for {symbol} -> forcing REJECTED ({str(e_l5)[:120]})", flush=True)
             result = {
-                "status": "APPROVED" if is_app else "REJECTED",
-                "decision": "APPROVE" if is_app else "REJECT",
-                "confidence_score": prob,
+                "status": "REJECTED",
+                "decision": "REJECT",
+                "ai_fallback": True,
+                "confidence_score": 0,
                 "direction": direction,
                 "entry_price": entry,
                 "stop_loss": sl,
@@ -1804,11 +1881,18 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
                 "limit_price": plan_result.get("limit_price", entry),
                 "position_size_idr": 0,
                 "setup_name": setup_name,
-                "risk_audit_pass_rate": risk_result.get("pass_rate_pct", 87),
-                "final_reason": f"Quant synthesis {'approved' if is_app else 'rejected'}: {setup_name} (Conf: {prob}%, RRR: 1:{rrr_val})"
+                "risk_audit_pass_rate": risk_result.get("pass_rate_pct", 0),
+                "final_reason": f"AI_UNAVAILABLE_LAYER5: Strict AI-only mandate blocks non-AI fallback trade ({setup_name})",
             }
         else:
             raise
+
+    if result and (plan_result.get("ai_fallback") or risk_result.get("ai_fallback") or setup_result.get("ai_fallback")):
+        result["ai_fallback"] = True
+        if result.get("status") == "APPROVED":
+            result["status"] = "REJECTED"
+            result["decision"] = "REJECT"
+            result["final_reason"] = f"{result.get('final_reason', '')} [AI_ONLY_BLOCK: upstream Layer 2/3/4 used fallback]".strip()
 
     if result:
         tp_val2 = float(result.get("take_profit_2") or result.get("take_profit") or plan_result.get("take_profit_2") or plan_result.get("take_profit") or 0)
@@ -1890,11 +1974,18 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
         result["status"] = "REJECTED"
         reasons.append("Trading plan SKIP")
 
-    # Gate 6: Risk audit must pass at least 5/10 checks (balanced, not ultra-strict)
-    risk_score = risk_result.get("total_score", 5)
-    if risk_score < 5:
+    # Gate 6: Risk audit must pass at least 5/max_score checks (H10 Fix: use actual max_score, fallback to pass_rate_pct, else 0)
+    risk_max = int(risk_result.get("max_score", 8) or 8)
+    if "total_score" in risk_result and risk_result.get("total_score") is not None:
+        risk_score = int(risk_result.get("total_score") or 0)
+    elif "pass_rate_pct" in risk_result and risk_result.get("pass_rate_pct") is not None:
+        risk_score = int(round((float(risk_result.get("pass_rate_pct") or 0.0) / 100.0) * risk_max))
+    else:
+        risk_score = 0
+    min_risk_pass = min(5, risk_max)
+    if risk_score < min_risk_pass:
         result["status"] = "REJECTED"
-        reasons.append(f"Risk audit hanya lolos {risk_score}/10 (minimum 5/10)")
+        reasons.append(f"Risk audit hanya lolos {risk_score}/{risk_max} (minimum {min_risk_pass}/{risk_max})")
 
     # Gate 6b: Confluence count minimum 2 (real markets rarely have 3+ perfect confluences)
     confluence_count = setup_result.get("confluence_count", 0)
@@ -2048,6 +2139,22 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
             result["status"] = "REJECTED"
             reasons.append(f"HMM Cascade Transition Prob={hmm.get('p_transition_to_cascade')} too high ({hmm.get('current_state')})")
 
+        # Feature #3: 15m Micro-Timing Exhaustion Chase Guard (blocks market-buying top of vertical 15m spikes)
+        micro_15m = market_data.get("_micro_15m") or {}
+        if result.get("status") == "APPROVED" and micro_15m.get("available"):
+            rsi_15 = float(micro_15m.get("rsi_15m", 50.0) or 50.0)
+            dist_atr_15 = float(micro_15m.get("dist_ema20_atr_15m", 0.0) or 0.0)
+            if direction == "LONG" and rsi_15 > 76.0 and dist_atr_15 > 1.4:
+                result["status"] = "REJECTED"
+                reasons.append(
+                    f"15m Micro-Timing Exhaustion Chase LONG (RSI15m={rsi_15:.1f} > 76 & +{dist_atr_15:.2f}x ATR above EMA20)"
+                )
+            elif direction == "SHORT" and rsi_15 < 24.0 and dist_atr_15 < -1.4:
+                result["status"] = "REJECTED"
+                reasons.append(
+                    f"15m Micro-Timing Exhaustion Chase SHORT (RSI15m={rsi_15:.1f} < 24 & {dist_atr_15:.2f}x ATR below EMA20)"
+                )
+
         liq_in = market_data.get("_liq_inputs") or {}
         if result.get("status") == "APPROVED" and e_px > 0 and sl_px > 0 and len(liq_in.get("closes", [])) >= 12:
             from features.liq_heatmap import build_liquidation_heatmap
@@ -2064,10 +2171,22 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
                 valid_side = (direction == "LONG" and 0 < rec_sl < e_px) or (direction == "SHORT" and rec_sl > e_px)
                 rec_dist_pct = (abs(e_px - rec_sl) / e_px) * 100.0 if rec_sl > 0 else 999.0
                 if valid_side and rec_dist_pct <= float(cfg.get("max_sl_pct", 2.5)):
-                    result["stop_loss"] = round(rec_sl, 6)
-                    mp["sl_liq_shielded"] = True
-                    mp["sl_liq_original"] = sl_px
-                    mp["sl_liq_shielded_to"] = round(rec_sl, 6)
+                    new_sl_rounded = round(rec_sl, 6)
+                    new_sl_d = abs(e_px - new_sl_rounded)
+                    rrr_after = abs(tp_px - e_px) / new_sl_d if (tp_px > 0 and new_sl_d > 1e-12) else current_min_rrr
+                    if rrr_after < current_min_rrr:
+                        result["status"] = "REJECTED"
+                        reasons.append(
+                            f"SL Shield widened SL to ${new_sl_rounded:.4f} dropping RRR to 1:{rrr_after:.2f} < 1:{current_min_rrr}"
+                        )
+                    else:
+                        result["stop_loss"] = new_sl_rounded
+                        d_sgn_sh = -1.0 if direction == "SHORT" else 1.0
+                        result["take_profit_1"] = round(e_px + d_sgn_sh * 0.55 * new_sl_d, 6)
+                        result["risk_reward_ratio"] = f"1:{round(rrr_after, 2)}"
+                        mp["sl_liq_shielded"] = True
+                        mp["sl_liq_original"] = sl_px
+                        mp["sl_liq_shielded_to"] = new_sl_rounded
                 elif rec_dist_pct > float(cfg.get("max_sl_pct", 2.5)):
                     result["status"] = "REJECTED"
                     reasons.append(f"SL (${sl_px:.4f}) sits in Stop-Hunt Liq Magnet and safe SL exceeds max_sl_pct ({rec_dist_pct:.2f}%)")
@@ -2262,11 +2381,11 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 except Exception as conf_exc:
                     logger.warning("Conformal filter evaluation failed: %s", conf_exc)
 
-                # T3.15: Dynamic Funding & Macro Shock Shield (fixed key check: block_new_entries / shield_active)
+                # T3.15 / C6 Fix: Dynamic Funding & Macro Shock Shield expects epoch MILLISECONDS (int(time.time()*1000))
                 macro_shield = {"blocked": False, "block_new_entries": False, "reason": "CLEAR"}
                 try:
                     from features.macro_funding_shield import check_macro_and_cme_shield
-                    macro_shield = check_macro_and_cme_shield(time.time())
+                    macro_shield = check_macro_and_cme_shield(int(time.time() * 1000))
                     is_macro_blocked = bool(
                         macro_shield.get("block_new_entries")
                         or macro_shield.get("shield_active")
@@ -2335,7 +2454,7 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                     "scratch_guard_r": 0.30,
                     "tp1_lock_trigger_r": float(sniper_cfg.get("tp1_lock_trigger_r", 0.55)),
                     "sl_lock_after_tp1_r": float(sniper_cfg.get("sl_lock_after_tp1_r", 0.38)),
-                    "tp2_runner_r": float(sniper_cfg.get("tp2_runner_r", 1.60)),
+                    "tp2_runner_r": float(sniper_cfg.get("tp2_runner_target_r", sniper_cfg.get("tp2_runner_r", 1.60))),
                 }
                 final_call["tp_time_prediction"] = plan_result.get("tp_time_prediction")
 
@@ -2400,18 +2519,28 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 plan_result["roi_pnl_projection"] = _roi_proj
                 final_call["roi_pnl_projection"] = _roi_proj
 
-                # Register skipped candidates in ShadowEngine for continuous counterfactual training
-                if final_call.get("status") != "APPROVED" and final_call.get("entry_price", 0) > 0 and final_call.get("stop_loss", 0) > 0:
+                # H4 Fix: Register ONLY real actionable skipped setups in ShadowEngine (exclude dummy QUANT_OBSERVATION_MODE / NO_CLEAR_SETUP)
+                _sh_setup_raw = final_call.get("setup_name") or setup_result.get("setup_name") or ""
+                _sh_setup_name = str(_sh_setup_raw).upper()
+                _sh_dir_name = str(final_call.get("direction") or setup_result.get("direction") or "").upper()
+                if (
+                    final_call.get("status") != "APPROVED"
+                    and _sh_setup_name not in ("", "N/A", "NO_CLEAR_SETUP", "QUANT_OBSERVATION_MODE")
+                    and _sh_dir_name in ("LONG", "SHORT")
+                    and float(final_call.get("entry_price") or 0) > 0
+                    and float(final_call.get("stop_loss") or 0) > 0
+                ):
                     try:
                         from shadow.engine import ShadowEngine
                         ShadowEngine().register_candidate(
                             candidate={
                                 "symbol": symbol,
-                                "strategy_id": final_call.get("setup_name", "S1_TREND_PULLBACK"),
+                                "strategy_id": _sh_setup_raw or "S1_TREND_PULLBACK",
                                 "regime": mp.get("statistical_regime", "UNKNOWN"),
-                                "direction": final_call.get("direction", "LONG"),
+                                "direction": _sh_dir_name,
                                 "entry_price": final_call.get("entry_price"),
                                 "sl_price": final_call.get("stop_loss"),
+                                "tp1_price": final_call.get("take_profit_1"),
                                 "tp2_price": final_call.get("take_profit"),
                             },
                             decision_id=pipeline_id,
@@ -2423,6 +2552,9 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                         final_call["_shadow_registered"] = True
                     except Exception:
                         pass
+                elif _sh_setup_name in ("QUANT_OBSERVATION_MODE", "NO_CLEAR_SETUP"):
+                    # Prevent auto_trader fallback from re-registering dummy observation setups
+                    final_call["_shadow_registered"] = True
             except Exception as _v2e:
                 print(f"[INSTITUTIONAL V3] Enrichment notice: {_v2e}", flush=True)
     except Exception as e:
@@ -2439,6 +2571,15 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
         raise
 
     execution_time = round(time.time() - start_time, 2)
+    ai_fallback_used = bool(
+        setup_result.get("ai_fallback")
+        or plan_result.get("ai_fallback")
+        or risk_result.get("ai_fallback")
+        or final_call.get("ai_fallback")
+    )
+    if ai_fallback_used and final_call.get("status") == "APPROVED":
+        final_call["status"] = "REJECTED"
+        final_call["final_reason"] = f"{final_call.get('final_reason', '')} [AI_ONLY_BLOCK: fallback used]".strip()
 
     result = {
         "pipeline_id": pipeline_id,
@@ -2528,6 +2669,7 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
             "timestamp": result.get("timestamp"),
             "symbol": symbol,
             "timeframe": "1h",
+            "regime": (market_data.get("math_proof") or {}).get("statistical_regime", "UNKNOWN"),
             "direction": final_call.get("direction", "NONE"),
             "setup": setup_result.get("setup_name", "N/A"),
             "ai_prob": final_call.get("confidence_score", 0),

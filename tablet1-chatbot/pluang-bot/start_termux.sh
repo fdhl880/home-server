@@ -21,6 +21,98 @@ if [ "$1" = "--selftest" ]; then
     exit 0
 fi
 
+run_supervisor_loop() {
+    mkdir -p "$BOT_DIR/logs" "$BOT_DIR/results"
+    LOCK_FILE="$BOT_DIR/results/pyrofuel.lock"
+    if command -v flock &>/dev/null; then
+        exec 9>"$LOCK_FILE"
+        if ! flock -n 9; then
+            echo "[ERROR] Instance lain sedang berjalan (flock terkunci)." >> "$BOT_DIR/logs/bot.log"
+            exit 1
+        fi
+    fi
+
+    STARTUP_GRACE_SEC=180
+    MAX_LOG_BYTES=20971520
+    LAST_BACKUP_DAY=""
+    export EMBED_AUTO_TRADER=0
+
+    while true; do
+        rm -f "$BOT_DIR/results/heartbeat.json" "$BOT_DIR/results/heartbeat.json.tmp"* 2>/dev/null || true
+        python3 -c "import journal; journal.backup_journal_and_rotate_logs()" 2>/dev/null || true
+        BOOT_EPOCH=$(date +%s)
+        echo "[SUPERVISOR] Memulai Pyrofuel Bot Suite pada $(date)..." >> "$BOT_DIR/logs/bot.log"
+        python3 "$BOT_DIR/server.py" >> "$BOT_DIR/logs/server.log" 2>&1 &
+        SRV_PID=$!
+        python3 "$BOT_DIR/telegram_bot.py" >> "$BOT_DIR/logs/telegram.log" 2>&1 &
+        TG_PID=$!
+        python3 "$BOT_DIR/auto_trader.py" >> "$BOT_DIR/logs/bot.log" 2>&1 &
+        BOT_PID=$!
+        trap 'kill -TERM $BOT_PID $SRV_PID $TG_PID 2>/dev/null || true' EXIT INT TERM
+
+        while kill -0 "$BOT_PID" 2>/dev/null; do
+            sleep 30
+            for lf in "$BOT_DIR"/logs/*.log; do
+                [ -f "$lf" ] || continue
+                LSIZE=$(stat -c %s "$lf" 2>/dev/null || wc -c < "$lf" 2>/dev/null || echo 0)
+                if [ "$LSIZE" -ge "$MAX_LOG_BYTES" ]; then
+                    python3 -c "import journal; journal.rotate_log_files(max_bytes=20*1024*1024, keep=3)" 2>/dev/null || true
+                    break
+                fi
+            done
+            CUR_DAY=$(date -u +%Y%m%d)
+            if [ "$CUR_DAY" != "$LAST_BACKUP_DAY" ]; then
+                python3 -c "import journal; journal.backup_state_and_journal(keep_days=7)" 2>/dev/null || true
+                LAST_BACKUP_DAY="$CUR_DAY"
+            fi
+            if ! kill -0 "$SRV_PID" 2>/dev/null; then
+                echo "[SUPERVISOR] server.py berhenti — merestart..." >> "$BOT_DIR/logs/bot.log"
+                python3 "$BOT_DIR/server.py" >> "$BOT_DIR/logs/server.log" 2>&1 &
+                SRV_PID=$!
+            fi
+            if ! kill -0 "$TG_PID" 2>/dev/null; then
+                echo "[SUPERVISOR] telegram_bot.py berhenti — merestart..." >> "$BOT_DIR/logs/bot.log"
+                python3 "$BOT_DIR/telegram_bot.py" >> "$BOT_DIR/logs/telegram.log" 2>&1 &
+                TG_PID=$!
+            fi
+            NOW_EPOCH=$(date +%s)
+            UPTIME=$(( NOW_EPOCH - BOOT_EPOCH ))
+            if [ "$UPTIME" -ge "$STARTUP_GRACE_SEC" ]; then
+                if [ ! -f "$BOT_DIR/results/heartbeat.json" ]; then
+                    echo "[WATCHDOG] heartbeat.json hilang setelah ${UPTIME}s — merestart proses..." >> "$BOT_DIR/logs/bot.log"
+                    kill -TERM "$BOT_PID" "$SRV_PID" "$TG_PID" 2>/dev/null || true
+                    sleep 3
+                    kill -9 "$BOT_PID" "$SRV_PID" "$TG_PID" 2>/dev/null || true
+                    break
+                fi
+                HB_MTIME=$(stat -c %Y "$BOT_DIR/results/heartbeat.json" 2>/dev/null || date -r "$BOT_DIR/results/heartbeat.json" +%s 2>/dev/null || echo "$NOW_EPOCH")
+                HB_AGE=$(( NOW_EPOCH - HB_MTIME ))
+                HB_STALLED=$(python3 -c 'import json,time; d=json.load(open("results/heartbeat.json")); st=str(d.get("status","")).upper(); lm=float(d.get("last_monitor_ts") or 0); age=(time.time()-lm) if lm>0 else 0; print("1" if (st=="MONITOR_STALLED" or age>360) else "0")' 2>/dev/null || echo "0")
+                if [ "$HB_AGE" -gt 300 ] || [ "$HB_STALLED" = "1" ]; then
+                    echo "[WATCHDOG] Heartbeat stale/deadlock (hb_age=${HB_AGE}s, stalled=${HB_STALLED}, uptime=${UPTIME}s). Merestart proses..." >> "$BOT_DIR/logs/bot.log"
+                    kill -TERM "$BOT_PID" "$SRV_PID" "$TG_PID" 2>/dev/null || true
+                    sleep 3
+                    kill -9 "$BOT_PID" "$SRV_PID" "$TG_PID" 2>/dev/null || true
+                    break
+                fi
+            fi
+        done
+
+        wait "$BOT_PID" 2>/dev/null || true
+        kill -TERM "$SRV_PID" "$TG_PID" 2>/dev/null || true
+        sleep 2
+        kill -9 "$SRV_PID" "$TG_PID" 2>/dev/null || true
+        wait "$SRV_PID" "$TG_PID" 2>/dev/null || true
+        echo "[SUPERVISOR] Proses berhenti. Restart dalam 5 detik..." >> "$BOT_DIR/logs/bot.log"
+        sleep 5
+    done
+}
+
+if [ "$1" = "--supervisor" ]; then
+    run_supervisor_loop
+    exit 0
+fi
+
 # ─────────────────────────────────────────────────────────────
 # STEP 1: Cek & Install Dependensi Sistem Termux
 # ─────────────────────────────────────────────────────────────
@@ -54,7 +146,7 @@ pip install -q --upgrade pip 2>/dev/null || true
 if [ -f "requirements-termux.txt" ]; then
     pip install -q -r requirements-termux.txt
 else
-    pip install -q flask flask-cors requests python-dotenv urllib3 websocket-client
+    pip install -q flask flask-cors requests python-dotenv urllib3 websocket-client websockets
 fi
 echo "     [OK] Python libraries terinstall."
 
@@ -117,87 +209,11 @@ if command -v tmux &>/dev/null && [ -z "$TMUX" ]; then
     fi
 
     echo "     [*] Membuka sesi tmux '$SESSION_NAME' di background..."
-    tmux new-session -d -s "$SESSION_NAME" "bash -c '
-        exec 9>\"$LOCK_FILE\"
-        if ! flock -n 9; then
-            echo \"[ERROR] Instance lain sedang berjalan (flock terkunci).\" >> logs/bot.log
-            exit 1
-        fi
-        STARTUP_GRACE_SEC=120
-        MAX_LOG_BYTES=20971520
-        LAST_BACKUP_DAY=""
-        while true; do
-            rm -f results/heartbeat.json results/heartbeat.json.tmp* 2>/dev/null || true
-            python3 -c "import journal; journal.backup_journal_and_rotate_logs()" 2>/dev/null || true
-            BOOT_EPOCH=\$(date +%s)
-            echo \"[SUPERVISOR] Memulai Pyrofuel Bot Suite pada \$(date)...\" >> logs/bot.log
-            python3 server.py >> logs/server.log 2>&1 &
-            SRV_PID=\$!
-            python3 telegram_bot.py >> logs/telegram.log 2>&1 &
-            TG_PID=\$!
-            python3 auto_trader.py >> logs/bot.log 2>&1 &
-            BOT_PID=\$!
-            trap \"kill -TERM \$BOT_PID \$SRV_PID \$TG_PID 2>/dev/null || true\" EXIT INT TERM
-            while kill -0 \$BOT_PID 2>/dev/null; do
-                sleep 30
-                for lf in logs/*.log; do
-                    [ -f \"\$lf\" ] || continue
-                    LSIZE=\$(stat -c %s \"\$lf\" 2>/dev/null || wc -c < \"\$lf\" 2>/dev/null || echo 0)
-                    if [ \"\$LSIZE\" -ge \"\$MAX_LOG_BYTES\" ]; then
-                        python3 -c \"import journal; journal.rotate_log_files(max_bytes=20*1024*1024, keep=3)\" 2>/dev/null || true
-                        break
-                    fi
-                done
-                CUR_DAY=\$(date -u +%Y%m%d)
-                if [ \"\$CUR_DAY\" != \"\$LAST_BACKUP_DAY\" ]; then
-                    python3 -c \"import journal; journal.backup_state_and_journal(keep_days=7)\" 2>/dev/null || true
-                    LAST_BACKUP_DAY=\"\$CUR_DAY\"
-                fi
-                if ! kill -0 \$SRV_PID 2>/dev/null; then
-                    echo \"[SUPERVISOR] server.py berhenti — merestart...\" >> logs/bot.log
-                    python3 server.py >> logs/server.log 2>&1 &
-                    SRV_PID=\$!
-                fi
-                if ! kill -0 \$TG_PID 2>/dev/null; then
-                    echo \"[SUPERVISOR] telegram_bot.py berhenti — merestart...\" >> logs/bot.log
-                    python3 telegram_bot.py >> logs/telegram.log 2>&1 &
-                    TG_PID=\$!
-                fi
-                NOW_EPOCH=\$(date +%s)
-                UPTIME=\$(( NOW_EPOCH - BOOT_EPOCH ))
-                if [ \$UPTIME -ge \$STARTUP_GRACE_SEC ] && [ -f results/heartbeat.json ]; then
-                    HB_MTIME=\$(stat -c %Y results/heartbeat.json 2>/dev/null || date -r results/heartbeat.json +%s 2>/dev/null || echo \$NOW_EPOCH)
-                    HB_AGE=\$(( NOW_EPOCH - HB_MTIME ))
-                    if [ \$HB_AGE -gt 300 ]; then
-                        echo \"[WATCHDOG] Heartbeat stale (\${HB_AGE}s > 300s, uptime=\${UPTIME}s). Merestart proses...\" >> logs/bot.log
-                        kill -TERM \$BOT_PID \$SRV_PID \$TG_PID 2>/dev/null || true
-                        sleep 3
-                        kill -9 \$BOT_PID \$SRV_PID \$TG_PID 2>/dev/null || true
-                        break
-                    fi
-                fi
-            done
-            wait \$BOT_PID 2>/dev/null || true
-            kill -TERM \$SRV_PID \$TG_PID 2>/dev/null || true
-            sleep 2
-            kill -9 \$SRV_PID \$TG_PID 2>/dev/null || true
-            wait \$SRV_PID \$TG_PID 2>/dev/null || true
-            echo \"[SUPERVISOR] Proses berhenti. Restart dalam 5 detik...\" >> logs/bot.log
-            sleep 5
-        done
-    '"
+    tmux new-session -d -s "$SESSION_NAME" "bash \"$BOT_DIR/start_termux.sh\" --supervisor"
     echo "     [OK] Bot aktif di background dengan Heartbeat Watchdog!"
     echo "     - Lihat output scanner real-time: tail -f logs/bot.log"
     echo "     - Masuk ke dashboard terminal: tmux attach -t $SESSION_NAME"
 else
-    echo "     [*] Memulai background API server & Telegram Bot..."
-    rm -f "$BOT_DIR/results/heartbeat.json" "$BOT_DIR/results/heartbeat.json.tmp"* 2>/dev/null || true
-    python3 server.py > logs/server.log 2>&1 &
-    SRV_PID=$!
-    python3 telegram_bot.py > logs/telegram.log 2>&1 &
-    TG_PID=$!
-    trap "kill -TERM $SRV_PID $TG_PID 2>/dev/null" EXIT INT TERM
-
-    echo "     [*] Menjalankan Autonomous AI Scanner langsung di terminal..."
-    python3 auto_trader.py
+    echo "     [*] Memulai supervisor dengan single-instance flock & Heartbeat Watchdog..."
+    run_supervisor_loop
 fi

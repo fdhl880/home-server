@@ -150,8 +150,8 @@ function parseAllowedOrigins(extra) {
 
 const TRADING_CONFIG_NUM_SPECS = {
     max_budget_idr: { min: 0, max: 1_000_000_000 },
-    max_leverage: { min: 1, max: 50, int: true },
-    fixed_leverage: { min: 1, max: 50, int: true },
+    max_leverage: { min: 1, max: 20, int: true },
+    fixed_leverage: { min: 1, max: 20, int: true },
     min_confidence_score: { min: 0, max: 100 },
     min_risk_reward_ratio: { min: 0.5, max: 20 },
     min_ev_r: { min: -1, max: 10 },
@@ -163,17 +163,19 @@ const TRADING_CONFIG_NUM_SPECS = {
     max_drawdown_pct: { min: 1, max: 100 },
     breaker_daily_dd_pct: { min: 1, max: 100 },
     circuit_breaker_consecutive_losses: { min: 1, max: 20, int: true },
-    breaker_cooldown_hours: { min: 0.1, max: 168 },
+    breaker_consecutive_losses: { min: 1, max: 20, int: true },
+    breaker_cooldown_hours: { min: 0.5, max: 168 },
+    post_sl_symbol_cooldown_hours: { min: 0.25, max: 48 },
     max_concurrent_positions: { min: 1, max: 20, int: true },
     max_daily_trades: { min: 1, max: 200, int: true },
-    all_in_balance_fraction: { min: 0.05, max: 0.99 },
+    all_in_balance_fraction: { min: 0.05, max: 0.98 },
     tp1_close_pct: { min: 1, max: 100 }
 };
 
 const TRADING_CONFIG_ENUM_SPECS = {
     margin_type: ['ISOLATED', 'CROSS', 'CROSSED'],
-    order_type: ['MARKET', 'LIMIT'],
-    sizing_mode: ['ALL_IN', 'RISK_PCT', 'FIXED_IDR', 'FIXED_USD'],
+    order_type: ['MARKET', 'LIMIT', 'MAKER_FIRST_GTX', 'SMART_MAKER', 'GTX'],
+    sizing_mode: ['ALL_IN', 'RISK_FRACTIONAL', 'RISK_PCT', 'FIXED_IDR', 'FIXED_USD'],
     tp_sl_mode: ['SINGLE_TP', 'DUAL_TP', 'SNIPER_TWO_STAGE'],
     currency: ['USDT', 'IDR', 'USD']
 };
@@ -181,7 +183,7 @@ const TRADING_CONFIG_ENUM_SPECS = {
 const TRADING_CONFIG_BOOL_KEYS = new Set([
     'tp1_move_sl_to_breakeven', 'auto_execute_on_pluang', 'auto_execute',
     'auto_execute_on_binance', 'committee_enabled', 'ai_manages_execution',
-    'ai_manages_leverage', 'ai_manages_order_type'
+    'ai_manages_leverage', 'ai_manages_order_type', 'enforce_backtest_gate'
 ]);
 
 function validateTradingConfigPatch(patch) {
@@ -3703,6 +3705,20 @@ app.get('/api/crypto-futures/status', (req, res) => {
     const liveWallet = getRealBinanceWallet();
     const binanceBalance = Number(liveWallet.total_wallet_balance ?? 0);
     const binanceAvailable = Number(liveWallet.available_balance ?? binanceBalance);
+    // C7 Fix: Sum live ISOLATED unrealized PnL into total floating uPnL & live equity
+    const openPositionsList = positions.filter(p => p && p.status === 'OPEN');
+    const isoUpnlSum = openPositionsList.reduce((acc, p) => {
+        const mt = String(p.margin_type || 'ISOLATED').toUpperCase();
+        if (mt === 'ISOLATED') {
+            return acc + Number(p.pnl_usd ?? p.unrealized_pnl ?? 0);
+        }
+        return acc;
+    }, 0);
+    const totalUpnlUsdt = Number((Number(liveWallet.cross_unrealized_pnl || 0) + isoUpnlSum).toFixed(4));
+    const stateUpnl = Number(state.binance_unrealized_pnl_usdt);
+    const effectiveUpnl = (openPositionsList.length > 0 && Math.abs(totalUpnlUsdt) > 0)
+        ? totalUpnlUsdt
+        : (Number.isFinite(stateUpnl) ? stateUpnl : totalUpnlUsdt);
 
     res.json({
         status: "online",
@@ -3714,7 +3730,8 @@ app.get('/api/crypto-futures/status', (req, res) => {
         binance_connected: true,
         binance_wallet_balance_usdt: binanceBalance,
         binance_available_balance_usdt: binanceAvailable,
-        binance_unrealized_pnl_usdt: Number(liveWallet.cross_unrealized_pnl || 0),
+        binance_unrealized_pnl_usdt: effectiveUpnl,
+        binance_live_equity_usdt: Number((binanceBalance + effectiveUpnl).toFixed(4)),
         pluang_connected: false,
         max_budget_idr: cfg.max_budget_idr || 50000,
         max_leverage: cfg.max_leverage || 20,
@@ -3722,14 +3739,16 @@ app.get('/api/crypto-futures/status', (req, res) => {
         order_type: cfg.order_type || "MARKET",
         auto_execute_on_pluang: false,
         auto_execute_on_binance: true,
-        ai_provider: process.env.AI_PROVIDER || "openrouter",
-        model: process.env.OPENROUTER_MODEL || "minimax/minimax-m3.1-flash:free",
+        ai_provider: process.env.AI_PROVIDER || "groq",
+        model: process.env.GROQ_MODEL || "qwen/qwen3.8-27b",
         telegram_bot: "@idrisginting_bot",
-        active_positions_count: positions.filter(p => p.status === 'OPEN').length,
+        active_positions_count: openPositionsList.length,
         autonomous_running: state.is_running !== false,
         all_in_monitoring_mode: Boolean(state.all_in_monitoring_mode),
         all_in_focus_positions: state.all_in_focus_positions || [],
         all_in_reason: state.all_in_reason || '',
+        rejection_stats: state.rejection_stats || { counts_4h: {}, events: [], total_4h: 0 },
+        symbol_sl_cooldowns: state.symbol_sl_cooldowns || {},
         total_scans_done: state.total_scans_done || 0,
         last_scan_time: state.last_scan_time || (quickScreen && quickScreen.timestamp) || "Real-Time Active"
     });
@@ -3817,14 +3836,24 @@ app.get(['/api/crypto-futures/positions', '/api/futures/positions'], (req, res) 
 app.get('/api/futures/wallet', (req, res) => {
     const cfg = getLocalTradingConfig();
     const liveWallet = getRealBinanceWallet();
+    const openPositionsW = getLocalPositions().filter(p => p && p.status === 'OPEN');
+    const isoUpnlW = openPositionsW.reduce((acc, p) => (
+        String(p.margin_type || 'ISOLATED').toUpperCase() === 'ISOLATED'
+            ? acc + Number(p.pnl_usd ?? p.unrealized_pnl ?? 0)
+            : acc
+    ), 0);
     const totalUsdt = Number(liveWallet.total_wallet_balance ?? 0);
     const availUsdt = Number(liveWallet.available_balance ?? totalUsdt);
+    const totalUpnlW = Number((Number(liveWallet.cross_unrealized_pnl || 0) + isoUpnlW).toFixed(4));
     res.json({
         status: 'online',
         exchange: 'BINANCE_FUTURES',
         total_balance_usdt: totalUsdt,
+        live_equity_usdt: Number((totalUsdt + totalUpnlW).toFixed(4)),
         available_balance_usdt: availUsdt,
         cross_unrealized_pnl_usdt: Number(liveWallet.cross_unrealized_pnl || 0),
+        isolated_unrealized_pnl_usdt: Number(isoUpnlW.toFixed(4)),
+        total_unrealized_pnl_usdt: totalUpnlW,
         balance_idr: Math.round(totalUsdt * 16500),
         leverage: cfg.max_leverage || 20,
         margin_type: cfg.margin_type || 'ISOLATED'
@@ -3875,15 +3904,22 @@ app.post(['/api/crypto-futures/positions/close', '/api/positions/close'], (req, 
         if (!testMode) refreshRealBinanceState();
     };
 
+    // C8 Fix: Close FIRST -> verify flat via get_positions(pair) -> cancel orders ONLY AFTER flat confirmed!
+    // Never delete protective SL orders before position is confirmed closed on Binance.
     const pyCode = [
         "import sys, json; sys.path.insert(0, '.')",
         "from binance_futures import BinanceFuturesClient",
         "p = json.loads(sys.stdin.read() or '{}')",
         "c = BinanceFuturesClient()",
-        "c.cancel_all_orders(p['pair'])",
         "res = c.close_position(p['pair'], p['direction'])",
-        "print(json.dumps(res if isinstance(res, dict) else {'status': str(res)}))"
-    ].join("; ");
+        "err = (not isinstance(res, dict)) or bool(res.get('isError')) or bool(res.get('error'))",
+        "if err: print(json.dumps({'flat_verified': False, 'error': (res.get('error') if isinstance(res, dict) else str(res)), 'close_res': res})); sys.exit(0)",
+        "post = c.get_positions(p['pair'])",
+        "still_open = (not isinstance(post, list)) or any(abs(float(x.get('position_amount', 0) or 0)) > 0 for x in post)",
+        "if still_open: print(json.dumps({'flat_verified': False, 'error': 'Position not confirmed flat after close; SL preserved', 'close_res': res})); sys.exit(0)",
+        "canc = c.cancel_all_orders(p['pair'])",
+        "print(json.dumps({'flat_verified': True, 'close_res': res, 'cancel_res': canc}))"
+    ].join("\n");
 
     runPythonJson(pyCode, { pair: targetPair, direction: targetDir }, { timeout: 20000 }, (err, stdout) => {
         let parsed = null;
@@ -3891,7 +3927,11 @@ app.post(['/api/crypto-futures/positions/close', '/api/positions/close'], (req, 
             const lines = String(stdout || '').trim().split(/\r?\n/);
             parsed = JSON.parse(lines[lines.length - 1]);
         } catch (e) {}
-        const apiError = err ? err.message : (parsed && (parsed.error || (parsed.code && Number(parsed.code) < 0 ? parsed.msg : null)));
+        const apiError = err
+            ? err.message
+            : (!parsed || parsed.flat_verified !== true || parsed.error
+                ? ((parsed && (parsed.error || (parsed.code && Number(parsed.code) < 0 ? parsed.msg : null))) || 'Position close could not be verified flat')
+                : null);
         if (apiError) {
             return res.status(502).json({ success: false, error: `Binance close failed for ${targetPair}: ${U.redactSecrets(apiError)}`, binance: parsed });
         }
@@ -3900,7 +3940,7 @@ app.post(['/api/crypto-futures/positions/close', '/api/positions/close'], (req, 
         } catch (saveErr) {
             return res.status(500).json({ success: false, error: 'Failed to persist closed position state' });
         }
-        res.json({ success: true, message: `Position ${targetPair} closed at market & algo orders cancelled.`, binance: parsed });
+        res.json({ success: true, message: `Position ${targetPair} verified closed at market & algo orders cancelled.`, binance: parsed });
     });
 });
 
@@ -3944,8 +3984,13 @@ app.post(['/api/crypto-futures/positions/sync-sl', '/api/positions/sync-sl'], (r
             const lines = String(stdout || '').trim().split(/\r?\n/);
             parsed = JSON.parse(lines[lines.length - 1]);
         } catch (e) {}
-        if (err || !parsed || parsed.error) {
-            return res.status(502).json({ success: false, error: U.redactSecrets((err && err.message) || (parsed && parsed.error) || 'Failed to sync SL on Binance') });
+        // C1 Fix: Require parsed.status === 'AMENDED' (reject AMEND_FAILED_KEPT_OLD with HTTP 502!)
+        const amendOk = !err && parsed && !parsed.error && parsed.status === 'AMENDED';
+        if (!amendOk) {
+            const detail = (err && err.message)
+                || (parsed && (parsed.error || (parsed.new_res && parsed.new_res.error) || parsed.status))
+                || 'Failed to sync SL on Binance';
+            return res.status(502).json({ success: false, error: U.redactSecrets(String(detail)), binance: parsed });
         }
         try {
             const stored = getAllStoredPositions().map(p => {
@@ -4243,8 +4288,20 @@ app.post(['/api/crypto-futures/auto/toggle', '/api/crypto-futures/auto/pause', '
     }
 
     if (nextRunning) {
+        // C8 Fix: Do NOT silently delete panic_lock.json from /auto/resume without explicit CONFIRM_UNPANIC!
         const panicPath = path.join(resultsDir, 'panic_lock.json');
-        try { if (fs.existsSync(panicPath)) fs.unlinkSync(panicPath); } catch (e) {}
+        if (fs.existsSync(panicPath)) {
+            if (req.body && req.body.confirm === 'CONFIRM_UNPANIC') {
+                try { fs.unlinkSync(panicPath); } catch (e) {}
+            } else {
+                return res.status(409).json({
+                    status: 'PANIC_LOCKED',
+                    is_running: false,
+                    autonomous_running: false,
+                    error: 'Panic lock is active; send {"confirm":"CONFIRM_UNPANIC"} or call /api/crypto-futures/unpanic first'
+                });
+            }
+        }
         if (!testMode) startBackgroundAutoTrader();
     }
     res.json({ status: "SUCCESS", is_running: state.is_running, autonomous_running: state.is_running });
@@ -4284,22 +4341,102 @@ app.post(['/api/crypto-futures/panic', '/api/panic'], (req, res) => {
     } catch (e) {
         return res.status(500).json({ status: 'FAILED', success: false, error: 'Failed writing panic lock' });
     }
+    // C8 Fix: Close FIRST -> verify flat per symbol -> cancel orders ONLY AFTER flat -> mark ONLY verified-flat symbols CLOSED_PANIC!
     const pyCode = [
-        "import sys",
+        "import sys, json",
         "sys.path.insert(0, '.')",
         "from binance_futures import BinanceFuturesClient",
         "c = BinanceFuturesClient()",
-        "for p in (c.get_positions() or []):",
-        "    sym = p.get('symbol')",
-        "    if sym:",
-        "        c.close_position(sym, p.get('direction', 'LONG'))",
-        "        c.cancel_all_orders(sym)"
+        "closed, failed = [], []",
+        "live = c.get_positions()",
+        "if not isinstance(live, list):",
+        "    print(json.dumps({'closed': [], 'failed': [f'get_positions_error: {live}']}))",
+        "    sys.exit(0)",
+        "for p in live:",
+        "    sym = str(p.get('symbol') or '').upper()",
+        "    if not sym: continue",
+        "    cr = c.close_position(sym, p.get('direction', 'LONG'))",
+        "    if not isinstance(cr, dict) or cr.get('isError'):",
+        "        failed.append(f'{sym}: close_failed')",
+        "        continue",
+        "    post = c.get_positions(sym)",
+        "    still_open = (not isinstance(post, list)) or any(abs(float(x.get('position_amount', 0) or 0)) > 0 for x in post)",
+        "    if still_open:",
+        "        failed.append(f'{sym}: not_flat_sl_preserved')",
+        "        continue",
+        "    c.cancel_all_orders(sym)",
+        "    closed.append(sym)",
+        "print(json.dumps({'closed': closed, 'failed': failed}))"
     ].join("\n");
-    if (!testMode) {
-        runPythonJson(pyCode, {}, { timeout: 20000 }, () => {});
+    if (testMode) {
+        return res.json({ status: "PANIC_LOCKED", success: true, panic: payload, closed_symbols: [], failed_symbols: [] });
     }
-    try { saveLocalPositions([]); } catch (e) {}
-    res.json({ status: "PANIC_LOCKED", success: true, panic: payload });
+    runPythonJson(pyCode, {}, { timeout: 25000 }, (err, stdout) => {
+        let report = { closed: [], failed: err ? [err.message] : [] };
+        try {
+            const lines = String(stdout || '').trim().split(/\r?\n/);
+            report = JSON.parse(lines[lines.length - 1]);
+        } catch (e) {}
+        const verifiedFlat = new Set((report.closed || []).map(s => String(s).toUpperCase()));
+        if (verifiedFlat.size > 0) {
+            try {
+                const stored = getAllStoredPositions();
+                const closedAt = new Date().toISOString();
+                const updated = stored.map(p => {
+                    if (!p || p.status !== 'OPEN') return p;
+                    const pair = String(p.binance_pair || p.symbol || '').toUpperCase().replace('-USD', 'USDT');
+                    if (verifiedFlat.has(pair)) {
+                        return { ...p, status: 'CLOSED_PANIC', closed_at: closedAt, close_reason: 'DASHBOARD_PANIC' };
+                    }
+                    return p;
+                });
+                writeJsonAtomicSync(positionsPath, updated);
+            } catch (e) {}
+        }
+        const allClosedOk = !err && (!report.failed || report.failed.length === 0);
+        return res.status(allClosedOk ? 200 : 207).json({
+            status: "PANIC_LOCKED",
+            success: allClosedOk,
+            panic: payload,
+            closed_symbols: report.closed || [],
+            failed_symbols: report.failed || []
+        });
+    });
+});
+
+// Feature #1: Record external deposit (+amount_usdt) or withdrawal (-amount_usdt) into HardRiskEngine
+app.post(['/api/crypto-futures/transfer', '/api/transfer'], (req, res) => {
+    const body = req.body || {};
+    if (body.confirm !== 'CONFIRM_TRANSFER') {
+        return res.status(400).json({ ok: false, success: false, error: 'Confirmation required: send {"confirm":"CONFIRM_TRANSFER","amount_usdt":...}' });
+    }
+    const amt = Number(body.amount_usdt);
+    if (!Number.isFinite(amt) || amt === 0 || Math.abs(amt) > 10_000_000) {
+        return res.status(400).json({ ok: false, success: false, error: 'Valid non-zero amount_usdt required' });
+    }
+    const breakerPath = path.join(resultsDir, 'risk_breaker_state.json');
+    const pyCode = [
+        "import sys, json",
+        "sys.path.insert(0, '.')",
+        "import auto_trader as at",
+        "p = json.loads(sys.stdin.read() or '{}')",
+        "at.RISK_BREAKER_FILE = p['state_path']",
+        "eng = at.load_hard_risk_engine()",
+        "eng.record_transfer(delta_usdt=float(p['amount_usdt']), note='DASHBOARD_TRANSFER')",
+        "at.save_hard_risk_engine(eng)",
+        "print(json.dumps({'ok': True, 'daily_start_equity': eng.daily_start_equity, 'amount_usdt': float(p['amount_usdt'])}))"
+    ].join("\n");
+    runPythonJson(pyCode, { state_path: breakerPath, amount_usdt: amt }, { timeout: 10000 }, (err, stdout) => {
+        let parsed = null;
+        try {
+            const lines = String(stdout || '').trim().split(/\r?\n/);
+            parsed = JSON.parse(lines[lines.length - 1]);
+        } catch (e) {}
+        if (err || !parsed || !parsed.ok) {
+            return res.status(500).json({ ok: false, success: false, error: U.redactSecrets((err && err.message) || 'Failed recording transfer') });
+        }
+        return res.json({ ok: true, success: true, ...parsed });
+    });
 });
 
 app.post(['/api/crypto-futures/unpanic', '/api/unpanic'], (req, res) => {
@@ -4321,8 +4458,23 @@ app.get(['/api/crypto-futures/health', '/api/health'], (req, res) => {
     const hb = readJsonSafeSync(hbPath, null);
     const panic = readJsonSafeSync(panicPath, null);
     const cfg = getLocalTradingConfig();
+    // H10 Fix: Report honest operational health based on panic_lock & heartbeat freshness/status
+    const nowSec = Date.now() / 1000;
+    const hbTs = hb && hb.timestamp ? Number(hb.timestamp) : 0;
+    const hbAgeSec = hbTs > 0 ? Math.max(0, Math.round(nowSec - hbTs)) : null;
+    let healthStatus = 'HEALTHY';
+    if (panic && panic.locked) {
+        healthStatus = 'PANIC_LOCKED';
+    } else if (!hb || !hbTs) {
+        healthStatus = 'DEGRADED_NO_HEARTBEAT';
+    } else if (hbAgeSec !== null && hbAgeSec > 180) {
+        healthStatus = 'DEGRADED_STALE_HEARTBEAT';
+    } else if (String(hb.status || '').toUpperCase() === 'MONITOR_STALLED') {
+        healthStatus = 'DEGRADED_MONITOR_STALLED';
+    }
     res.json({
-        status: "HEALTHY",
+        status: healthStatus,
+        heartbeat_age_sec: hbAgeSec,
         architecture: "INSTITUTIONAL_V2_28_PILLARS",
         fixed_leverage: 20,
         margin_type: "ISOLATED",
@@ -5583,7 +5735,8 @@ app.post('/api/terminal/bmail/send', async (req, res) => {
 let _knownPosStates = new Map();
 function pollFuturesPositionsForEmailAlerts() {
     try {
-        const positions = getLocalPositions();
+        // M17 Fix: Read ALL stored positions (including CLOSED_*) so OPEN -> CLOSED_* email alerts actually fire!
+        const positions = getAllStoredPositions();
         if (!Array.isArray(positions)) return;
         const store = loadBmail();
         const cfg = store.alertConfig || DEFAULT_BMAIL.alertConfig;

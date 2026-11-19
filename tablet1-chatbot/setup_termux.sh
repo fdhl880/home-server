@@ -23,7 +23,7 @@ npm install
 
 # 4. Install Python Dependencies
 echo "[4/5] Menginstall Python packages via pip..."
-pip install flask flask-cors requests python-dotenv urllib3 websocket-client
+pip install flask flask-cors requests python-dotenv urllib3 websocket-client websockets
 
 # 5. Initialize .env files safely (without hardcoded secrets in git)
 echo "[5/5] Memeriksa konfigurasi .env..."

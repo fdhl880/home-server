@@ -194,20 +194,21 @@ def build_liquidation_heatmap(
             "sl_shield_info": {},
         }
 
-    c_arr = c_arr[:n]
-    h_arr = h_arr[:n]
-    l_arr = l_arr[:n]
-    oi_arr = oi_arr[:n]
+    # C5 Fix: Always align to the LATEST n bars ([-n:]), never oldest [:n]
+    c_arr = c_arr[-n:]
+    h_arr = h_arr[-n:]
+    l_arr = l_arr[-n:]
+    oi_arr = oi_arr[-n:]
 
     if tfi_series is not None and len(tfi_series) >= n:
-        tfi_arr = np.asarray(tfi_series[:n], dtype=float)
+        tfi_arr = np.asarray(tfi_series[-n:], dtype=float)
     else:
         # Infer TFI proxy from bar Close Location Value
         rng = np.maximum(h_arr - l_arr, 1e-8 * c_arr)
         tfi_arr = np.clip((2.0 * c_arr - h_arr - l_arr) / rng, -1.0, 1.0)
 
     if vwap_series is not None and len(vwap_series) >= n:
-        p_bar_arr = np.asarray(vwap_series[:n], dtype=float)
+        p_bar_arr = np.asarray(vwap_series[-n:], dtype=float)
     else:
         p_bar_arr = (h_arr + l_arr + c_arr) / 3.0
 

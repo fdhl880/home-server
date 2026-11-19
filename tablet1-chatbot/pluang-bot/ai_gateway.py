@@ -278,8 +278,21 @@ def classify_http_error(
     hdrs = {k.lower(): v for k, v in (headers or {}).items()}
     low_body = (body_text or "").lower()
 
-    if status_code in (401, 402, 403):
+    if status_code in (401, 402):
         return "INVALID_OR_UNPAID", now + 86400.0
+
+    if status_code == 403:
+        # H8 Fix: Distinguish permanent auth/billing/region 403 from transient Cloudflare/WAF 403
+        perm_403_markers = ("invalid api key", "unauthorized", "billing", "payment", "deactivated", "suspended", "permission denied")
+        if any(m in low_body for m in perm_403_markers):
+            return "INVALID_OR_UNPAID", now + 86400.0
+        return "TRANSIENT_ERROR", now + 300.0
+
+    if status_code == 404:
+        return "MODEL_NOT_FOUND", now + 1800.0
+
+    if status_code == 400:
+        return "BAD_REQUEST_COOLDOWN", now + 600.0
 
     if status_code == 429:
         # Check if TPD (Tokens Per Day) or daily quota exhausted
@@ -343,11 +356,10 @@ class AIGateway:
             "chat_url": "https://api.groq.com/openai/v1/chat/completions",
             "models_url": "https://api.groq.com/openai/v1/models",
             "default_models": [
-                "llama-3.3-70b-versatile",
-                "qwen/qwen3-32b",
-                "deepseek-r1-distill-llama-70b",
+                "qwen/qwen3.8-27b",
                 "openai/gpt-oss-120b",
                 "openai/gpt-oss-20b",
+                "allam-2-7b",
             ],
             "tpd_limit": DEFAULT_GROQ_TPD_LIMIT,
             "env_keys": ("GROQ_API_KEYS", "GROQ_API_KEY"),
@@ -372,10 +384,13 @@ class AIGateway:
         },
         "openrouter": {
             "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+            "models_url": "https://openrouter.ai/api/v1/models",
             "default_models": [
-                "meta-llama/llama-3.3-70b-instruct:free",
-                "qwen/qwen3-32b:free",
-                "deepseek/deepseek-r1:free",
+                "google/gemma-4-31b-it:free",
+                "google/gemma-4-26b-a4b-it:free",
+                "nvidia/nemotron-3-ultra-550b-a55b:free",
+                "nvidia/nemotron-3.5-super-vl:free",
+                "particle-ai/particle-1:free",
             ],
             "tpd_limit": 300_000,
             "env_keys": ("OPENROUTER_API_KEYS", "OPENROUTER_API_KEY"),
@@ -426,8 +441,11 @@ class AIGateway:
         # Per-candle prompt cache: (symbol, tf, closed_bar_ts, strategy_id, stage) -> response dict
         self._candle_cache: Dict[Tuple[str, ...], Dict[str, Any]] = {}
 
+        self._or_models_discovered_ts: float = 0.0
         if discover_groq_models and self.provider_keys.get("groq"):
             self.discover_groq_models()
+        if discover_groq_models and self.provider_keys.get("openrouter"):
+            self.discover_openrouter_free_models()
 
     def _sync_env_file_into_os(self) -> bool:
         """Reload pluang-bot/.env if its mtime advanced (supports runtime +ADD API KEY hot-reload)."""
@@ -575,11 +593,14 @@ class AIGateway:
             cooldown_until = float(b.get("cooldown_until", 0.0))
 
             if status == "INVALID_OR_UNPAID":
-                return False
+                if cooldown_until <= 0.0 or cooldown_until > now:
+                    return False
+                b["status"] = "ACTIVE"
+                b["cooldown_until"] = 0.0
 
             if cooldown_until > now:
                 return False
-            elif status in ("EXHAUSTED_TPD", "COOLDOWN_RPM", "TRANSIENT_ERROR") and cooldown_until <= now:
+            elif status in ("EXHAUSTED_TPD", "COOLDOWN_RPM", "TRANSIENT_ERROR", "MODEL_NOT_FOUND", "BAD_REQUEST_COOLDOWN") and cooldown_until <= now:
                 # Cooldown expired
                 b["status"] = "ACTIVE"
                 b["cooldown_until"] = 0.0
@@ -696,16 +717,56 @@ class AIGateway:
                     if m in models_raw
                 ]
                 for m in models_raw:
+                    ml = m.lower()
                     if m not in preferred and any(
-                        tag in m.lower() for tag in ("gpt-oss", "qwen", "llama-3.3", "deepseek", "llama-3.1")
+                        tag in ml for tag in ("qwen", "gpt-oss", "llama-3.3", "deepseek", "llama-3.1", "allam", "gemma")
                     ):
-                        if "whisper" not in m.lower() and "guard" not in m.lower() and "tts" not in m.lower():
+                        if not any(bad in ml for bad in ("whisper", "guard", "safeguard", "tts", "orpheus", "playai")):
                             preferred.append(m)
                 if preferred:
                     self.provider_models["groq"] = preferred
         except Exception:
             pass
         return self.provider_models["groq"]
+
+    def discover_openrouter_free_models(self, max_models: int = 6) -> List[str]:
+        """Discover live OpenRouter ':free' models (cached 6h) so deprecated slugs never cause 404."""
+        now = time.time()
+        if self._or_models_discovered_ts > 0 and (now - self._or_models_discovered_ts) < 6 * 3600:
+            return self.provider_models["openrouter"]
+        try:
+            resp = self.session.get(
+                self.PROVIDER_CONFIGS["openrouter"]["models_url"],
+                headers={"User-Agent": MANDATORY_USER_AGENT, "Accept": "application/json"},
+                timeout=8.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                pref_order = (
+                    "gemma-4-31b", "gemma-4-26b", "nemotron-3-ultra", "nemotron-3.5-super",
+                    "particle-1", "gpt-oss-120b", "llama-3.3-70b", "qwen3", "deepseek",
+                    "nemotron-3-nano", "gpt-oss-20b", "gemma", "mistral", "llama",
+                )
+                excl = ("safety", "guard", "code", "embed", "whisper", "tts", "1.7b", "flint", "note-preview")
+                ids = [
+                    str(m.get("id", ""))
+                    for m in (data.get("data") or [])
+                    if str(m.get("id", "")).endswith(":free")
+                    and not any(x in str(m.get("id", "")).lower() for x in excl)
+                ]
+                def _or_rank(mid: str) -> int:
+                    ml = mid.lower()
+                    for idx, tag in enumerate(pref_order):
+                        if tag in ml:
+                            return idx
+                    return len(pref_order)
+                ids.sort(key=_or_rank)
+                if ids:
+                    self.provider_models["openrouter"] = ids[:max_models]
+                    self._or_models_discovered_ts = now
+        except Exception:
+            pass
+        return self.provider_models["openrouter"]
 
     def _build_candidate_routes(
         self,
@@ -730,10 +791,11 @@ class AIGateway:
                 for key in keys:
                     if not self.is_bucket_available(provider, model, key, estimated_tokens=estimated_tokens):
                         continue
-                    is_excluded = (
+                    # H8 Fix: Honor exclude_provider independently of exclude_model_family
+                    is_excluded = bool(
                         (exclude_provider and provider == exclude_provider)
-                        and (exclude_model_family and family == exclude_model_family)
-                    ) or (exclude_model_family and family == exclude_model_family)
+                        or (exclude_model_family and family == exclude_model_family)
+                    )
                     if is_excluded:
                         fallback_routes.append((provider, model, key))
                     else:
@@ -801,6 +863,17 @@ class AIGateway:
                 "Content-Type": "application/json",
                 "User-Agent": MANDATORY_USER_AGENT,
             }
+            if provider == "openrouter":
+                headers["HTTP-Referer"] = "https://pyrofuel.app"
+                headers["X-Title"] = "PYROFUEL"
+
+            m_low = str(model or "").lower()
+            is_reasoning_model = any(
+                tag in m_low for tag in ("deepseek-r1", "qwen3", "gpt-oss", "reasoner", "thinking", "nemotron")
+            )
+            is_reasoning_or_free = (":free" in m_low) or (provider == "openrouter") or is_reasoning_model
+            eff_max_tokens = max(int(max_tokens or 900), 1500) if is_reasoning_or_free else int(max_tokens or 900)
+
             payload = {
                 "model": model,
                 "messages": [
@@ -808,9 +881,14 @@ class AIGateway:
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": temperature,
-                "max_tokens": max_tokens,
+                "max_tokens": eff_max_tokens,
             }
-            if use_json_format:
+            if provider == "groq":
+                if "qwen3" in m_low:
+                    payload["reasoning_effort"] = "none"
+                elif "gpt-oss" in m_low:
+                    payload["reasoning_effort"] = "low"
+            if use_json_format and not is_reasoning_or_free:
                 payload["response_format"] = {"type": "json_object"}
             resp = self.session.post(url, headers=headers, json=payload, timeout=15.0)
             resp_headers = dict(getattr(resp, "headers", {}) or {})
@@ -818,7 +896,8 @@ class AIGateway:
                 return resp.status_code, resp.text, resp_headers, 0
             data = resp.json()
             choices = data.get("choices", [])
-            content = choices[0].get("message", {}).get("content", "") if choices else ""
+            msg_obj = (choices[0].get("message") or {}) if choices else {}
+            content = str(msg_obj.get("content") or msg_obj.get("reasoning_content") or msg_obj.get("reasoning") or "")
             usage = data.get("usage", {})
             tokens = int(usage.get("total_tokens", 0)) or (
                 (len(system_prompt) + len(user_prompt) + len(content)) // 4

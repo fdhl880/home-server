@@ -24,6 +24,7 @@ BINANCE EXECUTION:
 """
 import os
 import sys
+import math
 import json
 import time
 import uuid
@@ -32,7 +33,7 @@ import asyncio
 import logging
 import threading
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from state_io import CorruptedStateError, atomic_write_json, get_file_lock, read_json_safe
@@ -654,117 +655,359 @@ def _start_realtime_ws_worker(bn_client):
         _WS_WORKER_STARTED = True
 
     def _ws_runner():
+        global _WS_WORKER_STARTED
         try:
-            import websockets
-            from exec.userstream import UserDataStreamManager
-        except Exception as e:
-            logger.warning("[WS] websockets/UserDataStreamManager unavailable (%s)", e)
-            print(f"[WS] Notice: websockets/UserDataStreamManager unavailable ({e})", flush=True)
-            return
-
-        async def _loop():
             try:
-                mgr = UserDataStreamManager(
-                    client=bn_client,
-                    reconcile_callback=lambda reason: _reconcile_after_ws_reconnect(bn_client, reason=reason),
-                )
-            except TypeError:
-                mgr = UserDataStreamManager(client=bn_client)
-            backoff = 2.0
-            first_connect_done = False
-            while True:
+                import websockets
+                from exec.userstream import UserDataStreamManager
+            except Exception as e:
+                logger.warning("[WS] websockets/UserDataStreamManager unavailable (%s)", e)
+                print(f"[WS] Notice: websockets/UserDataStreamManager unavailable ({e})", flush=True)
+                return
+
+            async def _loop():
                 try:
-                    lk = mgr.create_listen_key()
-                    if not lk:
+                    mgr = UserDataStreamManager(
+                        client=bn_client,
+                        reconcile_callback=lambda reason: _reconcile_after_ws_reconnect(bn_client, reason=reason),
+                    )
+                except TypeError:
+                    mgr = UserDataStreamManager(client=bn_client)
+                backoff = 2.0
+                first_connect_done = False
+                while True:
+                    try:
+                        lk = mgr.create_listen_key()
+                        if not lk:
+                            await asyncio.sleep(backoff)
+                            backoff = min(30.0, backoff * 1.5)
+                            continue
+
+                        subscribed_marks = _get_open_ws_mark_streams()
+                        streams = [lk] + list(subscribed_marks)
+                        base_ws = "wss://stream.binancefuture.com" if getattr(bn_client, "testnet", False) else "wss://fstream.binance.com"
+                        url = f"{base_ws}/stream?streams=" + "/".join(streams) if len(streams) > 1 else mgr.get_ws_url(testnet=getattr(bn_client, "testnet", False))
+
+                        async with websockets.connect(url, ping_interval=20, ping_timeout=15, open_timeout=10) as ws:
+                            backoff = 2.0
+                            last_ka = time.time()
+                            last_mark_check = time.time()
+                            if hasattr(mgr, "reconnect_requested") and mgr.reconnect_requested.is_set():
+                                mgr.reconnect_requested.clear()
+                                _reconcile_after_ws_reconnect(bn_client, reason="WS_LISTEN_KEY_REFRESH")
+                            elif first_connect_done:
+                                _reconcile_after_ws_reconnect(bn_client, reason="WS_RECONNECT")
+                            first_connect_done = True
+
+                            while True:
+                                if hasattr(mgr, "reconnect_requested") and mgr.reconnect_requested.is_set():
+                                    logger.info("[WS] Reconnect requested by UserDataStreamManager")
+                                    break
+
+                                now_ws = time.time()
+                                if now_ws - last_ka >= 1500.0:
+                                    ok_ka = mgr.keepalive_listen_key()
+                                    last_ka = now_ws
+                                    if ok_ka is False:
+                                        logger.warning("[WS] listenKey keepalive failed — forcing reconnect & REST reconcile")
+                                        if hasattr(mgr, "reconnect_requested"):
+                                            mgr.reconnect_requested.set()
+                                        break
+
+                                if now_ws - last_mark_check >= 15.0:
+                                    last_mark_check = now_ws
+                                    desired_marks = _get_open_ws_mark_streams()
+                                    if desired_marks != subscribed_marks:
+                                        logger.info("[WS] Open positions changed (%s -> %s); resubscribing markPrice streams", subscribed_marks, desired_marks)
+                                        break
+
+                                try:
+                                    raw = await asyncio.wait_for(ws.recv(), timeout=15.0)
+                                except asyncio.TimeoutError:
+                                    # Normal idle timeout (e.g. 0 open positions): keep socket open, just check keepalive & subscriptions
+                                    now_to = time.time()
+                                    if hasattr(mgr, "reconnect_requested") and mgr.reconnect_requested.is_set():
+                                        break
+                                    if _get_open_ws_mark_streams() != subscribed_marks:
+                                        break
+                                    if now_to - last_ka >= 1500.0:
+                                        ok_ka = mgr.keepalive_listen_key()
+                                        last_ka = now_to
+                                        if ok_ka is False:
+                                            if hasattr(mgr, "reconnect_requested"):
+                                                mgr.reconnect_requested.set()
+                                            break
+                                    continue
+
+                                update_runtime_health(ws_last_msg_ts=time.time())
+                                msg = json.loads(raw)
+                                payload = msg.get("data", msg) if isinstance(msg, dict) else {}
+                                ev = str(payload.get("e", ""))
+                                if ev == "markPriceUpdate":
+                                    s_sym = str(payload.get("s", "")).upper()
+                                    m_px = float(payload.get("p") or 0.0)
+                                    if s_sym and m_px > 0:
+                                        with _LIVE_MARK_LOCK:
+                                            _LIVE_MARK_PRICES[s_sym] = (m_px, time.time())
+                                elif ev in ("ORDER_TRADE_UPDATE", "ALGO_UPDATE", "ACCOUNT_UPDATE", "ACCOUNT_CONFIG_UPDATE", "listenKeyExpired"):
+                                    res = mgr.handle_event(payload)
+                                    _WS_WAKEUP_EVENT.set()
+                                    if ev in ("ORDER_TRADE_UPDATE", "ALGO_UPDATE") and isinstance(res, dict):
+                                        st_lbl = res.get("status") or res.get("sub_type") or res.get("algo_status") or ""
+                                        print(f"[WS REALTIME] ⚡ {ev}: {res.get('symbol', '')} {st_lbl}", flush=True)
+                                    if ev == "listenKeyExpired" or (isinstance(res, dict) and res.get("reconnect_required")):
+                                        logger.warning("[WS] %s received — reconnecting stream immediately", ev)
+                                        break
+                    except Exception as wse:
+                        logger.warning("[WS] Stream disconnected (%s) — reconnecting in %.1fs", wse, backoff)
                         await asyncio.sleep(backoff)
                         backoff = min(30.0, backoff * 1.5)
-                        continue
 
-                    subscribed_marks = _get_open_ws_mark_streams()
-                    streams = [lk] + list(subscribed_marks)
-                    base_ws = "wss://stream.binancefuture.com" if getattr(bn_client, "testnet", False) else "wss://fstream.binance.com"
-                    url = f"{base_ws}/stream?streams=" + "/".join(streams) if len(streams) > 1 else mgr.get_ws_url(testnet=getattr(bn_client, "testnet", False))
-
-                    async with websockets.connect(url, ping_interval=20, ping_timeout=15, open_timeout=10) as ws:
-                        backoff = 2.0
-                        last_ka = time.time()
-                        last_mark_check = time.time()
-                        if hasattr(mgr, "reconnect_requested") and mgr.reconnect_requested.is_set():
-                            mgr.reconnect_requested.clear()
-                            _reconcile_after_ws_reconnect(bn_client, reason="WS_LISTEN_KEY_REFRESH")
-                        elif first_connect_done:
-                            _reconcile_after_ws_reconnect(bn_client, reason="WS_RECONNECT")
-                        first_connect_done = True
-
-                        while True:
-                            if hasattr(mgr, "reconnect_requested") and mgr.reconnect_requested.is_set():
-                                logger.info("[WS] Reconnect requested by UserDataStreamManager")
-                                break
-
-                            now_ws = time.time()
-                            if now_ws - last_ka >= 1500.0:
-                                ok_ka = mgr.keepalive_listen_key()
-                                last_ka = now_ws
-                                if ok_ka is False:
-                                    logger.warning("[WS] listenKey keepalive failed — forcing reconnect & REST reconcile")
-                                    if hasattr(mgr, "reconnect_requested"):
-                                        mgr.reconnect_requested.set()
-                                    break
-
-                            if now_ws - last_mark_check >= 15.0:
-                                last_mark_check = now_ws
-                                desired_marks = _get_open_ws_mark_streams()
-                                if desired_marks != subscribed_marks:
-                                    logger.info("[WS] Open positions changed (%s -> %s); resubscribing markPrice streams", subscribed_marks, desired_marks)
-                                    break
-
-                            raw = await asyncio.wait_for(ws.recv(), timeout=15.0)
-                            update_runtime_health(ws_last_msg_ts=time.time())
-                            msg = json.loads(raw)
-                            payload = msg.get("data", msg) if isinstance(msg, dict) else {}
-                            ev = str(payload.get("e", ""))
-                            if ev == "markPriceUpdate":
-                                s_sym = str(payload.get("s", "")).upper()
-                                m_px = float(payload.get("p") or 0.0)
-                                if s_sym and m_px > 0:
-                                    with _LIVE_MARK_LOCK:
-                                        _LIVE_MARK_PRICES[s_sym] = (m_px, time.time())
-                            elif ev in ("ORDER_TRADE_UPDATE", "ALGO_UPDATE", "ACCOUNT_UPDATE", "ACCOUNT_CONFIG_UPDATE", "listenKeyExpired"):
-                                res = mgr.handle_event(payload)
-                                _WS_WAKEUP_EVENT.set()
-                                if ev in ("ORDER_TRADE_UPDATE", "ALGO_UPDATE"):
-                                    print(f"[WS REALTIME] ⚡ {ev}: {res.get('symbol', '')} {res.get('status', '')}", flush=True)
-                                if ev == "listenKeyExpired" or (isinstance(res, dict) and res.get("reconnect_required")):
-                                    logger.warning("[WS] %s received — reconnecting stream immediately", ev)
-                                    break
-                except asyncio.TimeoutError:
-                    try:
-                        now_to = time.time()
-                        if hasattr(mgr, "reconnect_requested") and mgr.reconnect_requested.is_set():
-                            break
-                        if _get_open_ws_mark_streams() != subscribed_marks:
-                            break
-                        if now_to - last_ka >= 1500.0:
-                            ok_ka = mgr.keepalive_listen_key()
-                            last_ka = now_to
-                            if ok_ka is False:
-                                break
-                    except Exception as to_exc:
-                        logger.warning("[WS] Idle keepalive check error: %s", to_exc)
-                except Exception as wse:
-                    logger.warning("[WS] Stream disconnected (%s) — reconnecting in %.1fs", wse, backoff)
-                    await asyncio.sleep(backoff)
-                    backoff = min(30.0, backoff * 1.5)
-
-        try:
-            asyncio.run(_loop())
-        except Exception as e:
-            logger.error("[WS] Runner exited unexpectedly: %s", e)
-            print(f"[WS] Runner exited: {e}", flush=True)
+            try:
+                asyncio.run(_loop())
+            except Exception as e:
+                logger.error("[WS] Runner exited unexpectedly: %s", e)
+                print(f"[WS] Runner exited: {e}", flush=True)
+        finally:
+            with _WS_WORKER_LOCK:
+                _WS_WORKER_STARTED = False
 
     t = threading.Thread(target=_ws_runner, name="binance-ws-userstream", daemon=True)
     t.start()
     print("[WS] 🌐 Binance Futures UserDataStream + markPrice@1s daemon active (<50ms wakeup)", flush=True)
+
+
+_LAST_TRANSFER_SYNC_TS = 0.0
+_LAST_STALE_ORDER_SWEEP_TS = 0.0
+_SHADOW_LAST_BAR_BUCKET = 0
+
+
+def _classify_rejection_gate(status: str, reason: str) -> str:
+    """Bucket a signal rejection reason into a concise gate tag for /why & Dashboard pills."""
+    st = str(status or "").upper()
+    rs = str(reason or "").upper()
+    if "BREAKER" in st or "CIRCUIT_BREAKER" in rs:
+        return "BREAKER_ACTIVE"
+    if "COOLDOWN" in st or "POST_SL_COOLDOWN" in rs:
+        return "POST_SL_COOLDOWN"
+    if "BTC_DUMP" in st or "BTC_PUMP" in st or "BTC GUARD" in rs:
+        return "BTC_GUARD"
+    if "CONFORMAL" in rs:
+        return "CONFORMAL_AMBIGUITY"
+    if "OPTIONS DEALER GAMMA" in rs:
+        return "OPTIONS_GAMMA"
+    if "15M MICRO-TIMING" in rs or "EXHAUSTION CHASE" in rs:
+        return "MICRO_TIMING_15M"
+    if "NO_CLEAR_SETUP" in st or "NO_CLEAR_SETUP" in rs:
+        return "NO_CLEAR_SETUP"
+    if "CONFIDENCE" in rs or "S_HYBRID" in rs or "P_MATH" in rs or "PRECISION_GATE" in rs:
+        return "LOW_CONFIDENCE"
+    if "RISK AUDIT" in rs or "RISK SCORE" in rs or "RRR" in rs or "EV_R" in rs:
+        return "RISK_OR_RRR"
+    if "ORDERBOOK" in rs or "OFI" in rs or "HAWKES" in rs or "VPIN" in rs or "HMM" in rs:
+        return "MICROSTRUCTURE_VETO"
+    if "MACRO SHIELD" in rs or "FUNDING" in rs:
+        return "MACRO_OR_FUNDING"
+    if "SHADOW_ONLY" in st or "DEGRADED" in st:
+        return "SHADOW_ONLY_GATE"
+    if "DRIFT" in rs or "NOTIONAL" in rs or "VAULT" in rs or "HARD RISK" in rs:
+        return "EXEC_RISK_GUARD"
+    return "OTHER"
+
+
+def _record_rejection_telemetry(symbol: str, status: str, reason: str, gate: str = None) -> None:
+    """Persist rolling 4-hour rejection gate telemetry in `state['rejection_stats']` for `/why` & ops.js."""
+    now = time.time()
+    gate_tag = gate or _classify_rejection_gate(status, reason)
+    stats = state.get("rejection_stats")
+    if not isinstance(stats, dict):
+        stats = {"events": [], "counts_4h": {}, "updated_at": ""}
+    events = [
+        ev for ev in (stats.get("events") or [])
+        if isinstance(ev, dict) and (now - float(ev.get("ts") or 0.0)) <= 14400.0
+    ]
+    events.append({
+        "ts": round(now, 1),
+        "symbol": str(symbol or ""),
+        "gate": gate_tag,
+        "status": str(status or "REJECTED"),
+        "reason": str(reason or "")[:160],
+    })
+    events = events[-150:]
+    counts = {}
+    for ev in events:
+        g = ev.get("gate") or "OTHER"
+        counts[g] = counts.get(g, 0) + 1
+    state["rejection_stats"] = {
+        "events": events,
+        "counts_4h": dict(sorted(counts.items(), key=lambda kv: kv[1], reverse=True)),
+        "total_4h": len(events),
+        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }
+
+
+def _record_post_sl_symbol_cooldown(pair: str, exit_reason: str, net_usd: float, cfg: dict = None) -> None:
+    """Persist a per-symbol cooldown after a losing/SL close so 20x sniper doesn't revenge-trade the same coin."""
+    pair_u = str(pair or "").upper().strip()
+    if not pair_u:
+        return
+    reason_u = str(exit_reason or "").upper()
+    is_sl_loss = (
+        float(net_usd or 0.0) < 0.0
+        or any(k in reason_u for k in ("CLOSED_SL", "EARLY_INVALIDATION", "LIQUIDATION", "IMMEDIATE_2021"))
+    )
+    if not is_sl_loss:
+        return
+    cfg_c = cfg or _get_config()
+    hrs = float(cfg_c.get("post_sl_symbol_cooldown_hours", 3.0) or 3.0)
+    if hrs <= 0:
+        return
+    now = time.time()
+    cd_map = state.get("symbol_sl_cooldowns")
+    if not isinstance(cd_map, dict):
+        cd_map = {}
+    # Prune expired entries
+    cd_map = {k: float(v) for k, v in cd_map.items() if float(v or 0.0) > now}
+    cd_map[pair_u] = round(now + hrs * 3600.0, 1)
+    state["symbol_sl_cooldowns"] = cd_map
+    try:
+        save_state()
+    except Exception as exc:
+        logger.debug("save_state failed after post-SL cooldown on %s: %s", pair_u, exc)
+    print(f"[COOLDOWN] 🧊 {pair_u} masuk Post-SL Cooldown selama {hrs:.1f} jam (anti revenge-trade).", flush=True)
+
+
+def _sync_external_transfers(bn_client, cfg: dict = None, force: bool = False) -> list:
+    """
+    Auto-detect Binance Futures external deposits/withdrawals via /fapi/v1/income?incomeType=TRANSFER
+    and call HardRiskEngine.record_transfer() so withdrawals don't falsely trip Daily DD or corrupt Vault HWM.
+    """
+    global _LAST_TRANSFER_SYNC_TS
+    if bn_client is None or not hasattr(bn_client, "get_income_history") or _is_unmocked_bf_method(bn_client, "get_income_history"):
+        return []
+    now = time.time()
+    if not force and (now - _LAST_TRANSFER_SYNC_TS) < 60.0:
+        return []
+    _LAST_TRANSFER_SYNC_TS = now
+
+    try:
+        raw = bn_client.get_income_history(income_type="TRANSFER", limit=50)
+    except TypeError:
+        return []
+    except Exception as exc:
+        logger.debug("External transfer sync skipped: %s", exc)
+        return []
+
+    if not isinstance(raw, list):
+        return []
+
+    seen_ids = set(str(x) for x in (state.get("processed_transfer_ids") or []))
+    last_sync_ms = int(state.get("last_transfer_sync_ms") or 0)
+    bootstrapped = bool(state.get("transfer_sync_bootstrapped", False))
+
+    if not bootstrapped:
+        # First-ever run: seed existing historical transfer IDs without retroactively shifting equity
+        max_seen_ms = int(now * 1000)
+        for it in raw:
+            if not isinstance(it, dict):
+                continue
+            tid = str(it.get("tranId") or f"{it.get('time')}_{it.get('income')}")
+            seen_ids.add(tid)
+            try:
+                max_seen_ms = max(max_seen_ms, int(it.get("time") or 0))
+            except (TypeError, ValueError):
+                pass
+        state["processed_transfer_ids"] = list(seen_ids)[-500:]
+        state["last_transfer_sync_ms"] = max_seen_ms
+        state["transfer_sync_bootstrapped"] = True
+        save_state()
+        return []
+
+    applied = []
+    cfg_t = cfg or _get_config()
+    new_max_ms = last_sync_ms
+    for it in raw:
+        if not isinstance(it, dict):
+            continue
+        if str(it.get("incomeType") or "TRANSFER").upper() != "TRANSFER":
+            continue
+        asset = str(it.get("asset") or "USDT").upper()
+        if asset not in ("USDT", "USDC", "FDUSD", "BUSD"):
+            continue
+        tid = str(it.get("tranId") or f"{it.get('time')}_{it.get('income')}")
+        t_ms = int(it.get("time") or 0)
+        if tid in seen_ids or (last_sync_ms > 0 and t_ms > 0 and t_ms < last_sync_ms):
+            continue
+        delta = float(it.get("income") or 0.0)
+        if abs(delta) < 1e-6:
+            seen_ids.add(tid)
+            continue
+        try:
+            eng = load_hard_risk_engine(cfg_t)
+            tr_res = eng.record_transfer(delta_usdt=delta, note=f"AUTO_BINANCE_TRANSFER_{tid}")
+            save_hard_risk_engine(eng)
+            seen_ids.add(tid)
+            new_max_ms = max(new_max_ms, t_ms)
+            applied.append({"tranId": tid, "delta_usdt": delta, "result": tr_res})
+            kind = "DEPOSIT" if delta > 0 else "WITHDRAWAL"
+            print(f"[TRANSFER SYNC] 💸 Auto-detected Binance {kind}: {delta:+.2f} USDT (tranId={tid}) — Vault & Daily DD adjusted!", flush=True)
+            send_telegram(
+                f"💸 <b>[AUTO TRANSFER SYNC — {kind}]</b>\n\n"
+                f"💰 <b>Nominal:</b> <code>{delta:+.2f} USDT</code>\n"
+                f"🛡️ <i>Baseline Daily DD &amp; Profit Vault HWM otomatis disesuaikan agar tidak memicu breaker palsu atau mengunci modal pokok.</i>"
+            )
+        except Exception as tr_exc:
+            logger.warning("Failed applying auto transfer %s (%s): %s", tid, delta, tr_exc)
+
+    if applied or new_max_ms != last_sync_ms:
+        state["processed_transfer_ids"] = list(seen_ids)[-500:]
+        state["last_transfer_sync_ms"] = new_max_ms
+        save_state()
+    return applied
+
+
+def _sweep_stale_orders_on_flat(bn_client, open_pos: list, max_age_sec: float = 600.0) -> list:
+    """Cancel orphaned resting LIMIT entry orders older than `max_age_sec` on symbols with NO open position."""
+    global _LAST_STALE_ORDER_SWEEP_TS
+    if bn_client is None or not hasattr(bn_client, "get_open_orders") or _is_unmocked_bf_method(bn_client, "get_open_orders"):
+        return []
+    now = time.time()
+    if (now - _LAST_STALE_ORDER_SWEEP_TS) < 900.0:
+        return []
+    _LAST_STALE_ORDER_SWEEP_TS = now
+
+    open_pairs = {
+        str(p.get("binance_pair") or p.get("symbol", "").replace("-USD", "USDT")).upper()
+        for p in (open_pos or [])
+        if isinstance(p, dict) and p.get("status") == "OPEN"
+    }
+    cancelled = []
+    try:
+        orders = bn_client.get_open_orders()
+        if not isinstance(orders, list):
+            return []
+        for o in orders:
+            if not isinstance(o, dict):
+                continue
+            sym = str(o.get("symbol") or "").upper()
+            oid = o.get("orderId")
+            otype = str(o.get("type") or "").upper()
+            if not sym or oid is None or sym in open_pairs:
+                continue
+            if otype != "LIMIT":
+                continue
+            o_ms = int(o.get("updateTime") or o.get("time") or 0)
+            age_s = (now * 1000.0 - o_ms) / 1000.0 if o_ms > 0 else max_age_sec + 1.0
+            if age_s >= max_age_sec:
+                try:
+                    bn_client.cancel_order(sym, int(oid))
+                    cancelled.append({"symbol": sym, "order_id": oid, "age_sec": round(age_s, 1)})
+                    print(f"[STALE SWEEP] 🧹 Cancelled stale LIMIT order #{oid} on flat {sym} (age={age_s:.0f}s).", flush=True)
+                except Exception as c_exc:
+                    logger.warning("Failed cancelling stale order %s on %s: %s", oid, sym, c_exc)
+    except Exception as exc:
+        logger.debug("Stale order sweep notice: %s", exc)
+    return cancelled
 
 def _is_unmocked_bf_method(bn_client, method_name: str) -> bool:
     """
@@ -951,7 +1194,18 @@ def record_position(signal: dict):
         print(f"[SIZING] ⚠️ Insufficient Binance available margin (${avail_usdt:.2f} < $0.30). Entry aborted.", flush=True)
         return None
 
-    live_equity_usdt = max(0.0, total_wallet_usdt + cross_upnl_usdt)
+    # Sum live isolated unrealized PnL too (Binance /fapi/v2/balance crossUnPnl is 0.0 for ISOLATED positions!)
+    iso_upnl_entry = 0.0
+    try:
+        _raw_lp_entry, _ = _safe_get_positions(_bn)
+        if isinstance(_raw_lp_entry, list):
+            for _lp_e in _raw_lp_entry:
+                if isinstance(_lp_e, dict) and str(_lp_e.get("margin_type", _lp_e.get("marginType", "ISOLATED"))).upper() == "ISOLATED":
+                    iso_upnl_entry += float(_lp_e.get("unrealized_pnl", _lp_e.get("unRealizedProfit", 0.0)) or 0.0)
+    except Exception:
+        iso_upnl_entry = 0.0
+
+    live_equity_usdt = max(0.0, total_wallet_usdt + cross_upnl_usdt + iso_upnl_entry)
     risk_eng = load_hard_risk_engine(cfg, current_equity=live_equity_usdt if (live_equity_usdt > 0 or total_wallet_usdt > 0) else None)
     dd_eval = risk_eng.check_live_equity_drawdown(live_equity=live_equity_usdt)
     if dd_eval.get("breaker_active"):
@@ -1303,6 +1557,7 @@ def record_position(signal: dict):
                     if execution_result.get("position_size_usdt") is not None and float(execution_result.get("position_size_usdt") or 0) > 0:
                         pos["position_size_usdt"] = round(float(execution_result["position_size_usdt"]), 4)
                         pos["position_size_usd"] = pos["position_size_usdt"]
+                        pos["initial_position_size_usd"] = pos["position_size_usdt"]
                         pos["position_size_idr"] = int(round(pos["position_size_usd"] * _fx.get("usd_idr", 16500)))
                     pos["take_profit"] = execution_result.get("take_profit") or pos["take_profit"]
                     pos["take_profit_2"] = pos["take_profit"]
@@ -1315,6 +1570,40 @@ def record_position(signal: dict):
                     if execution_result.get("liquidation_price") is not None:
                         pos["liquidation_price"] = float(execution_result["liquidation_price"])
                     pos["quantity"] = execution_result.get("quantity")
+                    if execution_result.get("quantity") is not None:
+                        pos["initial_quantity"] = float(execution_result["quantity"])
+                    if signal.get("signal_id"):
+                        pos["signal_id"] = signal["signal_id"]
+
+                    # Feature #2: Rest native Maker LIMIT TP1 (+0.55R, 65% reduceOnly) when SL is confirmed & minNotional allows
+                    sniper_open_cfg = cfg.get("sniper_75_mode") or {}
+                    tp1_maker_frac = float(sniper_open_cfg.get("tp1_partial_close_pct") or cfg.get("tp1_partial_close_pct") or 0.65)
+                    if (
+                        not still_open
+                        and pos.get("sl_state") == "CONFIRMED"
+                        and tp1_maker_frac > 0
+                        and float(pos.get("take_profit_1") or 0) > 0
+                        and hasattr(bn_client, "place_maker_tp1_order")
+                        and not _is_unmocked_bf_method(bn_client, "place_maker_tp1_order")
+                    ):
+                        try:
+                            mk_tp1 = bn_client.place_maker_tp1_order(
+                                pos["binance_pair"],
+                                pos["direction"],
+                                float(pos["take_profit_1"]),
+                                fraction=tp1_maker_frac,
+                            )
+                            if isinstance(mk_tp1, dict) and mk_tp1.get("placed"):
+                                pos["tp1_maker_placed"] = True
+                                pos["tp1_maker_order_id"] = mk_tp1.get("order_id")
+                                pos["tp1_maker_qty"] = mk_tp1.get("partial_qty")
+                                print(
+                                    f"[BINANCE] 🎯 Maker LIMIT TP1 placed @ ${mk_tp1.get('tp1_price')} "
+                                    f"(qty={mk_tp1.get('partial_qty')}, Order #{mk_tp1.get('order_id')})",
+                                    flush=True,
+                                )
+                        except Exception as mk_exc:
+                            logger.debug("Optional Maker LIMIT TP1 placement skipped on %s: %s", pos["binance_pair"], mk_exc)
 
                     tca_res = execution_result.get("tca") if isinstance(execution_result.get("tca"), dict) else None
                     if tca_res and tca_res.get("fee_usdt") is not None:
@@ -1371,7 +1660,7 @@ def record_position(signal: dict):
     except Exception as exc:
         logger.warning("save_hard_risk_engine failed after record_position: %s", exc)
 
-    # Log new position & TCA execution to SQLite WAL Journal
+    # Log new position & TCA execution to SQLite WAL Journal (include sl_plan & tp_plan for exact R-multiple accounting)
     try:
         import journal
         journal.open_trade({
@@ -1388,11 +1677,17 @@ def record_position(signal: dict):
             "strategy_id": pos.get("setup_name", "AI_SETUP"),
             "regime": pos.get("regime", "NORMAL"),
             "cal_p": pos.get("calibrated_prob") or (float(pos.get("confidence_score", 70)) / 100.0),
+            "sl_plan": float(pos.get("init_stop_loss") or pos.get("stop_loss") or 0.0),
+            "tp_plan": float(pos.get("take_profit") or 0.0),
         })
         tca_payload = (pos.get("binance_execution") or {}).get("tca")
         if isinstance(tca_payload, dict) and tca_payload:
             tca_exec_id = journal.record_tca_execution({**tca_payload, "trade_id": pos["id"]})
             pos["tca_exec_id"] = tca_exec_id
+            try:
+                _save_positions_merged([pos])
+            except CorruptedStateError:
+                pass
         print(f"[JOURNAL] 📖 Open trade & TCA recorded in journal: {pos['id']}", flush=True)
     except Exception as je:
         print(f"[JOURNAL] ⚠️ Journal open trade logging error: {je}", flush=True)
@@ -1822,6 +2117,12 @@ def _record_trade_close_in_journal(
         should_run_learners = True
 
     if should_run_learners:
+        # Feature #3: Persist per-symbol post-SL cooldown on losing/SL closes (anti revenge-trade)
+        try:
+            _pair_cd = pos.get("binance_pair") or pos.get("symbol", "").replace("-USD", "USDT")
+            _record_post_sl_symbol_cooldown(_pair_cd, exit_reason, net_usd)
+        except Exception as cd_exc:
+            logger.debug("Post-SL cooldown update skipped: %s", cd_exc)
         pos_copy = dict(pos)
         try:
             _update_closed_loop_learners(pos_copy, net_usd, exit_price, exit_reason)
@@ -2059,7 +2360,10 @@ def _fetch_live_micro_state(pair: str, bn_client=None) -> dict:
                     buy_v += q_usd
             tot_v = buy_v + sell_v
             if tot_v > 0:
-                micro["tfi_5m"] = round((buy_v - sell_v) / tot_v, 4)
+                tfi_val = (buy_v - sell_v) / tot_v
+                micro["tfi_5m"] = round(tfi_val, 4)
+                # Orderflow toxicity proxy for VPIN so IntrabarThesisMonitor sees real burst imbalance
+                micro["vpin"] = round(min(0.99, max(0.10, abs(tfi_val))), 4)
         elif r_ag.status_code in (418, 429):
             logger.warning("Microstate aggTrades HTTP %s on %s", r_ag.status_code, pair)
     except Exception as exc:
@@ -2072,7 +2376,10 @@ def _fetch_live_micro_state(pair: str, bn_client=None) -> dict:
             m_p = float(pi.get("markPrice") or 0.0)
             i_p = float(pi.get("indexPrice") or 0.0)
             if m_p > 0 and i_p > 0:
-                micro["spot_perp_div"] = round((i_p - m_p) / i_p, 6)
+                raw_basis = (i_p - m_p) / i_p
+                # Scale basis to z-score units (5 bps baseline std -> +-7.5 bps == +-1.5 sigma)
+                micro["spot_perp_div"] = round(raw_basis / 0.0005, 4)
+                micro["spot_perp_basis_raw"] = round(raw_basis, 6)
         elif r_pi.status_code in (418, 429):
             logger.warning("Microstate premiumIndex HTTP %s on %s", r_pi.status_code, pair)
     except Exception as exc:
@@ -2099,12 +2406,15 @@ def _fetch_live_micro_state(pair: str, bn_client=None) -> dict:
 
 
 def _sync_open_shadow_trades(ticker_map: dict):
-    """Periodically update counterfactual shadow_trades against live market prices (60s throttle)."""
-    global _SHADOW_LAST_SYNC_TS
+    """Periodically update counterfactual shadow_trades against live market prices (60s intrabar, 15m bar advance)."""
+    global _SHADOW_LAST_SYNC_TS, _SHADOW_LAST_BAR_BUCKET
     now = time.time()
     if not ticker_map or (now - _SHADOW_LAST_SYNC_TS < 60.0):
         return
     _SHADOW_LAST_SYNC_TS = now
+    cur_bucket = int(now // 900)  # 15-minute bar boundary (so 16-bar timeout == 4h, not 16min!)
+    advance_bar = (_SHADOW_LAST_BAR_BUCKET != 0 and cur_bucket != _SHADOW_LAST_BAR_BUCKET)
+    _SHADOW_LAST_BAR_BUCKET = cur_bucket
     try:
         import journal
         from shadow.engine import ShadowEngine
@@ -2117,7 +2427,11 @@ def _sync_open_shadow_trades(ticker_map: dict):
             pair = sym.replace("-USD", "USDT").upper()
             px = float(ticker_map.get(pair) or 0.0)
             if px > 0:
-                se.update_open_shadows(sym, {"close": px, "high": px, "low": px})
+                try:
+                    se.update_open_shadows(sym, {"close": px, "high": px, "low": px}, advance_bar=advance_bar)
+                except TypeError:
+                    if advance_bar:
+                        se.update_open_shadows(sym, {"close": px, "high": px, "low": px})
     except Exception as exc:
         logger.debug("_sync_open_shadow_trades error: %s", exc)
 
@@ -2789,6 +3103,25 @@ def _execute_verified_bot_close(
             fallback_price=current_price,
             fallback_pnl_usd=pnl_usd,
         )
+        if (
+            not metrics.get("used_exchange_fills")
+            and isinstance(bn_client, BinanceFuturesClient)
+            and type(bn_client) is BinanceFuturesClient
+        ):
+            time.sleep(0.4)
+            metrics = _fetch_exchange_close_metrics(
+                pair=pair,
+                direction=direction,
+                pos=pos,
+                bn_client=bn_client,
+                ticker_map=ticker_map or {},
+                entry_price=entry_price,
+                pos_usd=pos_usd,
+                leverage=leverage,
+                fx_rate=fx_rate,
+                fallback_price=current_price,
+                fallback_pnl_usd=pnl_usd,
+            )
         exit_px = float(metrics["exit_price"] or current_price)
         gross_pnl_usd = float(metrics["gross_pnl_usd"])
         fee_usd = float(metrics["commission_usd"])
@@ -2801,7 +3134,8 @@ def _execute_verified_bot_close(
 
     net_pnl_usd = float(gross_pnl_usd) - float(fee_usd) - float(funding_usd)
     net_pnl_idr = round(net_pnl_usd * fx_rate, 2)
-    net_pnl_pct = round((net_pnl_usd / pos_usd) * 100.0, 2) if pos_usd > 0 else round(float(pnl_pct), 2)
+    base_margin_usd = float(pos.get("initial_position_size_usd") or pos_usd or 0.0)
+    net_pnl_pct = round((net_pnl_usd / base_margin_usd) * 100.0, 2) if base_margin_usd > 0 else round(float(pnl_pct), 2)
 
     pos["status"] = close_status
     pos["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -2815,6 +3149,21 @@ def _execute_verified_bot_close(
     if close_reason_detail:
         pos["close_reason"] = close_reason_detail
 
+    # Refresh post-close wallet balance BEFORE HardRiskEngine + ProfitVault updates (fixes stale pre-close equity bug)
+    fresh_bal_bot = None
+    if is_binance_pos and bn_client and hasattr(bn_client, "get_balance") and not _is_unmocked_bf_method(bn_client, "get_balance"):
+        try:
+            fresh_bal_bot = bn_client.get_balance()
+        except Exception as b_exc:
+            logger.warning("Post-close balance refresh failed for %s: %s", pair, b_exc)
+            fresh_bal_bot = None
+    if isinstance(fresh_bal_bot, dict) and not fresh_bal_bot.get("isError") and fresh_bal_bot.get("total_wallet_balance") is not None:
+        tot_eq_bot = float(fresh_bal_bot["total_wallet_balance"])
+        if tot_eq_bot > 0:
+            state["binance_wallet_balance_usdt"] = round(tot_eq_bot, 4)
+            if fresh_bal_bot.get("available_balance") is not None:
+                state["binance_available_balance_usdt"] = round(float(fresh_bal_bot["available_balance"]), 4)
+
     _record_trade_close_in_journal(
         pos,
         exit_px,
@@ -2825,7 +3174,7 @@ def _execute_verified_bot_close(
         gross_pnl_usd=gross_pnl_usd,
     )
     if is_binance_pos and bn_client:
-        _update_vault_on_close(bn_client)
+        _update_vault_on_close(bn_client, bal_info=fresh_bal_bot)
 
     try:
         _save_positions_merged([pos])
@@ -2894,7 +3243,8 @@ def _monitor_and_update_positions_impl():
                         print(f"[MONITOR] 📥 Auto-imported active Binance position: {sym_l} ({new_pos['direction']} {new_pos['leverage']}x, SL State: {new_pos['sl_state']})", flush=True)
             elif isinstance(live_list, dict) and live_list.get("isError"):
                 update_runtime_health(last_api_err_ts=time.time())
-                _alert_error_rate_limited("MONITOR_BINANCE_SYNC", f"Position sync returned error: {live_list.get('msg')}", cooldown_sec=300.0, level="warning")
+                err_txt = live_list.get("error") or live_list.get("msg") or str(live_list)
+                _alert_error_rate_limited("MONITOR_BINANCE_SYNC", f"Position sync returned error: {err_txt}", cooldown_sec=300.0, level="warning")
         except Exception as e:
             update_runtime_health(last_api_err_ts=time.time())
             _alert_error_rate_limited("MONITOR_BINANCE_SYNC", f"Binance sync warning: {e}", cooldown_sec=300.0, level="warning")
@@ -2954,13 +3304,40 @@ def _monitor_and_update_positions_impl():
                 live_liq = float(live_item.get("liquidation_price", 0) or 0)
                 if live_liq > 0:
                     pos["liquidation_price"] = live_liq
-                live_margin = abs(float(live_item.get("isolated_margin", 0) or 0))
-                if live_margin > 0:
-                    pos_usd = live_margin
-                    pos_idr = live_margin * fx_rate
-                    pos["position_size_usd"] = round(pos_usd, 4)
-                    pos["position_size_usdt"] = round(pos_usd, 4)
-                    pos["position_size_idr"] = round(pos_idr, 2)
+                # H1 Fix: Preserve initial_position_size_usd! Binance `isolatedMargin = isolatedWallet + uPnL`
+                # fluctuates with PnL and shrinks by 65% after TP1 partial close — overwriting position_size_usd
+                # would inflate ROE% and R-multiples by ~2.86x into Bandit/ADWIN/k-NN learners!
+                if not pos.get("initial_position_size_usd") and pos_usd > 0:
+                    pos["initial_position_size_usd"] = round(pos_usd, 4)
+                live_wallet_m = abs(float(live_item.get("isolated_wallet", 0) or 0))
+                live_margin = live_wallet_m if live_wallet_m > 0 else abs(float(live_item.get("isolated_margin", 0) or 0))
+                if live_margin > 0 and not pos.get("tp1_partial_closed"):
+                    # Only backfill margin when initial_position_size_usd wasn't recorded at entry (e.g. manual synced trade)
+                    if not pos.get("initial_position_size_usd"):
+                        pos_usd = live_margin
+                        pos_idr = live_margin * fx_rate
+                        pos["initial_position_size_usd"] = round(pos_usd, 4)
+                        pos["position_size_usd"] = round(pos_usd, 4)
+                        pos["position_size_usdt"] = round(pos_usd, 4)
+                        pos["position_size_idr"] = round(pos_idr, 2)
+                live_qty_now = abs(float(live_item.get("position_amount", 0) or 0))
+                if live_qty_now > 0:
+                    if not pos.get("initial_quantity"):
+                        pos["initial_quantity"] = live_qty_now
+                    pos["quantity"] = live_qty_now
+                    # Detect resting Maker LIMIT TP1 fill (live qty shrunk >= 30% vs initial_quantity)
+                    init_q = float(pos.get("initial_quantity") or 0)
+                    if pos.get("tp1_maker_placed") and not pos.get("tp1_partial_closed") and init_q > 0 and live_qty_now <= init_q * 0.70:
+                        pos["tp1_partial_closed"] = True
+                        pos["tp1_maker_filled"] = True
+                        print(f"[TP1 MAKER FILLED] 🎯 Resting Maker TP1 detected filled on {pair}: qty {init_q} -> {live_qty_now}!", flush=True)
+                        if hasattr(bn_client, "sync_take_profit_close_position") and tp > 0 and not _is_unmocked_bf_method(bn_client, "sync_take_profit_close_position"):
+                            try:
+                                tp_sync = bn_client.sync_take_profit_close_position(pair, direction, tp, old_tp_algo_id=pos.get("tp_algo_id"))
+                                if isinstance(tp_sync, dict) and tp_sync.get("new_algo_id") is not None:
+                                    pos["tp_algo_id"] = tp_sync["new_algo_id"]
+                            except Exception as tps_exc:
+                                logger.debug("TP2 closePosition sync skipped on %s: %s", pair, tps_exc)
                 if not pos.get("order_id") or str(pos.get("order_id")) == "None":
                     pos["order_id"] = f"SYNC_{pair}"
                 current_price = float(live_item.get("mark_price", 0)) or ticker_map.get(pair, entry_price)
@@ -2971,7 +3348,8 @@ def _monitor_and_update_positions_impl():
                 live_upnl = float(live_item.get("unrealized_pnl", 0))
                 pnl_usd = live_upnl
                 pnl_idr = live_upnl * fx_rate
-                pnl_pct = (live_upnl / pos_usd * 100.0) if pos_usd > 0 else 0.0
+                ref_margin = float(pos.get("initial_position_size_usd") or pos_usd or 0)
+                pnl_pct = (live_upnl / ref_margin * 100.0) if ref_margin > 0 else 0.0
                 pos["unrealized_pnl"] = round(live_upnl, 4)
         else:
             current_price = ticker_map.get(pair, entry_price)
@@ -3284,11 +3662,16 @@ def _monitor_and_update_positions_impl():
             except Exception as tca_exc:
                 logger.debug("update_tca_markout failed for %s: %s", pos.get("id"), tca_exc)
 
+        sniper_m = cfg_mon.get("sniper_75_mode") or {}
+        tp1_trig_r = float(sniper_m.get("tp1_lock_trigger_r", 0.55) or 0.55)
+        tp1_lock_r = float(sniper_m.get("sl_lock_after_tp1_r", 0.38) or 0.38)
+        tp1_partial_frac = float(sniper_m.get("tp1_partial_close_pct") or cfg_mon.get("tp1_partial_close_pct") or 0.65)
+
         # Real Orderflow Intrabar First-Passage Survival & Early Invalidation (0.35R / Structural Reversal)
         try:
             micro_state = _fetch_live_micro_state(pair, bn_client=bn_client)
             tm = _get_thesis_monitor()
-            early_loss_lim = abs(float(cfg_mon.get("early_invalidation_max_loss_r", 0.35) or 0.35))
+            early_loss_lim = abs(float(sniper_m.get("early_invalidation_max_loss_r", cfg_mon.get("early_invalidation_max_loss_r", 0.35)) or 0.35))
             allow_ai_emg = (
                 r_multiple_curr <= -early_loss_lim
                 and (time.time() - float(pos.get("last_ai_emg_ts") or 0.0) >= 90.0)
@@ -3321,9 +3704,10 @@ def _monitor_and_update_positions_impl():
             pos["ofi_20_live"] = micro_state.get("ofi_20")
             pos["tfi_5m_live"] = micro_state.get("tfi_5m")
 
+            # Honor IntrabarThesisMonitor's own min_elapsed_sec & reversal/AI approval via `should_scratch`
             should_early_exit = (
                 (r_multiple_curr <= -early_loss_lim)
-                and (bool(th_res.get("should_scratch")) or int(th_res.get("consecutive_breaches", 0)) >= 3)
+                and bool(th_res.get("should_scratch"))
             )
             if should_early_exit:
                 closed_early = _execute_verified_bot_close(
@@ -3353,10 +3737,14 @@ def _monitor_and_update_positions_impl():
             logger.warning("ThesisMonitor evaluation error on %s: %s", pair, tm_exc)
             pos["p_survive_pct"] = pos.get("p_survive_pct", 78.0)
 
-        sniper_m = cfg_mon.get("sniper_75_mode") or {}
-        tp1_trig_r = float(sniper_m.get("tp1_lock_trigger_r", 0.55) or 0.55)
-        tp1_lock_r = float(sniper_m.get("sl_lock_after_tp1_r", 0.38) or 0.38)
-        tp1_partial_frac = float(sniper_m.get("tp1_partial_close_pct") or cfg_mon.get("tp1_partial_close_pct") or 0.65)
+        def _sync_tp2_after_partial() -> None:
+            if is_binance_pos and bn_client and tp > 0 and hasattr(bn_client, "sync_take_profit_close_position") and not _is_unmocked_bf_method(bn_client, "sync_take_profit_close_position"):
+                try:
+                    tp_sync = bn_client.sync_take_profit_close_position(pair, direction, tp, old_tp_algo_id=pos.get("tp_algo_id"))
+                    if isinstance(tp_sync, dict) and tp_sync.get("new_algo_id") is not None:
+                        pos["tp_algo_id"] = tp_sync["new_algo_id"]
+                except Exception as tps_exc:
+                    logger.debug("Post-TP1 TP2 sync skipped on %s: %s", pair, tps_exc)
 
         def _apply_exchange_sl_lock(new_sl_px: float) -> bool:
             nonlocal sl
@@ -3405,7 +3793,7 @@ def _monitor_and_update_positions_impl():
                 highest_stage2 = (r_trig, flag_key, r_lock, label)
                 break
 
-        if allow_sl_amend and r_multiple_curr >= tp1_trig_r and not pos.get("tp1_profit_lock_set"):
+        if allow_sl_amend and (r_multiple_curr >= tp1_trig_r or pos.get("tp1_maker_filled")) and not pos.get("tp1_profit_lock_set"):
             # If price jumped straight to >= 1.00R, perform a single amend to Stage 2 level before marking TP1 flags
             if highest_stage2 is not None:
                 _, _, r_lock_s2, label_s2 = highest_stage2
@@ -3421,13 +3809,16 @@ def _monitor_and_update_positions_impl():
                         if r_multiple_curr >= sub_trig:
                             pos[sub_flag] = True
                     partial_note = ""
-                    if is_binance_pos and bn_client and tp1_partial_frac > 0 and not pos.get("tp1_partial_closed"):
+                    if pos.get("tp1_maker_filled"):
+                        partial_note = f"\n💵 <b>Maker LIMIT TP1 Filled:</b> Sisa {pos.get('quantity')} Runner (0.02% Maker Fee)"
+                    elif is_binance_pos and bn_client and tp1_partial_frac > 0 and not pos.get("tp1_partial_closed"):
                         try:
                             pc_res = bn_client.partial_close_position(pair, direction, fraction=tp1_partial_frac)
                             pos["tp1_partial_result"] = pc_res
                             if pc_res.get("partial_closed"):
                                 pos["tp1_partial_closed"] = True
                                 pos["quantity"] = pc_res.get("remaining_qty", pos.get("quantity"))
+                                _sync_tp2_after_partial()
                                 partial_note = f"\n💵 <b>Partial Close {int(tp1_partial_frac*100)}%:</b> Realized {pc_res.get('closed_qty')} (Sisa {pc_res.get('remaining_qty')} Runner)"
                             else:
                                 partial_note = f"\nℹ️ <b>Partial Close:</b> {pc_res.get('status')} (Full qty kept under +{r_lock_s2}R SL lock)"
@@ -3457,13 +3848,16 @@ def _monitor_and_update_positions_impl():
                     pos["tp1_profit_lock_set"] = True
                     pos["breakeven_set"] = True
                     partial_note = ""
-                    if is_binance_pos and bn_client and tp1_partial_frac > 0 and not pos.get("tp1_partial_closed"):
+                    if pos.get("tp1_maker_filled"):
+                        partial_note = f"\n💵 <b>Maker LIMIT TP1 Filled:</b> Sisa {pos.get('quantity')} Runner (0.02% Maker Fee)"
+                    elif is_binance_pos and bn_client and tp1_partial_frac > 0 and not pos.get("tp1_partial_closed"):
                         try:
                             pc_res = bn_client.partial_close_position(pair, direction, fraction=tp1_partial_frac)
                             pos["tp1_partial_result"] = pc_res
                             if pc_res.get("partial_closed"):
                                 pos["tp1_partial_closed"] = True
                                 pos["quantity"] = pc_res.get("remaining_qty", pos.get("quantity"))
+                                _sync_tp2_after_partial()
                                 partial_note = f"\n💵 <b>Partial Close {int(tp1_partial_frac*100)}%:</b> Realized {pc_res.get('closed_qty')} (Sisa {pc_res.get('remaining_qty')} Runner)"
                             else:
                                 partial_note = f"\nℹ️ <b>Partial Close:</b> {pc_res.get('status')} (Full qty kept under +{tp1_lock_r}R SL lock)"
@@ -3496,6 +3890,47 @@ def _monitor_and_update_positions_impl():
                 for sub_trig, sub_flag, _, _ in r_trail_stages:
                     if r_multiple_curr >= sub_trig:
                         pos[sub_flag] = True
+        elif allow_sl_amend and pos.get("r_trail_20_set") and r_multiple_curr >= 2.50:
+            # Feature #2: Dynamic unbounded Runner Trailing BEYOND +2.0R (+2.5R->+1.95R, +3.0R->+2.45R, +3.5R->+2.95R...)
+            dyn_step = math.floor(r_multiple_curr * 2.0) / 2.0
+            prev_dyn = float(pos.get("r_trail_dyn_max_r") or 2.0)
+            if dyn_step > prev_dyn:
+                dyn_lock_r = round(dyn_step - 0.55, 2)
+                lock_pct = max(0.004, dyn_lock_r * sl_dist_pct)
+                new_sl = round(entry_price * (1.0 + lock_pct if direction == "LONG" else 1.0 - lock_pct), 6)
+                better = (direction == "LONG" and new_sl > sl) or (direction == "SHORT" and (sl <= 0 or new_sl < sl))
+                if better and _apply_exchange_sl_lock(new_sl):
+                    pos["r_trail_dyn_max_r"] = dyn_step
+                    send_telegram(
+                        f"🚀 <b>[RUNNER DYNAMIC TRAIL +{dyn_step:.1f}R] LOCK +{dyn_lock_r:.2f}R</b>\n"
+                        f"💎 <code>{pos.get('symbol')}</code> {direction} | +{r_multiple_curr:.2f}R (ROE: +{pnl_pct:.1f}%)\n"
+                        f"🔒 SL Bursa Baru: <b>${new_sl:,.4f}</b>"
+                    )
+                elif not better:
+                    pos["r_trail_dyn_max_r"] = dyn_step
+
+        # Retry TP1 partial close on next tick if transient API error occurred previously (never retry SKIPPED_MIN_NOTIONAL)
+        if (
+            is_binance_pos
+            and bn_client
+            and pos.get("tp1_profit_lock_set")
+            and not pos.get("tp1_partial_closed")
+            and not pos.get("tp1_maker_placed")
+            and tp1_partial_frac > 0
+            and r_multiple_curr >= tp1_trig_r
+            and str((pos.get("tp1_partial_result") or {}).get("status") or "") not in ("SKIPPED_MIN_NOTIONAL", "NO_ACTIVE_POSITION")
+            and (time.time() - float(pos.get("_last_tp1_partial_retry_ts") or 0.0)) >= 30.0
+        ):
+            pos["_last_tp1_partial_retry_ts"] = time.time()
+            try:
+                pc_retry = bn_client.partial_close_position(pair, direction, fraction=tp1_partial_frac)
+                pos["tp1_partial_result"] = pc_retry
+                if isinstance(pc_retry, dict) and pc_retry.get("partial_closed"):
+                    pos["tp1_partial_closed"] = True
+                    pos["quantity"] = pc_retry.get("remaining_qty", pos.get("quantity"))
+                    _sync_tp2_after_partial()
+            except Exception as pc_re_exc:
+                logger.debug("TP1 partial close retry notice on %s: %s", pair, pc_re_exc)
 
         # Blueprint v3 C4: Legacy Flash Crash Exit removed.
         # Native exchange STOP_MARKET orders handle stop-loss protection directly.
@@ -3692,6 +4127,34 @@ def _monitor_and_update_positions_impl():
                         )
                     continue
 
+                # Rule 3 (M15 Fix): >72 jam + stagnant dead zone [-5%, 0%] -> scratch close to stop funding bleed
+                elif _hrs_open > 72 and -5.0 <= effective_pnl_pct <= 0.0 and _tp_progress < 50:
+                    closed_72s = _execute_verified_bot_close(
+                        pos,
+                        close_status="CLOSED_TIMEOUT_SCRATCH",
+                        exit_reason="CLOSED_TIMEOUT_72H_SCRATCH",
+                        current_price=current_price,
+                        pnl_usd=pnl_usd,
+                        pnl_idr=effective_pnl_idr,
+                        pnl_pct=effective_pnl_pct,
+                        bn_client=bn_client,
+                        ticker_map=ticker_map,
+                        fx_rate=fx_rate,
+                        is_binance_pos=is_binance_pos,
+                        close_reason_detail=(
+                            f"TIMEOUT_72H_SCRATCH: {_hrs_open:.0f}h, Net PnL {effective_pnl_pct:.1f}% "
+                            f"(Funding=${funding_cost_usd:.4f})"
+                        ),
+                    )
+                    if closed_72s:
+                        send_telegram(
+                            f"⌛ <b>[TIMEOUT SCRATCH 72H] Posisi Stagnan Ditutup!</b>\n\n"
+                            f"💎 <code>{pos.get('symbol')}</code> {direction} 20x\n"
+                            f"⏱️ Terbuka <b>{_hrs_open:.0f} jam</b> di zona stagnan ({effective_pnl_pct:+.2f}%)\n"
+                            f"🔄 <i>Ditutup agar tidak terus tergerus biaya funding 8-jam.</i>"
+                        )
+                    continue
+
         except Exception as _tme:
             logger.warning("Timeout cut check error for %s: %s", pair, _tme)
 
@@ -3768,9 +4231,14 @@ def _monitor_and_update_positions_impl():
 
 def check_wallet_and_position_guard():
     """
-    Evaluates whether the trading system should pause all universe scanning and 9-agent analysis
+    Thread-safe entrypoint evaluating whether the trading system should pause scanning
     to dedicate 100% of compute and surveillance to active open position(s).
     """
+    with _MONITOR_LOCK:
+        return _check_wallet_and_position_guard_impl()
+
+
+def _check_wallet_and_position_guard_impl():
     _retry_pending_learners()
 
     try:
@@ -3793,10 +4261,15 @@ def check_wallet_and_position_guard():
     avail_usdt = float(state.get("binance_available_balance_usdt", 0.0))
     total_usdt = float(state.get("binance_wallet_balance_usdt", 0.0))
     cross_upnl_usdt = float(state.get("binance_unrealized_pnl_usdt", 0.0) or 0.0)
+    isolated_upnl_usdt = 0.0
     bal_fresh_ok = False
+    cfg_g = _get_config()
 
     if bn_client:
         try:
+            # Feature #1: Auto-detect Binance external deposit/withdrawal TRANSFER records BEFORE DD eval
+            _sync_external_transfers(bn_client, cfg_g)
+
             bal = bn_client.get_balance()
             if isinstance(bal, dict) and not bal.get("isError") and "total_wallet_balance" in bal:
                 update_runtime_health(last_api_ok_ts=time.time())
@@ -3823,6 +4296,14 @@ def check_wallet_and_position_guard():
                         side_u = _norm_pos_side(lp)
                         if sym_u:
                             live_keys.add((sym_u, side_u))
+                        # C7 Fix: Sum ISOLATED margin uPnL (Binance /fapi/v2/balance crossUnPnl is 0 for ISOLATED!)
+                        m_type_lp = str(lp.get("margin_type", lp.get("marginType", "ISOLATED")) or "ISOLATED").upper()
+                        if m_type_lp == "ISOLATED":
+                            isolated_upnl_usdt += float(lp.get("unrealized_pnl", lp.get("unRealizedProfit", 0.0)) or 0.0)
+
+                if bal_fresh_ok and abs(isolated_upnl_usdt) > 0:
+                    state["binance_unrealized_pnl_usdt"] = round(cross_upnl_usdt + isolated_upnl_usdt, 4)
+                    save_state()
 
                 valid_open_pos = []
                 dirty = False
@@ -3888,12 +4369,15 @@ def check_wallet_and_position_guard():
                     except CorruptedStateError as cse:
                         _alert_error_rate_limited("CORRUPT_POSITIONS_GUARD", f"POSITIONS_FILE corrupt during guard merge write ({cse})", cooldown_sec=300.0)
                         print(f"[GUARD] ❌ POSITIONS_FILE corrupt during merge write ({cse}) — refusing overwrite.", flush=True)
+                if not open_pos:
+                    _sweep_stale_orders_on_flat(bn_client, open_pos)
         except Exception as e:
             update_runtime_health(last_api_err_ts=time.time())
             _alert_error_rate_limited("GUARD_BINANCE_SYNC", f"Guard Binance sync error: {e}", cooldown_sec=300.0, level="warning")
             print(f"[GUARD] Binance sync notice: {e}", flush=True)
 
-    live_equity_usdt = max(0.0, total_usdt + cross_upnl_usdt)
+    total_upnl_usdt = cross_upnl_usdt + isolated_upnl_usdt
+    live_equity_usdt = max(0.0, total_usdt + total_upnl_usdt)
     locked_vault_g = 0.0
     try:
         v_inst_g = _get_vault_instance()
@@ -4161,8 +4645,13 @@ def run_sideways_market_scanner(ranked_coins: list) -> list:
         score = 0
         setup_type = []
 
-        # Cek funding rate (dari ranked data jika ada)
-        funding = coin.get("funding_rate", 0) or 0
+        # Cek funding rate (normalisasi desimal vs persen ke persen, mis. 0.0003 -> 0.03%)
+        raw_fr = coin.get("funding_rate_raw", coin.get("lastFundingRate"))
+        if raw_fr is not None and raw_fr != "":
+            funding = float(raw_fr or 0.0) * 100.0
+        else:
+            fr_val = float(coin.get("funding_rate_pct", coin.get("funding_rate", 0)) or 0.0)
+            funding = (fr_val * 100.0) if (0.0 < abs(fr_val) < 0.005) else fr_val
         if abs(funding) > 0.025:
             score += 3
             direction = "SHORT" if funding > 0 else "LONG"
@@ -4280,14 +4769,35 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=N
                                              "LINK-USD","DOT-USD","UNI-USD","MATIC-USD"}}
 
     candidates = []
+    now_pf = time.time()
+    sl_cooldowns = state.get("symbol_sl_cooldowns") if isinstance(state.get("symbol_sl_cooldowns"), dict) else {}
 
     for coin in screen_pool:
         pair = coin.get("pair", "")
+        pair_u = str(pair or "").upper()
         sym = coin.get("symbol", pair.replace("USDT", "-USD"))
+
+        # Feature #3: Persistent Post-SL Symbol Cooldown (prevent immediate 20x revenge-entry on choppy coin)
+        cd_exp = float(sl_cooldowns.get(pair_u) or 0.0)
+        if cd_exp > now_pf:
+            rem_min = max(1.0, (cd_exp - now_pf) / 60.0)
+            _record_rejection_telemetry(
+                pair_u or sym,
+                "POST_SL_COOLDOWN",
+                f"Post-SL cooldown active ({rem_min:.0f}m remaining)",
+                gate="POST_SL_COOLDOWN",
+            )
+            continue
+
         change_24h = abs(float(coin.get("price_change_24h_pct", 0) or 0))
         vol_usd = float(coin.get("volume_24h_usd", 0) or 0)
         opp_score = float(coin.get("opportunity_score", 0) or 0)
-        funding_abs = abs(float(coin.get("funding_rate", coin.get("lastFundingRate", 0)) or 0))
+        raw_fr_pf = coin.get("funding_rate_raw", coin.get("lastFundingRate"))
+        if raw_fr_pf is not None and raw_fr_pf != "":
+            funding_abs = abs(float(raw_fr_pf or 0.0))
+        else:
+            fr_pf_val = abs(float(coin.get("funding_rate", coin.get("funding_rate_pct", 0)) or 0.0))
+            funding_abs = (fr_pf_val / 100.0) if fr_pf_val >= 0.005 else fr_pf_val
 
         # Quantitative Opportunity Scoring (Squeeze/Pullback/Funding + Liquidity, avoiding blown-out chases)
         score = 0.0
@@ -4320,7 +4830,7 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=N
         elif hl_range > 24.0:
             score -= 2.0  # Extreme 24%+ intraday whipsaw blows through 20x 2.25% SL / fails setup clarity
 
-        # 4. Crowded funding squeeze potential
+        # 4. Crowded funding squeeze potential (>= 0.03% per 8h in decimal = 0.0003)
         if funding_abs >= 0.0003:
             score += 1.5
 
@@ -4329,11 +4839,12 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=N
             score += 0.25
 
         # 6. Soft rotation cooldown for recently rejected pairs so scanner covers fresh setups
-        rej_ts = _RECENT_REJECT_TS.get(str(pair or "").upper(), 0.0)
-        if rej_ts > 0 and (time.time() - rej_ts) < _RECENT_REJECT_COOLDOWN_SEC:
+        rej_ts = _RECENT_REJECT_TS.get(pair_u, 0.0)
+        if rej_ts > 0 and (now_pf - rej_ts) < _RECENT_REJECT_COOLDOWN_SEC:
             score -= 1.5
 
         if score >= 2.0:
+            coin["_prefilter_score"] = round(score, 3)
             candidates.append((score, opp_norm, coin))
 
     candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
@@ -4421,31 +4932,56 @@ def run_full_scan_cycle():
             })
 
     # Gate teknikal + T0.7 minNotional filter -> max N koin untuk AI
+    avail_for_scan = guard.get("working_usdt", guard.get("available_usdt"))
     scan_list = _technical_pre_filter(
         all_candidates,
         max_ai_coins=max_coins,
-        available_balance_usdt=guard.get("working_usdt", guard.get("available_usdt")),
+        available_balance_usdt=avail_for_scan,
     )
+    # C4 Fix: Only let ContextualThompsonBandit re-order scan_list once matching arms have >= 5 updates;
+    # otherwise preserve _technical_pre_filter() ranking (whipsaw penalty + reject rotation + funding bonus).
     try:
         from strategies.bandit_allocator import ContextualThompsonBandit
         if scan_list:
             bandit = ContextualThompsonBandit()
+            trained_obs = 0
             for item_b in scan_list:
-                item_b.setdefault("strategy_id", f"TIER_{item_b.get('tier', 'CORE')}")
+                strat_key = str(item_b.get("strategy_id") or f"TIER_{item_b.get('tier', 'CORE')}")
+                item_b.setdefault("strategy_id", strat_key)
                 item_b.setdefault("regime", regime)
-                item_b["rrr_net"] = max(1.0, float(item_b.get("opportunity_score") or 5.0))
-            ranked_b = bandit.rank_candidates(scan_list, regime=regime, deterministic=True)
-            if isinstance(ranked_b, list) and len(ranked_b) == len(scan_list):
-                scan_list = ranked_b
+                arm_existing = bandit.arms.get(bandit._arm_key(strat_key, regime)) or {}
+                trained_obs += int(arm_existing.get("n_updates", 0) or 0)
+            if trained_obs >= 5:
+                for item_b in scan_list:
+                    item_b["rrr_net"] = max(1.0, float(item_b.get("_prefilter_score") or item_b.get("opportunity_score") or 5.0))
+                ranked_b = bandit.rank_candidates(scan_list, regime=regime, deterministic=True)
+                if isinstance(ranked_b, list) and len(ranked_b) == len(scan_list):
+                    scan_list = ranked_b
     except Exception as bandit_exc:
         logger.debug("Bandit ranking skipped: %s", bandit_exc)
 
-    # SIDEWAYS BONUS: Jika pasar sideways, tambahkan koin khusus sideways strategy
+    # SIDEWAYS BONUS: Jika pasar sideways, tambahkan koin khusus sideways strategy (tetap lewat T0.7 minNotional & cooldown)
     if regime == "SIDEWAYS":
         sideways_coins = run_sideways_market_scanner(ranked)
+        if sideways_coins and avail_for_scan is not None and float(avail_for_scan or 0) > 0:
+            try:
+                from market_data import filter_eligible_symbols
+                sideways_coins, _ = filter_eligible_symbols(
+                    sideways_coins,
+                    available_balance_usdt=float(avail_for_scan),
+                    leverage=int(float(cfg.get("fixed_leverage", 20))),
+                    all_in_fraction=float(cfg.get("all_in_balance_fraction", 0.95)),
+                )
+            except Exception as sw_filt_exc:
+                logger.debug("Sideways minNotional filter skipped: %s", sw_filt_exc)
+        sl_cds_sw = state.get("symbol_sl_cooldowns") if isinstance(state.get("symbol_sl_cooldowns"), dict) else {}
+        now_sw = time.time()
         seen_in_scan = {c.get("pair") for c in scan_list}
         added = 0
         for sc in sideways_coins:
+            sc_pair = str(sc.get("pair") or "").upper()
+            if sc_pair and float(sl_cds_sw.get(sc_pair) or 0.0) > now_sw:
+                continue
             if sc.get("pair") not in seen_in_scan and added < 1:
                 scan_list.append(sc)
                 seen_in_scan.add(sc.get("pair"))
@@ -4491,6 +5027,8 @@ def run_full_scan_cycle():
     bn_scan = get_binance_client()
 
     for idx, item in enumerate(scan_list, start=1):
+        # M16 Fix: Keep monitor/scan heartbeat fresh between multi-coin sequential scans
+        update_runtime_health(last_monitor_ts=time.time(), last_scan_ts=time.time())
         if not sync_control_flags_from_disk():
             print("[FULL SCAN] ⏸️ Paused by user mid-cycle. Halting remaining coin scans immediately.", flush=True)
             break
@@ -4514,6 +5052,7 @@ def run_full_scan_cycle():
         status = fc.get("status", "REJECTED")
         conf = fc.get("confidence_score", 0)
         setup = res.get("layer2_setup", {}).get("setup_name", "N/A")
+        reject_reason_text = str(fc.get("final_reason") or fc.get("reason") or "")
 
         # Evaluasi konsensus kolaboratif 9-Agent Committee
         com_approved = bool(com_res and com_res.get("approved"))
@@ -4531,6 +5070,7 @@ def run_full_scan_cycle():
             pm_dec = com_res.get("portfolio_manager", {}).get("decision", "Risk veto")
             print(f"[COMMITTEE VETO] {sym}: Pipeline lolos tapi 9-Agent Committee mem-veto: {pm_dec}", flush=True)
             status = "REJECTED_BY_COMMITTEE"
+            reject_reason_text = f"Committee veto: {pm_dec}"
 
         # Strategy Auto-Degradation Gate: if setup demoted to SHADOW_ONLY, block real capital
         if is_trade_approved and os.path.exists(DEGRADED_STRAT_FILE):
@@ -4540,6 +5080,7 @@ def run_full_scan_cycle():
                 if bool((deg_map.get(setup) or {}).get("degraded")):
                     is_trade_approved = False
                     status = "STRATEGY_DEMOTED_SHADOW_ONLY"
+                    reject_reason_text = f"Auto-degraded to SHADOW_ONLY: {deg_map[setup].get('reason')}"
                     print(f"[AUTO-DEGRADATION] 🛡️ {sym} setup '{setup}' sedang SHADOW_ONLY ({deg_map[setup].get('reason')})", flush=True)
             except Exception as deg_exc:
                 logger.warning("Failed reading DEGRADED_STRAT_FILE for %s: %s", sym, deg_exc)
@@ -4554,6 +5095,7 @@ def run_full_scan_cycle():
                 if not gate_res.get("allowed_live", True):
                     is_trade_approved = False
                     status = "STRATEGY_GATE_SHADOW_ONLY"
+                    reject_reason_text = f"Strategy gate SHADOW_ONLY: {gate_res.get('reason')}"
                     print(f"[STRATEGY GATE] 🛡️ {sym} setup '{setup}' diblokir ke SHADOW_ONLY ({gate_res.get('reason')})", flush=True)
             except Exception as gate_exc:
                 logger.warning("Failed evaluating strategy gate for %s: %s", sym, gate_exc)
@@ -4575,10 +5117,12 @@ def run_full_scan_cycle():
                     if candidate_dir == "LONG" and (btc_rsi < 40.0 or (btc_p < btc_e20 and btc_e9 < btc_e20 and btc_chg4h < -1.5)):
                         is_trade_approved = False
                         status = "REJECTED_BTC_DUMP"
+                        reject_reason_text = f"BTC Guard LONG veto (RSI={btc_rsi:.1f}, 4h={btc_chg4h:+.2f}%)"
                         print(f"[BTC GUARD] 🛡️ Altcoin LONG di {sym} DIBATALKAN: BTC sedang dump (RSI: {btc_rsi:.1f}, 4h: {btc_chg4h:+.2f}%)", flush=True)
                     elif candidate_dir == "SHORT" and (btc_rsi > 62.0 or (btc_p > btc_e20 and btc_e9 > btc_e20 and btc_chg4h > 1.5)):
                         is_trade_approved = False
                         status = "REJECTED_BTC_PUMP"
+                        reject_reason_text = f"BTC Guard SHORT veto (RSI={btc_rsi:.1f}, 4h={btc_chg4h:+.2f}%)"
                         print(f"[BTC GUARD] 🛡️ Altcoin SHORT di {sym} DIBATALKAN: BTC sedang pump kuat (RSI: {btc_rsi:.1f}, 4h: {btc_chg4h:+.2f}%)", flush=True)
             except Exception as btc_err:
                 print(f"[BTC GUARD] ⚠️ Error evaluating BTC trend: {btc_err}", flush=True)
@@ -4588,12 +5132,14 @@ def run_full_scan_cycle():
         _sl_sig = float(fc.get("stop_loss") or _plan_sig.get("stop_loss") or 0)
         _tp1_sig = float(fc.get("take_profit_1") or _plan_sig.get("take_profit_1") or 0)
         _tp2_sig = float(fc.get("take_profit_2") or fc.get("take_profit") or _plan_sig.get("take_profit_2") or _plan_sig.get("take_profit") or _tp1_sig or 0)
+        _failed_gate = "" if is_trade_approved else _classify_rejection_gate(status, reject_reason_text)
 
         sig_entry = {
             "symbol": sym,
             "binance_pair": pair,
             "name": name,
             "tier": tier,
+            "signal_id": res.get("pipeline_id", ""),
             "status": "APPROVED" if is_trade_approved else status,
             "confidence": max(conf, com_conf),
             "confidence_pct": max(conf, com_conf),
@@ -4606,6 +5152,8 @@ def run_full_scan_cycle():
             "take_profit_1": _tp1_sig,
             "take_profit_2": _tp2_sig,
             "committee_approved": com_approved,
+            "reject_reason": "" if is_trade_approved else reject_reason_text[:180],
+            "failed_gate": _failed_gate,
             "time": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
             "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
             "opportunity_score": item.get("opportunity_score", 0)
@@ -4631,6 +5179,7 @@ def run_full_scan_cycle():
             exec_plan = {
                 "symbol": sym,
                 "binance_pair": pair,
+                "signal_id": res.get("pipeline_id", ""),
                 "direction": final_dir,
                 "action": final_dir,
                 "confidence_score": max(conf, com_conf),
@@ -4669,14 +5218,14 @@ def run_full_scan_cycle():
                 exec_plan["tp_time_prediction"] = _tp_pred
                 exec_plan["estimated_time_horizon"] = _tp_pred.get("eta_label", "N/A")
             else:
-                # Compute on-the-fly if not in plan
+                # Compute on-the-fly if not in plan (H10 Fix: support layer1_scanning key)
                 try:
                     from pipeline import predict_tp_time
                     _entry = exec_plan.get("entry_price") or 0
                     _tp    = exec_plan.get("take_profit") or 0
                     _sl    = exec_plan.get("stop_loss") or 0
                     if _entry and _tp:
-                        _scan = res.get("layer1_scan") or {} if isinstance(res, dict) else {}
+                        _scan = (res.get("layer1_scanning") or res.get("layer1_scan") or {}) if isinstance(res, dict) else {}
                         _mkt  = res.get("market_data") or {} if isinstance(res, dict) else {}
                         _tp_pred = predict_tp_time(_entry, _tp, _sl, setup, _scan, _mkt)
                         exec_plan["tp_time_prediction"] = _tp_pred
@@ -4699,6 +5248,7 @@ def run_full_scan_cycle():
                     flush=True,
                 )
                 state["signals_rejected_count"] += 1
+                _record_rejection_telemetry(pair, "DIRECTIONAL_CAP", f"Max same-direction ({same_dir_exec}/{max_same_dir_scan}) reached", gate="EXEC_RISK_GUARD")
                 continue
 
             print(f"🔥 KONSENSUS MULTI-AGENT APPROVED! {sym} ({final_dir}) Keyakinan: {exec_plan['confidence_score']}%", flush=True)
@@ -4790,6 +5340,7 @@ def run_full_scan_cycle():
                 # Setup passed 5 layers and committee, but could not be filled on Binance (e.g. margin/notional cap)
                 print(f"[EXEC NOT FILLED] {sym}: Konsensus lolos tapi order tidak masuk Binance Futures. Tidak tercatat di portofolio.", flush=True)
                 state["signals_rejected_count"] += 1
+                _record_rejection_telemetry(pair, "EXEC_NOT_FILLED", "Approved setup failed/skipped exchange execution", gate="EXEC_RISK_GUARD")
                 send_telegram(
                     f"⚠️ <b>KONSENSUS APPROVED TAPI TIDAK DAPAT MASUK BINANCE</b>\n\n"
                     f"💎 <b>Aset:</b> <code>{pair}</code> ({final_dir} 20x)\n"
@@ -4798,14 +5349,17 @@ def run_full_scan_cycle():
                 )
         else:
             _RECENT_REJECT_TS[str(pair or "").upper()] = time.time()
-            reason_short = (com_res.get("portfolio_manager", {}).get("decision") if com_res else fc.get("final_reason", ""))[:70]
+            reason_full = reject_reason_text or (com_res.get("portfolio_manager", {}).get("decision") if com_res else fc.get("final_reason", "")) or status
+            reason_short = str(reason_full)[:70]
             print(f"REJECTED {sym}: {reason_short}...", flush=True)
             state["signals_rejected_count"] += 1
+            _record_rejection_telemetry(pair or sym, status, reason_full, gate=_failed_gate or None)
             if not fc.get("_shadow_registered") and _entry_sig > 0 and _sl_sig > 0 and _tp2_sig > 0 and fc.get("direction") in ("LONG", "SHORT"):
                 try:
                     from shadow.engine import ShadowEngine
                     _p_cal_sh = float(fc.get("calibrated_prob") or (float(conf or 50) / 100.0))
-                    _reg_sh = (fc.get("math_proof") or {}).get("statistical_regime") or regime
+                    _mp_sh = (res.get("math_proof") if isinstance(res, dict) else None) or fc.get("math_proof") or {}
+                    _reg_sh = (_mp_sh.get("statistical_regime") if isinstance(_mp_sh, dict) else None) or regime
                     ShadowEngine().register_candidate(
                         candidate={
                             "symbol": sym,
@@ -4843,20 +5397,18 @@ def run_full_scan_cycle():
     except Exception as uni_exc:
         logger.warning("Failed writing UNIVERSE_FILE: %s", uni_exc)
     
-    # Summary Telegram
-    summary_msg = (
-        f"📊 <b>PYROFUEL SCAN CYCLE #{state['total_scans_done']} COMPLETE</b>\n\n"
-        f"🌐 Universe: {len(ranked)} pairs total (Binance Futures)\n"
-        f"🔍 Scanned: {len(scan_list)} top actionable coins (Sequential 5-Layer AI Pipeline + 9-Agent)\n"
-        f"✅ Approved: {len(approved_signals)}\n"
-        f"❌ Rejected: {len(scan_list) - len(approved_signals)}\n"
-        f"💰 Sizing: {'Dynamic Wallet-Based (Kelly)' if max_budget == 0 else f'Capped Rp {max_budget:,}'}\n"
-        f"⚡ Leverage: FIXED 20x (user mandate)\n"
-        f"⏱️ Next cycle: ~5 min"
-    )
-    if not approved_signals:
-        summary_msg += "\n\n<i>🛡️ Tidak ada setup valid. Dana aman dalam cash.</i>"
-    send_telegram(summary_msg)
+    # Feature #5: Stop spamming Telegram every 5 min with empty 0-approved cycles.
+    # Send Telegram cycle summary only when at least 1 trade executed (empty cycles are inspectable via /why & Dashboard).
+    if approved_signals:
+        summary_msg = (
+            f"📊 <b>PYROFUEL SCAN CYCLE #{state['total_scans_done']} COMPLETE</b>\n\n"
+            f"🌐 Universe: {len(ranked)} pairs total (Binance Futures)\n"
+            f"🔍 Scanned: {len(scan_list)} top actionable coins\n"
+            f"✅ Executed: {len(approved_signals)}\n"
+            f"❌ Filtered: {max(0, len(scan_list) - len(approved_signals))}\n"
+            f"⚡ Leverage: FIXED 20x ISOLATED"
+        )
+        send_telegram(summary_msg)
     
     print(f"\n[FULL SCAN] Cycle complete. {len(approved_signals)} approved out of {len(scan_list)} scanned.", flush=True)
     print(f"[FULL SCAN] Next cycle in {state['scan_interval_sec']} seconds...", flush=True)
@@ -4965,6 +5517,38 @@ def start_loop():
                     _alert_error_rate_limited("MONITOR_LOOP_ERR", f"Position monitor error: {e}", cooldown_sec=180.0)
                     print(f"[-] Position monitor error: {e}", flush=True)
 
+                # Feature #6a: Automated 00:00 WIB (17:00 UTC) Daily Performance & TCA Digest
+                try:
+                    now_wib = datetime.now(timezone.utc) + timedelta(hours=7)
+                    wib_date_str = now_wib.strftime("%Y-%m-%d")
+                    if now_wib.hour == 0 and now_wib.minute < 15 and state.get("last_daily_digest_wib_date") != wib_date_str:
+                        import journal as _j_digest
+                        rep_d = _j_digest.generate_daily_observability_report(days=1)
+                        txt_d = _j_digest.format_daily_telegram_report(rep_d)
+                        if txt_d:
+                            send_telegram(txt_d)
+                        state["last_daily_digest_wib_date"] = wib_date_str
+                        save_state()
+                except Exception as dig_exc:
+                    logger.debug("Daily WIB digest skipped: %s", dig_exc)
+
+                # Feature #6b: Open-Position Latency / WS+REST Staleness Watchdog (>60s blackout while 20x open)
+                if guard.get("open_positions"):
+                    with _RUNTIME_HEALTH_LOCK:
+                        h_snap = dict(_RUNTIME_HEALTH)
+                    now_wd = time.time()
+                    boot_age = now_wd - float(h_snap.get("boot_ts") or now_wd)
+                    ws_age = now_wd - float(h_snap.get("ws_last_msg_ts") or 0.0)
+                    api_age = now_wd - float(h_snap.get("last_api_ok_ts") or 0.0)
+                    if boot_age > 90.0 and ws_age > 60.0 and api_age > 60.0:
+                        open_syms_wd = ", ".join(str(p.get("symbol", "")) for p in guard.get("open_positions", []))
+                        _alert_error_rate_limited(
+                            "OPEN_POS_DATA_STALE",
+                            f"WS ({ws_age:.0f}s) & Binance REST ({api_age:.0f}s) stale while 20x position open ({open_syms_wd})!",
+                            cooldown_sec=180.0,
+                            level="error",
+                        )
+
                 if guard["pause_scanning"]:
                     # === ALL-IN POSITION MONITORING ACTIVE ===
                     state["all_in_monitoring_mode"] = True
@@ -5009,23 +5593,23 @@ def start_loop():
                         last_full_scan = 0
                         last_quick_scan = 0
 
-                    # Quick screen every 60 seconds (or configured interval)
-                    if now - last_quick_scan >= state.get("quick_screen_interval_sec", 60):
+                    # Quick screen every 60 seconds (or configured interval) — M16 Fix: timestamp AFTER completion
+                    if time.time() - last_quick_scan >= state.get("quick_screen_interval_sec", 60):
                         try:
                             run_quick_screen()
                         except Exception as e:
                             _alert_error_rate_limited("QUICK_SCREEN_ERR", f"Quick screen error: {e}", cooldown_sec=300.0, level="warning")
                             print(f"[-] Quick screen error: {e}", flush=True)
-                        last_quick_scan = now
+                        last_quick_scan = time.time()
 
-                    # Full AI scan every 5 minutes
-                    if now - last_full_scan >= state.get("scan_interval_sec", 300):
+                    # Full AI scan every 5 minutes — M16 Fix: timestamp AFTER completion so long scans don't loop back-to-back
+                    if time.time() - last_full_scan >= state.get("scan_interval_sec", 300):
                         try:
                             run_full_scan_cycle()
                         except Exception as e:
                             _alert_error_rate_limited("FULL_SCAN_ERR", f"Full scan error: {e}", cooldown_sec=300.0)
                             print(f"[-] Full scan error: {e}", flush=True)
-                        last_full_scan = now
+                        last_full_scan = time.time()
 
                     _WS_WAKEUP_EVENT.wait(timeout=10)  # Wakes immediately on UserDataStream WS fill/algo event
                     _WS_WAKEUP_EVENT.clear()

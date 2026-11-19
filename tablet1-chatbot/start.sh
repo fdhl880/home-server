@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ==============================================================================
 # TABLET1-CHATBOT: UNIFIED BLOOMBERG TERMINAL & PYROFUEL 28-PILLAR ENGINE
 # ==============================================================================
@@ -41,9 +41,9 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 if command -v pip3 &> /dev/null; then
-    pip3 install requests python-dotenv numpy urllib3 websocket-client --quiet || true
+    pip3 install requests python-dotenv numpy urllib3 websocket-client websockets --quiet || true
 elif command -v pip &> /dev/null; then
-    pip install requests python-dotenv numpy urllib3 websocket-client --quiet || true
+    pip install requests python-dotenv numpy urllib3 websocket-client websockets --quiet || true
 fi
 
 # 3. Initialize results directory and active positions if missing

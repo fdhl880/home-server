@@ -179,21 +179,27 @@ def format_pipeline_report(res: dict):
     total_f = qf.get("total_factors_evaluated", 532)
     regime = qf.get("regime", "NORMAL")
 
-    tp_val = plan.get('take_profit') or plan.get('take_profit_1') or plan.get('take_profit_2', 0)
-    sl_val = plan.get('stop_loss', 0)
+    tp_val = float(plan.get('take_profit') or plan.get('take_profit_1') or plan.get('take_profit_2') or 0)
+    sl_val = float(plan.get('stop_loss') or 0)
+    ent_val = float(plan.get('entry_price') or 0)
+    cur_px_val = float(layer1.get('current_price') or 0)
     order_t = (plan.get('order_type') or 'MARKET').upper()
-    limit_p_str = f" (@ ${plan.get('limit_price', 0):,})" if order_t == 'LIMIT' else ""
+    limit_p_val = float(plan.get('limit_price') or 0)
+    limit_p_str = f" (@ ${limit_p_val:,})" if order_t == 'LIMIT' else ""
     lev_val = plan.get('leverage') or fc.get('leverage', 20)
-    modal_val = plan.get('position_size_idr') or fc.get('position_size_idr', max_budget)
+    modal_val = float(plan.get('position_size_idr') or fc.get('position_size_idr') or max_budget or 0)
 
-    # 1. LIVE BINANCE FUTURES POSITION STATUS (IF ACTIVE)
+    # 1. LIVE BINANCE FUTURES POSITION STATUS (IF ACTIVE) — exact normalized pair match (fixes H11 substring bug)
     bn_pos_text = ""
     try:
         bn = get_binance_client()
         if bn:
             pos_list = bn.get_positions()
-            coin_clean = symbol.replace("-USD", "").replace("USDT", "")
-            match_pos = next((p for p in pos_list if coin_clean in p.get("symbol", "")), None) if isinstance(pos_list, list) else None
+            target_pair = normalize_symbol_to_pair(symbol)
+            match_pos = next(
+                (p for p in pos_list if str(p.get("symbol", "")).upper() == target_pair),
+                None,
+            ) if isinstance(pos_list, list) else None
             if match_pos and abs(float(match_pos.get("position_amount", 0))) > 0:
                 dir_str = match_pos.get("direction", "LONG")
                 amt_str = match_pos.get("position_amount")
@@ -256,28 +262,31 @@ def format_pipeline_report(res: dict):
         )
 
     setup_exp = _esc_html(setup.get('explanation_id', ''))
-    final_reason_text = _esc_html(fc.get('final_reason', '-')[:350])
+    final_reason_text = _esc_html(str(fc.get('final_reason') or '-')[:350])
+    piv_v = float(levels.get('pivot') or 0)
+    r1_v = float(levels.get('resistance_1') or 0)
+    s1_v = float(levels.get('support_1') or 0)
 
     text = (
         f"🛡️ <b>PYROFUEL INSTITUTIONAL 5-LAYER + SIDANG 9-AGENT</b>\n"
-        f"<b>Aset:</b> <code>{symbol}</code> (${layer1.get('current_price', 0):,.4f})\n"
-        f"<b>Harga IDR:</b> Rp {convert_usd_to_idr(layer1.get('current_price', 0)):,.0f}\n"
+        f"<b>Aset:</b> <code>{_esc_html(symbol)}</code> (${cur_px_val:,.4f})\n"
+        f"<b>Harga IDR:</b> Rp {convert_usd_to_idr(cur_px_val):,.0f}\n"
         f"────────────────────────\n"
         f"{bn_pos_text}"
-        f"📊 <b>KUANTITATIF & SMC ALPHA:</b>\n"
-        f"• <b>RSI (14):</b> {layer1.get('rsi_14')} | <b>Tren EMA:</b> {layer1.get('ema_trend')}\n"
+        f"📊 <b>KUANTITATIF &amp; SMC ALPHA:</b>\n"
+        f"• <b>RSI (14):</b> {layer1.get('rsi_14')} | <b>Tren EMA:</b> {_esc_html(layer1.get('ema_trend'))}\n"
         f"• <b>Bollinger Bands:</b> {bb_sqz} (Width: {bb_data.get('width_pct', 0)}%)\n"
-        f"• <b>Funding Rate:</b> {fr_val:+.4f}% | <b>L/S Ratio:</b> {ls_ratio} ({long_pct}% Long)\n"
+        f"• <b>Funding Rate:</b> {float(fr_val or 0):+.4f}% | <b>L/S Ratio:</b> {ls_ratio} ({long_pct}% Long)\n"
         f"• <b>SMC Fair Value Gaps:</b> {b_fvg} Bullish / {be_fvg} Bearish FVG\n"
-        f"• <b>Level Kunci:</b> Pivot ${levels.get('pivot', 0):,.2f} | R1 ${levels.get('resistance_1', 0):,.2f} | S1 ${levels.get('support_1', 0):,.2f}\n"
+        f"• <b>Level Kunci:</b> Pivot ${piv_v:,.2f} | R1 ${r1_v:,.2f} | S1 ${s1_v:,.2f}\n"
         f"────────────────────────\n"
-        f"🎯 <b>1. Setup Hunter:</b> <code>{setup.get('setup_name', 'N/A')}</code> ({setup.get('direction', 'NONE')})\n"
+        f"🎯 <b>1. Setup Hunter:</b> <code>{_esc_html(setup.get('setup_name', 'N/A'))}</code> ({_esc_html(setup.get('direction', 'NONE'))})\n"
         f"<i>\"{setup_exp}\"</i>\n\n"
-        f"📐 <b>2. Trading Plan (AI Governed):</b> {plan.get('action', 'SKIP')}\n"
+        f"📐 <b>2. Trading Plan (AI Governed):</b> {_esc_html(plan.get('action', 'SKIP'))}\n"
         f"• Order: {order_t}{limit_p_str} | Leverage: <b>20x ISOLATED</b>\n"
-        f"• Entry: ${plan.get('entry_price', 0):,} | SL: ${sl_val:,} | TP: ${tp_val:,}\n"
-        f"• Modal Sizing: Rp {modal_val:,} | RRR: {plan.get('risk_reward_ratio', 'N/A')}\n\n"
-        f"🔍 <b>3. CRO Risk Audit:</b> {risk.get('risk_verdict', 'N/A')} ({risk.get('total_score', 0)}/{risk.get('max_score', 10)} pass)\n\n"
+        f"• Entry: ${ent_val:,} | SL: ${sl_val:,} | TP: ${tp_val:,}\n"
+        f"• Modal Sizing: Rp {modal_val:,.0f} | RRR: {_esc_html(plan.get('risk_reward_ratio', 'N/A'))}\n\n"
+        f"🔍 <b>3. CRO Risk Audit:</b> {_esc_html(risk.get('risk_verdict', 'N/A'))} ({risk.get('total_score', 0)}/{risk.get('max_score', 8)} pass)\n\n"
         f"⚖️ <b>4. Supreme Judge Decision:</b> {badge}\n"
         f"• <b>Skor Keyakinan:</b> {fc.get('confidence_score', 0)}% (Min {min_conf}%)\n\n"
         f"{com_text}"
@@ -297,6 +306,30 @@ def execute_trade_with_binance(symbol: str, chat_id: int, callback_query_id: str
     leverage = 20
     margin_type = cfg.get("margin_type", "ISOLATED")
     order_type = cfg.get("order_type", "MARKET")
+
+    # 0a. H11 Safety Check: Block /konfirmasi when Panic Lock or HardRiskEngine Circuit Breaker is active!
+    panic_file = os.path.join(RESULTS_DIR, "panic_lock.json")
+    if os.path.exists(panic_file):
+        msg_p = "🔒 <b>PANIC LOCK AKTIF!</b> Eksekusi diblokir. Jalankan <code>/unpanic</code> terlebih dahulu."
+        if callback_query_id:
+            answer_callback(callback_query_id, "Diblokir: Panic Lock aktif!", show_alert=True)
+        send_telegram_message(chat_id, msg_p)
+        return False
+    try:
+        from auto_trader import load_hard_risk_engine
+        rk_eng = load_hard_risk_engine(cfg)
+        if rk_eng.is_circuit_breaker_active():
+            msg_b = (
+                f"🛑 <b>CIRCUIT BREAKER AKTIF!</b> Eksekusi <code>{pair}</code> diblokir demi keamanan modal.\n"
+                f"Alasan: <i>{_esc_html(getattr(rk_eng, 'breaker_reason', None) or 'Breaker active')}</i>\n"
+                f"Ketik <code>/reset_breaker</code> jika Anda yakin ingin membuka kunci breaker."
+            )
+            if callback_query_id:
+                answer_callback(callback_query_id, "Diblokir: Circuit Breaker aktif!", show_alert=True)
+            send_telegram_message(chat_id, msg_b)
+            return False
+    except Exception:
+        pass
 
     # 0. Check duplicate active position
     try:
@@ -358,23 +391,38 @@ def execute_trade_with_binance(symbol: str, chat_id: int, callback_query_id: str
     order_type = (signal.get("order_type") or cfg.get("order_type", "MARKET")).upper()
     limit_price = float(signal.get("limit_price") or entry_price)
 
-    # Dynamic sizing from live wallet
+    # Dynamic sizing from live wallet (H11 Fix: respect locked Profit Vault & include * leverage in risk-fractional formula!)
     bal = bn_client.get_balance()
     avail_usdt = float(bal.get("available_balance", 0)) if isinstance(bal, dict) else 0.0
-    sl_pct = float(signal.get("stop_loss_pct", 2.0)) / 100.0
+    locked_vault = 0.0
+    try:
+        pv = _resolve_vault_instance(initial_equity=avail_usdt)
+        locked_vault = float(pv.get_status().get("locked_profit_vault_usdt", 0.0) or 0.0)
+    except Exception:
+        locked_vault = 0.0
+    working_usdt = max(0.0, avail_usdt - locked_vault)
+
+    sl = float(signal.get("stop_loss", 0) or 0)
+    tp = float(signal.get("take_profit") or signal.get("take_profit_2") or signal.get("take_profit_1") or 0)
+    tp1 = float(signal.get("take_profit_1") or 0)
+    sl_pct = (abs(entry_price - sl) / entry_price) if (entry_price > 0 and sl > 0) else (float(signal.get("stop_loss_pct", 1.5)) / 100.0)
     sl_pct = max(0.005, min(0.025, sl_pct))
-    
-    # 2% probation or 5% standard
-    risk_frac = 0.02 if len(positions) < 20 else 0.05
-    calc_margin_usd = (avail_usdt * risk_frac) / sl_pct if sl_pct > 0 else (avail_usdt * 0.10)
-    calc_margin_usd = max(1.0, min(calc_margin_usd, avail_usdt * 0.95))
+
+    sizing_mode_cfg = str(cfg.get("sizing_mode", "ALL_IN")).upper()
+    all_in_frac = float(cfg.get("all_in_balance_fraction", 0.95) or 0.95)
+    if sizing_mode_cfg == "ALL_IN":
+        calc_margin_usd = working_usdt * min(0.98, max(0.05, all_in_frac))
+    else:
+        # Correct risk-fractional formula: margin = (working_equity * risk_frac) / (sl_pct * leverage)
+        risk_frac = 0.02 if len(positions) < 20 else 0.05
+        calc_margin_usd = (working_usdt * risk_frac) / max(1e-6, sl_pct * leverage)
+        calc_margin_usd = min(calc_margin_usd, working_usdt * 0.95)
+    calc_margin_usd = max(1.0, min(calc_margin_usd, working_usdt * 0.98)) if working_usdt >= 1.0 else 0.0
     pos_usd = round(calc_margin_usd, 2)
     pos_idr = int(pos_usd * get_fx_info().get("usd_idr", 16500))
 
     # Time horizon
     time_horizon = signal.get("estimated_time_horizon", "N/A")
-    tp = float(signal.get("take_profit") or signal.get("take_profit_2") or signal.get("take_profit_1", 0))
-    sl = float(signal.get("stop_loss", 0))
 
     limit_info = f" (@ ${limit_price:,.4f})" if order_type == "LIMIT" else ""
     send_telegram_message(
@@ -436,6 +484,8 @@ def execute_trade_with_binance(symbol: str, chat_id: int, callback_query_id: str
                 "position_size_idr": eff_size_idr,
                 "position_size_usd": eff_size_usd,
                 "position_size_usdt": eff_size_usd,
+                "initial_position_size_usd": eff_size_usd,
+                "initial_quantity": execution_result.get("quantity"),
                 "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "opened_ts": time.time(),
                 "status": "OPEN",
@@ -453,6 +503,26 @@ def execute_trade_with_binance(symbol: str, chat_id: int, callback_query_id: str
                     return False
                 positions.append(new_pos)
                 atomic_write_json(POSITIONS_FILE, positions, make_bak=True)
+
+            try:
+                import journal
+                journal.open_trade({
+                    "trade_id": new_pos["id"],
+                    "symbol": pair,
+                    "direction": direction,
+                    "entry_price": eff_entry,
+                    "sl_plan": new_pos["stop_loss"],
+                    "tp_plan": new_pos["take_profit"],
+                    "quantity": float(new_pos.get("quantity") or 0),
+                    "leverage": eff_lev,
+                    "margin_usdt": eff_size_usd,
+                    "notional_usdt": round(eff_size_usd * eff_lev, 4),
+                    "setup_name": signal.get("setup_name", "TELEGRAM_MANUAL"),
+                    "strategy_id": signal.get("setup_name", "TELEGRAM_MANUAL"),
+                    "order_id": str(order_id),
+                })
+            except Exception as j_exc:
+                logger.debug("Journal open_trade skipped on /konfirmasi: %s", j_exc)
 
             if callback_query_id:
                 answer_callback(callback_query_id, f"Order {pair} berhasil dibuka di Binance Futures!", show_alert=False)
@@ -527,6 +597,7 @@ def handle_login_command(chat_id):
 
 def run_radar_scan(chat_id):
     """Fast Parallel Quant Radar Scan (Top 3 Candidates in Parallel - <10s)"""
+    guard = {}
     try:
         from auto_trader import check_wallet_and_position_guard
         guard = check_wallet_and_position_guard()
@@ -669,19 +740,36 @@ def handle_wallet_command(chat_id):
         try:
             bn_bal = bn_client.get_balance()
             if isinstance(bn_bal, dict) and "total_wallet_balance" in bn_bal:
-                tot_usdt = bn_bal["total_wallet_balance"]
-                avail_usdt = bn_bal["available_balance"]
-                unpnl = bn_bal["cross_unrealized_pnl"]
+                tot_usdt = float(bn_bal["total_wallet_balance"] or 0.0)
+                avail_usdt = float(bn_bal["available_balance"] or 0.0)
+                cross_unpnl = float(bn_bal.get("cross_unrealized_pnl", 0.0) or 0.0)
+                iso_unpnl = 0.0
+                open_cnt = 0
+                try:
+                    live_ps = bn_client.get_positions()
+                    if isinstance(live_ps, list):
+                        open_cnt = len(live_ps)
+                        iso_unpnl = sum(
+                            float(p.get("unrealized_pnl", 0.0) or 0.0)
+                            for p in live_ps
+                            if str(p.get("margin_type", "ISOLATED")).upper() == "ISOLATED"
+                        )
+                except Exception:
+                    pass
+                unpnl = cross_unpnl + iso_unpnl
+                live_eq = tot_usdt + unpnl
                 tot_idr = tot_usdt * usd_idr
                 avail_idr = avail_usdt * usd_idr
+                eq_idr = live_eq * usd_idr
 
                 sign_pnl = "+" if unpnl >= 0 else ""
                 lines.append("🟡 <b>BINANCE FUTURES (USDT-M):</b> 🟢 LIVE CONNECTED")
-                lines.append(f"• Total Wallet: <b>${tot_usdt:.4f} USDT</b> (~Rp {tot_idr:,.0f})")
+                lines.append(f"• Wallet Balance: <b>${tot_usdt:.4f} USDT</b> (~Rp {tot_idr:,.0f})")
+                lines.append(f"• Live Equity (incl. Isolated uPnL): <b>${live_eq:.4f} USDT</b> (~Rp {eq_idr:,.0f})")
                 lines.append(f"• Margin Tersedia: <b>${avail_usdt:.4f} USDT</b> (~Rp {avail_idr:,.0f})")
-                lines.append(f"• Floating PnL: <b>{sign_pnl}${unpnl:.4f} USDT</b>")
-                if avail_usdt < 1.0:
-                    lines.append("<i>⚠️ Saldo margin rendah (< $1). Transfer USDT dari Spot ke Futures Binance agar order dapat dibuka.</i>")
+                lines.append(f"• Floating PnL ({open_cnt} pos): <b>{sign_pnl}${unpnl:.4f} USDT</b>")
+                if avail_usdt < 1.0 and open_cnt == 0:
+                    lines.append("<i>⚠️ Saldo margin rendah (&lt; $1). Transfer USDT dari Spot ke Futures Binance agar order dapat dibuka.</i>")
             else:
                 lines.append("🟡 <b>BINANCE FUTURES:</b> 🟢 Terhubung")
         except Exception as e:
@@ -831,8 +919,14 @@ def handle_convert_command(chat_id, args):
             "• <code>/convert 100 usd</code> → ke IDR")
         return
     try:
-        amount = float(args[0].replace(",", "").replace(".", ""))
+        raw_amt = args[0].strip()
         currency = args[1].upper()
+        # H11 Fix: Preserve decimal point in USD inputs like 50.5 while stripping thousand separators in IDR
+        if currency == "IDR":
+            cleaned_amt = raw_amt.replace(",", "").replace(".", "")
+        else:
+            cleaned_amt = raw_amt.replace(",", "")
+        amount = float(cleaned_amt)
         fx = get_fx_info()
         if currency == "IDR":
             result_usd = convert_idr_to_usd(amount)
@@ -859,21 +953,57 @@ def handle_convert_command(chat_id, args):
         send_telegram_message(chat_id, "❌ Format salah. Contoh: <code>/convert 50000 idr</code>")
 
 def handle_pnl_command(chat_id):
-    """Calculate and report Win Rate, Realized PnL, and Floating PnL to Telegram"""
-    positions = read_json_safe(POSITIONS_FILE, default=[], strict_on_corrupt=False, expected_type=list)
+    """Calculate and report Win Rate, Net Realized PnL (from journal/ledger), and Floating PnL to Telegram"""
+    positions = read_json_safe(POSITIONS_FILE, default=[], strict_on_corrupt=False, expected_type=list) or []
+    fx = get_fx_info()
+    usd_idr = float(fx.get("usd_idr", 16500) or 16500)
 
     closed_pos = [p for p in positions if str(p.get("status", "")).startswith("CLOSED")]
     open_pos = [p for p in positions if p.get("status") == "OPEN"]
 
-    winning = [p for p in closed_pos if p.get("pnl_idr", 0) > 0 or p.get("pnl_pct", 0) > 0]
-    losing = [p for p in closed_pos if p.get("pnl_idr", 0) <= 0 and p.get("pnl_pct", 0) <= 0]
-    closed_count = len(closed_pos)
-    win_rate = round((len(winning) / closed_count * 100), 1) if closed_count > 0 else 0.0
+    # Prefer authoritative journal.db 30-day stats + live Binance isolated uPnL
+    j_rep = None
+    try:
+        import journal
+        j_rep = journal.generate_daily_observability_report(days=30)
+    except Exception:
+        j_rep = None
 
-    realized_idr = sum(p.get("pnl_idr", 0) for p in closed_pos)
-    realized_usd = sum(p.get("pnl_usd", 0) for p in closed_pos)
-    unrealized_idr = sum(p.get("pnl_idr", 0) for p in open_pos)
-    unrealized_usd = sum(p.get("pnl_usd", 0) for p in open_pos)
+    if isinstance(j_rep, dict) and int(j_rep.get("trade_count", 0) or 0) > 0:
+        closed_count = int(j_rep["trade_count"])
+        win_rate = float(j_rep.get("win_rate", 0.0) or 0.0)
+        win_cnt = int(round(closed_count * (win_rate / 100.0)))
+        loss_cnt = max(0, closed_count - win_cnt)
+        realized_usd = float(j_rep.get("net_pnl_usdt", 0.0) or 0.0)
+        realized_idr = realized_usd * usd_idr
+        fees_line = f"💸 <b>Fees + Funding (30d):</b> -${float(j_rep.get('total_fee_usdt', 0)) + float(j_rep.get('total_funding_usdt', 0)):.4f} USDT\n"
+    else:
+        winning = [p for p in closed_pos if p.get("pnl_idr", 0) > 0 or p.get("pnl_pct", 0) > 0]
+        losing = [p for p in closed_pos if p.get("pnl_idr", 0) <= 0 and p.get("pnl_pct", 0) <= 0]
+        closed_count = len(closed_pos)
+        win_cnt = len(winning)
+        loss_cnt = len(losing)
+        win_rate = round((win_cnt / closed_count * 100), 1) if closed_count > 0 else 0.0
+        realized_idr = sum(float(p.get("pnl_idr", 0) or 0) for p in closed_pos)
+        realized_usd = sum(float(p.get("pnl_usd", 0) or 0) for p in closed_pos)
+        fees_line = ""
+
+    unrealized_usd = sum(float(p.get("pnl_usd", 0) or 0) for p in open_pos)
+    bn_c = get_binance_client()
+    if bn_c:
+        try:
+            live_ps = bn_c.get_positions()
+            if isinstance(live_ps, list):
+                unrealized_usd = sum(float(p.get("unrealized_pnl", 0.0) or 0.0) for p in live_ps)
+                open_cnt_disp = len(live_ps)
+            else:
+                open_cnt_disp = len(open_pos)
+        except Exception:
+            open_cnt_disp = len(open_pos)
+    else:
+        open_cnt_disp = len(open_pos)
+    unrealized_idr = unrealized_usd * usd_idr
+
     total_idr = realized_idr + unrealized_idr
     total_usd = realized_usd + unrealized_usd
 
@@ -882,17 +1012,18 @@ def handle_pnl_command(chat_id):
     sign_un = "+" if unrealized_idr >= 0 else ""
 
     text = (
-        f"📊 <b>PERFORMA TRADING & WIN RATE AI</b>\n"
+        f"📊 <b>PERFORMA TRADING &amp; WIN RATE AI (30D JOURNAL)</b>\n"
         f"────────────────────────\n"
         f"🏆 <b>Win Rate:</b> <b>{win_rate:.1f}%</b>\n"
-        f"📊 <b>Statistik:</b> {len(winning)} Menang / {len(losing)} Kalah ({closed_count} selesai)\n"
+        f"📊 <b>Statistik:</b> {win_cnt} Menang / {loss_cnt} Kalah ({closed_count} selesai)\n"
         f"────────────────────────\n"
-        f"💰 <b>Net Total P&L:</b> <b>{sign_tot}Rp {total_idr:,.0f} ({sign_tot}${total_usd:.2f})</b>\n"
-        f"📈 <b>Realized P&L:</b> {sign_real}Rp {realized_idr:,.0f} ({sign_real}${realized_usd:.2f})\n"
-        f"🌊 <b>Floating P&L:</b> {sign_un}Rp {unrealized_idr:,.0f} ({sign_un}${unrealized_usd:.2f})\n"
-        f"💼 <b>Posisi Terbuka:</b> {len(open_pos)} posisi aktif\n"
+        f"💰 <b>Net Total P&amp;L:</b> <b>{sign_tot}Rp {total_idr:,.0f} ({sign_tot}${total_usd:.4f})</b>\n"
+        f"📈 <b>Realized Net P&amp;L:</b> {sign_real}Rp {realized_idr:,.0f} ({sign_real}${realized_usd:.4f})\n"
+        f"🌊 <b>Floating P&amp;L:</b> {sign_un}Rp {unrealized_idr:,.0f} ({sign_un}${unrealized_usd:.4f})\n"
+        f"{fees_line}"
+        f"💼 <b>Posisi Terbuka:</b> {open_cnt_disp} posisi aktif\n"
         f"────────────────────────\n"
-        f"🛡️ <i>Semua posisi diawasi real-time oleh AI Sentinel tiap 10 detik.</i>"
+        f"🛡️ <i>Ketik <code>/digest</code> untuk laporan TCA &amp; slippage harian lengkap.</i>"
     )
     send_telegram_message(chat_id, text)
 
@@ -1255,10 +1386,8 @@ def handle_vault_command(chat_id):
     }
     try:
         pv = _resolve_vault_instance(initial_equity=eq)
-        if eq > 0:
-            vault_info = pv.update_equity(eq)
-        else:
-            vault_info = pv.get_status()
+        # H11 Fix: Read-only status query (do not mutate vault HWM from /vault inspection)
+        vault_info = pv.get_status()
     except Exception as exc:
         logger.warning("/vault get_profit_vault fallback to vault_state.json: %s", exc)
         v_file = os.path.join(RESULTS_DIR, "vault_state.json")
@@ -1283,21 +1412,197 @@ def handle_vault_command(chat_id):
     )
     return {"eq": eq, "hwm_equity": hwm_v, "locked_vault_usdt": locked_v, "working_balance_usdt": wb}
 
+def handle_why_command(chat_id):
+    """Feature #5: 1-Tap Rejection Telemetry (/why) explaining why bot hasn't opened a trade."""
+    st = read_json_safe(STATE_FILE, default={}, strict_on_corrupt=False, expected_type=dict) or {}
+    rej = st.get("rejection_stats") or {}
+    counts = rej.get("counts_4h") or {}
+    events = rej.get("events") or []
+    sl_cds = st.get("symbol_sl_cooldowns") or {}
+    now_t = time.time()
+    active_cds = [
+        f"<code>{k}</code> ({max(1, int((float(v) - now_t) / 60))}m)"
+        for k, v in sl_cds.items()
+        if float(v or 0) > now_t
+    ]
+
+    # Check breaker / panic / open positions
+    panic_active = os.path.exists(os.path.join(RESULTS_DIR, "panic_lock.json"))
+    brk_txt = "🟢 CLEAR"
+    try:
+        from auto_trader import load_hard_risk_engine
+        rk = load_hard_risk_engine()
+        if rk.is_circuit_breaker_active():
+            brk_txt = f"🔴 ACTIVE ({_esc_html(getattr(rk, 'breaker_reason', None) or '')})"
+    except Exception:
+        pass
+
+    lines = [
+        "🔎 <b>KENAPA BOT BELUM OPEN POSISI? (/why)</b>",
+        "────────────────────────",
+        f"🔒 <b>Panic Lock:</b> {'🔴 LOCKED' if panic_active else '🟢 OFF'}",
+        f"🛡️ <b>Hard Breaker:</b> {brk_txt}",
+        f"🌡️ <b>Market Regime:</b> {_esc_html((st.get('market_regime') or {}).get('regime', 'N/A'))}",
+        f"🔄 <b>Scan Terakhir:</b> {_esc_html(st.get('last_scan_time', 'N/A'))}",
+    ]
+    if active_cds:
+        lines.append(f"⏳ <b>Post-SL Cooldown:</b> {', '.join(active_cds[:6])}")
+
+    lines.append("\n📊 <b>Gate Penolakan (4 Jam Terakhir):</b>")
+    if counts:
+        for gate, cnt in list(counts.items())[:8]:
+            lines.append(f"• <code>{_esc_html(gate)}</code>: <b>{cnt}x</b>")
+    else:
+        lines.append("<i>Belum ada data penolakan tercatat pada 4 jam terakhir.</i>")
+
+    if events:
+        lines.append("\n📝 <b>5 Penolakan Terakhir:</b>")
+        for ev in reversed(events[-5:]):
+            lines.append(
+                f"• <code>{_esc_html(ev.get('symbol'))}</code> [<b>{_esc_html(ev.get('gate'))}</b>]: "
+                f"<i>{_esc_html(str(ev.get('reason') or '')[:95])}</i>"
+            )
+
+    send_telegram_message(chat_id, "\n".join(lines))
+
+
+def handle_positions_command(chat_id):
+    """Feature #5: Show live Binance Futures open positions with ROE%, R-multiple, and SL/TP status."""
+    bn = get_binance_client()
+    local_pos = read_json_safe(POSITIONS_FILE, default=[], strict_on_corrupt=False, expected_type=list) or []
+    local_map = {
+        str(p.get("binance_pair") or p.get("symbol", "").replace("-USD", "USDT")).upper(): p
+        for p in local_pos if isinstance(p, dict) and p.get("status") == "OPEN"
+    }
+    live_pos = []
+    if bn:
+        try:
+            res = bn.get_positions()
+            if isinstance(res, list):
+                live_pos = res
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Gagal membaca posisi Binance: <code>{_esc_html(e)}</code>")
+            return
+
+    if not live_pos:
+        send_telegram_message(chat_id, "💼 <b>0 POSISI AKTIF DI BINANCE FUTURES</b>\n<i>Modal 100% aman dalam USDT cash; scanner siap mencari setup terbaik.</i>")
+        return
+
+    lines = [f"💼 <b>POSISI AKTIF LIVE BINANCE FUTURES ({len(live_pos)})</b>", "────────────────────────"]
+    for lp in live_pos:
+        sym = str(lp.get("symbol", "")).upper()
+        loc = local_map.get(sym) or {}
+        d_str = lp.get("direction", "LONG")
+        lev = lp.get("leverage", 20)
+        ent = float(lp.get("entry_price", 0) or 0)
+        mk = float(lp.get("mark_price", 0) or 0)
+        upnl = float(lp.get("unrealized_pnl", 0) or 0)
+        liq = float(lp.get("liquidation_price", 0) or 0)
+        iso_w = float(lp.get("isolated_wallet") or loc.get("initial_position_size_usd") or lp.get("isolated_margin") or 0)
+        roe = (upnl / iso_w * 100.0) if iso_w > 0 else 0.0
+        sl_p = float(loc.get("stop_loss") or 0)
+        tp1_p = float(loc.get("take_profit_1") or 0)
+        tp2_p = float(loc.get("take_profit_2") or loc.get("take_profit") or 0)
+        sl_st = loc.get("sl_state", "UNKNOWN")
+        sgn = "+" if upnl >= 0 else ""
+        lines.append(
+            f"💎 <code>{sym}</code> <b>{d_str} {lev}x ISOLATED</b>\n"
+            f"  • Entry: ${ent:,.4f} ➔ Mark: ${mk:,.4f} | Liq: ${liq:,.4f}\n"
+            f"  • uPnL: <b>{sgn}${upnl:.4f} ({sgn}{roe:.2f}% ROE)</b> | Margin: ${iso_w:.2f}\n"
+            f"  • SL: ${sl_p:,.4f} (<code>{sl_st}</code>) | TP1: ${tp1_p:,.4f} | TP2: ${tp2_p:,.4f}\n"
+        )
+    send_telegram_message(chat_id, "\n".join(lines))
+
+
+def handle_reset_breaker_command(chat_id):
+    """Feature #5: Reset HardRiskEngine circuit breaker from Telegram & re-anchor daily start equity."""
+    try:
+        from auto_trader import load_hard_risk_engine, save_hard_risk_engine
+        live_eq = None
+        bn = get_binance_client()
+        if bn:
+            try:
+                b = bn.get_balance()
+                if isinstance(b, dict) and not b.get("isError") and "total_wallet_balance" in b:
+                    live_eq = float(b.get("total_wallet_balance", 0) or 0) + float(b.get("cross_unrealized_pnl", 0) or 0)
+                    lps = bn.get_positions()
+                    if isinstance(lps, list):
+                        live_eq += sum(float(p.get("unrealized_pnl", 0) or 0) for p in lps if str(p.get("margin_type", "ISOLATED")).upper() == "ISOLATED")
+            except Exception:
+                live_eq = None
+        rk = load_hard_risk_engine(current_equity=live_eq)
+        if live_eq is not None and live_eq > 0:
+            rk.current_equity = float(live_eq)
+            rk.daily_start_equity = float(live_eq)
+        rk.resume_circuit_breaker()
+        save_hard_risk_engine(rk)
+        eq_str = f"${live_eq:.4f} USDT" if live_eq is not None else "tetap"
+        send_telegram_message(
+            chat_id,
+            f"🟢 <b>CIRCUIT BREAKER BERHASIL DI-RESET!</b>\n"
+            f"• Anchor Ekuitas Harian: <b>{eq_str}</b>\n"
+            f"• Consecutive Losses: <b>0</b>\n"
+            f"• Scanner &amp; eksekusi 20x kembali aktif."
+        )
+    except Exception as e:
+        send_telegram_message(chat_id, f"❌ Gagal reset breaker: <code>{_esc_html(e)}</code>")
+
+
+def handle_transfer_command(chat_id, args):
+    """Feature #1 & #5: Record external deposit (+amount) or withdraw (-amount) into HardRiskEngine."""
+    if not args:
+        send_telegram_message(
+            chat_id,
+            "ℹ️ <b>Format:</b> <code>/transfer +50</code> (deposit $50) atau <code>/transfer -20</code> (withdraw $20)\n"
+            "<i>Menyesuaikan anchor ekuitas harian agar Daily DD Breaker tidak false-trip saat WD/Top-up.</i>"
+        )
+        return
+    try:
+        amt = float(args[0].replace(",", "").strip())
+        if amt == 0:
+            send_telegram_message(chat_id, "❌ Nominal transfer tidak boleh 0.")
+            return
+        from auto_trader import load_hard_risk_engine, save_hard_risk_engine
+        rk = load_hard_risk_engine()
+        rk.record_transfer(delta_usdt=amt, note="TELEGRAM_TRANSFER")
+        save_hard_risk_engine(rk)
+        kind = "DEPOSIT" if amt > 0 else "WITHDRAW"
+        send_telegram_message(
+            chat_id,
+            f"💳 <b>{kind} TERCATAT DI RISK ENGINE</b>\n"
+            f"• Nominal: <b>{amt:+.4f} USDT</b>\n"
+            f"• Anchor Daily Start Equity baru: <b>${float(getattr(rk, 'daily_start_equity', 0.0) or 0.0):.4f} USDT</b>"
+        )
+    except Exception as e:
+        send_telegram_message(chat_id, f"❌ Format salah / error: <code>{_esc_html(e)}</code>")
+
+
+def handle_digest_command(chat_id):
+    """Feature #6: On-demand Daily Performance & TCA Observability Digest."""
+    try:
+        import journal
+        rep = journal.generate_daily_observability_report(days=1)
+        txt = journal.format_daily_telegram_report(rep)
+        send_telegram_message(chat_id, txt or "ℹ️ Belum ada data digest harian.")
+    except Exception as e:
+        send_telegram_message(chat_id, f"❌ Gagal membuat digest harian: <code>{_esc_html(e)}</code>")
+
+
 def start_bot_listener():
     print(f"[*] Menjalankan Telegram Bot v3.0 - Full Universe Crypto Futures (@idrisginting_bot)...", flush=True)
-    cb_thread = threading.Thread(target=start_callback_server, daemon=True)
-    cb_thread.start()
+    # C3 Fix: Removed broken undefined callback server thread & made embedded auto_trader OPT-IN
+    # (EMBED_AUTO_TRADER=1) so telegram_bot.py NEVER spawns a duplicate auto_trader racing server.js/start_termux.sh!
+    if str(os.getenv("EMBED_AUTO_TRADER", "0")).strip().lower() in ("1", "true", "yes"):
+        def _run_autotrader():
+            try:
+                import auto_trader
+                print("[*] 🤖 Launching Autonomous 5-Minute AI Scanner in embedded thread (EMBED_AUTO_TRADER=1)...", flush=True)
+                auto_trader.start_loop()
+            except Exception as e:
+                print(f"[-] Auto trader background thread error: {e}", flush=True)
 
-    def _run_autotrader():
-        try:
-            import auto_trader
-            print("[*] 🤖 Launching Autonomous 5-Minute AI Scanner in background thread...", flush=True)
-            auto_trader.start_loop()
-        except Exception as e:
-            print(f"[-] Auto trader background thread error: {e}", flush=True)
-
-    trader_thread = threading.Thread(target=_run_autotrader, daemon=True)
-    trader_thread.start()
+        trader_thread = threading.Thread(target=_run_autotrader, daemon=True)
+        trader_thread.start()
 
     offset = 0
     while True:
@@ -1371,12 +1676,17 @@ def start_bot_listener():
                             "• <code>/universe</code> - Status full universe 500+ pairs\n"
                             "• <code>/top</code> - Top 20 movers saat ini\n"
                             "• <code>/status</code> - Portfolio, margin & posisi aktif\n"
-                            "• <code>/pnl</code> - Win Rate % & Total P&L Real-time\n"
+                            "• <code>/positions</code> - Detail posisi live (ROE%, SL/TP1/TP2)\n"
+                            "• <code>/why</code> - Alasan bot belum open posisi (4h gate telemetry)\n"
+                            "• <code>/pnl</code> - Win Rate % & Total Net P&amp;L (Journal 30d)\n"
+                            "• <code>/digest</code> - Laporan harian Performa, Fee &amp; TCA Slippage\n"
                             "• <code>/vault</code> - Status High-Water Mark Profit Vault (T7.3)\n"
-                            "• <code>/health</code> - Diagnostik sistem, AI Gateway & SL State (T9.3)\n"
-                            "• <code>/panic</code> - Emergency Kill-Switch: tutup semua posisi & kunci bot (T7.1)\n"
+                            "• <code>/health</code> - Diagnostik Heartbeat, WS, Breaker &amp; AI Gateway\n"
+                            "• <code>/reset_breaker</code> - Reset Hard Circuit Breaker &amp; re-anchor ekuitas\n"
+                            "• <code>/transfer [+50/-20]</code> - Catat Deposit/Withdraw eksternal\n"
+                            "• <code>/panic</code> - Emergency Kill-Switch: tutup semua posisi &amp; kunci bot\n"
                             "• <code>/unpanic</code> - Buka kunci Emergency Panic Lock\n"
-                            "• <code>/news</code> - AI Crypto News & Macro Sentiment\n"
+                            "• <code>/news</code> - AI Crypto News &amp; Macro Sentiment\n"
                             "• <code>/auto</code> - Status auto-trading background"
                         )
                         send_telegram_message(chat_id, welcome)
@@ -1440,7 +1750,23 @@ def start_bot_listener():
                         send_telegram_message(chat_id, get_system_status())
 
                     elif msg_lower in ["/audit", "audit", "/audit sistem", "audit sistem", "/cek"]:
-                        handle_audit_command(chat_id)
+                        threading.Thread(target=handle_audit_command, args=(chat_id,), daemon=True).start()
+
+                    elif msg_lower in ["/why", "why", "/alasan", "alasan"]:
+                        handle_why_command(chat_id)
+
+                    elif msg_lower in ["/positions", "/pos", "pos", "positions"]:
+                        threading.Thread(target=handle_positions_command, args=(chat_id,), daemon=True).start()
+
+                    elif msg_lower in ["/reset_breaker", "/resetbreaker"]:
+                        handle_reset_breaker_command(chat_id)
+
+                    elif msg_lower.startswith("/transfer"):
+                        parts = msg_text.split()
+                        handle_transfer_command(chat_id, parts[1:])
+
+                    elif msg_lower in ["/digest", "digest", "/report"]:
+                        handle_digest_command(chat_id)
 
                     elif msg_lower.startswith("/auto"):
                         state = read_json_safe(STATE_FILE, default={}, strict_on_corrupt=False, expected_type=dict) or {}
@@ -1504,34 +1830,34 @@ def start_bot_listener():
                         handle_convert_command(chat_id, parts[1:])
 
                     elif msg_lower in ["/btc", "btc", "bitcoin"]:
-                        handle_any_coin_scan(chat_id, "BTC")
+                        threading.Thread(target=handle_any_coin_scan, args=(chat_id, "BTC"), daemon=True).start()
 
                     elif msg_lower in ["/eth", "eth", "ethereum"]:
-                        handle_any_coin_scan(chat_id, "ETH")
+                        threading.Thread(target=handle_any_coin_scan, args=(chat_id, "ETH"), daemon=True).start()
 
                     elif msg_lower in ["/sol", "sol", "solana"]:
-                        handle_any_coin_scan(chat_id, "SOL")
+                        threading.Thread(target=handle_any_coin_scan, args=(chat_id, "SOL"), daemon=True).start()
                     
                     elif msg_lower in ["/bnb", "bnb"]:
-                        handle_any_coin_scan(chat_id, "BNB")
+                        threading.Thread(target=handle_any_coin_scan, args=(chat_id, "BNB"), daemon=True).start()
                     
                     elif msg_lower in ["/xrp", "xrp", "ripple"]:
-                        handle_any_coin_scan(chat_id, "XRP")
+                        threading.Thread(target=handle_any_coin_scan, args=(chat_id, "XRP"), daemon=True).start()
                     
                     elif msg_lower in ["/doge", "doge", "dogecoin"]:
-                        handle_any_coin_scan(chat_id, "DOGE")
+                        threading.Thread(target=handle_any_coin_scan, args=(chat_id, "DOGE"), daemon=True).start()
                     
                     elif msg_lower in ["/avax", "avax", "avalanche"]:
-                        handle_any_coin_scan(chat_id, "AVAX")
+                        threading.Thread(target=handle_any_coin_scan, args=(chat_id, "AVAX"), daemon=True).start()
                     
                     elif msg_lower in ["/link", "link", "chainlink"]:
-                        handle_any_coin_scan(chat_id, "LINK")
+                        threading.Thread(target=handle_any_coin_scan, args=(chat_id, "LINK"), daemon=True).start()
                     
                     elif msg_lower in ["/ada", "ada", "cardano"]:
-                        handle_any_coin_scan(chat_id, "ADA")
+                        threading.Thread(target=handle_any_coin_scan, args=(chat_id, "ADA"), daemon=True).start()
                     
                     elif msg_lower in ["/sui", "sui"]:
-                        handle_any_coin_scan(chat_id, "SUI")
+                        threading.Thread(target=handle_any_coin_scan, args=(chat_id, "SUI"), daemon=True).start()
 
                     elif msg_lower in ["/pnl", "pnl", "/winrate", "winrate", "/performance"]:
                         handle_pnl_command(chat_id)
@@ -1540,7 +1866,7 @@ def start_bot_listener():
                         handle_news_command(chat_id)
 
                     elif msg_lower in ["/panic", "panic", "/kill"]:
-                        handle_panic_command(chat_id)
+                        threading.Thread(target=handle_panic_command, args=(chat_id,), daemon=True).start()
 
                     elif msg_lower in ["/unpanic", "unpanic", "/resume"]:
                         handle_unpanic_command(chat_id)
@@ -1550,22 +1876,39 @@ def start_bot_listener():
 
                     elif msg_lower in ["/health", "health", "/diag"]:
                         hb_file = os.path.join(RESULTS_DIR, "heartbeat.json")
-                        hb_age = "N/A"
+                        hb_age = "MISSING"
+                        hb_status = "UNKNOWN"
+                        ws_status = "UNKNOWN"
                         if os.path.exists(hb_file):
                             try:
                                 with open(hb_file, "r", encoding="utf-8") as hf:
                                     hbd = json.load(hf)
-                                hb_age = f"{int(time.time() - float(hbd.get('timestamp', time.time())))}s lalu"
+                                age_s = int(max(0, time.time() - float(hbd.get("timestamp", 0) or 0)))
+                                hb_age = f"{age_s}s lalu"
+                                hb_status = str(hbd.get("status", "OK"))
+                                ws_age = int(max(0, time.time() - float(hbd.get("ws_last_msg_ts", 0) or 0))) if hbd.get("ws_last_msg_ts") else -1
+                                ws_status = f"🟢 LIVE ({ws_age}s lalu)" if (hbd.get("ws_active") and 0 <= ws_age <= 90) else "🔴 STALE/OFF"
                             except Exception:
                                 pass
+                        panic_flag = "🔴 LOCKED" if os.path.exists(os.path.join(RESULTS_DIR, "panic_lock.json")) else "🟢 OFF"
+                        brk_state = "🟢 CLEAR"
+                        try:
+                            from auto_trader import load_hard_risk_engine
+                            rk_h = load_hard_risk_engine()
+                            if rk_h.is_circuit_breaker_active():
+                                brk_state = f"🔴 ACTIVE ({_esc_html(getattr(rk_h, 'breaker_reason', None) or '')})"
+                        except Exception:
+                            pass
                         cfg_h = get_trading_config()
                         sniper_h = cfg_h.get("sniper_75_mode", {})
                         send_telegram_message(
                             chat_id,
                             f"🩺 <b>[T9.3 INSTITUTIONAL HEALTH DIAGNOSTICS]</b>\n"
                             f"────────────────────────\n"
-                            f"💓 <b>Monitor Heartbeat:</b> {hb_age}\n"
-                            f"⚡ <b>Leverage & Margin:</b> {cfg_h.get('fixed_leverage', 20)}x {cfg_h.get('margin_type', 'ISOLATED')}\n"
+                            f"💓 <b>Heartbeat:</b> {hb_age} (<code>{_esc_html(hb_status)}</code>)\n"
+                            f"🌐 <b>UserDataStream WS:</b> {ws_status}\n"
+                            f"🔒 <b>Panic Lock:</b> {panic_flag} | <b>Breaker:</b> {brk_state}\n"
+                            f"⚡ <b>Leverage &amp; Margin:</b> {cfg_h.get('fixed_leverage', 20)}x {cfg_h.get('margin_type', 'ISOLATED')}\n"
                             f"💰 <b>Sizing Mode:</b> {cfg_h.get('sizing_mode', 'ALL_IN')} ({float(cfg_h.get('all_in_balance_fraction', 0.95))*100:.0f}% Working Balance)\n"
                             f"🎯 <b>Sniper 75% Mode:</b> {'🟢 ACTIVE' if sniper_h.get('enabled', True) else '⚪ OFF'} "
                             f"(p_TP1 ≥ {sniper_h.get('min_calibrated_p_tp1', 0.76)}, TP1 Lock +{sniper_h.get('tp1_lock_trigger_r', 0.55)}R ➔ SL +{sniper_h.get('sl_lock_after_tp1_r', 0.38)}R)\n"
@@ -1573,11 +1916,20 @@ def start_bot_listener():
                             f"────────────────────────"
                         )
                     
-                    # Catch-all: scan any other coin name
+                    # Catch-all: scan any other coin name (skip reserved/unknown multi-word commands)
                     elif msg_lower.startswith("/"):
-                        coin_try = msg_lower.lstrip("/").strip()
-                        if len(coin_try) >= 2 and len(coin_try) <= 10:
-                            handle_any_coin_scan(chat_id, coin_try)
+                        coin_try = msg_lower.lstrip("/").split()[0].strip()
+                        reserved_cmds = {
+                            "start", "help", "login", "auth", "binance", "wallet", "balance", "saldo",
+                            "konfirmasi", "confirm", "approve", "beli", "scan", "sidang", "committee",
+                            "universe", "top", "movers", "status", "audit", "cek", "auto", "limit",
+                            "leverage", "fx", "kurs", "convert", "pnl", "winrate", "performance",
+                            "news", "berita", "sentiment", "panic", "kill", "unpanic", "resume",
+                            "vault", "health", "diag", "why", "alasan", "positions", "pos",
+                            "reset_breaker", "resetbreaker", "transfer", "digest", "report",
+                        }
+                        if coin_try not in reserved_cmds and coin_try.isalnum() and 2 <= len(coin_try) <= 10:
+                            threading.Thread(target=handle_any_coin_scan, args=(chat_id, coin_try), daemon=True).start()
                         else:
                             send_telegram_message(chat_id, 
                                 "❓ Perintah tidak dikenali.\n"

@@ -1300,13 +1300,29 @@ export function mountBOT(body, ctx) {
       );
     }
 
-    // 6. RECENT 5-LAYER PIPELINE SIGNALS (WITH TP & SL ROI/PnL PROJECTIONS)
+    // 6. RECENT 5-LAYER PIPELINE SIGNALS + 4H REJECTION GATE TELEMETRY PILLS (Feature #5)
+    const rejStats = (status && status.rejection_stats) || auto.rejection_stats || {};
+    const rejCounts = rejStats.counts_4h || {};
+    const rejEntries = Object.entries(rejCounts);
+    if (rejEntries.length) {
+      const pillBar = h('div', {
+        style: 'display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 10px;background:#070a10;border-bottom:1px solid var(--border);font-size:10px'
+      },
+        h('span', { class: 'lbl', style: 'margin-right:4px;color:#ff9f1c', text: `4H REJECTION GATES (${rejStats.total_4h || 0}):` }),
+        ...rejEntries.slice(0, 8).map(([gate, cnt]) => h('span', {
+          style: 'padding:2px 6px;border-radius:3px;background:#161d2b;border:1px solid #2b3a55;color:#dbe7ff;font-family:monospace',
+          text: `${gate}: ${cnt}x`
+        }))
+      );
+      sc.append(pillBar);
+    }
+
     const sigs = Array.isArray(auto.recent_signals) ? auto.recent_signals : [];
     if (sigs.length) {
       sc.append(
-        h('div', { class: 'tb', style: 'background:#070707;margin-top:4px' }, h('span', { class: 'lbl', text: 'RECENT 5-LAYER PIPELINE SIGNALS (WITH PROJECTED TP1 / TP2 / SL ROI%)' })),
+        h('div', { class: 'tb', style: 'background:#070707;margin-top:4px' }, h('span', { class: 'lbl', text: 'RECENT 5-LAYER PIPELINE SIGNALS (WITH PROJECTED TP1 / TP2 / SL ROI% & GATE REASON)' })),
         h('table', { class: 't' },
-          h('thead', null, h('tr', null, ['Time', 'Symbol', 'Dir', 'Hybrid Conf', 'Entry Px', 'TP1 Lock', 'TP2 Runner', 'Stop Loss', 'Setup'].map(x => h('th', { text: x })))),
+          h('thead', null, h('tr', null, ['Time', 'Symbol', 'Dir', 'Hybrid Conf', 'Entry Px', 'TP1 Lock', 'TP2 Runner', 'Stop Loss', 'Setup', 'Gate / Reason'].map(x => h('th', { text: x })))),
           h('tbody', null, sigs.map(s => {
             const sDir = s.direction || 'LONG';
             const sEntry = +(s.entry_price || 0);
@@ -1322,6 +1338,9 @@ export function mountBOT(body, ctx) {
             const mTp1Sig = calcTargetRoiPnl(sEntry, sTp1, sDir, 20, sigMarginIdr, realWalletUsdt);
             const mTp2Sig = calcTargetRoiPnl(sEntry, sTp2, sDir, 20, sigMarginIdr, realWalletUsdt);
             const mSlSig = calcTargetRoiPnl(sEntry, sSl, sDir, 20, sigMarginIdr, realWalletUsdt);
+            const gateReasonTxt = s.status === 'APPROVED'
+              ? '✅ APPROVED'
+              : `${s.failed_gate ? '[' + s.failed_gate + '] ' : ''}${String(s.reject_reason || s.status || 'REJECTED').slice(0, 68)}`;
             return h('tr', {
               class: 'row',
               onclick: () => {
@@ -1339,7 +1358,8 @@ export function mountBOT(body, ctx) {
               h('td', { style: 'color:#00e5ff;font-weight:bold', text: sEntry > 0 && sTp1 > 0 ? `${fmtPx(sTp1)} (+${mTp1Sig.roi_pct}%)` : '-' }),
               h('td', { class: 'up sym', text: sEntry > 0 && sTp2 > 0 ? `${fmtPx(sTp2)} (+${mTp2Sig.roi_pct}% | +$${fmtNum(mTp2Sig.pnl_usd, 2)})` : '-' }),
               h('td', { class: 'dn sym', text: sEntry > 0 && sSl > 0 ? `${fmtPx(sSl)} (${mSlSig.roi_pct}% | -$${fmtNum(Math.abs(mSlSig.pnl_usd), 2)})` : '-' }),
-              h('td', { class: 'l lb', text: s.setup_name || s.setup || '-' })
+              h('td', { class: 'l lb', text: s.setup_name || s.setup || '-' }),
+              h('td', { class: s.status === 'APPROVED' ? 'l up' : 'l mu', style: 'font-size:10px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap', title: s.reject_reason || s.status || '', text: gateReasonTxt })
             );
           }))
         )

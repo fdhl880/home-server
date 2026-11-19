@@ -716,6 +716,66 @@ async function run() {
                 defaultHostCtx.close();
             }
         });
+
+        // 10. Batch 1+2+3 Server Hardening & Feature Regression Checks
+        await test('Batch Hardening: close-first order, sync-sl AMENDED gate, honest /health, panic guard on /auto/resume, /transfer & config parity', async () => {
+            const serverSrc = fs.readFileSync(path.join(repoRoot, 'server.js'), 'utf8');
+            const closeIdx = serverSrc.indexOf("res = c.close_position(p['pair'], p['direction'])");
+            const cancelIdx = serverSrc.indexOf("canc = c.cancel_all_orders(p['pair'])");
+            assert(closeIdx > 0 && cancelIdx > closeIdx, '/positions/close must close & verify flat BEFORE cancel_all_orders');
+            assert(serverSrc.includes("parsed.status === 'AMENDED'"), '/sync-sl must require status === AMENDED');
+            assert(serverSrc.includes('const positions = getAllStoredPositions();'), 'Email alert poller must inspect all stored positions (including CLOSED_*)');
+
+            // Config schema parity with config_schema.py
+            assert.throws(() => validateTradingConfigPatch({ max_leverage: 25 }), /out of allowed range/);
+            assert.throws(() => validateTradingConfigPatch({ all_in_balance_fraction: 0.99 }), /out of allowed range/);
+            const syncedCfg = validateTradingConfigPatch({
+                enforce_backtest_gate: false,
+                sizing_mode: 'RISK_FRACTIONAL',
+                breaker_consecutive_losses: 2,
+                breaker_cooldown_hours: 12
+            });
+            assert.strictEqual(syncedCfg.enforce_backtest_gate, false);
+            assert.strictEqual(syncedCfg.sizing_mode, 'RISK_FRACTIONAL');
+
+            // Honest /api/crypto-futures/health (DEGRADED_NO_HEARTBEAT when no heartbeat.json, PANIC_LOCKED when panic_lock active)
+            const hNoHb = await rawHttpRequest(port, {
+                method: 'GET',
+                reqPath: '/api/crypto-futures/health',
+                headers: { 'X-Dash-Token': testToken }
+            });
+            assert.strictEqual(hNoHb.status, 200);
+            assert.strictEqual(hNoHb.json.status, 'DEGRADED_NO_HEARTBEAT');
+
+            // Panic lock must NOT be cleared by /auto/resume without CONFIRM_UNPANIC
+            const panicPath = path.join(env.resultsDir, 'panic_lock.json');
+            writeJsonAtomicSync(panicPath, { locked: true, reason: 'test_panic' });
+            const hPanic = await rawHttpRequest(port, {
+                method: 'GET',
+                reqPath: '/api/crypto-futures/health',
+                headers: { 'X-Dash-Token': testToken }
+            });
+            assert.strictEqual(hPanic.json.status, 'PANIC_LOCKED');
+
+            const resumeBlocked = await rawHttpRequest(port, {
+                method: 'POST',
+                reqPath: '/api/crypto-futures/auto/resume',
+                headers: { 'Content-Type': 'application/json', 'X-Dash-Token': testToken },
+                body: '{}'
+            });
+            assert.strictEqual(resumeBlocked.status, 409);
+            assert.strictEqual(fs.existsSync(panicPath), true, 'panic_lock.json must stay intact on bare /auto/resume');
+            fs.unlinkSync(panicPath);
+
+            // /api/crypto-futures/transfer requires CONFIRM_TRANSFER
+            const txBad = await rawHttpRequest(port, {
+                method: 'POST',
+                reqPath: '/api/crypto-futures/transfer',
+                headers: { 'Content-Type': 'application/json', 'X-Dash-Token': testToken },
+                body: JSON.stringify({ amount_usdt: 25 })
+            });
+            assert.strictEqual(txBad.status, 400);
+        });
     } finally {
         await closeServer(srv, ctx);
         fs.rmSync(env.tmpRoot, { recursive: true, force: true });

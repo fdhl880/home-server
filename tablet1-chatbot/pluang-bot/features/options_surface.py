@@ -151,8 +151,8 @@ def fetch_options_surface(
     except Exception as exc:
         logger.debug("Deribit DVOL fetch fallback for %s: %s", curr, exc)
 
-    # Attempt to sample OTM Call vs OTM Put mark IVs from Binance eapi or Deribit book summary
-    if dvol_val is None:
+    # H3 Fix: Sample 25-Delta Call/Put IV skew from Binance eapi even when Deribit DVOL succeeded
+    if dvol_val is None or call_iv is None or put_iv is None:
         try:
             resp_eapi = requests.get(
                 BINANCE_EAPI_MARK,
@@ -178,7 +178,8 @@ def fetch_options_surface(
                     if c_ivs and p_ivs:
                         call_iv = float(np.median(c_ivs))
                         put_iv = float(np.median(p_ivs))
-                        dvol_val = 0.5 * (call_iv + put_iv)
+                        if dvol_val is None:
+                            dvol_val = 0.5 * (call_iv + put_iv)
         except Exception as exc:
             logger.debug("Binance eapi mark fallback for %s: %s", curr, exc)
 

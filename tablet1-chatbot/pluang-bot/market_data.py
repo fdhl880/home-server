@@ -136,9 +136,12 @@ def _resolve_doh(domain: str):
         except Exception as exc:
             logger.debug("DoH lookup failed for %s via %s: %s", domain, doh_url, exc)
             continue
-    fallback_ip = _BINANCE_STATIC_IPS.get(domain, "65.8.76.49")
-    _dns_cache[domain] = (fallback_ip, now + _DNS_TTL_SEC)
-    return fallback_ip
+    fallback_ip = _BINANCE_STATIC_IPS.get(domain)
+    if fallback_ip:
+        _dns_cache[domain] = (fallback_ip, now + _DNS_TTL_SEC)
+        return fallback_ip
+    # M14 Fix: Never cache REST static IP (65.8.76.49) for WS/testnet domains
+    return None
 
 def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     if isinstance(host, str) and ("binance" in host.lower()):
@@ -226,8 +229,13 @@ def filter_eligible_symbols(
             skipped.append({"symbol": pair, "skip_reason": "SKIP_NON_STANDARD_OR_ILLIQUID"})
             continue
 
-        # 2. Check minNotional
+        # 2. Check minNotional (honor item-level exchange filter metadata + ex_map)
         min_not = KNOWN_MIN_NOTIONAL.get(pair, 5.0)
+        if isinstance(item, dict) and item.get("minNotional") is not None:
+            try:
+                min_not = max(min_not, float(item.get("minNotional") or 5.0))
+            except (TypeError, ValueError):
+                pass
         if ex_map and pair in ex_map:
             min_not = max(min_not, float(ex_map[pair].get("minNotional", 5.0)))
             if ex_map[pair].get("status", "TRADING") != "TRADING":
@@ -243,24 +251,39 @@ def filter_eligible_symbols(
             })
             continue
 
-        # 2b. Check minQty notional capacity
+        # 2b. Check minQty notional capacity (from ex_map OR item-level metadata)
+        min_qty = 0.0
         if ex_map and pair in ex_map:
-            min_qty = float(ex_map[pair].get("minQty", 0.0))
-            last_price = float(item.get("price") or item.get("lastPrice") or 0.0) if isinstance(item, dict) else 0.0
-            if min_qty > 0 and last_price > 0 and (min_qty * last_price) > max_notional:
-                skipped.append({
-                    "symbol": pair,
-                    "skip_reason": f"SKIP_MIN_QTY (minQty*price=${min_qty * last_price:.2f} > max_notional=${max_notional:.2f})",
-                    "min_notional": min_not,
-                    "max_notional": round(max_notional, 2),
-                })
-                continue
+            min_qty = float(ex_map[pair].get("minQty", 0.0) or 0.0)
+        elif isinstance(item, dict) and item.get("minQty") is not None:
+            try:
+                min_qty = float(item.get("minQty") or 0.0)
+            except (TypeError, ValueError):
+                min_qty = 0.0
+        last_price = (
+            float(item.get("price") or item.get("lastPrice") or item.get("last_price") or 0.0)
+            if isinstance(item, dict)
+            else 0.0
+        )
+        if min_qty > 0 and last_price > 0 and (min_qty * last_price) > max_notional:
+            skipped.append({
+                "symbol": pair,
+                "skip_reason": f"SKIP_MIN_QTY (minQty*price=${min_qty * last_price:.2f} > max_notional=${max_notional:.2f})",
+                "min_notional": min_not,
+                "max_notional": round(max_notional, 2),
+            })
+            continue
 
         # 3. Check 24h volume if provided in item dict
-        if isinstance(item, dict) and "quoteVolume" in item:
-            if float(item.get("quoteVolume", 0)) < 15_000_000:
-                skipped.append({"symbol": pair, "skip_reason": "SKIP_LOW_24H_VOLUME"})
-                continue
+        if isinstance(item, dict):
+            if "quoteVolume" in item:
+                if float(item.get("quoteVolume", 0) or 0) < 15_000_000:
+                    skipped.append({"symbol": pair, "skip_reason": "SKIP_LOW_24H_VOLUME"})
+                    continue
+            elif "volume_24h_usd" in item and float(item.get("volume_24h_usd", 0) or 0) > 0:
+                if float(item.get("volume_24h_usd", 0) or 0) < 15_000_000:
+                    skipped.append({"symbol": pair, "skip_reason": "SKIP_LOW_24H_VOLUME"})
+                    continue
 
         eligible.append(item)
 
@@ -555,6 +578,46 @@ def get_binance_24h_tickers():
     return []
 
 
+_PREMIUM_INDEX_CACHE = {"data": {}, "last_fetch": 0.0, "ttl": 60.0}
+
+
+def get_binance_premium_index_bulk():
+    """
+    Feature #4 / C6 Fix: Fetch bulk funding rates & mark prices for ALL Binance Futures pairs
+    in 1 lightweight call (60s TTL cache). Returns dict[pair -> {lastFundingRate, markPrice, ...}].
+    """
+    now = time.time()
+    if _PREMIUM_INDEX_CACHE["data"] and (now - _PREMIUM_INDEX_CACHE["last_fetch"] < _PREMIUM_INDEX_CACHE["ttl"]):
+        return _PREMIUM_INDEX_CACHE["data"]
+
+    endpoints = [
+        "https://fapi.binance.com/fapi/v1/premiumIndex",
+        "https://fapi1.binance.com/fapi/v1/premiumIndex",
+        "https://fapi2.binance.com/fapi/v1/premiumIndex",
+    ]
+    for url in endpoints:
+        try:
+            resp, rate_limited = _public_get(url, timeout=6)
+            if rate_limited:
+                break
+            if resp is not None and resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and data:
+                    pmap = {
+                        str(item.get("symbol", "")).upper(): item
+                        for item in data
+                        if isinstance(item, dict) and str(item.get("symbol", "")).endswith("USDT")
+                    }
+                    if pmap:
+                        _PREMIUM_INDEX_CACHE["data"] = pmap
+                        _PREMIUM_INDEX_CACHE["last_fetch"] = now
+                        return pmap
+        except Exception as exc:
+            logger.debug("get_binance_premium_index_bulk failed (%s): %s", url, exc)
+            continue
+    return _PREMIUM_INDEX_CACHE["data"] or {}
+
+
 def rank_universe_by_opportunity():
     """
     Rank ALL crypto futures in Binance universe by trading opportunity score.
@@ -562,6 +625,7 @@ def rank_universe_by_opportunity():
     - 24h Absolute Volatility / Momentum
     - Liquidity / Institutional Volume
     - High-Low Range expansion
+    - Bulk premiumIndex funding rate (crowded squeeze detection)
     """
     universe = get_full_universe()
     tickers = get_binance_24h_tickers()
@@ -570,6 +634,11 @@ def rank_universe_by_opportunity():
         return universe
 
     ticker_map = {t["symbol"]: t for t in tickers if t.get("symbol", "").endswith("USDT")}
+    prem_map = {}
+    try:
+        prem_map = get_binance_premium_index_bulk()
+    except Exception:
+        prem_map = {}
 
     ranked = []
     for coin in universe:
@@ -596,6 +665,11 @@ def rank_universe_by_opportunity():
         high_low_range = ((high - low) / low * 100) if low > 0 else 0
         abs_change = abs(change)
 
+        # Feature #4: Attach live bulk funding rate from /fapi/v1/premiumIndex
+        prem = prem_map.get(str(pair).upper()) or {}
+        fr_raw = float(prem.get("lastFundingRate", coin.get("funding_rate_raw", 0.0)) or 0.0)
+        fr_pct = round(fr_raw * 100.0, 4)
+
         # Opportunity score components:
         # 1. Volume score (log scale, rewards high liquidity)
         vol_score = min(math.log10(max(vol_usd, 1)) * 1.0, 10.0)
@@ -605,6 +679,8 @@ def rank_universe_by_opportunity():
         range_score = min(high_low_range / 3.0, 10.0)
 
         opp_score = (vol_score * 0.35) + (change_score * 0.40) + (range_score * 0.25)
+        if abs(fr_raw) >= 0.0003:
+            opp_score += 0.35  # Slight boost for crowded funding squeeze candidates
 
         # Tiny liquidity anchor tie-breaker so high-volatility alts are never drowned out by flat majors
         if pair in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
@@ -618,6 +694,10 @@ def rank_universe_by_opportunity():
             "high_24h": high,
             "low_24h": low,
             "high_low_range_pct": round(high_low_range, 2),
+            "lastFundingRate": fr_raw,
+            "funding_rate_raw": fr_raw,
+            "funding_rate": fr_pct,
+            "funding_rate_pct": fr_pct,
             "opportunity_score": round(opp_score, 3),
             "volume_rank": "HIGH" if vol_usd > 100_000_000 else ("MEDIUM" if vol_usd > 10_000_000 else "LOW")
         })
@@ -845,7 +925,7 @@ def calculate_volume_profile(volumes, closes):
 # BINANCE FUTURES SPECIFIC DATA
 # ===================================================================
 def get_binance_funding_rate(pair="BTCUSDT"):
-    """Get real-time funding rate from Binance Futures"""
+    """Get real-time funding rate from Binance Futures (C6 Fix: ±0.0003 threshold + alias keys)."""
     try:
         url = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={pair}&limit=3"
         resp, rate_limited = _public_get(url, timeout=5)
@@ -854,15 +934,26 @@ def get_binance_funding_rate(pair="BTCUSDT"):
             if data:
                 latest = data[-1]
                 rate = float(latest.get("fundingRate", 0))
+                rate_pct = round(rate * 100.0, 4)
                 return {
-                    "funding_rate": round(rate * 100, 4),
+                    "funding_rate": rate_pct,
+                    "funding_rate_pct": rate_pct,
                     "funding_rate_raw": rate,
-                    "sentiment": "BEARISH_LONGS_PAY" if rate > 0.01 else ("BULLISH_SHORTS_PAY" if rate < -0.01 else "NEUTRAL"),
+                    "rate": rate,
+                    "current_rate": rate,
+                    "sentiment": "BEARISH_LONGS_PAY" if rate >= 0.0003 else ("BULLISH_SHORTS_PAY" if rate <= -0.0003 else "NEUTRAL"),
                     "timestamp": latest.get("fundingTime")
                 }
     except Exception as exc:
         logger.warning("get_binance_funding_rate failed for %s: %s", pair, exc)
-    return {"funding_rate": 0, "sentiment": "UNAVAILABLE"}
+    return {
+        "funding_rate": 0.0,
+        "funding_rate_pct": 0.0,
+        "funding_rate_raw": 0.0,
+        "rate": 0.0,
+        "current_rate": 0.0,
+        "sentiment": "UNAVAILABLE",
+    }
 
 
 def get_binance_open_interest(pair="BTCUSDT"):
@@ -968,7 +1059,15 @@ def analyze_derivatives_confluence(price_change, funding_rate, open_interest=Non
     - Short Squeeze Setup: Extreme Negative Funding (Pump Reversal Risk)
     - Healthy Trend Continuation: Price trend backed by moderate leverage
     """
-    fr_val = funding_rate.get("current_rate", 0.0001) if isinstance(funding_rate, dict) else 0.0001
+    if isinstance(funding_rate, dict):
+        raw_fr = funding_rate.get("funding_rate_raw", funding_rate.get("current_rate", funding_rate.get("rate")))
+        if raw_fr is not None:
+            fr_val = float(raw_fr or 0.0)
+        else:
+            pct_fr = float(funding_rate.get("funding_rate_pct", funding_rate.get("funding_rate", 0.01)) or 0.0)
+            fr_val = (pct_fr / 100.0) if abs(pct_fr) >= 0.005 else pct_fr
+    else:
+        fr_val = float(funding_rate or 0.0001)
     
     if fr_val > 0.0005 and price_change > 3:
         regime = "OVERLEVERAGED_LONG_TRAP_FADE"

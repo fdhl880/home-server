@@ -87,9 +87,12 @@ def _resolve_doh(domain: str):
         except Exception as exc:
             logger.debug("DoH lookup failed for %s via %s: %s", domain, doh_url, exc)
             continue
-    fallback_ip = _BINANCE_STATIC_IPS.get(domain, "65.8.76.49")
-    _dns_cache[domain] = (fallback_ip, now + _DNS_TTL_SEC)
-    return fallback_ip
+    fallback_ip = _BINANCE_STATIC_IPS.get(domain)
+    if fallback_ip:
+        _dns_cache[domain] = (fallback_ip, now + _DNS_TTL_SEC)
+        return fallback_ip
+    # M14 Fix: Never cache REST static IP (65.8.76.49) for WS/testnet domains (fstream/stream/testnet).
+    return None
 
 
 def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
@@ -681,6 +684,7 @@ class BinanceFuturesClient:
         _hosts_override: list = None,
         priority: str = None,
         _retry_rate_limit: bool = True,
+        api_key_only: bool = False,
     ):
         """
         T0.1 / A-1 / B-13: Execute HTTP request against Binance Futures REST API with:
@@ -776,6 +780,11 @@ class BinanceFuturesClient:
                 raise ValueError("Binance API Key and Secret are required for private endpoints!")
             req_params = self._sign(raw_params)
         else:
+            if api_key_only:
+                if not self.api_key:
+                    raise ValueError("Binance API Key is required for USER_STREAM endpoints!")
+                if "X-MBX-APIKEY" not in self.session.headers:
+                    self.session.headers["X-MBX-APIKEY"] = self.api_key
             req_params = raw_params
 
         last_error = None
@@ -1058,6 +1067,7 @@ class BinanceFuturesClient:
                         "leverage": int(p.get("leverage", 20)),
                         "margin_type": p.get("marginType", "isolated").upper(),
                         "isolated_margin": float(p.get("isolatedMargin", 0)),
+                        "isolated_wallet": float(p.get("isolatedWallet", 0)),
                     })
             return open_positions
         return res
@@ -1541,37 +1551,109 @@ class BinanceFuturesClient:
 
     def amend_stop_loss(self, symbol: str, direction: str, new_trigger_price: float, old_algo_id: int = None, quantity: float = None) -> dict:
         """
-        T0.6: Zero-Unprotected-Window Stop-Loss Amendment.
-        1. Place NEW Stop-Loss Algo Order first.
-        2. Verify new_algo_id is confirmed.
-        3. ONLY THEN cancel the old Stop-Loss Algo Order.
-        If new SL placement fails, the old SL remains untouched on the exchange!
+        T0.6 / C1 Fix: Zero-Unprotected-Window Stop-Loss Amendment (bypasses Binance -4130).
+        Binance rejects placing a second closePosition=true STOP_MARKET while an existing
+        closePosition=true SL exists (-4130). To preserve ZERO unprotected window:
+        1. Discover ALL existing SL algo orders (merged with old_algo_id).
+        2. If an existing closePosition=true SL is open (or first placement returns -4130)
+           and quantity is None, fetch live position quantity and place the new SL using
+           explicit quantity + reduceOnly/positionSide (which Binance allows concurrently).
+        3. Verify new_algo_id is confirmed.
+        4. ONLY THEN cancel all old SL algo orders.
+        If new SL placement fails (e.g. -2021), old SL remains untouched on exchange!
         """
         with self._critical_priority():
             sym = self.normalize_symbol(symbol)
-            # Discover existing SL algo orders before placing new one if old_algo_id not provided
-            existing_sl_ids = []
-            if old_algo_id:
-                existing_sl_ids.append(int(old_algo_id))
-            else:
-                ok, open_algos = self.get_open_algo_orders(sym)
-                if ok:
-                    expected_side = "SELL" if direction.upper() == "LONG" else "BUY"
-                    for ao in open_algos:
-                        otype = str(ao.get("orderType", ao.get("type", ""))).upper()
-                        side = str(ao.get("side", "")).upper()
-                        if "STOP" in otype and "TAKE_PROFIT" not in otype and side == expected_side and "algoId" in ao:
-                            existing_sl_ids.append(int(ao["algoId"]))
+            dir_u = str(direction or "").upper()
+            expected_side = "SELL" if dir_u == "LONG" else "BUY"
 
-            # Step 1: Place NEW SL first
-            new_res = self.set_stop_loss(sym, direction, new_trigger_price, quantity=quantity)
+            # Always discover ALL active SL algo orders and merge with old_algo_id (deduped)
+            existing_sl_ids = []
+            has_close_pos_sl = False
+            if old_algo_id is not None:
+                try:
+                    existing_sl_ids.append(int(old_algo_id))
+                except (TypeError, ValueError):
+                    pass
+
+            ok_open, open_algos = self.get_open_algo_orders(sym)
+            if ok_open and isinstance(open_algos, list):
+                for ao in open_algos:
+                    if not isinstance(ao, dict):
+                        continue
+                    otype = str(ao.get("orderType", ao.get("type", ""))).upper()
+                    side = str(ao.get("side", "")).upper()
+                    if "STOP" in otype and "TAKE_PROFIT" not in otype and side == expected_side and "algoId" in ao:
+                        aid = int(ao["algoId"])
+                        if aid not in existing_sl_ids:
+                            existing_sl_ids.append(aid)
+                        cp_raw = ao.get("closePosition")
+                        if cp_raw is True or str(cp_raw).lower() == "true":
+                            has_close_pos_sl = True
+
+            def _fetch_live_qty_for_sl() -> float | None:
+                try:
+                    pos_list = self.get_positions(sym)
+                    if isinstance(pos_list, list):
+                        matched = next(
+                            (
+                                p for p in pos_list
+                                if p.get("symbol") == sym
+                                and abs(float(p.get("position_amount", 0) or 0)) > 0
+                                and (
+                                    str(p.get("direction", "")).upper() == dir_u
+                                    or str(p.get("position_side", "")).upper() == dir_u
+                                )
+                            ),
+                            None,
+                        )
+                        if matched is None:
+                            matched = next(
+                                (p for p in pos_list if p.get("symbol") == sym and abs(float(p.get("position_amount", 0) or 0)) > 0),
+                                None,
+                            )
+                        if matched is not None:
+                            q_val = abs(float(matched.get("position_amount", 0) or 0))
+                            if q_val > 0:
+                                return q_val
+                except Exception as q_exc:
+                    logger.debug("amend_stop_loss live qty lookup failed for %s: %s", sym, q_exc)
+                return None
+
+            # Step 1: Place NEW SL first (proactively use live quantity+reduceOnly if a closePosition SL exists)
+            eff_qty = quantity
+            used_qty_fallback = False
+            if eff_qty is None and has_close_pos_sl:
+                live_q = _fetch_live_qty_for_sl()
+                if live_q and live_q > 0:
+                    eff_qty = live_q
+                    used_qty_fallback = True
+
+            new_res = self.set_stop_loss(sym, direction, new_trigger_price, quantity=eff_qty)
+
+            # Reactive -4130 fallback when old_algo_id was provided or openAlgoOrders didn't expose closePosition flag
+            if (
+                eff_qty is None
+                and isinstance(new_res, dict)
+                and new_res.get("code") == -4130
+            ):
+                live_q_retry = _fetch_live_qty_for_sl()
+                if live_q_retry and live_q_retry > 0:
+                    print(
+                        f"[BinanceFutures] 🔄 amend_stop_loss {sym} hit -4130 (existing closePosition SL); "
+                        f"retrying with live quantity={live_q_retry} reduceOnly (zero unprotected window)...",
+                        flush=True,
+                    )
+                    new_res = self.set_stop_loss(sym, direction, new_trigger_price, quantity=live_q_retry)
+                    used_qty_fallback = True
+
             if not isinstance(new_res, dict) or new_res.get("isError") or "algoId" not in new_res:
                 print(f"[BinanceFutures] ⚠️ amend_stop_loss: New SL failed ({new_res}); keeping existing SL untouched!", flush=True)
                 return {"status": "AMEND_FAILED_KEPT_OLD", "new_res": new_res, "kept_algo_ids": existing_sl_ids}
 
             new_algo_id = int(new_res["algoId"])
 
-            # Step 2: Cancel old SL orders only after new SL is active
+            # Step 2: Cancel ALL old SL orders only after new SL is confirmed active
             cancelled_ids = []
             cancel_errors = []
             for old_id in existing_sl_ids:
@@ -1591,6 +1673,7 @@ class BinanceFuturesClient:
                 "new_algo_id": new_algo_id,
                 "new_trigger_price": self.format_price(sym, new_trigger_price),
                 "cancelled_algo_ids": cancelled_ids,
+                "used_quantity_reduce_only": used_qty_fallback,
             }
             if cancel_errors:
                 out["cancel_errors"] = cancel_errors
@@ -1786,6 +1869,167 @@ class BinanceFuturesClient:
                 "closed_qty": partial_qty,
                 "remaining_qty": round(rem_qty, 8),
                 "order": res,
+            }
+
+    def sync_take_profit_close_position(
+        self,
+        symbol: str,
+        direction: str,
+        tp_price: float,
+        old_tp_algo_id: int = None,
+    ) -> dict:
+        """
+        H1 / Feature #2: Replace an oversized quantity-based TP2 order with a clean
+        `closePosition=true` TAKE_PROFIT_MARKET algo order after a 65% TP1 partial close.
+        """
+        with self._critical_priority():
+            sym = self.normalize_symbol(symbol)
+            dir_u = str(direction or "").upper()
+            expected_side = "SELL" if dir_u == "LONG" else "BUY"
+
+            old_tp_ids = []
+            if old_tp_algo_id is not None:
+                try:
+                    old_tp_ids.append(int(old_tp_algo_id))
+                except (TypeError, ValueError):
+                    pass
+
+            ok_open, open_algos = self.get_open_algo_orders(sym)
+            if ok_open and isinstance(open_algos, list):
+                for ao in open_algos:
+                    if not isinstance(ao, dict):
+                        continue
+                    otype = str(ao.get("orderType", ao.get("type", ""))).upper()
+                    side = str(ao.get("side", "")).upper()
+                    if "TAKE_PROFIT" in otype and side == expected_side and "algoId" in ao:
+                        aid = int(ao["algoId"])
+                        if aid not in old_tp_ids:
+                            old_tp_ids.append(aid)
+
+            # Cancel existing TP algo orders first (TP is non-protective, so replacing avoids -4130)
+            cancelled_ids = []
+            for oid in old_tp_ids:
+                try:
+                    c_res = self.cancel_algo_order(sym, oid)
+                    if not (c_res is False or (isinstance(c_res, dict) and c_res.get("isError"))):
+                        cancelled_ids.append(oid)
+                except Exception as exc:
+                    logger.debug("Cancel old TP algo #%s on %s failed: %s", oid, sym, exc)
+
+            new_tp_res = self.set_take_profit(sym, dir_u, trigger_price=float(tp_price), quantity=None)
+            if isinstance(new_tp_res, dict) and "algoId" in new_tp_res:
+                return {
+                    "status": "TP_SYNCED_CLOSE_POSITION",
+                    "symbol": sym,
+                    "new_algo_id": int(new_tp_res["algoId"]),
+                    "cancelled_algo_ids": cancelled_ids,
+                }
+            return {
+                "status": "TP_SYNC_FAILED",
+                "symbol": sym,
+                "cancelled_algo_ids": cancelled_ids,
+                "error": (new_tp_res.get("error") if isinstance(new_tp_res, dict) else str(new_tp_res)),
+            }
+
+    def place_maker_tp1_order(
+        self,
+        symbol: str,
+        direction: str,
+        tp1_price: float,
+        fraction: float = 0.65,
+    ) -> dict:
+        """
+        Feature #2: Place a resting exchange-side LIMIT reduceOnly (GTC) Maker TP1 order
+        for `fraction` (e.g. 65%) of the live position to earn Maker fees (0.02% vs 0.05%)
+        and capture sub-second wicks. Strictly enforces minQty & minNotional on BOTH slices.
+        """
+        with self._critical_priority():
+            sym = self.normalize_symbol(symbol)
+            dir_u = str(direction or "").upper()
+            side = "SELL" if dir_u == "LONG" else "BUY"
+            tp1_px = float(tp1_price or 0.0)
+            if tp1_px <= 0:
+                return {"status": "INVALID_TP1_PRICE", "placed": False, "symbol": sym}
+
+            positions = self.get_positions(sym)
+            if not isinstance(positions, list) or not positions:
+                return {"status": "NO_ACTIVE_POSITION", "placed": False, "symbol": sym}
+
+            pos = next(
+                (
+                    p for p in positions
+                    if p.get("symbol") == sym
+                    and float(p.get("position_amount", 0)) > 0
+                    and (not dir_u or str(p.get("direction", "")).upper() == dir_u or str(p.get("position_side", "")).upper() == dir_u)
+                ),
+                None,
+            )
+            if pos is None:
+                pos = next((p for p in positions if p.get("symbol") == sym and float(p.get("position_amount", 0)) > 0), None)
+            if not pos:
+                return {"status": "NO_ACTIVE_POSITION", "placed": False, "symbol": sym}
+
+            total_qty = abs(float(pos.get("position_amount", 0)))
+            rules = self.get_symbol_filters(sym)
+            if not isinstance(rules, dict) or rules.get("isError"):
+                return {"status": "SYMBOL_FILTER_ERROR", "placed": False, "symbol": sym}
+
+            min_notional = float(rules.get("minNotional", 5.0))
+            min_qty = float(rules.get("minQty", 0.001))
+            prec = int(rules.get("quantityPrecision", 3))
+            frac = max(0.10, min(0.85, float(fraction or 0.65)))
+
+            partial_qty = self._format_qty_compat(sym, total_qty * frac, order_type="LIMIT")
+            rem_qty = max(0.0, total_qty - partial_qty)
+            partial_notional = partial_qty * tp1_px
+            rem_notional = rem_qty * tp1_px
+
+            if (
+                partial_qty < min_qty
+                or rem_qty < min_qty
+                or partial_notional < min_notional
+                or rem_notional < min_notional
+            ):
+                return {
+                    "status": "SKIPPED_MIN_NOTIONAL",
+                    "placed": False,
+                    "symbol": sym,
+                    "partial_qty": partial_qty,
+                    "remaining_qty": round(rem_qty, 8),
+                    "min_notional": min_notional,
+                }
+
+            fmt_tp1 = self.format_price(sym, tp1_px)
+            params = {
+                "symbol": sym,
+                "side": side,
+                "type": "LIMIT",
+                "timeInForce": "GTC",
+                "price": str(fmt_tp1),
+                "quantity": partial_qty if prec > 0 else int(partial_qty),
+            }
+            if self.dual_side_position:
+                params["positionSide"] = "LONG" if dir_u == "LONG" else "SHORT"
+            else:
+                params["reduceOnly"] = "true"
+
+            res = self._request("POST", "/fapi/v1/order", params=params, signed=True)
+            if isinstance(res, dict) and not res.get("isError") and res.get("orderId"):
+                return {
+                    "status": "MAKER_TP1_PLACED",
+                    "placed": True,
+                    "symbol": sym,
+                    "order_id": res.get("orderId"),
+                    "tp1_price": fmt_tp1,
+                    "partial_qty": partial_qty,
+                    "remaining_qty": round(rem_qty, 8),
+                    "order": res,
+                }
+            return {
+                "status": "MAKER_TP1_ERROR",
+                "placed": False,
+                "symbol": sym,
+                "error": (res.get("error") if isinstance(res, dict) else str(res)),
             }
 
     # ===================================================================
@@ -2486,6 +2730,21 @@ class BinanceFuturesClient:
                                     rem_qty = max(0.0, quantity - filled_qty_total)
                                     routing_used = "MAKER_GTX_FILLED"
                                     last_filled_order_res = qo_post
+                            else:
+                                # L20 Fix: Guard cancel-vs-fill race via live positionRisk delta if query_order fails
+                                try:
+                                    pos_race = self.get_positions(symbol)
+                                    if isinstance(pos_race, list):
+                                        race_amt = sum(abs(float(p.get("position_amount", 0) or 0)) for p in pos_race)
+                                        race_delta = max(0.0, race_amt - pre_amt)
+                                        if race_delta > filled_qty_total + 1e-8:
+                                            inc_q = race_delta - filled_qty_total
+                                            filled_qty_total = race_delta
+                                            weighted_fill_cost += inc_q * chase_px
+                                            rem_qty = max(0.0, quantity - filled_qty_total)
+                                            routing_used = "MAKER_GTX_FILLED"
+                                except Exception as race_exc:
+                                    logger.debug("GTX cancel-vs-fill positionRisk guard failed on %s: %s", symbol, race_exc)
 
                 if filled_qty_total > 0 and (rem_qty <= 0 or (rem_qty * mark_price < min_notional)):
                     execution_log["quantity"] = round(filled_qty_total, 8)

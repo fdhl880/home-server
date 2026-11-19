@@ -1341,10 +1341,31 @@ def backup_state_and_journal(
         with contextlib.closing(sqlite3.connect(backup_db_path, timeout=20)) as dst_conn:
             src_conn.backup(dst_conn)
 
+    # H9 Fix: Backup only critical state JSON files (skip hundreds of *_USD_latest.json / scan cache files)
+    core_state_json_allowlist = {
+        "active_positions.json",
+        "autotrader_state.json",
+        "trading_config.json",
+        "risk_breaker_state.json",
+        "vault_state.json",
+        "performance_ledger.json",
+        "bandit_state.json",
+        "calibrator_state.json",
+        "conformal_state.json",
+        "adwin_state.json",
+        "tabular_meta_weights.json",
+        "ensemble_weights.json",
+        "episodic_memory.json",
+        "degraded_strategies.json",
+        "promotion_ledger.json",
+        "ai_quota_ledger.json",
+        "heartbeat.json",
+        "panic_lock.json",
+    }
     copied_json: List[str] = []
     if os.path.isdir(target_results):
         for fname in sorted(os.listdir(target_results)):
-            if not fname.endswith(".json"):
+            if fname not in core_state_json_allowlist:
                 continue
             src_json = os.path.join(target_results, fname)
             if not os.path.isfile(src_json):

@@ -1082,30 +1082,50 @@ class TestServerHardening(unittest.TestCase):
                 pl.save_trading_config({"max_budget_idr": 0, "margin_type": "ISOLATED"})
 
                 client = srv.app.test_client()
+                tok = srv._resolve_flask_dash_token()
+                hdrs = {"X-Dash-Token": tok} if tok else {}
+
+                # 0. C8 Auth check: mutating route rejects missing token with 401 when DASH_TOKEN configured
+                if tok:
+                    r_unauth = client.post("/api/config", json={"margin_type": "ISOLATED"})
+                    self.assertEqual(r_unauth.status_code, 401)
 
                 # 1. Invalid config via /api/config returns HTTP 400 (never unhandled 500)
-                r_bad = client.post("/api/config", json={"all_in_balance_fraction": 1.5})
+                r_bad = client.post("/api/config", json={"all_in_balance_fraction": 1.5}, headers=hdrs)
                 self.assertEqual(r_bad.status_code, 400)
                 self.assertFalse(r_bad.get_json()["success"])
-                r_bad2 = client.post("/api/config", json={"margin_type": "INVALID_MODE"})
+                r_bad2 = client.post("/api/config", json={"margin_type": "INVALID_MODE"}, headers=hdrs)
                 self.assertEqual(r_bad2.status_code, 400)
                 self.assertFalse(r_bad2.get_json()["success"])
 
                 # 2. /api/futures/settings normalizes CROSS -> CROSSED and returns 400 on invalid
-                r_fs_ok = client.post("/api/futures/settings", json={"margin_type": "CROSS"})
+                r_fs_ok = client.post("/api/futures/settings", json={"margin_type": "CROSS"}, headers=hdrs)
                 self.assertEqual(r_fs_ok.status_code, 200)
                 self.assertEqual(r_fs_ok.get_json()["config"]["margin_type"], "CROSSED")
 
-                r_fs_bad = client.post("/api/futures/settings", json={"max_leverage": 999})
+                r_fs_bad = client.post("/api/futures/settings", json={"max_leverage": 999}, headers=hdrs)
                 self.assertEqual(r_fs_bad.status_code, 400)
                 self.assertFalse(r_fs_bad.get_json()["success"])
 
-                # 3. /api/execute normalizes CROSS -> CROSSED & writes POSITIONS_FILE atomically with .bak
+                # 3a. C8 No-phantom-position check: disconnected exchange returns 502 and writes nothing
                 with patch.object(srv, "get_pluang_client", return_value=None):
+                    r_no_ex = client.post("/api/execute", json={
+                        "symbol": "SOL-USD", "direction": "LONG", "amount_idr": 0,
+                        "leverage": 10, "margin_type": "CROSS", "order_type": "MARKET",
+                    }, headers=hdrs)
+                self.assertEqual(r_no_ex.status_code, 502)
+
+                # 3b. /api/execute with synced exchange normalizes CROSS -> CROSSED & writes atomically with .bak
+                fake_bn = MagicMock()
+                fake_bn.execute_full_trade.return_value = {
+                    "binance_synced": True, "status": "EXECUTED",
+                    "entry_price": 150.0, "quantity": 1.0, "leverage": 10, "order_id": 101,
+                }
+                with patch.object(srv, "get_pluang_client", return_value=fake_bn):
                     r_ex = client.post("/api/execute", json={
                         "symbol": "SOL-USD", "direction": "LONG", "amount_idr": 0,
                         "leverage": 10, "margin_type": "CROSS", "order_type": "MARKET",
-                    })
+                    }, headers=hdrs)
                 self.assertEqual(r_ex.status_code, 200)
                 self.assertEqual(r_ex.get_json()["position"]["margin_type"], "CROSSED")
                 pos_disk = state_io.read_json_safe(srv.POSITIONS_FILE, default=[], strict_on_corrupt=True)
@@ -1113,7 +1133,7 @@ class TestServerHardening(unittest.TestCase):
                 self.assertEqual(pos_disk[0]["margin_type"], "CROSSED")
 
                 # 4. /api/auto/toggle persists STATE_FILE atomically with control_updated_at
-                r_tog = client.post("/api/auto/toggle")
+                r_tog = client.post("/api/auto/toggle", headers=hdrs)
                 self.assertEqual(r_tog.status_code, 200)
                 st_disk = state_io.read_json_safe(srv.STATE_FILE, default={}, strict_on_corrupt=True)
                 self.assertIn("control_updated_at", st_disk)
@@ -1121,11 +1141,11 @@ class TestServerHardening(unittest.TestCase):
                 # 5. Corrupt POSITIONS_FILE without .bak refuses overwrite on /api/execute (HTTP 500)
                 with open(srv.POSITIONS_FILE, "w", encoding="utf-8") as f:
                     f.write('[{"id":"broken"')
-                with patch.object(srv, "get_pluang_client", return_value=None):
+                with patch.object(srv, "get_pluang_client", return_value=fake_bn):
                     r_corrupt = client.post("/api/execute", json={
                         "symbol": "BTC-USD", "direction": "LONG", "amount_idr": 0,
                         "leverage": 10, "margin_type": "ISOLATED", "order_type": "MARKET",
-                    })
+                    }, headers=hdrs)
                 self.assertEqual(r_corrupt.status_code, 500)
                 with open(srv.POSITIONS_FILE, "r", encoding="utf-8") as f:
                     self.assertEqual(f.read(), '[{"id":"broken"')

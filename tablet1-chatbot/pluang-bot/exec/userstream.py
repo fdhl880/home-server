@@ -81,10 +81,18 @@ class UserDataStreamManager:
             logger.warning("UserDataStream reconcile callback failed (%s): %s", reason, exc)
             return {"triggered": False, "reason": reason, "error": str(exc)}
 
+    def _listen_key_request(self, method: str) -> Any:
+        """Send USER_STREAM listenKey request using X-MBX-APIKEY header without HMAC signature (C2 Fix)."""
+        try:
+            return self.client._request(method, "/fapi/v1/listenKey", signed=False, api_key_only=True)
+        except TypeError:
+            # Compatibility fallback for unit-test client mocks expecting (method, endpoint, signed=...)
+            return self.client._request(method, "/fapi/v1/listenKey", signed=True)
+
     def create_listen_key(self) -> Optional[str]:
         if self.client is None:
             return None
-        res = self.client._request("POST", "/fapi/v1/listenKey", signed=True)
+        res = self._listen_key_request("POST")
         if isinstance(res, dict) and "listenKey" in res:
             with self._lock:
                 self.listen_key = str(res["listenKey"])
@@ -97,7 +105,7 @@ class UserDataStreamManager:
     def keepalive_listen_key(self) -> bool:
         if self.client is None or not self.listen_key:
             return False
-        res = self.client._request("PUT", "/fapi/v1/listenKey", signed=True)
+        res = self._listen_key_request("PUT")
         if isinstance(res, dict) and not res.get("isError"):
             with self._lock:
                 self.last_keepalive_ts = time.time()
@@ -111,7 +119,7 @@ class UserDataStreamManager:
     def close_listen_key(self) -> bool:
         if self.client is None or not self.listen_key:
             return False
-        res = self.client._request("DELETE", "/fapi/v1/listenKey", signed=True)
+        res = self._listen_key_request("DELETE")
         with self._lock:
             self.listen_key = None
         return isinstance(res, dict) and not res.get("isError")
@@ -263,6 +271,7 @@ class UserDataStreamManager:
                 }
 
             # Case 2: Exit / SL / TP fill update
+            trade_record: Optional[Dict[str, Any]] = None
             if is_exit_order and status == "FILLED":
                 close_reason = "TP_EXCHANGE"
                 if "TRAILING" in orig_type or "TRAILING" in order_type:
@@ -272,10 +281,15 @@ class UserDataStreamManager:
                 elif realized_profit < 0:
                     close_reason = "SL_EXCHANGE"
 
-                entry_px = float(pos["entry_price"]) if pos else avg_price
-                sl_px = float(pos["sl_price"]) if pos else entry_px * 0.99
-                qty = filled_qty if filled_qty > 0 else (float(pos["quantity"]) if pos else 0.0)
-                entry_fee = float(pos.get("entry_fee_usdt", 0.0)) if pos else 0.0
+                entry_px = float(pos.get("entry_price", 0.0) or 0.0) if pos else 0.0
+                if entry_px <= 0:
+                    entry_px = avg_price
+                pos_dir_eff = str(pos.get("direction", "")).upper() if pos else ("LONG" if side == "SELL" else "SHORT")
+                raw_sl = float(pos.get("sl_price", 0.0) or 0.0) if pos else 0.0
+                sl_px = raw_sl if raw_sl > 0 else (entry_px * (0.99 if pos_dir_eff == "LONG" else 1.01))
+                pos_qty_cur = float(pos.get("quantity", 0.0) or 0.0) if pos else 0.0
+                qty = filled_qty if filled_qty > 0 else pos_qty_cur
+                entry_fee = float(pos.get("entry_fee_usdt", 0.0) or 0.0) if pos else 0.0
                 total_fee = entry_fee + commission
                 net_pnl_usdt = realized_profit - total_fee
 
@@ -285,13 +299,13 @@ class UserDataStreamManager:
                 if realized_profit != 0.0 or total_fee != 0.0:
                     r_multiple_net = net_pnl_usdt / initial_risk_usdt
                 else:
-                    dir_sign = 1.0 if (pos and pos["direction"] == "LONG") else -1.0
+                    dir_sign = 1.0 if pos_dir_eff == "LONG" else -1.0
                     gross_r = dir_sign * (avg_price - entry_px) / risk_per_unit
                     r_multiple_net = gross_r - (total_fee / initial_risk_usdt)
 
                 trade_record = {
                     "symbol": symbol,
-                    "direction": pos["direction"] if pos else ("LONG" if side == "SELL" else "SHORT"),
+                    "direction": pos_dir_eff,
                     "decision_id": pos.get("decision_id", "") if pos else "",
                     "client_order_id": client_order_id,
                     "entry_fill": entry_px,
@@ -303,10 +317,11 @@ class UserDataStreamManager:
                     "r_multiple_net": float(r_multiple_net),
                     "close_reason": close_reason,
                     "closed_at_ms": int(msg.get("E", int(time.time() * 1000))),
+                    "status": status,
                 }
 
                 # Check if partial TP1 fill or full position close
-                remaining_qty = (float(pos["quantity"]) - filled_qty) if pos else 0.0
+                remaining_qty = (pos_qty_cur - filled_qty) if pos else 0.0
                 is_partial_tp1 = (not close_position) and (remaining_qty > 1e-8)
 
                 if is_partial_tp1 and pos:
@@ -318,20 +333,35 @@ class UserDataStreamManager:
                     self.closed_trades_log.append(trade_record)
                     trade_record["sub_type"] = "POSITION_CLOSED"
 
-        if self.journal_callback is not None:
-            self.journal_callback(trade_record)
+        if trade_record is not None:
+            if self.journal_callback is not None:
+                self.journal_callback(trade_record)
 
-        if self.event_bus is not None:
-            self.event_bus.publish(
-                "CRITICAL_POSITION_INTERRUPT",
-                payload=trade_record,
-                priority=int(EventPriority.CRITICAL_POSITION_INTERRUPT),
-            )
+            if self.event_bus is not None:
+                self.event_bus.publish(
+                    "CRITICAL_POSITION_INTERRUPT",
+                    payload=trade_record,
+                    priority=int(EventPriority.CRITICAL_POSITION_INTERRUPT),
+                )
 
+            return {
+                "handled": True,
+                "event_type": "ORDER_TRADE_UPDATE",
+                **trade_record,
+            }
+
+        # C2 Fix: Cleanly handle NEW / CANCELED / EXPIRED / PARTIALLY_FILLED non-terminal updates without UnboundLocalError
         return {
             "handled": True,
             "event_type": "ORDER_TRADE_UPDATE",
-            **trade_record,
+            "sub_type": "ORDER_STATUS_UPDATE",
+            "symbol": symbol,
+            "side": side,
+            "order_type": orig_type or order_type,
+            "status": status,
+            "filled_qty": filled_qty,
+            "avg_price": avg_price,
+            "client_order_id": client_order_id,
         }
 
     def _handle_algo_update(self, msg: Dict[str, Any]) -> Dict[str, Any]:

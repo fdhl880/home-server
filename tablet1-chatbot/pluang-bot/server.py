@@ -15,6 +15,7 @@ Backend server for:
 """
 import os
 import sys
+import hmac
 import json
 import time
 import logging
@@ -73,10 +74,52 @@ EXECUTION_LOG_FILE = os.path.join(RESULTS_DIR, "execution_log.json")
 
 app = Flask(__name__, static_folder=STATIC_DIR)
 
+
+def _resolve_flask_dash_token() -> str:
+    env_tok = str(os.environ.get("DASH_TOKEN", "") or "").strip()
+    if env_tok:
+        return env_tok
+    tok_path = os.path.join(BASE_DIR, ".dash_token")
+    if os.path.exists(tok_path):
+        try:
+            with open(tok_path, "r", encoding="utf-8") as tf:
+                return tf.read().strip()
+        except Exception:
+            pass
+    return ""
+
+
+@app.before_request
+def enforce_dash_token_on_mutations():
+    """C8 Fix: Require DASH_TOKEN on mutating API routes when configured."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    expected = _resolve_flask_dash_token()
+    if not expected:
+        return None
+    supplied = str(request.headers.get("X-Dash-Token", "") or "").strip()
+    if not supplied:
+        auth_h = str(request.headers.get("Authorization", "") or "").strip()
+        if auth_h.lower().startswith("bearer "):
+            supplied = auth_h[7:].strip()
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        return jsonify({"success": False, "error": "Unauthorized (missing or invalid DASH_TOKEN)"}), 401
+    return None
+
+
 @app.after_request
 def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    origin = request.headers.get("Origin", "")
+    allowed_raw = os.environ.get("ALLOWED_ORIGINS", "")
+    allowed_set = {x.strip().rstrip("/") for x in allowed_raw.split(",") if x.strip()}
+    if origin and (
+        origin.startswith("http://localhost")
+        or origin.startswith("http://127.0.0.1")
+        or origin.rstrip("/") in allowed_set
+    ):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,X-Dash-Token"
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
 
@@ -367,8 +410,8 @@ def execute_order():
     MAX_BUDGET_IDR = cfg.get("max_budget_idr", 500000)
     MAX_LEVERAGE = cfg.get("max_leverage", 25)
 
-    # HARD PYTHON SECURITY GATES (ANTI-TAMPERING)
-    if amount_idr > MAX_BUDGET_IDR:
+    # HARD PYTHON SECURITY GATES (ANTI-TAMPERING) — C8 Fix: max_budget_idr == 0 means dynamic/unlimited
+    if MAX_BUDGET_IDR and MAX_BUDGET_IDR > 0 and amount_idr > MAX_BUDGET_IDR:
         return jsonify({
             "success": False,
             "error": f"Nominal Rp {amount_idr:,.0f} ditolak! Melebihi batas Rp {MAX_BUDGET_IDR:,.0f}."
@@ -390,7 +433,7 @@ def execute_order():
     pluang_active = client is not None
     pluang_result = None
 
-    # Execute on Pluang if connected
+    # Execute on Binance Futures if connected
     if pluang_active and cfg.get("auto_execute_on_pluang", True):
         try:
             pos_usd = convert_idr_to_usd(amount_idr)
@@ -415,27 +458,59 @@ def execute_order():
                 }
             )
         except Exception as e:
-            pluang_result = {"error": str(e)}
+            pluang_result = {"error": str(e), "binance_synced": False}
 
-    # Record position atomically via state_io
+    # C8 Fix: NEVER write a phantom OPEN position to disk when exchange execution failed!
+    exec_synced = bool(
+        pluang_active
+        and isinstance(pluang_result, dict)
+        and (pluang_result.get("binance_synced") is True or pluang_result.get("status") == "EXECUTED")
+        and not pluang_result.get("error")
+    )
+    if not exec_synced:
+        err_detail = (
+            pluang_result.get("error") or pluang_result.get("status")
+            if isinstance(pluang_result, dict)
+            else "Binance client not connected or auto_execute disabled"
+        )
+        return jsonify({
+            "success": False,
+            "pluang_synced": False,
+            "binance_synced": False,
+            "error": f"Exchange execution failed: {err_detail}",
+            "pluang_execution": pluang_result,
+        }), 502
+
+    # Record verified position atomically via state_io
     new_pos = {
         "id": f"POS_{symbol}_{int(time.time())}",
         "symbol": symbol,
+        "binance_pair": symbol.replace("-USD", "USDT") if "-USD" in symbol else symbol,
         "direction": direction,
-        "leverage": leverage,
+        "entry_price": pluang_result.get("entry_price", 0),
+        "leverage": int(pluang_result.get("leverage") or leverage),
         "margin_type": margin_type,
         "order_type": order_type,
         "amount_idr": amount_idr,
         "amount_usd": convert_idr_to_usd(amount_idr),
         "position_size_idr": amount_idr,
-        "position_size_usd": convert_idr_to_usd(amount_idr),
-        "take_profit": tp_price,
+        "position_size_usd": float(pluang_result.get("position_size_usdt") or convert_idr_to_usd(amount_idr)),
+        "initial_position_size_usd": float(pluang_result.get("position_size_usdt") or convert_idr_to_usd(amount_idr)),
+        "quantity": pluang_result.get("quantity"),
+        "initial_quantity": pluang_result.get("quantity"),
+        "take_profit": pluang_result.get("take_profit") or tp_price,
         "take_profit_1": tp_price,
-        "take_profit_2": tp_price,
-        "stop_loss": sl_price,
+        "take_profit_2": pluang_result.get("take_profit") or tp_price,
+        "stop_loss": pluang_result.get("stop_loss") or sl_price,
+        "sl_algo_id": pluang_result.get("sl_algo_id"),
+        "tp_algo_id": pluang_result.get("tp_algo_id"),
+        "sl_state": pluang_result.get("sl_state", "CONFIRMED"),
+        "order_id": pluang_result.get("order_id"),
         "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "opened_ts": time.time(),
         "status": "OPEN",
-        "pluang_synced": pluang_active and pluang_result and "error" not in pluang_result,
+        "binance_synced": True,
+        "pluang_synced": True,
         "pluang_execution": pluang_result
     }
     try:
@@ -532,22 +607,24 @@ def futures_settings():
 
 @app.route("/api/pluang/status")
 def pluang_status():
-    """Check Pluang MCP connection status and available tools"""
+    """Check Binance Futures client connection status (C8 Fix: remove broken legacy MCP calls)."""
     client = get_pluang_client()
     if client:
-        conn = client.check_connection()
-        tools = client.get_available_tools()
-        return jsonify({
-            "connected": conn.get("connected", False),
-            "server_info": conn.get("server_info", {}),
-            "available_tools": tools,
-            "last_error": conn.get("last_error")
-        })
+        try:
+            bal = client.get_balance()
+            ok = isinstance(bal, dict) and not bal.get("isError") and "total_wallet_balance" in bal
+            return jsonify({
+                "connected": ok,
+                "exchange": "BINANCE_FUTURES",
+                "wallet_balance_usdt": float(bal.get("total_wallet_balance", 0)) if ok else 0.0,
+                "last_error": None if ok else (bal.get("error") if isinstance(bal, dict) else "Balance query failed"),
+            })
+        except Exception as exc:
+            return jsonify({"connected": False, "exchange": "BINANCE_FUTURES", "last_error": str(exc)})
     return jsonify({
         "connected": False,
-        "server_info": {},
-        "available_tools": {"count": 0, "tools": []},
-        "last_error": "No token file or client not initialized"
+        "exchange": "BINANCE_FUTURES",
+        "last_error": "Binance client not initialized",
     })
 
 @app.route("/api/pluang/balance")
@@ -607,15 +684,45 @@ def set_margin():
 
 @app.route("/api/pluang/close-position", methods=["POST"])
 def close_pluang_position():
-    """Close a position on Pluang"""
+    """C8 Fix: Close FIRST -> verify flat via get_positions() -> cancel orders ONLY AFTER flat -> update POSITIONS_FILE."""
     data = request.get_json() or {}
     symbol = data.get("symbol")
-    direction = data.get("direction")
+    direction = data.get("direction", "LONG")
     client = get_pluang_client()
     if not client:
-        return jsonify({"error": "Pluang not connected"}), 503
-    result = client.close_position(symbol, direction)
-    return jsonify(result)
+        return jsonify({"success": False, "error": "Binance Futures client not connected"}), 503
+    if not symbol:
+        return jsonify({"success": False, "error": "symbol is required"}), 400
+    pair = client.normalize_symbol(symbol)
+    result = client.close_position(pair, direction)
+    if not isinstance(result, dict) or result.get("isError"):
+        return jsonify({"success": False, "error": (result.get("error") if isinstance(result, dict) else str(result)), "result": result}), 502
+
+    # Verify flat before cancelling SL/TP orders
+    post_pos = client.get_positions(pair)
+    if not isinstance(post_pos, list) or any(abs(float(p.get("position_amount", 0) or 0)) > 0 for p in post_pos):
+        return jsonify({
+            "success": False,
+            "error": f"Position {pair} not confirmed flat after close; keeping SL orders intact",
+            "result": result,
+        }), 502
+
+    cancel_res = client.cancel_all_orders(pair)
+    try:
+        with get_file_lock(POSITIONS_FILE):
+            positions = read_json_safe(POSITIONS_FILE, default=[], strict_on_corrupt=True, expected_type=list)
+            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            for p in positions:
+                if isinstance(p, dict) and p.get("status") == "OPEN":
+                    bp = str(p.get("binance_pair") or p.get("symbol", "").replace("-USD", "USDT")).upper()
+                    if bp == pair:
+                        p["status"] = "CLOSED_MANUAL"
+                        p["closed_at"] = now_str
+                        p["close_reason"] = "FLASK_MANUAL_CLOSE"
+            atomic_write_json(POSITIONS_FILE, positions, make_bak=True)
+    except Exception as exc:
+        logger.warning("Failed updating POSITIONS_FILE after close of %s: %s", pair, exc)
+    return jsonify({"success": True, "pair": pair, "close_result": result, "cancel_result": cancel_res})
 
 # ============================================================
 # MULTI-AGENT COMMITTEE API ENDPOINTS
@@ -725,9 +832,10 @@ def committee_status():
 if __name__ == "__main__":
     os.makedirs(STATIC_DIR, exist_ok=True)
     port = int(os.environ.get("PORT", 5000))
-    print(f"[*] PYROFUEL v4.0 Dashboard Server: http://localhost:{port}", flush=True)
-    print(f"[*] Mode: FULL UNIVERSE + MULTI-AGENT COMMITTEE + PLUANG EXECUTION", flush=True)
+    flask_host = os.environ.get("FLASK_HOST", "127.0.0.1")
+    print(f"[*] PYROFUEL v4.0 Dashboard Server: http://{flask_host}:{port}", flush=True)
+    print(f"[*] Mode: FULL UNIVERSE + MULTI-AGENT COMMITTEE + BINANCE EXECUTION", flush=True)
     print(f"[*] Futures Settings API: /api/futures/settings", flush=True)
     print(f"[*] Committee API: /api/committee/run | /api/committee/status", flush=True)
     print(f"[*] Inspired by: TradingAgents, ai-hedge-fund, Vibe-Trading, LangAlpha, hummingbot", flush=True)
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    app.run(host=flask_host, port=port, debug=False, threaded=True)

@@ -53,12 +53,18 @@ def extract_quant_feature_vector(
     vpin = float(mp.get("vpin", 0.5) or 0.5)
     hawkes_net = float(mp.get("hawkes_ratio_plus", 1.0) or 1.0) - float(mp.get("hawkes_ratio_minus", 1.0) or 1.0)
     rsi = float(sc.get("rsi_14_1h", 50.0) or 50.0)
-    fr_rate = float(fr.get("rate", 0.0) or 0.0)
+    # C6 / H3 Fix: Read funding & options metrics from all supported nested and flat keys
+    fr_raw = fr.get("funding_rate_raw", fr.get("rate", fr.get("current_rate")))
+    if fr_raw is None:
+        fr_pct_v = float(fr.get("funding_rate_pct", fr.get("funding_rate", mp.get("funding_rate_raw", 0.0))) or 0.0)
+        fr_rate = (fr_pct_v / 100.0) if abs(fr_pct_v) >= 0.005 else fr_pct_v
+    else:
+        fr_rate = float(fr_raw or 0.0)
     ls_ratio = max(0.1, float(ls.get("long_short_ratio", ls.get("ratio", 1.0)) or 1.0))
     vol_ratio = float(vol.get("volume_ratio", 1.0) or 1.0)
     atr_pct = float(sc.get("atr_pct", 1.2) or 1.2)
-    dvol = float(opt.get("dvol", 50.0) or 50.0)
-    skew_25d = float(opt.get("skew_25d", 0.0) or 0.0)
+    dvol = float(opt.get("dvol", mp.get("options_dvol", 50.0)) or 50.0)
+    skew_25d = float(opt.get("skew_25d", mp.get("options_skew_25d", 0.0)) or 0.0)
     news_score = float(news.get("sentiment_score", 50.0) or 50.0)
 
     raw = [
