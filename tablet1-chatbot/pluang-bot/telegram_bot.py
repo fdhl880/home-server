@@ -969,7 +969,7 @@ def handle_pnl_command(chat_id):
     j_rep = None
     try:
         import journal
-        j_rep = journal.generate_daily_observability_report(days=30)
+        j_rep = journal.generate_daily_observability_report(window_hours=720)
     except Exception:
         j_rep = None
 
@@ -1585,7 +1585,7 @@ def handle_digest_command(chat_id):
     """Feature #6: On-demand Daily Performance & TCA Observability Digest."""
     try:
         import journal
-        rep = journal.generate_daily_observability_report(days=1)
+        rep = journal.generate_daily_observability_report(window_hours=24)
         txt = journal.format_daily_telegram_report(rep)
         send_telegram_message(chat_id, txt or "ℹ️ Belum ada data digest harian.")
     except Exception as e:

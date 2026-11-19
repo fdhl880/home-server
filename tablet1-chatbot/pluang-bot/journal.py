@@ -1052,12 +1052,15 @@ def generate_daily_observability_report(
     api_error_counts: Optional[Dict[str, int]] = None,
     window_hours: int = 24,
     cost_drift_threshold_pct: float = 0.04,
+    days: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Generate daily net-of-fees PnL, max drawdown, realized-vs-backtest cost-drift report,
     and API error summary (`Gap #11`).
     """
     init_db(db_path)
+    if days is not None:
+        window_hours = max(1, int(days)) * 24
     now_ms = int(time.time() * 1000)
     win_ms = max(1, int(window_hours)) * 3600_000
 

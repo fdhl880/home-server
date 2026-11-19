@@ -413,6 +413,58 @@ class TestFeaturesAutoTraderAndTelegram(unittest.TestCase):
                 "Upgrade from legacy v1 ledger must auto-clear stale error cooldowns",
             )
 
+    def test_telegram_all_new_commands_execute_without_errors(self):
+        import auto_trader as at
+        import journal
+        import telegram_bot as tb
+
+        sent = []
+        fake_bn = MagicMock()
+        fake_bn.get_balance.return_value = {
+            "total_wallet_balance": 35.0,
+            "available_balance": 35.0,
+            "cross_unrealized_pnl": 0.0,
+        }
+        fake_bn.get_positions.return_value = [
+            {
+                "symbol": "SOLUSDT",
+                "direction": "LONG",
+                "leverage": 20,
+                "position_amount": 1.0,
+                "entry_price": 150.0,
+                "mark_price": 153.0,
+                "unrealized_pnl": 3.0,
+                "liquidation_price": 143.0,
+                "margin_type": "ISOLATED",
+                "isolated_margin": 7.5,
+                "isolated_wallet": 7.5,
+            }
+        ]
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            orig_brk = at.RISK_BREAKER_FILE
+            orig_db = journal.DB_PATH
+            try:
+                at.RISK_BREAKER_FILE = os.path.join(tmp, "risk_breaker_state.json")
+                journal.DB_PATH = os.path.join(tmp, "journal.db")
+                journal.init_db(journal.DB_PATH)
+                with patch.object(tb, "send_telegram_message", side_effect=lambda cid, txt, *a, **k: sent.append(txt)), \
+                     patch.object(tb, "get_binance_client", return_value=fake_bn), \
+                     patch.object(tb, "get_fx_info", return_value={"usd_idr": 18000}):
+                    tb.handle_why_command(123)
+                    tb.handle_positions_command(123)
+                    tb.handle_reset_breaker_command(123)
+                    tb.handle_transfer_command(123, ["+10"])
+                    tb.handle_digest_command(123)
+                    tb.handle_pnl_command(123)
+                    tb.handle_wallet_command(123)
+                self.assertEqual(len(sent), 7, f"All 7 Telegram handlers must send output: {len(sent)}")
+                for idx, txt in enumerate(sent):
+                    self.assertNotIn("Gagal", txt, f"Handler #{idx} returned failure message: {txt}")
+                    self.assertNotIn("❌", txt, f"Handler #{idx} returned error banner: {txt}")
+            finally:
+                at.RISK_BREAKER_FILE = orig_brk
+                journal.DB_PATH = orig_db
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

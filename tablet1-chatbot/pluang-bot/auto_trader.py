@@ -5523,7 +5523,7 @@ def start_loop():
                     wib_date_str = now_wib.strftime("%Y-%m-%d")
                     if now_wib.hour == 0 and now_wib.minute < 15 and state.get("last_daily_digest_wib_date") != wib_date_str:
                         import journal as _j_digest
-                        rep_d = _j_digest.generate_daily_observability_report(days=1)
+                        rep_d = _j_digest.generate_daily_observability_report(window_hours=24)
                         txt_d = _j_digest.format_daily_telegram_report(rep_d)
                         if txt_d:
                             send_telegram(txt_d)
