@@ -75,7 +75,7 @@ class AIDecisionEngine:
         min_rrr_net: float = 1.60,
         atr_corridor_mult: float = 0.30,
         sniper_75_enabled: bool = False,
-        min_sniper_p_tp1: float = 0.76,
+        min_sniper_p_tp1: float = 0.65,
     ):
         self.gateway = gateway or AIGateway(persist_ledger=False)
         self.calibrator = calibrator or ProbabilityCalibrator()

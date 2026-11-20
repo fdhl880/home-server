@@ -2373,14 +2373,19 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 except Exception as cal_exc:
                     logger.warning("Calibrator loading/evaluation failed: %s", cal_exc)
 
+                _min_p_cfg = float(sniper_cfg.get("min_calibrated_p_tp1", 0.65))
+                strict_conf = bool(sniper_cfg.get("require_singleton_win", _min_p_cfg >= 0.75))
                 conformal_ok = True
-                conformal_set = ["WIN"] if cal_p >= float(sniper_cfg.get("min_calibrated_p_tp1", 0.74)) else ["WIN", "LOSS"]
+                conformal_set = ["WIN"] if cal_p >= _min_p_cfg else ["WIN", "LOSS"]
                 try:
                     from features.hmm_drift import load_conformal_filter
                     sg = load_conformal_filter(alpha_target=float(sniper_cfg.get("conformal_alpha_target", 0.18)))
                     _c_ok, _c_reason, _c_info = sg.evaluate_gate(cal_p)
-                    conformal_ok = bool(_c_ok)
                     conformal_set = list(_c_info.get("prediction_set") or [])
+                    if strict_conf:
+                        conformal_ok = bool(_c_ok)
+                    else:
+                        conformal_ok = bool(conformal_set != ["LOSS"])
                 except Exception as conf_exc:
                     logger.warning("Conformal filter evaluation failed: %s", conf_exc)
 
@@ -2417,8 +2422,9 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                         _veto_reasons.append(f"S_Hybrid {s_hybrid_pct:.1f}% < {min_conf_gate:.0f}% (kolaborasi Math+AI di bawah ambang Sniper)")
                     if bool(sniper_cfg.get("enabled", True)) and not conformal_ok:
                         _veto_reasons.append(f"SKIP_CONFORMAL_AMBIGUITY (set={conformal_set}, cal_p={cal_p:.2f})")
-                    if _p_tp1_sl < 70.0:
-                        _veto_reasons.append(f"First-Passage P(TP1<SL) {_p_tp1_sl:.1f}% < 70%")
+                    fpt_min_p = float(sniper_cfg.get("min_first_passage_pct", 60.0) or 60.0)
+                    if _p_tp1_sl < fpt_min_p:
+                        _veto_reasons.append(f"First-Passage P(TP1<SL) {_p_tp1_sl:.1f}% < {fpt_min_p:.0f}%")
                     if _pref_dir in ("LONG", "SHORT") and _fc_dir in ("LONG", "SHORT") and _pref_dir != _fc_dir and abs(_obi20) > 0.15:
                         _veto_reasons.append(f"Konflik arah AI ({_fc_dir}) vs Matematika+OFI_20 ({_pref_dir}, OFI={_obi20:+.2f})")
                     if _veto_reasons:

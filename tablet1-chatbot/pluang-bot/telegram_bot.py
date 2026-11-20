@@ -1917,7 +1917,7 @@ def start_bot_listener():
                             f"⚡ <b>Leverage &amp; Margin:</b> {cfg_h.get('fixed_leverage', 20)}x {cfg_h.get('margin_type', 'ISOLATED')}\n"
                             f"💰 <b>Sizing Mode:</b> {cfg_h.get('sizing_mode', 'ALL_IN')} ({float(cfg_h.get('all_in_balance_fraction', 0.95))*100:.0f}% Working Balance)\n"
                             f"🎯 <b>Sniper 75% Mode:</b> {'🟢 ACTIVE' if sniper_h.get('enabled', True) else '⚪ OFF'} "
-                            f"(p_TP1 ≥ {sniper_h.get('min_calibrated_p_tp1', 0.76)}, TP1 Lock +{sniper_h.get('tp1_lock_trigger_r', 0.55)}R ➔ SL +{sniper_h.get('sl_lock_after_tp1_r', 0.38)}R)\n"
+                            f"(p_TP1 ≥ {sniper_h.get('min_calibrated_p_tp1', 0.65)}, TP1 Lock +{sniper_h.get('tp1_lock_trigger_r', 0.55)}R ➔ SL +{sniper_h.get('sl_lock_after_tp1_r', 0.38)}R)\n"
                             f"🛡️ <b>Consecutive Loss Breaker:</b> {cfg_h.get('circuit_breaker_consecutive_losses', 2)}x\n"
                             f"────────────────────────"
                         )

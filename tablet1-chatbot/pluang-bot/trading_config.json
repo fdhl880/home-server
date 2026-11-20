@@ -24,7 +24,9 @@
   "tp_sl_mode": "SNIPER_TWO_STAGE",
   "sniper_75_mode": {
     "enabled": true,
-    "min_calibrated_p_tp1": 0.76,
+    "min_calibrated_p_tp1": 0.65,
+    "min_first_passage_pct": 60.0,
+    "require_singleton_win": false,
     "conformal_alpha_target": 0.18,
     "tp1_lock_trigger_r": 0.55,
     "tp1_partial_close_pct": 0.65,

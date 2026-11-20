@@ -398,12 +398,21 @@ class HardRiskEngine:
 
             conf_set_raw = decision.get("conformal_set", ["WIN"])
             conf_set: Set[str] = {str(x).upper() for x in conf_set_raw}
-            if conf_set != {"WIN"}:
-                return {
-                    "allowed": False,
-                    "reject_reason": "SKIP_CONFORMAL_AMBIGUITY",
-                    "conformal_set": sorted(list(conf_set)),
-                }
+            strict_conf = bool(sniper_cfg.get("require_singleton_win", min_p_tp1 >= 0.75))
+            if strict_conf:
+                if conf_set != {"WIN"}:
+                    return {
+                        "allowed": False,
+                        "reject_reason": "SKIP_CONFORMAL_AMBIGUITY",
+                        "conformal_set": sorted(list(conf_set)),
+                    }
+            else:
+                if conf_set == {"LOSS"}:
+                    return {
+                        "allowed": False,
+                        "reject_reason": "SKIP_CONFORMAL_LOSS_ONLY",
+                        "conformal_set": sorted(list(conf_set)),
+                    }
 
         # 6. Net EV & Net RRR Gate
         fee_roundtrip = float(m_state.get("roundtrip_fee_frac", 0.0010))
