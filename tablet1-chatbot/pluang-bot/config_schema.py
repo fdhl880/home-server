@@ -31,7 +31,7 @@ DEFAULT_TRADING_CONFIG: Dict[str, Any] = {
     "max_sl_pct": 2.25,
     "min_sl_pct": 0.45,
     "min_liq_to_sl_ratio": 2.0,
-    "min_confidence_score": 68,
+    "min_confidence_score": 65,
     "min_risk_reward_ratio": 1.5,
     "min_ev_r": 0.20,
     "max_drawdown_pct": 25.0,
