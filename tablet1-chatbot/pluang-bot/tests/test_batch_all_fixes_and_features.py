@@ -352,13 +352,16 @@ class TestFeaturesAutoTraderAndTelegram(unittest.TestCase):
 
     def test_c7_and_feature1_isolated_upnl_and_transfer_dedup(self):
         import auto_trader as at
+        import risk.vault as rv
         from risk.engine import HardRiskEngine
 
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             orig_brk = at.RISK_BREAKER_FILE
             orig_ts = at._LAST_TRANSFER_SYNC_TS
             orig_state = dict(at.state)
+            orig_vault = rv.DEFAULT_VAULT_STATE_PATH
             try:
+                rv.DEFAULT_VAULT_STATE_PATH = os.path.join(tmp, "vault_state.json")
                 at.RISK_BREAKER_FILE = os.path.join(tmp, "risk_breaker_state.json")
                 at._LAST_TRANSFER_SYNC_TS = 0.0
                 at.state["processed_transfer_ids"] = []
@@ -380,6 +383,7 @@ class TestFeaturesAutoTraderAndTelegram(unittest.TestCase):
                 eng_after = at.load_hard_risk_engine()
                 self.assertAlmostEqual(eng_after.daily_start_equity, 150.0, places=4)
             finally:
+                rv.DEFAULT_VAULT_STATE_PATH = orig_vault
                 at.RISK_BREAKER_FILE = orig_brk
                 at._LAST_TRANSFER_SYNC_TS = orig_ts
                 at.state.clear()
@@ -468,10 +472,13 @@ class TestFeaturesAutoTraderAndTelegram(unittest.TestCase):
                 "isolated_wallet": 7.5,
             }
         ]
+        import risk.vault as rv
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             orig_brk = at.RISK_BREAKER_FILE
             orig_db = journal.DB_PATH
+            orig_vault = rv.DEFAULT_VAULT_STATE_PATH
             try:
+                rv.DEFAULT_VAULT_STATE_PATH = os.path.join(tmp, "vault_state.json")
                 at.RISK_BREAKER_FILE = os.path.join(tmp, "risk_breaker_state.json")
                 journal.DB_PATH = os.path.join(tmp, "journal.db")
                 journal.init_db(journal.DB_PATH)
@@ -490,6 +497,7 @@ class TestFeaturesAutoTraderAndTelegram(unittest.TestCase):
                     self.assertNotIn("Gagal", txt, f"Handler #{idx} returned failure message: {txt}")
                     self.assertNotIn("❌", txt, f"Handler #{idx} returned error banner: {txt}")
             finally:
+                rv.DEFAULT_VAULT_STATE_PATH = orig_vault
                 at.RISK_BREAKER_FILE = orig_brk
                 journal.DB_PATH = orig_db
 

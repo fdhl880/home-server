@@ -1143,8 +1143,13 @@ def _safe_get_symbol_filters(bn_client, pair: str):
     return None
 
 
+_LAST_RECORD_POSITION_REASON: str = ""
+
+
 def record_position(signal: dict):
     """Record position locally AND execute on Binance Futures"""
+    global _LAST_RECORD_POSITION_REASON
+    _LAST_RECORD_POSITION_REASON = ""
     cfg = _get_config()
     max_budget = cfg.get("max_budget_idr", 0)   # 0 = no cap, dynamic wallet-based
     max_lev = cfg.get("max_leverage", 20)
@@ -1164,15 +1169,18 @@ def record_position(signal: dict):
     risk_eng = load_hard_risk_engine(cfg)
     max_daily_trades = int(cfg.get("max_daily_trades", 10) or 10)
     if risk_eng.is_circuit_breaker_active():
+        _LAST_RECORD_POSITION_REASON = f"Circuit Breaker aktif ({risk_eng.breaker_reason})"
         print(f"[RISK BREAKER] 🛑 Circuit Breaker active ({risk_eng.breaker_reason}). Entry blocked.", flush=True)
         return None
     if getattr(risk_eng, "_daily_trades_count", 0) >= max_daily_trades:
+        _LAST_RECORD_POSITION_REASON = f"Batas trading harian tercapai ({risk_eng._daily_trades_count}/{max_daily_trades})"
         print(f"[RISK BREAKER] 🛑 Daily trade limit reached ({risk_eng._daily_trades_count}/{max_daily_trades}). Entry blocked.", flush=True)
         return None
 
     # 2. LIVE WALLET CHECK (NO hardcoded fake $100/$10 balance fallback!)
     _bn = get_binance_client()
     if not _bn:
+        _LAST_RECORD_POSITION_REASON = "Klien Binance Futures tidak aktif"
         print("[SIZING] ❌ Binance client not configured — refusing fake balance sizing.", flush=True)
         return None
     avail_usdt = 0.0
@@ -1181,16 +1189,19 @@ def record_position(signal: dict):
     try:
         _bal = _bn.get_balance()
         if not isinstance(_bal, dict) or _bal.get("isError") or "available_balance" not in _bal:
+            _LAST_RECORD_POSITION_REASON = f"Endpoint saldo Binance tidak dapat diakses ({_bal})"
             print(f"[SIZING] ❌ Binance balance endpoint unavailable ({_bal}) — entry aborted safely.", flush=True)
             return None
         avail_usdt = float(_bal.get("available_balance", 0.0))
         total_wallet_usdt = float(_bal.get("total_wallet_balance", avail_usdt))
         cross_upnl_usdt = float(_bal.get("cross_unrealized_pnl", 0.0) or 0.0)
     except Exception as e:
+        _LAST_RECORD_POSITION_REASON = f"Gagal mengecek saldo Binance ({e})"
         print(f"[SIZING] ❌ Binance balance check failed ({e}) — entry aborted safely.", flush=True)
         return None
 
     if avail_usdt < 0.30:
+        _LAST_RECORD_POSITION_REASON = f"Saldo margin Binance tidak mencukupi (${avail_usdt:.2f} < $0.30)"
         print(f"[SIZING] ⚠️ Insufficient Binance available margin (${avail_usdt:.2f} < $0.30). Entry aborted.", flush=True)
         return None
 
@@ -1209,6 +1220,7 @@ def record_position(signal: dict):
     risk_eng = load_hard_risk_engine(cfg, current_equity=live_equity_usdt if (live_equity_usdt > 0 or total_wallet_usdt > 0) else None)
     dd_eval = risk_eng.check_live_equity_drawdown(live_equity=live_equity_usdt)
     if dd_eval.get("breaker_active"):
+        _LAST_RECORD_POSITION_REASON = f"Live Equity Daily Drawdown breaker aktif ({risk_eng.breaker_reason})"
         if dd_eval.get("tripped_now"):
             save_hard_risk_engine(risk_eng)
             send_telegram(
@@ -1237,6 +1249,7 @@ def record_position(signal: dict):
 
     working_usdt = max(0.0, avail_usdt - locked_vault_usdt)
     if working_usdt < 0.30:
+        _LAST_RECORD_POSITION_REASON = f"Modal dilindungi Vault (${locked_vault_usdt:.2f} terkunci, working balance ${working_usdt:.2f} < $0.30)"
         print(
             f"[SIZING] 🛡️ REJECTED_VAULT_PROTECTED: Available=${avail_usdt:.2f}, "
             f"LockedVault=${locked_vault_usdt:.2f}, Working=${working_usdt:.2f} < $0.30. Entry blocked.",
@@ -1249,15 +1262,37 @@ def record_position(signal: dict):
     try:
         positions = _load_positions_safe(strict=True)
     except CorruptedStateError as cse:
+        _LAST_RECORD_POSITION_REASON = f"File active_positions corrupt ({cse})"
         print(f"[POSITION] ❌ POSITIONS_FILE corrupt without valid backup ({cse}) — aborting entry safely without overwriting.", flush=True)
         return None
 
     effective_open, live_open_list, pos_check_err = _get_effective_open_positions(positions, _bn)
     if pos_check_err:
+        _LAST_RECORD_POSITION_REASON = f"Gagal memverifikasi posisi live bursa ({pos_check_err})"
         print(f"[POSITION] ❌ REJECTED_POSITION_CHECK_ERROR ({pos_check_err}) — refusing blind entry.", flush=True)
         return None
 
     open_count = len(effective_open)
+    if open_count >= max_concurrent:
+        _LAST_RECORD_POSITION_REASON = f"Batas posisi simultan ({open_count}/{max_concurrent}) tercapai"
+        print(f"[POSITION] ⚠️ Max concurrent positions ({open_count}/{max_concurrent}) reached. Skipping.", flush=True)
+        return None
+
+    max_same_dir_cfg = cfg.get("max_same_direction_positions", cfg.get("max_directional_positions"))
+    if max_same_dir_cfg is not None:
+        max_same_dir = int(max_same_dir_cfg)
+    elif live_open_list is not None:
+        max_same_dir = 1
+    else:
+        max_same_dir = max_concurrent
+    same_dir_count = sum(1 for p in effective_open if str(p.get("direction", "")).upper() == dir_init)
+    if same_dir_count >= max_same_dir:
+        _LAST_RECORD_POSITION_REASON = f"Batas arah ({dir_init}) tercapai ({same_dir_count}/{max_same_dir})"
+        print(
+            f"[POSITION] 🛡️ Directional exposure cap reached ({same_dir_count}/{max_same_dir} {dir_init} open). Skipping {pair_init}.",
+            flush=True,
+        )
+        return None
     if open_count >= max_concurrent:
         print(f"[POSITION] ⚠️ Max concurrent positions ({open_count}/{max_concurrent}) reached. Skipping.", flush=True)
         return None
@@ -1301,6 +1336,7 @@ def record_position(signal: dict):
         dir_init == "SHORT" and funding_rate <= -0.0005
     )
     if 0.0 <= minutes_to_funding < 15.0 and pays_high_funding:
+        _LAST_RECORD_POSITION_REASON = f"Funding rate tinggi ({funding_rate*100:+.4f}%) mendekati jam funding ({minutes_to_funding:.1f}m)"
         print(
             f"[FUNDING GATE] 🛑 REJECT_FUNDING_BOUNDARY_GUARD: {pair_init} {dir_init} pays "
             f"{funding_rate*100:+.4f}% in {minutes_to_funding:.1f}m (< 15m). Entry blocked.",
@@ -1315,6 +1351,7 @@ def record_position(signal: dict):
         drift_frac = abs(live_mark - entry_p) / entry_p
         drift_tol = max(0.005, 0.6 * sl_pct_raw)
         if drift_frac > drift_tol:
+            _LAST_RECORD_POSITION_REASON = f"Entry drift terlalu jauh ({drift_frac*100:.2f}% > tol {drift_tol*100:.2f}%)"
             print(
                 f"[ENTRY DRIFT] 🛑 STALE_ENTRY_DRIFT: {pair_init} plan=${entry_p:.4f} vs live=${live_mark:.4f} "
                 f"(drift={drift_frac*100:.2f}% > tol={drift_tol*100:.2f}%). Entry rejected.",
@@ -1412,6 +1449,7 @@ def record_position(signal: dict):
         market_state=market_state_payload,
     )
     if not risk_val.get("allowed"):
+        _LAST_RECORD_POSITION_REASON = f"HardRiskEngine: {risk_val.get('reject_reason')}"
         print(
             f"[HARD RISK] 🛑 Entry rejected by HardRiskEngine for {pair_init}: "
             f"{risk_val.get('reject_reason')} ({risk_val})",
@@ -1447,6 +1485,7 @@ def record_position(signal: dict):
         min_margin_for_notional = (min_notional_eff * 1.02) / leverage
         calc_margin_usd = max(calc_margin_usd, min_margin_for_notional)
         if calc_margin_usd > (working_usdt * 0.98) + 1e-6:
+            _LAST_RECORD_POSITION_REASON = f"Kebutuhan margin ${calc_margin_usd:.2f} > kapasitas ${working_usdt * 0.98:.2f}"
             print(
                 f"[SIZING] 🛡️ REJECTED_NOTIONAL_CAPACITY: required margin ${calc_margin_usd:.2f} "
                 f"> working cap ${working_usdt * 0.98:.2f} (Vault=${locked_vault_usdt:.2f}).",
@@ -1631,6 +1670,7 @@ def record_position(signal: dict):
                           f"${pos['position_size_usd']} {pos['leverage']}x {pos['margin_type']} {pos['routing_used']}{limit_str} TP: ${pos['take_profit']} SL: ${pos['stop_loss']} (Order #{pos['order_id']})", flush=True)
                 else:
                     pos["binance_synced"] = False
+                    _LAST_RECORD_POSITION_REASON = f"Bursa menolak order ({exec_status or 'REJECTED'}): {execution_result.get('error')}"
                     if exec_status in ("ABORTED_UNPROTECTED_SL", "ABORTED_MODE_MISMATCH", "FAILED_UNKNOWN_POSITION_STATE") or execution_result.get("critical_alert"):
                         send_telegram(
                             f"⚠️ <b>[EXECUTION ABORTED] {pos['binance_pair']} ({exec_status or 'ABORTED'})</b>\n"
@@ -1640,13 +1680,16 @@ def record_position(signal: dict):
                     print(f"[BINANCE] ⚠️ Binance execution rejected ({exec_status or 'REJECTED'}): {execution_result.get('error')}", flush=True)
                     return None
             except Exception as e:
+                _LAST_RECORD_POSITION_REASON = f"Eksepsi eksekusi Binance: {e}"
                 print(f"[BINANCE] ❌ Execution exception: {e}", flush=True)
                 return None
         else:
+            _LAST_RECORD_POSITION_REASON = "Klien Binance tidak aktif (periksa API key)"
             print("[BINANCE] ⚠️ Binance client not active! Check BINANCE_API_KEY / BINANCE_API_SECRET in .env", flush=True)
             return None
 
     if not pos.get("binance_synced"):
+        _LAST_RECORD_POSITION_REASON = _LAST_RECORD_POSITION_REASON or "Order tidak tersinkronisasi di Binance"
         print(f"[EXECUTION] ⚠️ Order not executed on Binance Futures - skipping recording to prevent fake reports", flush=True)
         return None
 
@@ -5338,13 +5381,14 @@ def run_full_scan_cycle():
                     break
             else:
                 # Setup passed 5 layers and committee, but could not be filled on Binance (e.g. margin/notional cap)
-                print(f"[EXEC NOT FILLED] {sym}: Konsensus lolos tapi order tidak masuk Binance Futures. Tidak tercatat di portofolio.", flush=True)
+                fail_detail = _LAST_RECORD_POSITION_REASON or "Saldo margin tidak mencukupi atau bursa menolak order."
+                print(f"[EXEC NOT FILLED] {sym}: Konsensus lolos tapi order tidak masuk Binance Futures ({fail_detail}). Tidak tercatat di portofolio.", flush=True)
                 state["signals_rejected_count"] += 1
-                _record_rejection_telemetry(pair, "EXEC_NOT_FILLED", "Approved setup failed/skipped exchange execution", gate="EXEC_RISK_GUARD")
+                _record_rejection_telemetry(pair, "EXEC_NOT_FILLED", f"Approved setup failed exchange execution: {fail_detail}", gate="EXEC_RISK_GUARD")
                 send_telegram(
                     f"⚠️ <b>KONSENSUS APPROVED TAPI TIDAK DAPAT MASUK BINANCE</b>\n\n"
                     f"💎 <b>Aset:</b> <code>{pair}</code> ({final_dir} 20x)\n"
-                    f"🛡️ <b>Keterangan:</b> Saldo margin tidak mencukupi atau bursa menolak order.\n"
+                    f"🛡️ <b>Keterangan:</b> {fail_detail}\n"
                     f"ℹ️ <b>Status:</b> Posisi <b>TIDAK DIBUKA</b> dan <b>TIDAK TERCATAT</b> di portofolio. Modal 100% aman dalam cash USDT."
                 )
         else:

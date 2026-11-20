@@ -1281,6 +1281,34 @@ class BinanceFuturesClient:
                 params["price"] = str(self.format_price(sym, limit_price))
                 params["timeInForce"] = "GTX"
                 res = self._request("POST", "/fapi/v1/order", params=params, signed=True)
+
+        # Smart Margin Buffer retry on code -2019: if Binance rejects due to insufficient margin
+        # (e.g. trading fees / liquidation fee buffer eating into wallet balance), trim quantity slightly and retry
+        if isinstance(res, dict) and res.get("isError") and (res.get("code") == -2019 or "insufficient" in str(res.get("error", "")).lower()):
+            cur_q = float(params.get("quantity", 0.0) or 0.0)
+            if cur_q > 0:
+                for trim_ratio in (0.96, 0.92, 0.88):
+                    trimmed_q = self._format_qty_compat(sym, cur_q * trim_ratio, order_type=otype)
+                    min_q_rule = float((rules or {}).get("minQty", 0.0) or 0.0)
+                    min_notional_rule = float((rules or {}).get("minNotional", 5.0) or 5.0)
+                    ref_px = float(limit_price or 0.0)
+                    if ref_px <= 0:
+                        try:
+                            ref_px = float(self.get_market_price(sym) or 0.0)
+                        except Exception:
+                            ref_px = 0.0
+                    if trimmed_q >= min_q_rule and (ref_px <= 0 or (trimmed_q * ref_px) >= min_notional_rule) and trimmed_q < cur_q:
+                        print(f"[BinanceFutures] 🔄 Margin insufficient (-2019). Auto-trimming quantity: {cur_q} -> {trimmed_q} ({int(trim_ratio*100)}%) and retrying...", flush=True)
+                        params["quantity"] = trimmed_q if prec > 0 else int(trimmed_q)
+                        if "newClientOrderId" in params:
+                            params["newClientOrderId"] = f"{str(params['newClientOrderId'])[:32]}_m{int(trim_ratio*100)}"
+                        res = self._request("POST", "/fapi/v1/order", params=params, signed=True)
+                        if isinstance(res, dict) and "orderId" in res:
+                            print(f"[BinanceFutures] ✅ Auto-trimmed order FILLED/SUBMITTED! Order ID: {res.get('orderId')}, Status: {res.get('status')}", flush=True)
+                            break
+                        if isinstance(res, dict) and res.get("code") != -2019 and "insufficient" not in str(res.get("error", "")).lower():
+                            break
+
         if isinstance(res, dict) and "orderId" in res:
             print(f"[BinanceFutures] ✅ Order FILLED/SUBMITTED! Order ID: {res.get('orderId')}, Status: {res.get('status')}", flush=True)
         return res
@@ -2512,6 +2540,14 @@ class BinanceFuturesClient:
                 }
 
         actual_req_margin = (quantity * mark_price) / effective_leverage
+        if actual_req_margin > budget_cap + 1e-6:
+            # Attempt to step down by 1 lot_step to safely fit within budget_cap without failing
+            stepped_down_qty = self._format_qty_compat(symbol, max(0.0, quantity - lot_step), order_type=order_type)
+            if stepped_down_qty >= lot_min_qty and (stepped_down_qty * mark_price) >= min_notional:
+                quantity = stepped_down_qty
+                actual_req_margin = (quantity * mark_price) / effective_leverage
+                pos_size_usd = round(actual_req_margin, 4)
+
         if actual_req_margin > budget_cap + 1e-6:
             if locked_vault > 0 and actual_req_margin <= (avail_usdt * 0.98) + 1e-6:
                 return {

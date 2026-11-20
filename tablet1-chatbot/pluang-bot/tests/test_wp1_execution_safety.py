@@ -993,6 +993,33 @@ class TestAutoTraderRecordPositionHandoff(unittest.TestCase):
                 at.RISK_BREAKER_FILE = orig_brk
                 journal.DB_PATH = orig_db
 
+    def test_open_position_retries_and_trims_on_margin_insufficient_2019(self):
+        """When Binance rejects order with code -2019 (Margin is insufficient), auto-trim quantity and retry."""
+        client = BinanceFuturesClient()
+        calls = []
+        def fake_request(method, endpoint, params=None, signed=False, **kwargs):
+            calls.append(dict(params or {}))
+            if len(calls) == 1:
+                return {"isError": True, "code": -2019, "error": "Margin is insufficient."}
+            return {"orderId": 88123, "status": "FILLED", "executedQty": str(params.get("quantity")), "avgPrice": "150.0"}
+
+        with patch.object(client, "_request", side_effect=fake_request), \
+             patch.object(client, "get_symbol_filters", return_value={"stepSize": "0.01", "minQty": "0.01", "minNotional": "5.0", "quantityPrecision": 2, "pricePrecision": 2, "status": "TRADING", "contractType": "PERPETUAL"}), \
+             patch.object(client, "get_market_price", return_value=150.0), \
+             patch.object(client, "set_margin_type", return_value={"code": 200}), \
+             patch.object(client, "set_leverage", return_value={"leverage": 20}):
+            res = client.open_position(
+                symbol="SOLUSDT",
+                direction="LONG",
+                quantity=1.0,
+                leverage=20,
+                order_type="MARKET",
+            )
+        self.assertEqual(res.get("orderId"), 88123)
+        self.assertEqual(len(calls), 2)
+        self.assertLess(calls[1]["quantity"], calls[0]["quantity"])
+        self.assertAlmostEqual(calls[1]["quantity"], 0.96, places=2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
