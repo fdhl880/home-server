@@ -349,6 +349,21 @@ class ProfitRatchetVault:
                 "working_balance_usdt": self._get_working_balance_locked(self.high_water_mark_equity),
             }
 
+    def reset_vault(self, new_equity: Optional[float] = None) -> Dict[str, Any]:
+        """Reset locked profits to 0.0 and re-anchor HWM/baseline to new_equity."""
+        with self._lock:
+            eq = float(new_equity if (new_equity is not None and new_equity > 0) else 0.0)
+            self.locked_profit_vault_usdt = 0.0
+            self.initial_session_equity = eq
+            self.baseline_equity = eq
+            self.high_water_mark_equity = eq
+            self.net_transfers_usdt = 0.0
+            self.ratchet_events.clear()
+            self.transfer_events.clear()
+            if self.persist and self.state_path:
+                self._save_state()
+            return self.get_status()
+
 
 def get_profit_vault(
     initial_equity: float = 0.0,

@@ -1554,6 +1554,37 @@ def handle_reset_breaker_command(chat_id):
         send_telegram_message(chat_id, f"❌ Gagal reset breaker: <code>{_esc_html(e)}</code>")
 
 
+def handle_reset_vault_command(chat_id):
+    """Reset ProfitRatchetVault locked profits to 0.0 and re-anchor to live Binance equity."""
+    try:
+        live_eq = 0.0
+        bn = get_binance_client()
+        if bn:
+            try:
+                b = bn.get_balance()
+                if isinstance(b, dict) and not b.get("isError"):
+                    live_eq = float(b.get("total_wallet_balance", 0) or 0)
+            except Exception:
+                live_eq = 0.0
+        pv = _resolve_vault_instance(initial_equity=live_eq)
+        status = pv.reset_vault(new_equity=live_eq)
+        locked_v = float(status.get("locked_profit_vault_usdt", 0.0))
+        wb = float(status.get("working_balance_usdt", live_eq))
+        send_telegram_message(
+            chat_id,
+            f"🏦 <b>PROFIT VAULT BERHASIL DI-RESET KE 0!</b>\n"
+            f"────────────────────────\n"
+            f"💰 <b>Total Wallet Balance:</b> ${live_eq:.4f} USDT\n"
+            f"🔒 <b>Locked Profit:</b> ${locked_v:.4f} USDT\n"
+            f"⚡ <b>Working Balance (Aktif):</b> ${wb:.4f} USDT\n"
+            f"🎯 <b>ALL-IN 95% Margin (20x):</b> ${wb * 0.95:.4f} USDT (Notional: ${wb * 0.95 * 20:.2f} USDT)\n"
+            f"────────────────────────\n"
+            f"<i>Kunci profit dibuka penuh. Seluruh modal aktif kembali tanpa saldo tertahan.</i>"
+        )
+    except Exception as e:
+        send_telegram_message(chat_id, f"❌ Gagal reset vault: <code>{_esc_html(e)}</code>")
+
+
 def handle_transfer_command(chat_id, args):
     """Feature #1 & #5: Record external deposit (+amount) or withdraw (-amount) into HardRiskEngine."""
     if not args:
@@ -1687,6 +1718,7 @@ def start_bot_listener():
                             "• <code>/pnl</code> - Win Rate % & Total Net P&amp;L (Journal 30d)\n"
                             "• <code>/digest</code> - Laporan harian Performa, Fee &amp; TCA Slippage\n"
                             "• <code>/vault</code> - Status High-Water Mark Profit Vault (T7.3)\n"
+                            "• <code>/reset_vault</code> - Reset Locked Profit Vault ke 0 (Buka kunci saldo)\n"
                             "• <code>/health</code> - Diagnostik Heartbeat, WS, Breaker &amp; AI Gateway\n"
                             "• <code>/reset_breaker</code> - Reset Hard Circuit Breaker &amp; re-anchor ekuitas\n"
                             "• <code>/transfer [+50/-20]</code> - Catat Deposit/Withdraw eksternal\n"
@@ -1766,6 +1798,9 @@ def start_bot_listener():
 
                     elif msg_lower in ["/reset_breaker", "/resetbreaker"]:
                         handle_reset_breaker_command(chat_id)
+
+                    elif msg_lower in ["/reset_vault", "/resetvault"]:
+                        handle_reset_vault_command(chat_id)
 
                     elif msg_lower.startswith("/transfer"):
                         parts = msg_text.split()
@@ -1931,7 +1966,7 @@ def start_bot_listener():
                             "universe", "top", "movers", "status", "audit", "cek", "auto", "limit",
                             "leverage", "fx", "kurs", "convert", "pnl", "winrate", "performance",
                             "news", "berita", "sentiment", "panic", "kill", "unpanic", "resume",
-                            "vault", "health", "diag", "why", "alasan", "positions", "pos",
+                            "vault", "reset_vault", "resetvault", "health", "diag", "why", "alasan", "positions", "pos",
                             "reset_breaker", "resetbreaker", "transfer", "digest", "report",
                         }
                         if coin_try not in reserved_cmds and coin_try.isalnum() and 2 <= len(coin_try) <= 10:

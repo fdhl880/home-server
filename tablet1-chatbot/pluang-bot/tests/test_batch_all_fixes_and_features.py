@@ -488,11 +488,12 @@ class TestFeaturesAutoTraderAndTelegram(unittest.TestCase):
                     tb.handle_why_command(123)
                     tb.handle_positions_command(123)
                     tb.handle_reset_breaker_command(123)
+                    tb.handle_reset_vault_command(123)
                     tb.handle_transfer_command(123, ["+10"])
                     tb.handle_digest_command(123)
                     tb.handle_pnl_command(123)
                     tb.handle_wallet_command(123)
-                self.assertEqual(len(sent), 7, f"All 7 Telegram handlers must send output: {len(sent)}")
+                self.assertEqual(len(sent), 8, f"All 8 Telegram handlers must send output: {len(sent)}")
                 for idx, txt in enumerate(sent):
                     self.assertNotIn("Gagal", txt, f"Handler #{idx} returned failure message: {txt}")
                     self.assertNotIn("❌", txt, f"Handler #{idx} returned error banner: {txt}")
@@ -500,6 +501,21 @@ class TestFeaturesAutoTraderAndTelegram(unittest.TestCase):
                 rv.DEFAULT_VAULT_STATE_PATH = orig_vault
                 at.RISK_BREAKER_FILE = orig_brk
                 journal.DB_PATH = orig_db
+
+    def test_profit_vault_reset_vault_method(self):
+        import tempfile
+        import risk.vault as rv
+        with tempfile.TemporaryDirectory() as tmp:
+            v_path = os.path.join(tmp, "vault_test.json")
+            pv = rv.ProfitRatchetVault(initial_equity=50.0, state_path=v_path, persist=True)
+            pv.update_equity(70.0)
+            self.assertGreater(pv.locked_profit_vault_usdt, 0.0)
+            # Reset vault
+            res = pv.reset_vault(new_equity=25.0)
+            self.assertEqual(res["locked_profit_vault_usdt"], 0.0)
+            self.assertEqual(res["high_water_mark_equity"], 25.0)
+            self.assertEqual(res["working_balance_usdt"], 25.0)
+            self.assertEqual(len(pv.ratchet_events), 0)
 
 
 if __name__ == "__main__":
