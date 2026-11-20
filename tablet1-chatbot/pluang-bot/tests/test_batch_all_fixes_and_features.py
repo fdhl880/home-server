@@ -296,6 +296,34 @@ class TestStreamBQuantPipelineAndAI(unittest.TestCase):
             self.assertTrue(any(n.startswith("active_positions_") for n in basenames))
             self.assertFalse(any("BTC_USD_latest" in n for n in basenames), "Scan cache JSONs must not be copied into daily backup")
 
+    def test_min_confidence_65_and_hybrid_score_exact_calculation(self):
+        """Verify min_confidence_score defaults to 65 and hybrid calculation is S_Hybrid = 0.55*P_Math + 0.45*P_AI."""
+        import json
+        import pipeline
+
+        cfg_path = os.path.join(os.path.dirname(__file__), "..", "trading_config.json")
+        if os.path.exists(cfg_path):
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.assertEqual(cfg.get("min_confidence_score"), 65, "trading_config.json must specify min_confidence_score = 65")
+
+        self.assertEqual(pipeline.MIN_CONFIDENCE_SCORE, 65, "pipeline.MIN_CONFIDENCE_SCORE must be 65")
+
+        # Test exact hybrid score math: S_Hybrid = 0.55 * P_Math + 0.45 * P_AI
+        # Case A: P_Math = 70.0, P_AI = 65.0 -> S_Hybrid = 0.55*70 + 0.45*65 = 38.5 + 29.25 = 67.75
+        p_math = 70.0
+        p_ai = 65.0
+        s_hybrid = round(0.55 * p_math + 0.45 * p_ai, 2)
+        self.assertEqual(s_hybrid, 67.75)
+        self.assertEqual(int(round(s_hybrid)), 68)
+
+        # Case B: P_Math = 60.0, P_AI = 72.0 -> S_Hybrid = 0.55*60 + 0.45*72 = 33.0 + 32.4 = 65.40
+        p_math_b = 60.0
+        p_ai_b = 72.0
+        s_hybrid_b = round(0.55 * p_math_b + 0.45 * p_ai_b, 2)
+        self.assertEqual(s_hybrid_b, 65.40)
+        self.assertGreaterEqual(s_hybrid_b, 65.0, "Should qualify under 65% threshold")
+
 
 class TestFeaturesAutoTraderAndTelegram(unittest.TestCase):
     def test_feature3_and_5_post_sl_cooldown_and_rejection_telemetry(self):

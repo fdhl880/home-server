@@ -202,7 +202,7 @@ def save_trading_config(new_config: dict):
 _cfg = get_trading_config()
 MAX_BUDGET_IDR = _cfg.get("max_budget_idr", 0)       # 0 = dynamic wallet-based
 MAX_LEVERAGE = 20                                     # FIXED 20x — user mandate
-MIN_CONFIDENCE_SCORE = _cfg.get("min_confidence_score", 68)
+MIN_CONFIDENCE_SCORE = _cfg.get("min_confidence_score", 65)
 MIN_RISK_REWARD_RATIO = _cfg.get("min_risk_reward_ratio", 1.5)
 MAX_DRAWDOWN_PCT = _cfg.get("max_drawdown_pct", 25.0)
 
@@ -1524,7 +1524,7 @@ def predict_tp_time(current_price: float, take_profit: float,
         return f"{days}d {rem_h}h"
 
     # 6. First-Passage Probability P(tau_TP < tau_SL) via Drift-Diffusion Peclet formula
-    p_math = float(mp.get("p_math_pct", 68.0) or 68.0) / 100.0
+    p_math = float(mp.get("p_math_pct", 65.0) or 65.0) / 100.0
     peclet = max(0.15, (p_math - 0.35) * 2.4 + (hurst_h - 0.50) * 2.0 + dir_sign * obi_20 * 0.8)
     u_tp1 = sl_dist_pct / max(sl_dist_pct + tp1_dist_pct, 1e-6)
     u_tp2 = sl_dist_pct / max(sl_dist_pct + tp_dist_pct, 1e-6)
@@ -1820,7 +1820,7 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
                           plan_result: dict, risk_result: dict, market_data: dict):
     """Final gate — compact prompt, strict approve criteria"""
     cfg = get_trading_config()
-    min_conf = cfg.get("min_confidence_score", 55)  # raised from 45 to 55
+    min_conf = cfg.get("min_confidence_score", 65)
     min_rrr = cfg.get("min_risk_reward_ratio", 1.5)
 
     entry = plan_result.get("entry_price", 0)
@@ -1927,7 +1927,7 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
     cfg = get_trading_config()
     current_max_budget = cfg.get("max_budget_idr", 0)
     current_max_leverage = FIXED_LEVERAGE  # Always 20x — immutable
-    current_min_confidence = cfg.get("min_confidence_score", 45)
+    current_min_confidence = cfg.get("min_confidence_score", 65)
     current_min_rrr = cfg.get("min_risk_reward_ratio", 1.5)
 
     # Preserve AI-governed parameters and distinct TP1 Lock / TP2 Runner levels
@@ -2279,7 +2279,7 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                            "verdict": "WAIT_CONFLUENCE", "recommendation": "WAIT", "reasoning": "Waiting for full multi-agent breakout confirmation."}
             final_call = {
                 "status": "REJECTED",
-                "confidence_score": int(round(float(mp_fallback.get("p_math_pct", 68.0)))),
+                "confidence_score": int(round(float(mp_fallback.get("p_math_pct", 65.0)))),
                 "direction": pref_dir,
                 "setup_name": "QUANT_OBSERVATION_MODE",
                 "entry_price": px_now,
@@ -2307,7 +2307,12 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 sniper_cfg = cfg_v2.get("sniper_75_mode", {})
                 mp = scan_summary.get("math_proof") or market_data.get("math_proof") or {}
                 p_math_pct = float(mp.get("p_math_pct", 65.0) or 65.0)
-                p_ai_pct = float(final_call.get("confidence_score", 50.0) or 50.0)
+                _had_live_px = float(market_data.get("live_price") or 0.0) > 0 or float(market_data.get("current_price") or 0.0) > 0
+                if p_math_pct < 45.0 and not _had_live_px:
+                    p_math_pct = 52.0  # neutral fallback if market data lacked live price
+
+                fc_conf = final_call.get("confidence_score")
+                p_ai_pct = float(fc_conf) if fc_conf is not None else 50.0
 
                 # Hybrid Mathematical x AI Collaboration Score: S_Hybrid = 0.55 * P_Math + 0.45 * P_AI
                 s_hybrid_pct = round(0.55 * p_math_pct + 0.45 * p_ai_pct, 2)
@@ -2343,7 +2348,6 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                     comb = ens.combine_probabilities(p_quant_ml=p_quant_ml, p_knn=p_knn, p_llm=p_llm)
                     if isinstance(comb, dict) and comb.get("p_hybrid"):
                         raw_p = float(comb["p_hybrid"])
-                        s_hybrid_pct = round(raw_p * 100.0, 2)
                 except Exception:
                     try:
                         from ai.hybrid_ensemble import NeuroSymbolicEnsemble
@@ -2351,7 +2355,6 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                         comb = ens.combine_probabilities(p_quant_ml=p_quant_ml, p_knn=p_knn, p_llm=p_llm)
                         if isinstance(comb, dict) and comb.get("p_hybrid"):
                             raw_p = float(comb["p_hybrid"])
-                            s_hybrid_pct = round(raw_p * 100.0, 2)
                     except Exception as ens_exc:
                         logger.warning("Fallback NeuroSymbolicEnsemble failed: %s", ens_exc)
                 if quant_feat_vec is not None:
@@ -2405,11 +2408,13 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                     _pref_dir = str(mp.get("preferred_direction", "")).upper()
                     _fc_dir = str(final_call.get("direction", "")).upper()
                     _obi20 = float(mp.get("obi_weighted_20", 0.0) or 0.0)
+                    sniper_min_math = float(sniper_cfg.get("min_math_pct", 55.0) or 55.0)
+                    min_conf_gate = float(cfg_v2.get("min_confidence_score", 65.0) or 65.0)
                     _veto_reasons = []
-                    if p_math_pct < 60.0:
-                        _veto_reasons.append(f"P_Math {p_math_pct:.1f}% < 60% (bukti matematika belum cukup kuat)")
-                    if s_hybrid_pct < 68.0:
-                        _veto_reasons.append(f"S_Hybrid {s_hybrid_pct:.1f}% < 68% (kolaborasi Math+AI di bawah ambang Sniper)")
+                    if p_math_pct < sniper_min_math:
+                        _veto_reasons.append(f"P_Math {p_math_pct:.1f}% < {sniper_min_math:.0f}% (bukti matematika belum cukup kuat)")
+                    if s_hybrid_pct < min_conf_gate:
+                        _veto_reasons.append(f"S_Hybrid {s_hybrid_pct:.1f}% < {min_conf_gate:.0f}% (kolaborasi Math+AI di bawah ambang Sniper)")
                     if bool(sniper_cfg.get("enabled", True)) and not conformal_ok:
                         _veto_reasons.append(f"SKIP_CONFORMAL_AMBIGUITY (set={conformal_set}, cal_p={cal_p:.2f})")
                     if _p_tp1_sl < 70.0:
@@ -2445,9 +2450,10 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                     "brain3_llm_meta_prob": p_llm,
                     "brain3_llm_prob_pct": round(p_llm * 100.0, 1),
                     "hybrid_bayesian_prob": round(raw_p, 4),
+                    "hybrid_linear_score_pct": s_hybrid_pct,
                     "calibrated_pava_prob": round(cal_p, 4),
                     "conformal_prediction_set": conformal_set,
-                    "formula": "logit(P_Hybrid) = w_ML*logit(P_Math) + w_kNN*logit(P_kNN) + w_LLM*logit(P_AI)"
+                    "formula": "S_Hybrid = 0.55*P_Math + 0.45*P_AI | logit(P_3Brain) = w_ML*logit(P_Math) + w_kNN*logit(P_kNN) + w_LLM*logit(P_AI)"
                 }
                 final_call["sniper_75_plan"] = {
                     "enabled": bool(sniper_cfg.get("enabled", True)),

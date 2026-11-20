@@ -288,7 +288,9 @@ def format_pipeline_report(res: dict):
         f"• Modal Sizing: Rp {modal_val:,.0f} | RRR: {_esc_html(plan.get('risk_reward_ratio', 'N/A'))}\n\n"
         f"🔍 <b>3. CRO Risk Audit:</b> {_esc_html(risk.get('risk_verdict', 'N/A'))} ({risk.get('total_score', 0)}/{risk.get('max_score', 8)} pass)\n\n"
         f"⚖️ <b>4. Supreme Judge Decision:</b> {badge}\n"
-        f"• <b>Skor Keyakinan:</b> {fc.get('confidence_score', 0)}% (Min {min_conf}%)\n\n"
+        f"• <b>Skor Keyakinan (Hybrid):</b> {fc.get('confidence_score', 0)}%"
+        + (f" (0.55·Math {fc.get('math_score_pct', (layer1.get('math_proof') or {}).get('p_math_pct', 0))}% + 0.45·AI {fc.get('ai_score_pct', 0)}%)" if fc.get('math_score_pct') is not None or fc.get('ai_score_pct') is not None else "")
+        + f" [Min {min_conf}%]\n\n"
         f"{com_text}"
         f"📌 <b>Pertimbangan Final:</b>\n{final_reason_text}\n"
     )

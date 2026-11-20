@@ -184,7 +184,7 @@ def get_status():
         "max_budget_idr": cfg.get("max_budget_idr", 50000),
         "max_budget_usd": convert_idr_to_usd(cfg.get("max_budget_idr", 50000)),
         "max_leverage": cfg.get("max_leverage", 5),
-        "min_confidence_score": cfg.get("min_confidence_score", 45),
+        "min_confidence_score": cfg.get("min_confidence_score", 65),
         "min_risk_reward_ratio": cfg.get("min_risk_reward_ratio", 1.5),
         "margin_type": cfg.get("margin_type", "ISOLATED"),
         "order_type": cfg.get("order_type", "MARKET"),

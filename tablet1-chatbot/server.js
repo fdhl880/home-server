@@ -2750,7 +2750,7 @@ function getLocalTradingConfig() {
     const fallback = {
         max_budget_idr: 0,
         max_leverage: 20,
-        min_confidence_score: 45,
+        min_confidence_score: 65,
         min_risk_reward_ratio: 1.5,
         margin_type: "ISOLATED",
         order_type: "MARKET",

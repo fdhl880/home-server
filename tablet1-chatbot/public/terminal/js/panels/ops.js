@@ -980,7 +980,12 @@ export function mountBOT(body, ctx) {
         h('span', { class: (dir === 'LONG' ? 'up' : 'dn') + ' sym', style: 'font-size:12px;padding:1px 6px;border:1px solid currentColor', text: `${dir} ${levNow}x` }),
         vm.isLivePosition
           ? h('span', { class: 'lb sym', text: `ENT:${fmtPx(entryNow)} | MARK:${fmtPx(vm.curPx)}${vm.liq > 0 ? ' | LIQ:' + fmtPx(vm.liq) : ''} | SL:${vm.slState}` })
-          : h('span', { class: 'up sym', text: `HYBRID SCORE: ${mp.s_hybrid_pct || l5.confidence_score || 88}% (P_Math ${mp.p_math_pct || 86}% × P_AI ${mp.p_ai_pct || 89}%)` })
+          : (() => {
+              const sHyb = mp.s_hybrid_pct != null ? mp.s_hybrid_pct : (l5.hybrid_score_pct != null ? l5.hybrid_score_pct : (l5.confidence_score ?? 0));
+              const pMath = mp.p_math_pct != null ? mp.p_math_pct : (l5.math_score_pct ?? (mp.p_math_pct ?? 0));
+              const pAi = mp.p_ai_pct != null ? mp.p_ai_pct : (l5.ai_score_pct ?? (l5.confidence_score ?? 0));
+              return h('span', { class: 'up sym', text: `HYBRID SCORE: ${sHyb}% (0.55·Math ${pMath}% + 0.45·AI ${pAi}%)` });
+            })()
       ];
       if (vm.isLivePosition) {
         bannerLeftItems.push(
