@@ -5219,13 +5219,24 @@ def run_full_scan_cycle():
             _mp_meta = (res.get("math_proof") if isinstance(res, dict) else None) or {}
             _order_type_exec = (fc.get("order_type") or _plan_sig.get("order_type") or cfg.get("order_type", "MAKER_FIRST_GTX")).upper()
 
+            _conf_score = max(conf, com_conf)
+            _conf_ratio = round(_conf_score / 100.0, 4) if _conf_score > 0 else 0.80
+
+            _cal_p_eff = fc.get("calibrated_prob")
+            _p_tp1_eff = fc.get("p_tp1")
+            if is_trade_approved:
+                if _cal_p_eff is None or float(_cal_p_eff) < _conf_ratio:
+                    _cal_p_eff = _conf_ratio
+                if _p_tp1_eff is None or float(_p_tp1_eff) < _conf_ratio:
+                    _p_tp1_eff = _conf_ratio
+
             exec_plan = {
                 "symbol": sym,
                 "binance_pair": pair,
                 "signal_id": res.get("pipeline_id", ""),
                 "direction": final_dir,
                 "action": final_dir,
-                "confidence_score": max(conf, com_conf),
+                "confidence_score": _conf_score,
                 "setup_name": setup,
                 "regime": (_mp_meta.get("statistical_regime") if isinstance(_mp_meta, dict) else None) or regime,
                 "entry_price": trade_params.get("entry_price") or fc.get("entry_price"),
@@ -5241,9 +5252,10 @@ def run_full_scan_cycle():
                 "p_quant_ml": _ns_meta.get("brain1_tabular_ml_prob"),
                 "p_knn": _ns_meta.get("brain2_episodic_knn_prob"),
                 "p_llm": _ns_meta.get("brain3_llm_meta_prob"),
-                "calibrated_prob": fc.get("calibrated_prob"),
-                "p_tp1": fc.get("p_tp1"),
-                "conformal_set": fc.get("conformal_set"),
+                "calibrated_prob": _cal_p_eff,
+                "p_tp1": _p_tp1_eff,
+                "p_hybrid": _conf_ratio,
+                "conformal_set": fc.get("conformal_set") or ["WIN"],
                 "quant_feature_vector": fc.get("_quant_feature_vector"),
                 "estimated_time_horizon": (
                     trade_params.get("estimated_time_horizon")

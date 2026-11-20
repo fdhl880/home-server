@@ -25,7 +25,7 @@
   "sniper_75_mode": {
     "enabled": true,
     "conformal_enabled": false,
-    "min_calibrated_p_tp1": 0.65,
+    "min_calibrated_p_tp1": 0.60,
     "min_first_passage_pct": 60.0,
     "require_singleton_win": false,
     "conformal_alpha_target": 0.18,

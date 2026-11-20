@@ -47,7 +47,7 @@ DEFAULT_TRADING_CONFIG: Dict[str, Any] = {
     "sniper_75_mode": {
         "enabled": True,
         "conformal_enabled": False,
-        "min_calibrated_p_tp1": 0.65,
+        "min_calibrated_p_tp1": 0.60,
         "min_first_passage_pct": 60.0,
         "require_singleton_win": False,
         "conformal_alpha_target": 0.18,

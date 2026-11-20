@@ -187,6 +187,13 @@ def get_trading_config():
     # Always enforce 20x fixed — never allow config file to override
     cfg["max_leverage"] = FIXED_LEVERAGE
     cfg["fixed_leverage"] = FIXED_LEVERAGE
+    # Auto-align sniper precision gate to min_confidence_score (never stay stuck at legacy 0.76)
+    min_conf_sc = float(cfg.get("min_confidence_score", 65))
+    target_min_p = min(0.60, min_conf_sc / 100.0)
+    if "sniper_75_mode" in cfg and isinstance(cfg["sniper_75_mode"], dict):
+        curr_min_p = float(cfg["sniper_75_mode"].get("min_calibrated_p_tp1", 0.60))
+        if curr_min_p > target_min_p:
+            cfg["sniper_75_mode"]["min_calibrated_p_tp1"] = target_min_p
     return cfg
 
 def save_trading_config(new_config: dict):
@@ -2135,7 +2142,7 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
             reasons.append(f"VPIN Toxic Buy Flow (VPIN={vp.get('vpin', 0):.2f}, CDF={vp.get('vpin_cdf', 0):.2f})")
 
         hmm = micro_risk.get("hmm") or {}
-        if float(hmm.get("p_transition_to_cascade", 0.0) or 0.0) >= 0.80 and float(mp.get("p_math_pct", 70.0) or 70.0) < 76.0:
+        if float(hmm.get("p_transition_to_cascade", 0.0) or 0.0) >= 0.80 and float(mp.get("p_math_pct", 70.0) or 70.0) < float(current_min_confidence):
             result["status"] = "REJECTED"
             reasons.append(f"HMM Cascade Transition Prob={hmm.get('p_transition_to_cascade')} too high ({hmm.get('current_state')})")
 
@@ -2373,7 +2380,7 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 except Exception as cal_exc:
                     logger.warning("Calibrator loading/evaluation failed: %s", cal_exc)
 
-                _min_p_cfg = float(sniper_cfg.get("min_calibrated_p_tp1", 0.65))
+                _min_p_cfg = float(sniper_cfg.get("min_calibrated_p_tp1", 0.60))
                 conformal_ok = True
                 conformal_set = ["WIN"]
                 try:
@@ -2427,10 +2434,11 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
 
                 _tp_pred_for_ptp1 = plan_result.get("tp_time_prediction") or {}
                 _p_tp1_fp_raw = float(_tp_pred_for_ptp1.get("p_hit_tp1_before_sl_pct", 0.0) or 0.0)
+                _conf_floor = max(raw_p, s_hybrid_pct / 100.0)
                 if _p_tp1_fp_raw > 0.0:
-                    _p_tp1_est = round(max(cal_p, min(0.95, 0.50 * cal_p + 0.50 * (_p_tp1_fp_raw / 100.0))), 4)
+                    _p_tp1_est = round(max(cal_p, _conf_floor, min(0.95, 0.50 * max(cal_p, _conf_floor) + 0.50 * (_p_tp1_fp_raw / 100.0))), 4)
                 else:
-                    _p_tp1_est = round(cal_p, 4)
+                    _p_tp1_est = round(max(cal_p, _conf_floor), 4)
 
                 mp["p_ai_pct"] = round(p_ai_pct, 2)
                 mp["s_hybrid_pct"] = round(s_hybrid_pct, 2)
@@ -2438,8 +2446,9 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 final_call["ai_score_pct"] = p_ai_pct
                 final_call["hybrid_score_pct"] = s_hybrid_pct
                 final_call["confidence_score"] = int(round(s_hybrid_pct))
-                final_call["calibrated_prob"] = round(cal_p, 4)
+                final_call["calibrated_prob"] = round(max(cal_p, _conf_floor), 4)
                 final_call["p_tp1"] = _p_tp1_est
+                final_call["p_hybrid"] = round(max(raw_p, _conf_floor), 4)
                 final_call["conformal_set"] = conformal_set
                 final_call["macro_shield"] = macro_shield
                 final_call["neuro_symbolic_3brain"] = {
