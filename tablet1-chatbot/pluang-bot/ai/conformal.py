@@ -73,9 +73,10 @@ class AdaptiveConformalFilter:
             for s in warm_start_scores:
                 self.scores_window.append(float(np.clip(s, 0.0, 1.0)))
         else:
-            # Default calibrated prior scores centered around [0.12, 0.34] so
-            # q_hat_{1 - 0.18} ~ 0.26 initially (requiring p_cal >= 0.74 for singleton {"WIN"})
-            default_prior = np.linspace(0.08, 0.30, 25)
+            # Default calibrated prior scores: q_hat_{1-0.18} ~ 0.38 so that
+            # p_cal >= 0.62 gets singleton {"WIN"}, aligned to 65% min_confidence target.
+            # (Previously 0.08-0.30 required p_cal >= 0.74 — blocking all 65% setups.)
+            default_prior = np.linspace(0.22, 0.42, 25)
             for s in default_prior:
                 self.scores_window.append(float(s))
 
