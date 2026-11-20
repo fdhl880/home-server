@@ -46,6 +46,7 @@ DEFAULT_TRADING_CONFIG: Dict[str, Any] = {
     "tp_sl_mode": "SNIPER_TWO_STAGE",
     "sniper_75_mode": {
         "enabled": True,
+        "conformal_enabled": False,
         "min_calibrated_p_tp1": 0.65,
         "min_first_passage_pct": 60.0,
         "require_singleton_win": False,
@@ -289,6 +290,10 @@ def validate_trading_config(
         min_inclusive=False,
         max_inclusive=False,
     )
+    if "conformal_enabled" in sn:
+        sn["conformal_enabled"] = _check_bool(
+            sn["conformal_enabled"], "sniper_75_mode.conformal_enabled"
+        )
     if "min_first_passage_pct" in sn:
         sn["min_first_passage_pct"] = _check_number(
             sn["min_first_passage_pct"],

@@ -2374,18 +2374,14 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                     logger.warning("Calibrator loading/evaluation failed: %s", cal_exc)
 
                 _min_p_cfg = float(sniper_cfg.get("min_calibrated_p_tp1", 0.65))
-                strict_conf = bool(sniper_cfg.get("require_singleton_win", _min_p_cfg >= 0.75))
                 conformal_ok = True
-                conformal_set = ["WIN"] if cal_p >= _min_p_cfg else ["WIN", "LOSS"]
+                conformal_set = ["WIN"]
                 try:
-                    from features.hmm_drift import load_conformal_filter
-                    sg = load_conformal_filter(alpha_target=float(sniper_cfg.get("conformal_alpha_target", 0.18)))
-                    _c_ok, _c_reason, _c_info = sg.evaluate_gate(cal_p)
-                    conformal_set = list(_c_info.get("prediction_set") or [])
-                    if strict_conf:
-                        conformal_ok = bool(_c_ok)
-                    else:
-                        conformal_ok = bool(conformal_set != ["LOSS"])
+                    if bool(sniper_cfg.get("conformal_enabled", False)):
+                        from features.hmm_drift import load_conformal_filter
+                        sg = load_conformal_filter(alpha_target=float(sniper_cfg.get("conformal_alpha_target", 0.18)))
+                        _c_ok, _c_reason, _c_info = sg.evaluate_gate(cal_p)
+                        conformal_set = list(_c_info.get("prediction_set") or ["WIN"])
                 except Exception as conf_exc:
                     logger.warning("Conformal filter evaluation failed: %s", conf_exc)
 
@@ -2420,8 +2416,6 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                         _veto_reasons.append(f"P_Math {p_math_pct:.1f}% < {sniper_min_math:.0f}% (bukti matematika belum cukup kuat)")
                     if s_hybrid_pct < min_conf_gate:
                         _veto_reasons.append(f"S_Hybrid {s_hybrid_pct:.1f}% < {min_conf_gate:.0f}% (kolaborasi Math+AI di bawah ambang Sniper)")
-                    if bool(sniper_cfg.get("enabled", True)) and not conformal_ok:
-                        _veto_reasons.append(f"SKIP_CONFORMAL_AMBIGUITY (set={conformal_set}, cal_p={cal_p:.2f})")
                     fpt_min_p = float(sniper_cfg.get("min_first_passage_pct", 60.0) or 60.0)
                     if _p_tp1_sl < fpt_min_p:
                         _veto_reasons.append(f"First-Passage P(TP1<SL) {_p_tp1_sl:.1f}% < {fpt_min_p:.0f}%")
