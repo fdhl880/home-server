@@ -4937,7 +4937,7 @@ _TOKEN_TRACKER = {
     "last_reset": time.time(),
 }
 _RECENT_REJECT_TS = {}
-_RECENT_REJECT_COOLDOWN_SEC = 720.0  # 12-min soft deprioritization so scanner rotates past repeating rejects
+_RECENT_REJECT_COOLDOWN_SEC = 1500.0  # 25-min rotation deprioritization so scanner rotates cleanly past choppy majors
 
 def _estimate_tokens_this_cycle(n_coins_ai):
     """Estimasi token yang akan dipakai siklus ini."""
@@ -5106,10 +5106,10 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=N
         elif sym.upper() in core_symbols:
             score += 1.5
 
-        # 6. Soft rotation cooldown for recently rejected pairs so scanner covers fresh setups
+        # 6. Strong rotation cooldown for recently rejected pairs so scanner covers fresh liquid setups (BTC/ETH/LINK/LTC/HYPE/AVAX)
         rej_ts = _RECENT_REJECT_TS.get(pair_u, 0.0)
         if rej_ts > 0 and (now_pf - rej_ts) < _RECENT_REJECT_COOLDOWN_SEC:
-            score -= 1.5
+            score -= 3.5
 
         if score >= 2.0:
             coin["_prefilter_score"] = round(score, 3)
@@ -5170,12 +5170,9 @@ def run_full_scan_cycle():
           f"Sideways: {regime_info['sideways_pct']:.0f}% | "
           f"Avg 24h: {regime_info['avg_abs_change_24h']:.2f}%", flush=True)
 
-    # Adjust agresivitas scan berdasarkan regime (fokus ke koin terbaik demi efisiensi kuota AI)
-    _comm_on = bool(cfg.get("committee_enabled", False) or os.getenv("COMMITTEE_ENABLED", "false").lower() == "true")
-    if _comm_on:
-        max_coins = 3 if regime == "VOLATILE" else 4
-    else:
-        max_coins = 5  # Layer 1-5 tanpa committee hemat ~70% token -> cukup untuk 5 kandidat bersih/siklus
+    # Committee v3.0 ONLY runs when Layer 5 is APPROVED (0 tokens on rejected coins),
+    # so we can safely scan 6 liquid candidates per cycle to avoid getting stuck on 3 flat majors!
+    max_coins = 6
 
     # Live ranked Binance pairs FIRST so real volume/change/opportunity metrics are preserved!
     seen_pairs_pf = set()

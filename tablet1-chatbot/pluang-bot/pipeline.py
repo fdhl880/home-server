@@ -1179,12 +1179,22 @@ def layer1_scanning(symbol: str):
         funding_raw = 0.0
         funding_pct = 0.0
 
-    # Directional Math Edge calculation
-    math_dir = "LONG" if c_score >= 50.0 else "SHORT"
+    # Directional Math Edge calculation (align with regime/EMA when qscore is near neutral 47..53)
+    _stat_u_dir = str(stat_regime or "").upper()
     if "BULL" in ema_1h and "BULL" in daily_tr:
         math_dir = "LONG"
     elif "BEAR" in ema_1h and "BEAR" in daily_tr:
         math_dir = "SHORT"
+    elif 47.0 <= c_score <= 53.0 and "TREND_BEAR" in _stat_u_dir:
+        math_dir = "SHORT"
+    elif 47.0 <= c_score <= 53.0 and "TREND_BULL" in _stat_u_dir:
+        math_dir = "LONG"
+    elif 47.0 <= c_score <= 53.0 and "BEAR" in ema_1h:
+        math_dir = "SHORT"
+    elif 47.0 <= c_score <= 53.0 and "BULL" in ema_1h:
+        math_dir = "LONG"
+    else:
+        math_dir = "LONG" if c_score >= 50.0 else "SHORT"
 
     # === INSTITUTIONAL MICROSTRUCTURE, OPTIONS, HMM & LIQ HEATMAP ENGINES ===
     vpin_info = {"vpin": 0.35, "vpin_cdf": 0.50, "toxic_flow_veto": False, "veto_maker_long": False, "veto_maker_short": False}
@@ -1260,18 +1270,21 @@ def layer1_scanning(symbol: str):
     except Exception:
         pass
 
-    dir_sign = 1.0 if math_dir == "LONG" else -1.0
-    base_edge = abs(c_score - 50.0) * 1.15  # 0..57.5
-    ofi_bonus = max(-12.0, min(12.0, dir_sign * obi_20 * 25.0))
-    hurst_bonus = 8.0 if hurst_h >= 0.55 else (6.0 if hurst_h <= 0.44 else -5.0)
-    mtf_bonus = 7.5 if ((math_dir == "LONG" and "BULL" in daily_tr) or (math_dir == "SHORT" and "BEAR" in daily_tr)) else -4.0
-    news_bonus = max(-6.0, min(6.0, dir_sign * (news_score - 50.0) * 0.2))
-    crowd_penalty = -10.0 if (math_dir == "LONG" and ls_ratio > 2.6 and "DISTRIBUTION" in vol_tr) else 0.0
-
-    p_math_score = round(max(25.0, min(96.0, 52.0 + base_edge * 0.65 + ofi_bonus + hurst_bonus + mtf_bonus + news_bonus + crowd_penalty)), 2)
     _qf_root = data_1h.get("quant_factors") or {}
     _qf_factors_map = _qf_root.get("factors") or _qf_root.get("sample_factors") or {}
     _adx_14_val = float(_qf_root.get("adx_14") if _qf_root.get("adx_14") is not None else (_qf_factors_map.get("adx_14", 0.0) or 0.0))
+
+    dir_sign = 1.0 if math_dir == "LONG" else -1.0
+    # Real 532-factor qscore spans ~35..65 (variance +-10 around 50); scale proportionally + ADX trend confirmation
+    base_edge = min(22.0, abs(c_score - 50.0) * 1.45)
+    ofi_bonus = max(-10.0, min(12.0, dir_sign * obi_20 * 24.0))
+    hurst_bonus = 7.0 if hurst_h >= 0.55 else (5.0 if hurst_h <= 0.44 else -3.0)
+    adx_bonus = 6.0 if _adx_14_val >= 25.0 else (3.0 if _adx_14_val >= 20.0 else (-3.0 if (0.0 < _adx_14_val < 14.0) else 0.0))
+    mtf_bonus = 7.0 if ((math_dir == "LONG" and "BULL" in daily_tr) or (math_dir == "SHORT" and "BEAR" in daily_tr)) else (2.0 if "NEUTRAL" in daily_tr else -3.0)
+    news_bonus = max(-5.0, min(5.0, dir_sign * (news_score - 50.0) * 0.18))
+    crowd_penalty = -10.0 if (math_dir == "LONG" and ls_ratio > 2.6 and "DISTRIBUTION" in vol_tr) else 0.0
+
+    p_math_score = round(max(25.0, min(96.0, 54.0 + base_edge + ofi_bonus + hurst_bonus + adx_bonus + mtf_bonus + news_bonus + crowd_penalty)), 2)
 
     math_proof = {
         "p_math_pct": p_math_score,
@@ -2626,14 +2639,14 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                     _pref_dir = str(mp.get("preferred_direction", "")).upper()
                     _fc_dir = str(final_call.get("direction", "")).upper()
                     _obi20 = float(mp.get("obi_weighted_20", 0.0) or 0.0)
-                    sniper_min_math = float(sniper_cfg.get("min_math_pct", 65.0) or 65.0)
-                    min_conf_gate = float(cfg_v2.get("min_confidence_score", 72.0) or 72.0)
+                    sniper_min_math = float(sniper_cfg.get("min_math_pct", 58.0) or 58.0)
+                    min_conf_gate = float(cfg_v2.get("min_confidence_score", 68.0) or 68.0)
                     _veto_reasons = []
                     if p_math_pct < sniper_min_math:
                         _veto_reasons.append(f"P_Math {p_math_pct:.1f}% < {sniper_min_math:.0f}% (bukti matematika belum cukup kuat)")
                     if s_hybrid_pct < min_conf_gate:
                         _veto_reasons.append(f"S_Hybrid {s_hybrid_pct:.1f}% < {min_conf_gate:.0f}% (kolaborasi Math+AI di bawah ambang Sniper)")
-                    fpt_min_p = float(sniper_cfg.get("min_first_passage_pct", 65.0) or 65.0)
+                    fpt_min_p = float(sniper_cfg.get("min_first_passage_pct", 58.0) or 58.0)
                     if _p_tp1_sl < fpt_min_p:
                         _veto_reasons.append(f"First-Passage P(TP1<SL) {_p_tp1_sl:.1f}% < {fpt_min_p:.0f}%")
                     if _pref_dir in ("LONG", "SHORT") and _fc_dir in ("LONG", "SHORT") and _pref_dir != _fc_dir and abs(_obi20) > 0.15:

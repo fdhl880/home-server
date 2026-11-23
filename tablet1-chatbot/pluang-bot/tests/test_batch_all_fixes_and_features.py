@@ -297,17 +297,27 @@ class TestStreamBQuantPipelineAndAI(unittest.TestCase):
             self.assertFalse(any("BTC_USD_latest" in n for n in basenames), "Scan cache JSONs must not be copied into daily backup")
 
     def test_min_confidence_65_and_hybrid_score_exact_calculation(self):
-        """Verify min_confidence_score >= 65 (72 in Sniper v3.2) and hybrid calculation is S_Hybrid = 0.55*P_Math + 0.45*P_AI."""
+        """Verify min_confidence_score = 68 (calibrated Sniper v3.2) and hybrid calculation is S_Hybrid = 0.55*P_Math + 0.45*P_AI."""
         import json
         import pipeline
+        import market_data as md
 
         cfg_path = os.path.join(os.path.dirname(__file__), "..", "trading_config.json")
         if os.path.exists(cfg_path):
             with open(cfg_path, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
-            self.assertEqual(cfg.get("min_confidence_score"), 72, "trading_config.json must specify min_confidence_score = 72")
+            self.assertEqual(cfg.get("min_confidence_score"), 68, "trading_config.json must specify min_confidence_score = 68")
 
-        self.assertEqual(pipeline.MIN_CONFIDENCE_SCORE, 72, "pipeline.MIN_CONFIDENCE_SCORE must match trading_config.json (72)")
+        self.assertEqual(pipeline.MIN_CONFIDENCE_SCORE, 68, "pipeline.MIN_CONFIDENCE_SCORE must match trading_config.json (68)")
+
+        # Sub-$1 coin precision guard (ADA/DOGE/SUI/XRP must never round ATR to 0.00 or collapse S/R)
+        h_ada = [0.1477 + 0.0020 + (i % 3) * 0.0004 for i in range(30)]
+        l_ada = [0.1477 - 0.0020 - (i % 3) * 0.0004 for i in range(30)]
+        c_ada = [0.1477 + (i % 2) * 0.0005 for i in range(30)]
+        self.assertGreater(md.calculate_atr(h_ada, l_ada, c_ada, 14), 0.001)
+        sr_ada = md.calculate_support_resistance(h_ada, l_ada, c_ada, 24)
+        self.assertLess(sr_ada["support_1"], sr_ada["pivot"])
+        self.assertLess(sr_ada["pivot"], sr_ada["resistance_1"])
 
         # Test exact hybrid score math: S_Hybrid = 0.55 * P_Math + 0.45 * P_AI
         # Case A: P_Math = 70.0, P_AI = 65.0 -> S_Hybrid = 0.55*70 + 0.45*65 = 38.5 + 29.25 = 67.75

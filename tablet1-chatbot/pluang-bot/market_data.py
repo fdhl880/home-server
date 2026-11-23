@@ -833,9 +833,9 @@ def calculate_bollinger_bands(prices, period=20, std_dev=2):
     squeeze = width < 4.0  # Tight bands indicate compression
 
     return {
-        "upper": round(upper, 2),
-        "middle": round(sma, 2),
-        "lower": round(lower, 2),
+        "upper": round(upper, 6),
+        "middle": round(sma, 6),
+        "lower": round(lower, 6),
         "width_pct": round(width, 2),
         "percent_b": round(percent_b, 2),
         "squeeze": squeeze
@@ -843,7 +843,7 @@ def calculate_bollinger_bands(prices, period=20, std_dev=2):
 
 
 def calculate_atr(highs, lows, closes, period=14):
-    """Average True Range (volatility measure)"""
+    """Average True Range (volatility measure — 6-decimal precision for sub-$1 alts like ADA/DOGE/XRP/SUI)"""
     if len(closes) < 2 or len(highs) < 2 or len(lows) < 2:
         return 0
 
@@ -856,20 +856,25 @@ def calculate_atr(highs, lows, closes, period=14):
         tr_values.append(tr)
 
     if len(tr_values) < period:
-        return round(sum(tr_values) / len(tr_values), 2) if tr_values else 0
+        return round(sum(tr_values) / len(tr_values), 6) if tr_values else 0
 
     atr = sum(tr_values[:period]) / period
     for i in range(period, len(tr_values)):
         atr = (atr * (period - 1) + tr_values[i]) / period
 
-    return round(atr, 2)
+    return round(atr, 6)
 
 
 def calculate_support_resistance(highs, lows, closes, window=24):
-    """Detect key support and resistance levels from recent price action"""
+    """Detect key support and resistance levels from recent price action (6-decimal precision)."""
     if len(closes) < window:
         c = closes[-1] if closes else 0
-        return {"resistance_1": c * 1.02, "support_1": c * 0.98, "resistance_2": c * 1.05, "support_2": c * 0.95}
+        return {
+            "resistance_1": round(c * 1.02, 6),
+            "support_1": round(c * 0.98, 6),
+            "resistance_2": round(c * 1.05, 6),
+            "support_2": round(c * 0.95, 6),
+        }
 
     recent_highs = highs[-window:]
     recent_lows = lows[-window:]
@@ -882,11 +887,11 @@ def calculate_support_resistance(highs, lows, closes, window=24):
     s2 = pivot - (max(recent_highs) - min(recent_lows))
 
     return {
-        "pivot": round(pivot, 2),
-        "resistance_1": round(r1, 2),
-        "resistance_2": round(r2, 2),
-        "support_1": round(s1, 2),
-        "support_2": round(s2, 2)
+        "pivot": round(pivot, 6),
+        "resistance_1": round(r1, 6),
+        "resistance_2": round(r2, 6),
+        "support_1": round(s1, 6),
+        "support_2": round(s2, 6)
     }
 
 
