@@ -69,6 +69,10 @@ DEFAULT_TRADING_CONFIG: Dict[str, Any] = {
         "hwm_step_pct": 15.0,
         "lock_fraction": 0.35,
     },
+    "auto_gear_system": {
+        "enabled": True,
+        "downshift_hysteresis_pct": 0.10,
+    },
     "max_concurrent_positions": 1,
     "max_daily_trades": 10,
     "currency": "USDT",

@@ -526,6 +526,12 @@ def execute_trade_with_binance(symbol: str, chat_id: int, callback_query_id: str
             except Exception as j_exc:
                 logger.debug("Journal open_trade skipped on /konfirmasi: %s", j_exc)
 
+            try:
+                from ai.trade_memory import get_trade_memory_engine
+                get_trade_memory_engine().record_open(new_pos)
+            except Exception as tm_exc:
+                logger.debug("AI trade memory record_open skipped on /konfirmasi: %s", tm_exc)
+
             if callback_query_id:
                 answer_callback(callback_query_id, f"Order {pair} berhasil dibuka di Binance Futures!", show_alert=False)
 
@@ -822,6 +828,24 @@ def get_system_status():
         mode_badge = f"🔍 <b>ACTIVE UNIVERSE SCANNER ({len(universe)} pairs)</b>"
 
     modal_txt = "Dynamic Wallet-Based (Kelly Criterion)" if cfg.get('max_budget_idr', 0) == 0 else f"Rp {cfg.get('max_budget_idr'):,} max"
+    ag_st = guard.get("active_gear") if isinstance(guard.get("active_gear"), dict) else None
+    if ag_st and ag_st.get("enabled"):
+        gear_line = (
+            f"⚙️ <b>Sistem Gigi:</b> <b>Gigi {ag_st.get('gear')} — {_esc_html(ag_st.get('code', 'GEAR_1_TURBO'))}</b> "
+            f"({ag_st.get('leverage', 20)}x {ag_st.get('sizing_mode', 'ALL_IN')})\n"
+        )
+    else:
+        gear_line = "⚡ <b>Leverage:</b> 20x ISOLATED Fixed (User Mandate)\n"
+    mem_line = ""
+    try:
+        from ai.trade_memory import get_trade_memory_engine
+        _ms = (get_trade_memory_engine().get_summary_report() or {}).get("summary") or {}
+        mem_line = (
+            f"🧠 <b>AI Trade Memory:</b> {_ms.get('total_closed_learned', 0)} closed learned "
+            f"(WR {_ms.get('win_rate_pct', 0):.1f}%, PF {_ms.get('profit_factor', 0):.2f}, streak {_ms.get('streak', '0')})\n"
+        )
+    except Exception:
+        pass
 
     text = (
         f"📊 <b>STATUS SISTEM TRADING AI BINANCE FUTURES</b>\n"
@@ -832,7 +856,8 @@ def get_system_status():
         f"🌐 <b>Universe:</b> {len(universe)} crypto futures pairs\n"
         f"🎯 <b>Mode Engine:</b> {mode_badge}\n"
         f"💰 <b>Modal Sizing:</b> {modal_txt}\n"
-        f"⚡ <b>Leverage:</b> 20x ISOLATED Fixed (User Mandate)\n"
+        f"{gear_line}"
+        f"{mem_line}"
         f"💱 <b>Kurs USD/IDR:</b> Rp {fx['usd_idr']:,.0f}\n"
         f"💼 <b>Posisi Aktif:</b> {len(open_pos)} posisi\n"
         f"────────────────────────\n"
@@ -1625,6 +1650,139 @@ def handle_digest_command(chat_id):
         send_telegram_message(chat_id, f"❌ Gagal membuat digest harian: <code>{_esc_html(e)}</code>")
 
 
+def handle_gear_command(chat_id):
+    """Display Auto Gear-Shift Compounding status (Gigi 1 TURBO / Gigi 2 CRUISE / Gigi 3 FORTRESS)."""
+    try:
+        from risk.gears import get_gear_engine, DEFAULT_GEAR_STATE_PATH
+        cfg = get_trading_config()
+        fx = get_fx_info()
+        usd_idr = float(fx.get("usd_idr", 16500) or 16500)
+        live_eq = 0.0
+        bn = get_binance_client()
+        if bn:
+            try:
+                bal = bn.get_balance()
+                if isinstance(bal, dict) and not bal.get("isError"):
+                    tot = float(bal.get("total_wallet_balance", 0.0) or 0.0)
+                    cross_u = float(bal.get("cross_unrealized_pnl", 0.0) or 0.0)
+                    iso_u = 0.0
+                    lps = bn.get_positions()
+                    if isinstance(lps, list):
+                        iso_u = sum(
+                            float(p.get("unrealized_pnl", 0.0) or 0.0)
+                            for p in lps
+                            if str(p.get("margin_type", "ISOLATED")).upper() == "ISOLATED"
+                        )
+                    live_eq = max(0.0, tot + cross_u + iso_u)
+            except Exception:
+                live_eq = 0.0
+
+        cur_res = os.path.normcase(os.path.abspath(RESULTS_DIR))
+        def_res = os.path.normcase(os.path.abspath(os.path.join(BASE_DIR, "results")))
+        g_path = os.path.join(RESULTS_DIR, "gear_state.json") if cur_res != def_res else DEFAULT_GEAR_STATE_PATH
+        eng = get_gear_engine(config=cfg, state_path=g_path, persist=True)
+        _, st = eng.apply_to_config(cfg, live_eq)
+
+        g_num = int(st.get("gear", 1))
+        next_eq = st.get("next_gear_equity_usdt")
+        prog_pct = float(st.get("progress_to_next_pct", 0.0) or 0.0)
+        filled = max(0, min(10, int(round(prog_pct / 10.0))))
+        bar = "🟩" * filled + "⬜" * (10 - filled)
+        sizing_txt = (
+            f"ALL-IN {int(round(float(st.get('all_in_balance_fraction', 0.95)) * 100))}% Working Balance"
+            if st.get("sizing_mode") == "ALL_IN"
+            else f"RISK FRACTIONAL ({float(st.get('risk_pct', 5.0)):.1f}% risiko/SL)"
+        )
+        next_line = (
+            f"🎯 <b>Target Gigi {g_num + 1}:</b> ${next_eq:,.0f} USDT (~Rp {next_eq * usd_idr:,.0f})\n"
+            f"📊 <b>Progres:</b> [{bar}] <b>{prog_pct:.1f}%</b>\n"
+            if next_eq
+            else "🏆 <b>Posisi Gigi Tertinggi (FORTRESS) Tercapai!</b>\n"
+        )
+        msg = (
+            f"⚙️ <b>SISTEM PINDAH GIGI OTOMATIS (AUTO GEAR-SHIFT)</b>\n"
+            f"────────────────────────\n"
+            f"🏁 <b>Gigi Aktif:</b> <b>{_esc_html(st.get('label', st.get('code')))}</b>\n"
+            f"💰 <b>Live Equity:</b> <b>${live_eq:,.4f} USDT</b> (~Rp {live_eq * usd_idr:,.0f})\n"
+            f"⚡ <b>Leverage:</b> <b>{st.get('leverage', 20)}x {st.get('margin_type', 'ISOLATED')}</b>\n"
+            f"⚖️ <b>Sizing:</b> <b>{sizing_txt}</b>\n"
+            f"🔒 <b>Vault Lock:</b> {int(round(float(st.get('vault_lock_fraction', 0.35)) * 100))}% profit / +15% HWM\n"
+            f"{next_line}"
+            f"────────────────────────\n"
+            f"<b>📋 Tabel Otomatisasi Gigi:</b>\n"
+            f"{'👉 ' if g_num == 1 else '• '}<b>Gigi 1 TURBO</b> (&lt;$600 / &lt;Rp 10jt): 20x ALL-IN 95%\n"
+            f"{'👉 ' if g_num == 2 else '• '}<b>Gigi 2 CRUISE</b> ($600–$6k / Rp 10–100jt): 12x Risk 5%/SL\n"
+            f"{'👉 ' if g_num == 3 else '• '}<b>Gigi 3 FORTRESS</b> (&ge;$6k / &ge;Rp 100jt): 8x Risk 2.5%/SL (Top-10 Majors)\n"
+            f"<i>Dilengkapi histeresis turun 10% ($540 / $5.400) agar tidak bolak-balik.</i>"
+        )
+        send_telegram_message(chat_id, msg)
+    except Exception as e:
+        send_telegram_message(chat_id, f"❌ Gagal memuat status Sistem Gigi: <code>{_esc_html(e)}</code>")
+
+
+def handle_memory_command(chat_id):
+    """Display Continuous AI Trade Memory & Self-Learning status (/memory or /belajar)."""
+    try:
+        from ai.trade_memory import get_trade_memory_engine, DEFAULT_AI_MEMORY_PATH
+        cur_res = os.path.normcase(os.path.abspath(RESULTS_DIR))
+        def_res = os.path.normcase(os.path.abspath(os.path.join(BASE_DIR, "results")))
+        m_path = os.path.join(RESULTS_DIR, "ai_trade_memory.json") if cur_res != def_res else DEFAULT_AI_MEMORY_PATH
+        mem = get_trade_memory_engine(memory_path=m_path)
+        bn = get_binance_client()
+        synced_now = 0
+        if bn and hasattr(bn, "get_income_history") and hasattr(bn, "get_user_trades"):
+            try:
+                synced_now = mem.sync_binance_closed_history(bn, days=14, min_interval_sec=300.0)
+            except Exception:
+                synced_now = 0
+
+        rep = mem.get_summary_report()
+        s = rep.get("summary") or {}
+        recent = rep.get("recent_closed") or []
+        by_sym = s.get("by_symbol") or {}
+
+        sorted_syms = sorted(by_sym.items(), key=lambda kv: float(kv[1].get("net_usd", 0.0)), reverse=True)
+        best_lines = [
+            f"  • <code>{_esc_html(k)}</code>: {v['w']}W/{v['l']}L (${v['net_usd']:+.2f})"
+            for k, v in sorted_syms[:3]
+            if float(v.get("net_usd", 0.0)) > 0
+        ]
+        worst_lines = [
+            f"  • <code>{_esc_html(k)}</code>: {v['w']}W/{v['l']}L (${v['net_usd']:+.2f})"
+            for k, v in sorted_syms[-3:]
+            if float(v.get("net_usd", 0.0)) < 0
+        ]
+        lesson_lines = []
+        for t in reversed(recent[-5:]):
+            ls = (t.get("lessons") or [""])[0]
+            badge = "🟢" if t.get("outcome") == "WIN" else ("🔴" if t.get("outcome") == "LOSS" else "⚪")
+            lesson_lines.append(
+                f"  {badge} <code>{_esc_html(t.get('symbol'))}</code> {t.get('direction')} "
+                f"${float(t.get('net_pnl_usd', 0)):+.2f} ({float(t.get('r_multiple_net', 0)):+.2f}R) — <i>{_esc_html(ls[:75])}</i>"
+            )
+
+        sync_note = f"\n🔄 <i>Baru menyinkronkan +{synced_now} trade histori dari Binance Futures.</i>" if synced_now > 0 else ""
+        msg = (
+            f"🧠 <b>AI CONTINUOUS TRADE MEMORY &amp; SELF-LEARNING</b>\n"
+            f"────────────────────────\n"
+            f"📌 <b>Posisi Open Terekam:</b> {s.get('total_opened_tracked', 0)} snapshot\n"
+            f"📚 <b>Total Trade Dipelajari:</b> <b>{s.get('total_closed_learned', 0)} posisi selesai</b>\n"
+            f"🏆 <b>Win Rate Memori:</b> <b>{s.get('win_rate_pct', 0):.1f}%</b> ({s.get('wins', 0)}W / {s.get('losses', 0)}L)\n"
+            f"📊 <b>Profit Factor:</b> <b>{s.get('profit_factor', 0):.2f}</b> | <b>Streak:</b> <code>{_esc_html(s.get('streak', '0'))}</code>\n"
+            f"💵 <b>Total Net PnL:</b> <b>${float(s.get('net_pnl_usd', 0.0)):+.4f} USDT</b>\n"
+            f"────────────────────────\n"
+            + ("🟢 <b>Koin Terkuat:</b>\n" + "\n".join(best_lines) + "\n" if best_lines else "")
+            + ("🔴 <b>Koin Waspada (Extra Confluence):</b>\n" + "\n".join(worst_lines) + "\n" if worst_lines else "")
+            + ("📝 <b>Pelajaran 5 Trade Terakhir:</b>\n" + "\n".join(lesson_lines) + "\n" if lesson_lines else "<i>Belum ada histori closed trade tersimpan.</i>\n")
+            + "────────────────────────\n"
+            + "<i>Memori ini disuntikkan otomatis ke Layer 2 Setup Hunter &amp; Layer 5 Supreme Judge sebelum setiap keputusan entry, sekaligus melatih Brain 1/2/3 pada 100% posisi.</i>"
+            + sync_note
+        )
+        send_telegram_message(chat_id, msg)
+    except Exception as e:
+        send_telegram_message(chat_id, f"❌ Gagal membaca AI Trade Memory: <code>{_esc_html(e)}</code>")
+
+
 def start_bot_listener():
     print(f"[*] Menjalankan Telegram Bot v3.0 - Full Universe Crypto Futures (@idrisginting_bot)...", flush=True)
     # C3 Fix: Removed broken undefined callback server thread & made embedded auto_trader OPT-IN
@@ -1717,6 +1875,8 @@ def start_bot_listener():
                             "• <code>/why</code> - Alasan bot belum open posisi (4h gate telemetry)\n"
                             "• <code>/pnl</code> - Win Rate % & Total Net P&amp;L (Journal 30d)\n"
                             "• <code>/digest</code> - Laporan harian Performa, Fee &amp; TCA Slippage\n"
+                            "• <code>/gigi</code> - Status Sistem Pindah Gigi Otomatis (G1/G2/G3)\n"
+                            "• <code>/memory</code> - Status Memori Belajar AI &amp; Pelajaran Trade\n"
                             "• <code>/vault</code> - Status High-Water Mark Profit Vault (T7.3)\n"
                             "• <code>/reset_vault</code> - Reset Locked Profit Vault ke 0 (Buka kunci saldo)\n"
                             "• <code>/health</code> - Diagnostik Heartbeat, WS, Breaker &amp; AI Gateway\n"
@@ -1808,6 +1968,12 @@ def start_bot_listener():
 
                     elif msg_lower in ["/digest", "digest", "/report"]:
                         handle_digest_command(chat_id)
+
+                    elif msg_lower in ["/gigi", "/gear", "gigi", "gear"]:
+                        handle_gear_command(chat_id)
+
+                    elif msg_lower in ["/memory", "/belajar", "memory", "belajar"]:
+                        handle_memory_command(chat_id)
 
                     elif msg_lower.startswith("/auto"):
                         state = read_json_safe(STATE_FILE, default={}, strict_on_corrupt=False, expected_type=dict) or {}

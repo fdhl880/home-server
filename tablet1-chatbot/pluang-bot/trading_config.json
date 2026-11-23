@@ -47,6 +47,57 @@
     "hwm_step_pct": 15.0,
     "lock_fraction": 0.35
   },
+  "auto_gear_system": {
+    "enabled": true,
+    "downshift_hysteresis_pct": 0.10,
+    "gears": [
+      {
+        "gear": 1,
+        "code": "GEAR_1_TURBO",
+        "label": "Gigi 1 — TURBO (Modal < $600 / Rp 10 Juta)",
+        "min_equity_usdt": 0.0,
+        "max_equity_usdt": 600.0,
+        "leverage": 20,
+        "margin_type": "ISOLATED",
+        "sizing_mode": "ALL_IN",
+        "all_in_balance_fraction": 0.95,
+        "risk_pct": 5.0,
+        "vault_lock_fraction": 0.35,
+        "majors_only": false,
+        "min_prefilter_volume_usd": 70000000
+      },
+      {
+        "gear": 2,
+        "code": "GEAR_2_CRUISE",
+        "label": "Gigi 2 — CRUISE ($600 - $6,000 / Rp 10jt - 100jt)",
+        "min_equity_usdt": 600.0,
+        "max_equity_usdt": 6000.0,
+        "leverage": 12,
+        "margin_type": "ISOLATED",
+        "sizing_mode": "RISK_FRACTIONAL",
+        "all_in_balance_fraction": 0.50,
+        "risk_pct": 5.0,
+        "vault_lock_fraction": 0.35,
+        "majors_only": false,
+        "min_prefilter_volume_usd": 120000000
+      },
+      {
+        "gear": 3,
+        "code": "GEAR_3_FORTRESS",
+        "label": "Gigi 3 — FORTRESS (>= $6,000 / Rp 100 Juta+)",
+        "min_equity_usdt": 6000.0,
+        "max_equity_usdt": 1000000000.0,
+        "leverage": 8,
+        "margin_type": "ISOLATED",
+        "sizing_mode": "RISK_FRACTIONAL",
+        "all_in_balance_fraction": 0.35,
+        "risk_pct": 2.5,
+        "vault_lock_fraction": 0.40,
+        "majors_only": true,
+        "min_prefilter_volume_usd": 250000000
+      }
+    ]
+  },
   "max_concurrent_positions": 1,
   "max_daily_trades": 10,
   "currency": "USDT",

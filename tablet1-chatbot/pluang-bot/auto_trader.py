@@ -556,6 +556,55 @@ def _get_vault_instance(initial_equity: float = 0.0):
     return rv.get_profit_vault(initial_equity=float(initial_equity or 0.0), state_path=state_path, persist=True)
 
 
+def _get_gear_engine_instance(cfg: dict = None):
+    """Return AutoGearShiftEngine respecting patched RESULTS_DIR for test isolation."""
+    import risk.gears as rg
+
+    cfg_use = cfg if isinstance(cfg, dict) else _get_config()
+    cur_results_dir = os.path.normcase(os.path.abspath(RESULTS_DIR))
+    default_results_dir = os.path.normcase(os.path.abspath(os.path.join(BASE_DIR, "results")))
+    state_path = os.path.join(RESULTS_DIR, "gear_state.json") if cur_results_dir != default_results_dir else rg.DEFAULT_GEAR_STATE_PATH
+    return rg.get_gear_engine(config=cfg_use, state_path=state_path, persist=True)
+
+
+def _get_trade_memory_instance():
+    """Return AITradeMemoryEngine respecting patched RESULTS_DIR for test isolation."""
+    from ai.trade_memory import get_trade_memory_engine, DEFAULT_AI_MEMORY_PATH
+
+    cur_results_dir = os.path.normcase(os.path.abspath(RESULTS_DIR))
+    default_results_dir = os.path.normcase(os.path.abspath(os.path.join(BASE_DIR, "results")))
+    mem_path = os.path.join(RESULTS_DIR, "ai_trade_memory.json") if cur_results_dir != default_results_dir else DEFAULT_AI_MEMORY_PATH
+    return get_trade_memory_engine(memory_path=mem_path)
+
+
+def _notify_gear_shift(gear_status: dict) -> None:
+    """Send Telegram notification when equity crosses a Gear Shift tier boundary."""
+    if not isinstance(gear_status, dict) or not gear_status.get("shifted"):
+        return
+    arrow = "⬆️ NAIK" if gear_status.get("shift_direction") == "UP" else "⬇️ TURUN"
+    sizing_desc = (
+        f"ALL-IN {int(round(float(gear_status.get('all_in_balance_fraction', 0.95)) * 100))}%"
+        if gear_status.get("sizing_mode") == "ALL_IN"
+        else f"RISK FRACTIONAL ({float(gear_status.get('risk_pct', 5.0)):.1f}% risiko/SL)"
+    )
+    majors_note = "\n• Universe: <b>Top-10 Liquid Majors ONLY</b>" if gear_status.get("majors_only") else ""
+    try:
+        send_telegram(
+            f"⚙️ <b>[SISTEM PINDAH GIGI OTOMATIS — {arrow} KE GIGI {gear_status.get('gear')}]</b>\n"
+            f"────────────────────────\n"
+            f"🏁 <b>Profil Aktif:</b> <b>{gear_status.get('label', gear_status.get('code'))}</b>\n"
+            f"💰 <b>Live Equity:</b> <b>${float(gear_status.get('equity_usdt', 0.0)):,.2f} USDT</b>\n"
+            f"⚡ <b>Leverage:</b> <b>{gear_status.get('leverage')}x {gear_status.get('margin_type', 'ISOLATED')}</b>\n"
+            f"⚖️ <b>Sizing Mode:</b> <b>{sizing_desc}</b>\n"
+            f"🔒 <b>Vault Ratchet:</b> Kunci {int(round(float(gear_status.get('vault_lock_fraction', 0.35)) * 100))}% profit tiap +15% HWM"
+            f"{majors_note}\n"
+            f"────────────────────────\n"
+            f"<i>Ketik <code>/gigi</code> kapan saja untuk cek progres ke gigi berikutnya.</i>"
+        )
+    except Exception as exc:
+        logger.debug("Gear shift Telegram alert skipped: %s", exc)
+
+
 def load_hard_risk_engine(cfg: dict = None, current_equity: float = None):
     """Load HardRiskEngine + daily trade counter persisted across restarts."""
     from risk.engine import HardRiskEngine
@@ -1225,6 +1274,30 @@ def record_position(signal: dict):
         iso_upnl_entry = 0.0
 
     live_equity_usdt = max(0.0, total_wallet_usdt + cross_upnl_usdt + iso_upnl_entry)
+
+    # 2b. AUTO GEAR-SHIFT COMPOUNDING ENGINE ("Sistem Pindah Gigi" — G1 TURBO / G2 CRUISE / G3 FORTRESS)
+    gear_status = {"enabled": False, "gear": 1, "code": "GEAR_1_TURBO", "shifted": False}
+    try:
+        if live_equity_usdt > 0:
+            cfg, gear_status = _get_gear_engine_instance(cfg).apply_to_config(cfg, live_equity_usdt)
+            if gear_status.get("enabled"):
+                leverage = int(cfg.get("fixed_leverage", leverage) or leverage)
+                margin_type = str(cfg.get("margin_type", margin_type) or margin_type).upper()
+                state["active_gear"] = gear_status
+                if gear_status.get("vault_lock_fraction"):
+                    try:
+                        _get_vault_instance().lock_fraction = float(gear_status["vault_lock_fraction"])
+                    except Exception:
+                        pass
+                _notify_gear_shift(gear_status)
+                print(
+                    f"[GEAR ENGINE] ⚙️ {gear_status.get('code')} aktif (Equity=${live_equity_usdt:.2f}) -> "
+                    f"{leverage}x {margin_type}, {gear_status.get('sizing_mode')}",
+                    flush=True,
+                )
+    except Exception as _gear_exc:
+        logger.debug("AutoGearShift evaluation skipped in record_position: %s", _gear_exc)
+
     risk_eng = load_hard_risk_engine(cfg, current_equity=live_equity_usdt if (live_equity_usdt > 0 or total_wallet_usdt > 0) else None)
     dd_eval = risk_eng.check_live_equity_drawdown(live_equity=live_equity_usdt)
     if dd_eval.get("breaker_active"):
@@ -1481,13 +1554,17 @@ def record_position(signal: dict):
             flush=True,
         )
     else:
-        try:
-            import journal
-            rep = journal.generate_report() if hasattr(journal, "generate_report") else journal.generate_gate_report()
-            is_probation = (rep.get("total_trades", 0) < 20) or not rep.get("gate_passed", False)
-        except Exception:
-            is_probation = True
-        risk_pct = cfg.get("probation_risk_pct", 2.0) if is_probation else cfg.get("risk_pct", 5.0)
+        if gear_status.get("enabled") and int(gear_status.get("gear", 1)) >= 2:
+            is_probation = False
+            risk_pct = float(gear_status.get("risk_pct", cfg.get("risk_pct", 5.0)))
+        else:
+            try:
+                import journal
+                rep = journal.generate_report() if hasattr(journal, "generate_report") else journal.generate_gate_report()
+                is_probation = (rep.get("total_trades", 0) < 20) or not rep.get("gate_passed", False)
+            except Exception:
+                is_probation = True
+            risk_pct = cfg.get("probation_risk_pct", 2.0) if is_probation else cfg.get("risk_pct", 5.0)
         target_loss_usd = working_usdt * (risk_pct / 100.0)
         calc_margin_usd = min(target_loss_usd / (sl_pct * leverage), working_usdt * all_in_fraction)
         min_margin_for_notional = (min_notional_eff * 1.02) / leverage
@@ -1505,7 +1582,11 @@ def record_position(signal: dict):
             calc_margin_usd = min(calc_margin_usd, max_budget_usd)
         pos_size_usd = round(calc_margin_usd, 4)
         pos_size = int(pos_size_usd * _fx.get("usd_idr", 16500))
-        prob_tag = "PROBATION (2% risk)" if is_probation else "STANDARD (5% risk)"
+        prob_tag = (
+            f"{gear_status.get('code', 'GEAR')} ({risk_pct:.1f}% risk)"
+            if (gear_status.get("enabled") and int(gear_status.get("gear", 1)) >= 2)
+            else ("PROBATION (2% risk)" if is_probation else f"STANDARD ({risk_pct:.1f}% risk)")
+        )
         print(
             f"[SIZING] ⚖️ Mode RISK_FRACTIONAL [{prob_tag}]: Saldo=${avail_usdt:.2f}, SL={sl_pct*100:.2f}%, "
             f"Margin=${pos_size_usd:.2f} USDT (Rp {pos_size:,.0f}), Notional=${pos_size_usd*leverage:.2f}",
@@ -1551,6 +1632,8 @@ def record_position(signal: dict):
         "calibrated_prob": signal.get("calibrated_prob"),
         "conformal_set": signal.get("conformal_set"),
         "quant_feature_vector": signal.get("quant_feature_vector"),
+        "math_proof": signal.get("math_proof"),
+        "active_gear": gear_status if gear_status.get("enabled") else None,
         "estimated_time_horizon": signal.get("estimated_time_horizon", "N/A"),
         "opened_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "opened_ts": time.time(),
@@ -1744,6 +1827,12 @@ def record_position(signal: dict):
     except Exception as je:
         print(f"[JOURNAL] ⚠️ Journal open trade logging error: {je}", flush=True)
 
+    # Continuous AI Learning Memory: snapshot EVERY opened position immediately
+    try:
+        _get_trade_memory_instance().record_open(pos)
+    except Exception as _me:
+        logger.debug("AI trade memory record_open skipped for %s: %s", pos.get("id"), _me)
+
     return pos
 
 
@@ -1915,7 +2004,30 @@ def _update_closed_loop_learners(pos: dict, net_usd: float, exit_price: float, e
             step_errors.append(("adwin", str(exc)))
 
     # 6. Online TabularMetaModel + NeuroSymbolicEnsemble + EpisodicMarketMemory
+    # Guarantee 100% learning coverage even for auto-imported / restarted / exchange-closed positions!
     x_vec = pos.get("quant_feature_vector")
+    if not (isinstance(x_vec, list) and len(x_vec) >= 10):
+        try:
+            _mem_l = _get_trade_memory_instance()
+            _open_rec = _mem_l.lookup_open_record(
+                pos_id=pos.get("id"),
+                pair=pos.get("binance_pair") or pos.get("symbol", "").replace("-USD", "USDT"),
+            )
+            if isinstance(_open_rec, dict) and isinstance(_open_rec.get("quant_feature_vector"), list) and len(_open_rec["quant_feature_vector"]) >= 10:
+                x_vec = _open_rec["quant_feature_vector"]
+                if not pos.get("setup_name") or pos.get("setup_name") == "N/A":
+                    strat_id = str(_open_rec.get("setup_name") or strat_id)
+                if not pos.get("regime") or pos.get("regime") == "NORMAL":
+                    regime_str = str(_open_rec.get("regime") or regime_str)
+        except Exception:
+            pass
+    if not (isinstance(x_vec, list) and len(x_vec) >= 10):
+        try:
+            from ai.trade_memory import synthesize_feature_vector_from_pos
+            x_vec = synthesize_feature_vector_from_pos(pos)
+        except Exception:
+            x_vec = None
+
     if isinstance(x_vec, list) and len(x_vec) >= 10 and "meta_ensemble" not in done_steps:
         try:
             from features.hmm_drift import (
@@ -2168,6 +2280,22 @@ def _record_trade_close_in_journal(
         # Still try running learners rather than silently losing breaker/learner updates
         should_run_learners = True
 
+    # Continuous AI Learning Memory: record EVERY closed position + post-mortem lessons immediately (deduplicated)
+    try:
+        _get_trade_memory_instance().record_close(
+            pos,
+            exit_price=float(exit_price or 0.0),
+            exit_reason=str(exit_reason or "CLOSED"),
+            gross_pnl_usd=float(gross_val),
+            fee_usd=float(actual_fee_usd),
+            funding_usd=float(actual_funding_usd),
+            net_pnl_usd=float(net_usd),
+            source=str(pos.get("close_source") or "BOT_CLOSE"),
+            binance_order_id=pos.get("close_order_id") or pos.get("order_id"),
+        )
+    except Exception as _mem_c_exc:
+        logger.debug("AI trade memory record_close skipped for %s: %s", pos_id, _mem_c_exc)
+
     if should_run_learners:
         # Feature #3: Persist per-symbol post-SL cooldown on losing/SL closes (anti revenge-trade)
         try:
@@ -2321,7 +2449,7 @@ def _build_synced_binance_pos(lp: dict, bn_client, fx_rate: float) -> dict:
     iso_margin = abs(float(lp.get("isolated_margin", lp.get("isolatedMargin", 0)) or ((amt * entry_px / lev) if lev else 0)))
     pnl_pct = round((live_upnl / iso_margin) * 100.0, 2) if iso_margin > 0 else 0.0
 
-    return {
+    synced_pos = {
         "id": f"POS_BINANCE_{sym}_{int(time.time())}",
         "order_id": f"SYNC_{sym}",
         "symbol": sym.replace("USDT", "-USD"),
@@ -2359,6 +2487,12 @@ def _build_synced_binance_pos(lp: dict, bn_client, fx_rate: float) -> dict:
         "binance_synced": True,
         "ai_sentinel_status": "ACTIVE_AI_MONITORED",
     }
+    # Ensure auto-imported / manual Binance positions are also snapshotted in AI Trade Memory
+    try:
+        _get_trade_memory_instance().record_open(synced_pos)
+    except Exception:
+        pass
+    return synced_pos
 
 
 _THESIS_MONITOR = None
@@ -4461,6 +4595,36 @@ def _check_wallet_and_position_guard_impl():
 
     # T7.5 / B-8: Check HardRiskEngine Circuit Breaker (including live unrealized DD) & Max Daily Trades
     cfg_g = _get_config()
+
+    # Auto Gear-Shift evaluation on live equity + periodic Binance closed-trade AI memory backfill
+    active_gear_g = state.get("active_gear")
+    if bal_fresh_ok and live_equity_usdt > 0:
+        try:
+            cfg_g, gear_st_g = _get_gear_engine_instance(cfg_g).apply_to_config(cfg_g, live_equity_usdt)
+            if gear_st_g.get("enabled"):
+                active_gear_g = gear_st_g
+                state["active_gear"] = gear_st_g
+                if gear_st_g.get("vault_lock_fraction"):
+                    try:
+                        _get_vault_instance().lock_fraction = float(gear_st_g["vault_lock_fraction"])
+                    except Exception:
+                        pass
+                _notify_gear_shift(gear_st_g)
+        except Exception as _gg_exc:
+            logger.debug("Guard gear evaluation skipped: %s", _gg_exc)
+    if bn_client and bal_fresh_ok:
+        try:
+            if (
+                not _is_unmocked_bf_method(bn_client, "get_income_history")
+                and not _is_unmocked_bf_method(bn_client, "get_user_trades")
+            ):
+                _ingested_cnt = _get_trade_memory_instance().sync_binance_closed_history(
+                    bn_client, days=14, min_interval_sec=1800.0
+                )
+                if _ingested_cnt > 0:
+                    print(f"[AI MEMORY] 🧠 Backfilled {_ingested_cnt} closed Binance trades into continuous AI memory.", flush=True)
+        except Exception as _ms_exc:
+            logger.debug("Guard AI memory Binance history sync skipped: %s", _ms_exc)
     if not should_pause:
         try:
             today_g = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -4530,6 +4694,7 @@ def _check_wallet_and_position_guard_impl():
         "working_usdt": round(working_usdt_g, 4),
         "total_usdt": total_usdt,
         "live_equity": round(live_equity_usdt, 4),
+        "active_gear": active_gear_g,
     }
 
 
@@ -4826,7 +4991,12 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=N
                                              "XRP-USD","ADA-USD","AVAX-USD",
                                              "LINK-USD","DOT-USD","UNI-USD","SUI-USD","LTC-USD"}}
     top_liquid_majors = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "LTCUSDT"}
-    min_vol_floor = float(cfg.get("min_prefilter_volume_usd", 70_000_000) or 70_000_000)
+    active_gear_pf = state.get("active_gear") if isinstance(state.get("active_gear"), dict) else {}
+    gear_majors_only = bool(cfg.get("gear_majors_only") or (active_gear_pf.get("enabled") and active_gear_pf.get("majors_only")))
+    min_vol_floor = max(
+        float(cfg.get("min_prefilter_volume_usd", 70_000_000) or 70_000_000),
+        float(active_gear_pf.get("min_prefilter_volume_usd") or 0.0) if active_gear_pf.get("enabled") else 0.0,
+    )
 
     candidates = []
     now_pf = time.time()
@@ -4863,6 +5033,16 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=N
         vol_usd = float(coin.get("volume_24h_usd", 0) or 0)
         opp_score = float(coin.get("opportunity_score", 0) or 0)
         is_major_liq = (pair_u in top_liquid_majors) or (sym.upper() in core_symbols)
+
+        # Gear 3 FORTRESS (>= $6,000): restrict strictly to Top-10 institutional liquid majors
+        if gear_majors_only and pair_u not in top_liquid_majors:
+            _record_rejection_telemetry(
+                pair_u or sym,
+                "GEAR_3_MAJORS_ONLY",
+                f"Gear 3 Fortress restricts universe to Top-10 liquid majors (skipped {pair_u})",
+                gate="GEAR_LIQUIDITY_GUARD",
+            )
+            continue
 
         # Hard liquidity floor for non-major alts: blocks thin micro-cap stop-hunt traps (BREV, KAVA, INIT, ORCA, AIGENSYN)
         if not is_major_liq and vol_usd < min_vol_floor:

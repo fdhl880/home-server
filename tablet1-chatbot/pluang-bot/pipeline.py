@@ -1365,6 +1365,7 @@ def layer1_scanning(symbol: str):
         "daily_trend": data_1d.get("trend") if isinstance(data_1d, dict) else None,
         "daily_macd": data_1d.get("macd") if isinstance(data_1d, dict) else None,
         "news_macro": news_macro,
+        "btc_macro": _get_btc_macro_context(),
     }
 
     return data_1h, scan_summary
@@ -1373,20 +1374,70 @@ def layer1_scanning(symbol: str):
 # ===========================================================================
 # LAPISAN 2: SETUP HUNTER (Identifikasi Pola & Strategi)
 # ===========================================================================
-def layer2_setup_hunter(symbol: str, scan_data: dict):
-    """AI identifies trading setup — compact prompt to preserve token budget"""
-    # Only pass essential fields to AI (compress input tokens from ~2500 to ~600)
+_BTC_MACRO_CACHE = {"ts": 0.0, "data": {}}
+
+
+def _get_btc_macro_context() -> dict:
+    """Cached 60s BTC 1h/4h macro anchor so Layer 2 & Gate 12 know live market leader direction."""
+    now = time.time()
+    if (now - float(_BTC_MACRO_CACHE.get("ts") or 0.0)) < 60.0 and _BTC_MACRO_CACHE.get("data"):
+        return dict(_BTC_MACRO_CACHE["data"])
+    out = {"btc_1h_trend": "UNKNOWN", "btc_4h_pct": 0.0, "btc_rsi_1h": 50.0}
+    try:
+        r_b = requests.get("https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=26", timeout=2.0, verify=True)
+        if r_b.status_code == 200:
+            kl_b = r_b.json() or []
+            cl_b = [float(x[4]) for x in kl_b if len(x) > 4]
+            if len(cl_b) >= 6 and cl_b[-5] > 0:
+                chg_4h = round((cl_b[-1] - cl_b[-5]) / cl_b[-5] * 100.0, 2)
+                from market_data import calculate_ema, calculate_rsi
+                ema_b = float(calculate_ema(cl_b, 20))
+                rsi_b = float(calculate_rsi(cl_b, 14))
+                tr_b = "BULLISH" if (cl_b[-1] > ema_b and chg_4h >= 0.4) else ("BEARISH" if (cl_b[-1] < ema_b and chg_4h <= -0.4) else "NEUTRAL")
+                out = {"btc_1h_trend": tr_b, "btc_4h_pct": chg_4h, "btc_rsi_1h": round(rsi_b, 1)}
+                _BTC_MACRO_CACHE["ts"] = now
+                _BTC_MACRO_CACHE["data"] = out
+    except Exception:
+        pass
+    return out
+
+
+def _get_regime_strategy_guidance(stat_regime: str, hurst_h: float, adx_14: float) -> str:
+    sr = str(stat_regime or "NORMAL").upper()
+    if "TREND" in sr or (hurst_h >= 0.55 and adx_14 >= 22.0):
+        return "TREND_REGIME: Prefer TREND_CONTINUATION, EMA_PULLBACK_ENTRY, BREAKOUT_MOMENTUM aligned with trend; AVOID fading strong trend."
+    if "MEAN_REVERT" in sr or (hurst_h <= 0.45 and adx_14 < 24.0):
+        return "RANGE/MEAN_REVERT_REGIME: Prefer MEAN_REVERSION_BOUNCE, SMC_LIQUIDITY_SWEEP, RSI_DIVERGENCE_PLAY, BOLLINGER_SQUEEZE_BREAKOUT at S/R extremes; AVOID chasing mid-range breakouts."
+    return "TRANSITIONAL/MIXED_REGIME: Require strong S/R + volume + orderflow confluence; output NO_CLEAR_SETUP if dead mid-range chop."
+
+
+def layer2_setup_hunter(symbol: str, scan_data: dict, memory_context: str = ""):
+    """AI identifies regime-matched trading setup enriched with microstructure, BTC macro & live AI trade memory."""
+    mp = scan_data.get("math_proof") or {}
+    hurst_v = float(mp.get("hurst_exponent", 0.50) or 0.50)
+    adx_v = float(mp.get("adx_14", 0.0) or 0.0)
+    stat_reg = str(mp.get("statistical_regime", "NORMAL") or "NORMAL")
+    btc_ctx = scan_data.get("btc_macro") or {}
+    regime_guide = _get_regime_strategy_guidance(stat_reg, hurst_v, adx_v)
+
     compact = {
         "sym": symbol,
         "price": scan_data.get("price"),
         "chg24h": scan_data.get("change_24h"),
         "rsi14": scan_data.get("rsi_14_1h"),
+        "rsi15m": mp.get("rsi_15m"),
+        "dist_ema20_atr15m": mp.get("dist_ema20_atr_15m"),
         "ema": scan_data.get("ema_trend_1h"),
         "macd_hist": (scan_data.get("macd_1h") or {}).get("histogram"),
         "macd_trend": (scan_data.get("macd_1h") or {}).get("trend"),
         "bb_pct_b": (scan_data.get("bollinger_1h") or {}).get("percent_b"),
         "bb_squeeze": (scan_data.get("bollinger_1h") or {}).get("squeeze"),
         "atr_pct": scan_data.get("atr_pct"),
+        "adx14": adx_v,
+        "hurst": hurst_v,
+        "stat_regime": stat_reg,
+        "obi20": mp.get("obi_weighted_20"),
+        "p_math": mp.get("p_math_pct"),
         "vol_trend": (scan_data.get("volume") or {}).get("volume_trend"),
         "vol_ratio": (scan_data.get("volume") or {}).get("volume_ratio"),
         "fund_rate_pct": (scan_data.get("funding_rate") or {}).get("funding_rate_pct", (scan_data.get("funding_rate") or {}).get("funding_rate", 0.0)),
@@ -1397,29 +1448,33 @@ def layer2_setup_hunter(symbol: str, scan_data: dict):
         "liq_sweep": (scan_data.get("smc") or {}).get("liquidity_sweep"),
         "daily_rsi": scan_data.get("daily_rsi"),
         "daily_trend": scan_data.get("daily_trend"),
+        "btc_trend": btc_ctx.get("btc_1h_trend"),
+        "btc_4h_pct": btc_ctx.get("btc_4h_pct"),
         "qscore": (scan_data.get("quant_factors") or {}).get("composite_quant_score"),
         "news": (scan_data.get("news_macro") or {}).get("market_sentiment"),
     }
     compact_json = json.dumps(compact, ensure_ascii=False)
 
     system = (
-        "Crypto futures setup analyst. Respond ONLY in valid JSON. DO NOT output internal reasoning.\n"
+        "Crypto futures setup analyst (20x ISOLATED precision). Respond ONLY in valid JSON. DO NOT output internal reasoning.\n"
         "Start your response directly with '{'.\n"
         "Rules:\n"
-        "- Identify actionable setups with statistical edge: TREND_CONTINUATION, EMA_PULLBACK_ENTRY, "
+        "- Match setup to stat_regime & Hurst/ADX: TREND_CONTINUATION, EMA_PULLBACK_ENTRY, "
         "MEAN_REVERSION_BOUNCE, BREAKOUT_MOMENTUM, SMC_LIQUIDITY_SWEEP, BOLLINGER_SQUEEZE_BREAKOUT, "
         "RSI_DIVERGENCE_PLAY, FUNDING_RATE_ARBITRAGE.\n"
-        "- Need ≥2 independent confirmations (e.g. Trend + Volume, or S/R bounce + RSI, or Squeeze + Structure).\n"
-        "- In sideways/range markets, look for MEAN_REVERSION_BOUNCE, BOLLINGER_SQUEEZE_BREAKOUT, or S/R levels.\n"
-        "- Use NO_CLEAR_SETUP only if the market is completely flat or signals are heavily conflicting.\n"
+        "- Need >=2 independent confirmations (e.g. Trend+OFI+Volume, or S/R extreme+RSI+Sweep).\n"
+        "- In MEAN_REVERT/sideways markets, DO NOT chase mid-range breakouts — only take MEAN_REVERSION_BOUNCE / SMC_LIQUIDITY_SWEEP / RSI_DIVERGENCE at extreme S/R!\n"
+        "- Respect AI_MEMORY past lessons: penalize setups/coins/directions with repeated losses unless confluence is exceptional.\n"
+        "- Use NO_CLEAR_SETUP if mid-range dead chop or conflicting signals.\n"
         "Output: {\"setup_name\":\"\",\"direction\":\"LONG/SHORT/NONE\","
         "\"confluence_count\":0,\"confluences\":[],"
         "\"probability_pct\":50,\"explanation_id\":\"\"}"
     )
 
+    mem_line = f"\nPast Trade Learning Memory: {memory_context}" if memory_context else ""
     prompt = (
-        f"Analyze {symbol}. Data:\n{compact_json}\n"
-        f"Output ONLY JSON setup. Use NO_CLEAR_SETUP ONLY if signals are truly flat/conflicting."
+        f"Analyze {symbol}.\nRegime Rule: {regime_guide}{mem_line}\nData:\n{compact_json}\n"
+        f"Output ONLY JSON setup."
     )
 
     try:
@@ -1459,10 +1514,11 @@ def predict_tp_time(current_price: float, take_profit: float,
     direction = "LONG" if take_profit >= current_price else "SHORT"
     tp_dist_pct = abs(take_profit - current_price) / current_price * 100.0
     sl_dist_pct = abs(stop_loss - current_price) / current_price * 100.0 if stop_loss else max(tp_dist_pct * 0.5, 0.8)
+    _tp1_r_fpt = float(((get_trading_config().get("sniper_75_mode") or {}).get("tp1_lock_trigger_r")) or 0.90)
     if tp1_price and tp1_price > 0:
         tp1_dist_pct = abs(tp1_price - current_price) / current_price * 100.0
     else:
-        tp1_dist_pct = min(tp_dist_pct, max(0.35, sl_dist_pct * 0.55))  # Sniper +0.55R profit-lock distance
+        tp1_dist_pct = min(tp_dist_pct, max(0.35, sl_dist_pct * _tp1_r_fpt))
 
     # 1. Baseline ATR velocity — net directional drift per hour
     atr_pct = float(scan_data.get("atr_pct") or market_data.get("atr_pct") or 1.4)
@@ -1579,7 +1635,7 @@ def predict_tp_time(current_price: float, take_profit: float,
         "eta_hours_realistic": eta_r,
         "eta_hours_pessimistic": eta_p,
         "eta_label": f"~{_fmt_exact(eta_r)} (TP1 Lock: ~{_fmt_exact(eta_tp1_r)})",
-        "eta_detail": f"TP1 Lock (+0.55R): ~{_fmt_exact(eta_tp1_r)} | Full TP2: ~{_fmt_exact(eta_r)} (Best {_fmt_exact(eta_o)} – Worst {_fmt_exact(eta_p)})",
+        "eta_detail": f"TP1 Lock (+{_tp1_r_fpt:.2f}R): ~{_fmt_exact(eta_tp1_r)} | Full TP2: ~{_fmt_exact(eta_r)} (Best {_fmt_exact(eta_o)} – Worst {_fmt_exact(eta_p)})",
         "p_hit_tp1_before_sl_pct": p_fpt_tp1,
         "p_hit_tp2_before_sl_pct": p_fpt_tp2,
         "confidence_pct": int(round(p_fpt_tp1)),
@@ -1832,11 +1888,12 @@ def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_res
 # LAPISAN 5: SUPREME JUDGE (Final Decision - Professional Trading Desk)
 # ===========================================================================
 def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
-                          plan_result: dict, risk_result: dict, market_data: dict):
-    """Final gate — compact prompt, strict approve criteria"""
+                          plan_result: dict, risk_result: dict, market_data: dict,
+                          memory_context: str = ""):
+    """Final gate — compact prompt, strict approve criteria enriched with AI trade learning memory"""
     cfg = get_trading_config()
-    min_conf = cfg.get("min_confidence_score", 65)
-    min_rrr = cfg.get("min_risk_reward_ratio", 1.5)
+    min_conf = cfg.get("min_confidence_score", 72)
+    min_rrr = cfg.get("min_risk_reward_ratio", 1.8)
 
     entry = plan_result.get("entry_price", 0)
     sl = plan_result.get("stop_loss", 0)
@@ -1855,11 +1912,10 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
         f"Final trading judge. Respond ONLY in JSON.\n"
         f"APPROVE if ALL: direction≠NONE, setup≠NO_CLEAR_SETUP, "
         f"confluence≥2, risk_score≥5/{risk_max}, RRR≥{min_rrr}, "
-        f"confidence≥{min_conf}%, SL distance < 3.0%.\n"
-        f"For 20x leverage: SL between 0.5% and 2.5% is EXCELLENT and SAFE (far from 5% liquidation).\n"
-        f"Only REJECT if SL > 3.5% (liquidation danger), RRR < {min_rrr}, or major signal conflict.\n"
+        f"confidence≥{min_conf}%, SL distance between 0.9% and 2.25%.\n"
+        f"Heed AI_MEMORY past trade lessons: REJECT if this coin/setup/direction repeatedly lost without exceptional edge.\n"
         f"Output: {{\"status\":\"APPROVED/REJECTED\",\"confidence_score\":{prob},"
-        f"\"direction\":\"{direction}\",\"order_type\":\"MARKET/LIMIT\","
+        f"\"direction\":\"{direction}\",\"order_type\":\"MAKER_FIRST_GTX\","
         f"\"limit_price\":{entry},\"entry_price\":{entry},"
         f"\"take_profit\":{tp},\"stop_loss\":{sl},"
         f"\"risk_reward_ratio\":\"1:{rrr_val}\",\"leverage\":20,"
@@ -1868,10 +1924,11 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
         f"\"final_reason\":\"brief reason\"}}"
     )
 
+    mem_block = f"\nAI Learning Memory: {memory_context}" if memory_context else ""
     prompt = (
         f"{symbol}: {direction} @ ${entry:.4f}, SL=${sl:.4f}({sl_pct:.2f}%), "
         f"TP=${tp:.4f}(RRR 1:{rrr_val}), Setup={setup_name}, "
-        f"Confidence={prob}%, Risk {risk_score}/{risk_max}.\n"
+        f"Confidence={prob}%, Risk {risk_score}/{risk_max}.{mem_block}\n"
         f"APPROVE or REJECT? Output ONLY JSON."
     )
 
@@ -2172,6 +2229,57 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
                     f"15m Micro-Timing Exhaustion Chase SHORT (RSI15m={rsi_15:.1f} < 24 & {dist_atr_15:.2f}x ATR below EMA20)"
                 )
 
+        # Gate 12d: Smart Regime-to-Strategy Compatibility (blocks strategy-regime mismatch & dead mid-range chop,
+        # while PRESERVING valid mean-reversion setups at range extremes in sideways markets!)
+        if result.get("status") == "APPROVED":
+            _setup_u = str(setup_result.get("setup_name") or result.get("setup_name") or "").upper()
+            _stat_reg_u = str(mp.get("statistical_regime") or "NORMAL").upper()
+            _adx_g = float(mp.get("adx_14") or 0.0)
+            _bb_pb = (scan_data.get("bollinger_1h") or {}).get("percent_b")
+            _bb_pb_v = float(_bb_pb) if _bb_pb is not None else 0.50
+
+            # 1) Do NOT chase mid-range breakouts/trend-continuation inside a proven MEAN_REVERT range
+            if ("MEAN_REVERT" in _stat_reg_u or hurst_h < 0.44) and (0.0 < _adx_g < 20.0):
+                if any(k in _setup_u for k in ("BREAKOUT_MOMENTUM", "TREND_CONTINUATION")):
+                    result["status"] = "REJECTED"
+                    reasons.append(
+                        f"Regime-Strategy mismatch: {_setup_u} blocked in MEAN_REVERT range (H={hurst_h:.2f}, ADX={_adx_g:.1f})"
+                    )
+
+            # 2) Do NOT fade a roaring persistent trend with MEAN_REVERSION_BOUNCE
+            if result.get("status") == "APPROVED" and hurst_h >= 0.56 and _adx_g >= 28.0:
+                if "MEAN_REVERSION" in _setup_u:
+                    if (direction == "LONG" and "BEARISH" in ema_1h) or (direction == "SHORT" and "BULLISH" in ema_1h):
+                        result["status"] = "REJECTED"
+                        reasons.append(
+                            f"Regime-Strategy mismatch: counter-trend {_setup_u} blocked in strong trend (H={hurst_h:.2f}, ADX={_adx_g:.1f})"
+                        )
+
+            # 3) Dead-zone mid-range random walk ONLY (neither trending NOR at range extremes!)
+            if (
+                result.get("status") == "APPROVED"
+                and (0.46 <= hurst_h <= 0.54)
+                and (0.0 < _adx_g < 18.0)
+                and (38.0 <= rsi_1h <= 62.0)
+                and (0.25 <= _bb_pb_v <= 0.75)
+            ):
+                result["status"] = "REJECTED"
+                reasons.append(
+                    f"Dead-zone random-walk chop (H={hurst_h:.2f}, ADX={_adx_g:.1f}, RSI={rsi_1h:.1f}, BB%B={_bb_pb_v:.2f})"
+                )
+
+            # 4) BTC Macro Divergence Guard for altcoins (prevent fighting decisive BTC 4h impulse >1.6%)
+            _btc_m = scan_data.get("btc_macro") or {}
+            _btc_4h = float(_btc_m.get("btc_4h_pct") or 0.0)
+            _sym_g = str(scan_data.get("symbol") or "").upper()
+            if result.get("status") == "APPROVED" and not _sym_g.startswith("BTC"):
+                if direction == "LONG" and _btc_4h <= -1.6 and rsi_1h > 30.0:
+                    result["status"] = "REJECTED"
+                    reasons.append(f"BTC Macro Divergence: altcoin LONG blocked while BTC 4h={_btc_4h:+.2f}%")
+                elif direction == "SHORT" and _btc_4h >= 1.6 and rsi_1h < 70.0:
+                    result["status"] = "REJECTED"
+                    reasons.append(f"BTC Macro Divergence: altcoin SHORT blocked while BTC 4h={_btc_4h:+.2f}%")
+
         liq_in = market_data.get("_liq_inputs") or {}
         if result.get("status") == "APPROVED" and e_px > 0 and sl_px > 0 and len(liq_in.get("closes", [])) >= 12:
             from features.liq_heatmap import build_liquidation_heatmap
@@ -2241,9 +2349,38 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
             "execution_time_sec": round(time.time() - start_time, 2)
         }
 
+    # === PRE-DECISION AI MEMORY & k-NN ANALOG RETRIEVAL (SO LAYER 2 & LAYER 5 ACTUALLY LEARN!) ===
+    _pre_knn_note = None
+    _pre_mem_ctx = ""
+    try:
+        _mp_pre = scan_summary.get("math_proof") or market_data.get("math_proof") or {}
+        _stat_reg_pre = str(_mp_pre.get("statistical_regime") or "NORMAL")
+        try:
+            from features.hmm_drift import extract_quant_feature_vector, load_episodic_memory
+            _pre_qvec = extract_quant_feature_vector(_mp_pre, scan_summary)
+            _pre_ep = load_episodic_memory(feature_dim=len(_pre_qvec))
+            if len(getattr(_pre_ep, "_vectors_list", [])) >= 3:
+                _pre_q = _pre_ep.query(_pre_qvec, regime=_stat_reg_pre)
+                if isinstance(_pre_q, dict) and _pre_q.get("k_used", 0) > 0:
+                    _pre_knn_note = _pre_q.get("prompt_summary")
+        except Exception:
+            _pre_knn_note = None
+
+        from ai.trade_memory import get_trade_memory_engine
+        _mem_eng = get_trade_memory_engine()
+        _pre_mem_ctx = _mem_eng.build_prompt_memory_context(
+            symbol=symbol,
+            regime=_stat_reg_pre,
+            direction=_mp_pre.get("preferred_direction"),
+            active_positions=active_positions,
+            knn_note=_pre_knn_note,
+        )
+    except Exception as _mem_exc:
+        logger.debug("Pre-decision AI memory context skipped for %s: %s", symbol, _mem_exc)
+
     # === LAYERS 2-5: AI ONLY (user mandate: NO math fallback). If AI is unavailable -> NO TRADE. ===
     try:
-        setup_result = layer2_setup_hunter(symbol, scan_summary)
+        setup_result = layer2_setup_hunter(symbol, scan_summary, memory_context=_pre_mem_ctx)
 
         # Branch on setup detection
         if setup_result.get("setup_name") == "NO_CLEAR_SETUP" or setup_result.get("direction") in ("NONE", "SKIP", None):
@@ -2269,8 +2406,9 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                     "execution_time_sec": round(time.time() - start_time, 2),
                 }
             atr_p = max(0.6, float(market_data.get("atr_pct") or 1.2))
-            sl_d = max(0.008, min(0.02, (atr_p / 100.0) * 1.1))
-            tp1_d = sl_d * 0.55
+            sl_d = max(0.009, min(0.02, (atr_p / 100.0) * 1.1))
+            _tp1_r_obs = float(((get_trading_config().get("sniper_75_mode") or {}).get("tp1_lock_trigger_r")) or 0.90)
+            tp1_d = sl_d * _tp1_r_obs
             tp2_d = sl_d * 2.0
             d_sign = 1.0 if pref_dir == "LONG" else -1.0
             sim_sl = round(px_now * (1.0 - d_sign * sl_d), 6)
@@ -2279,7 +2417,7 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
             sim_tp_pred = predict_tp_time(px_now, sim_tp2, sim_sl, "QUANT_OBSERVATION_MODE", scan_summary, market_data, tp1_price=sim_tp1)
             plan_result = {
                 "action": pref_dir,
-                "order_type": "MARKET",
+                "order_type": "MAKER_FIRST_GTX",
                 "entry_price": px_now,
                 "stop_loss": sim_sl,
                 "take_profit": sim_tp2,
@@ -2315,7 +2453,23 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
         else:
             plan_result = layer3_build_plan(symbol, scan_summary, setup_result, market_data)
             risk_result = layer4_risk_audit(symbol, scan_summary, setup_result, plan_result, market_data)
-            final_call = layer5_final_judgment(symbol, scan_summary, setup_result, plan_result, risk_result, market_data)
+            _l5_mem_ctx = _pre_mem_ctx
+            try:
+                from ai.trade_memory import get_trade_memory_engine
+                _l5_mem_ctx = get_trade_memory_engine().build_prompt_memory_context(
+                    symbol=symbol,
+                    regime=str((scan_summary.get("math_proof") or {}).get("statistical_regime") or "NORMAL"),
+                    direction=setup_result.get("direction"),
+                    setup_name=setup_result.get("setup_name"),
+                    active_positions=active_positions,
+                    knn_note=_pre_knn_note,
+                )
+            except Exception:
+                pass
+            final_call = layer5_final_judgment(
+                symbol, scan_summary, setup_result, plan_result, risk_result, market_data,
+                memory_context=_l5_mem_ctx,
+            )
 
         # === INSTITUTIONAL V3 (28-PILLAR + 3-BRAIN NEURO-SYMBOLIC + SNIPER 75% + ROI/PnL PROJECTION) ===
         if True:

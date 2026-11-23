@@ -567,6 +567,266 @@ class TestFeaturesAutoTraderAndTelegram(unittest.TestCase):
             self.assertEqual(res["working_balance_usdt"], 25.0)
             self.assertEqual(len(pv.ratchet_events), 0)
 
+    def test_auto_gear_shift_progression_hysteresis_and_config_application(self):
+        from risk.gears import AutoGearShiftEngine, reset_gear_engine_cache
+
+        reset_gear_engine_cache()
+        base_cfg = {
+            "fixed_leverage": 20,
+            "max_leverage": 20,
+            "margin_type": "ISOLATED",
+            "sizing_mode": "ALL_IN",
+            "all_in_balance_fraction": 0.95,
+            "min_prefilter_volume_usd": 70_000_000,
+            "auto_gear_system": {"enabled": True, "downshift_hysteresis_pct": 0.10},
+        }
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            gpath = os.path.join(tmp, "gear_state.json")
+            eng = AutoGearShiftEngine(downshift_hysteresis_pct=0.10, state_path=gpath, persist=True)
+
+            # 1) Small balance $5.59 -> Gear 1 TURBO (20x ALL_IN 95%)
+            c1, s1 = eng.apply_to_config(base_cfg, 5.59)
+            self.assertEqual(s1["gear"], 1)
+            self.assertEqual(s1["code"], "GEAR_1_TURBO")
+            self.assertEqual(c1["fixed_leverage"], 20)
+            self.assertEqual(c1["sizing_mode"], "ALL_IN")
+            self.assertAlmostEqual(c1["all_in_balance_fraction"], 0.95)
+            self.assertFalse(c1["gear_majors_only"])
+
+            # 2) Cross $600 -> Immediate upshift to Gear 2 CRUISE (12x RISK_FRACTIONAL 5%)
+            c2, s2 = eng.apply_to_config(base_cfg, 650.0)
+            self.assertEqual(s2["gear"], 2)
+            self.assertTrue(s2["shifted"])
+            self.assertEqual(s2["shift_direction"], "UP")
+            self.assertEqual(c2["fixed_leverage"], 12)
+            self.assertEqual(c2["sizing_mode"], "RISK_FRACTIONAL")
+            self.assertAlmostEqual(c2["risk_pct"], 5.0)
+            self.assertGreaterEqual(c2["min_prefilter_volume_usd"], 120_000_000)
+
+            # 3) Dip to $560 (above 10% hysteresis floor $540) -> MUST STAY Gear 2
+            _, s2_hold = eng.apply_to_config(base_cfg, 560.0)
+            self.assertEqual(s2_hold["gear"], 2)
+            self.assertFalse(s2_hold["shifted"])
+
+            # 4) Drop to $520 (below $540 floor) -> Downshift cleanly to Gear 1
+            _, s1_down = eng.apply_to_config(base_cfg, 520.0)
+            self.assertEqual(s1_down["gear"], 1)
+            self.assertTrue(s1_down["shifted"])
+            self.assertEqual(s1_down["shift_direction"], "DOWN")
+
+            # 5) Reach $6,200 -> Gear 3 FORTRESS (8x RISK_FRACTIONAL 2.5%, Top-10 majors only, 40% vault lock)
+            c3, s3 = eng.apply_to_config(base_cfg, 6200.0)
+            self.assertEqual(s3["gear"], 3)
+            self.assertEqual(s3["code"], "GEAR_3_FORTRESS")
+            self.assertEqual(c3["fixed_leverage"], 8)
+            self.assertEqual(c3["sizing_mode"], "RISK_FRACTIONAL")
+            self.assertAlmostEqual(c3["risk_pct"], 2.5)
+            self.assertTrue(c3["gear_majors_only"])
+            self.assertAlmostEqual(s3["vault_lock_fraction"], 0.40)
+            self.assertGreaterEqual(c3["min_prefilter_volume_usd"], 250_000_000)
+
+    def test_gate12d_smart_regime_strategy_compatibility_and_btc_macro(self):
+        import pipeline as pl
+
+        def _base_inputs(setup_name, hurst, stat_reg, adx, rsi, bb_pb, btc_4h=0.2, ema="NEUTRAL"):
+            scan_data = {
+                "symbol": "SOL-USD",
+                "rsi_1h": rsi,
+                "ema_trend_1h": ema,
+                "bollinger_1h": {"percent_b": bb_pb, "squeeze": False},
+                "btc_macro": {"btc_trend_1h": "NEUTRAL", "btc_4h_pct": btc_4h, "btc_rsi_1h": 50.0},
+                "math_proof": {
+                    "hurst_exponent": hurst,
+                    "statistical_regime": stat_reg,
+                    "adx_14": adx,
+                    "p_math_pct": 74.0,
+                    "hmm_cascade_prob": 0.15,
+                    "vpin": 0.30,
+                },
+            }
+            market_data = {
+                "current_price": 100.0,
+                "live_price": 100.0,
+                "funding_rate": {"funding_rate": 0.0001},
+                "math_proof": scan_data["math_proof"],
+                "_micro_15m": {"available": False},
+            }
+            setup_res = {"setup_name": setup_name, "direction": "LONG", "confluence_count": 3}
+            plan_res = {
+                "action": "LONG",
+                "order_type": "MAKER_FIRST_GTX",
+                "entry_price": 100.0,
+                "stop_loss": 98.8,
+                "take_profit": 102.6,
+                "risk_reward_ratio": "1:2.17",
+            }
+            risk_res = {"total_score": 7, "max_score": 8, "verdict": "PASS"}
+            final_res = {
+                "status": "APPROVED",
+                "direction": "LONG",
+                "setup_name": setup_name,
+                "confidence_score": 80,
+                "entry_price": 100.0,
+                "stop_loss": 98.8,
+                "take_profit": 102.6,
+                "risk_reward_ratio": "1:2.17",
+                "final_reason": "Strong confluence",
+            }
+            return scan_data, setup_res, plan_res, risk_res, market_data, final_res
+
+        # 1) Sideways MEAN_REVERT + MEAN_REVERSION_BOUNCE at range extreme -> MUST BE ALLOWED (not blindly blocked!)
+        sd, su, pln, rk, md, fc = _base_inputs("MEAN_REVERSION_BOUNCE", 0.38, "MEAN_REVERT", 14.0, 29.0, 0.08)
+        r1 = pl._apply_safety_gates(fc, su, pln, rk, sd, md)
+        self.assertEqual(r1["status"], "APPROVED", f"Valid mean-reversion at extreme must pass: {r1.get('final_reason')}")
+
+        # 2) Sideways MEAN_REVERT + BREAKOUT_MOMENTUM -> MUST BE REJECTED (regime-strategy mismatch)
+        sd, su, pln, rk, md, fc = _base_inputs("BREAKOUT_MOMENTUM", 0.38, "MEAN_REVERT", 14.0, 52.0, 0.55)
+        r2 = pl._apply_safety_gates(fc, su, pln, rk, sd, md)
+        self.assertEqual(r2["status"], "REJECTED")
+        self.assertIn("Regime-Strategy mismatch", r2.get("final_reason", ""))
+
+        # 3) Dead-zone mid-range random walk (H=0.50, ADX=12, RSI=50, BB%B=0.50) -> MUST BE REJECTED
+        sd, su, pln, rk, md, fc = _base_inputs("LIQUIDITY_SWEEP_REVERSAL", 0.50, "RANDOM_WALK", 12.0, 50.0, 0.50)
+        r3 = pl._apply_safety_gates(fc, su, pln, rk, sd, md)
+        self.assertEqual(r3["status"], "REJECTED")
+        self.assertIn("Dead-zone random-walk chop", r3.get("final_reason", ""))
+
+        # 4) Altcoin LONG fighting decisive BTC 4h dump (-2.1%) -> MUST BE REJECTED
+        sd, su, pln, rk, md, fc = _base_inputs("TREND_PULLBACK", 0.60, "TRENDING", 30.0, 48.0, 0.35, btc_4h=-2.1, ema="BULLISH")
+        r4 = pl._apply_safety_gates(fc, su, pln, rk, sd, md)
+        self.assertEqual(r4["status"], "REJECTED")
+        self.assertIn("BTC Macro Divergence", r4.get("final_reason", ""))
+
+    def test_continuous_ai_trade_memory_open_close_lessons_prompt_and_backfill(self):
+        from ai.trade_memory import AITradeMemoryEngine, synthesize_feature_vector_from_pos
+        import auto_trader as at
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            mpath = os.path.join(tmp, "ai_trade_memory.json")
+            mem = AITradeMemoryEngine(memory_path=mpath)
+
+            # 1) Record open without quant_feature_vector -> synthesizes deterministic 12-dim vector
+            pos1 = {
+                "id": "POS_MEM_1",
+                "symbol": "SOL-USD",
+                "binance_pair": "SOLUSDT",
+                "direction": "LONG",
+                "setup_name": "BREAKOUT_MOMENTUM",
+                "regime": "MEAN_REVERT",
+                "entry_price": 150.0,
+                "init_stop_loss": 149.1,  # 0.60% tight SL
+                "leverage": 20,
+                "position_size_usd": 5.0,
+                "opened_ts": time.time() - 300.0,  # 5m hold
+                "confidence_score": 76,
+                "math_proof": {"p_math_pct": 71.0, "hurst_exponent": 0.41, "adx_14": 15.0, "rsi_15m": 62.0},
+            }
+            snap = mem.record_open(pos1)
+            self.assertEqual(len(snap["quant_feature_vector"]), 12)
+            self.assertIsNotNone(mem.lookup_open_record(pos_id="POS_MEM_1"))
+
+            # 2) Record 2 losses on SOL-USD -> lessons & prompt warning generated
+            cls1 = mem.record_close(pos1, exit_price=149.1, exit_reason="SL_HIT", gross_pnl_usd=-0.60, fee_usd=0.10, net_pnl_usd=-0.70)
+            self.assertEqual(cls1["outcome"], "LOSS")
+            self.assertTrue(any("FAST_SL_STOPHUNT" in ls for ls in cls1["lessons"]))
+            self.assertTrue(any("TIGHT_SL" in ls for ls in cls1["lessons"]))
+
+            pos2 = dict(pos1, id="POS_MEM_2")
+            mem.record_open(pos2)
+            mem.record_close(pos2, exit_price=149.2, exit_reason="SL_HIT", gross_pnl_usd=-0.50, fee_usd=0.10, net_pnl_usd=-0.60)
+
+            ctx = mem.build_prompt_memory_context(
+                symbol="SOL-USD",
+                regime="MEAN_REVERT",
+                direction="LONG",
+                setup_name="BREAKOUT_MOMENTUM",
+                knn_note="3 analogs -> 33% WR",
+            )
+            self.assertIn("AI_MEMORY", ctx)
+            self.assertIn("CAUTION: poor history on this coin", ctx)
+            self.assertIn("AvoidPastErrors", ctx)
+            self.assertIn("kNN:", ctx)
+
+            # 3) Binance closed history backfill + strict deduplication by orderId
+            fake_bn = MagicMock()
+            fake_bn.get_income_history.return_value = [
+                {"symbol": "ETHUSDT", "incomeType": "REALIZED_PNL", "income": "1.25", "time": int(time.time() * 1000) - 60_000}
+            ]
+            fake_bn.get_user_trades.return_value = [
+                {"orderId": 1001, "time": int(time.time() * 1000) - 120_000, "side": "BUY", "qty": "0.05", "price": "3000.0", "realizedPnl": "0", "commission": "0.06"},
+                {"orderId": 1002, "time": int(time.time() * 1000) - 60_000, "side": "SELL", "qty": "0.05", "price": "3025.0", "realizedPnl": "1.25", "commission": "0.06"},
+            ]
+            ing1 = mem.sync_binance_closed_history(fake_bn, days=14, min_interval_sec=0.0)
+            ing2 = mem.sync_binance_closed_history(fake_bn, days=14, min_interval_sec=0.0)
+            self.assertEqual(ing1, 1)
+            self.assertEqual(ing2, 0, "Duplicate Binance orderId must NEVER be double-counted")
+            self.assertEqual(len(synthesize_feature_vector_from_pos({"direction": "SHORT", "entry_price": 100.0, "stop_loss": 101.2})), 12)
+
+            # 4) Verify _update_closed_loop_learners trains meta_ensemble even when quant_feature_vector is missing!
+            orig_res = at.RESULTS_DIR
+            orig_brk = at.RISK_BREAKER_FILE
+            try:
+                at.RESULTS_DIR = tmp
+                at.RISK_BREAKER_FILE = os.path.join(tmp, "risk_breaker_state.json")
+                pos_no_vec = {
+                    "id": "POS_SYNC_NO_VEC",
+                    "symbol": "BNBUSDT",
+                    "binance_pair": "BNBUSDT",
+                    "direction": "LONG",
+                    "entry_price": 600.0,
+                    "init_stop_loss": 592.0,
+                    "leverage": 20,
+                    "position_size_usd": 5.0,
+                }
+                with patch("features.hmm_drift.load_tabular_meta_model") as m_tab, \
+                     patch("features.hmm_drift.save_tabular_meta_model"), \
+                     patch("features.hmm_drift.load_ensemble_weights") as m_ens, \
+                     patch("features.hmm_drift.save_ensemble_weights"), \
+                     patch("features.hmm_drift.append_episodic_episode") as m_ep, \
+                     patch("features.hmm_drift.load_calibrator", return_value=MagicMock(history_y=[])), \
+                     patch("features.hmm_drift.save_calibrator"), \
+                     patch("features.hmm_drift.load_conformal_filter", return_value=MagicMock()), \
+                     patch("features.hmm_drift.save_conformal_filter"), \
+                     patch("features.hmm_drift.ADWINDetector") as m_adwin, \
+                     patch("strategies.bandit_allocator.ContextualThompsonBandit") as m_bandit:
+                    m_bandit.return_value.update.return_value = None
+                    m_adwin.return_value.update.return_value = {"drift_detected": False}
+                    at._update_closed_loop_learners(pos_no_vec, net_usd=0.80, exit_price=608.0, exit_reason="TP_HIT")
+                    m_tab.return_value.partial_fit.assert_called_once()
+                    m_ens.return_value.update_from_outcome.assert_called_once()
+                    m_ep.assert_called_once()
+            finally:
+                at.RESULTS_DIR = orig_res
+                at.RISK_BREAKER_FILE = orig_brk
+
+    def test_telegram_gear_and_memory_commands_execute_cleanly(self):
+        import telegram_bot as tb
+
+        sent = []
+        fake_bn = MagicMock()
+        fake_bn.get_balance.return_value = {
+            "total_wallet_balance": 5.59,
+            "available_balance": 5.59,
+            "cross_unrealized_pnl": 0.0,
+        }
+        fake_bn.get_positions.return_value = []
+        fake_bn.get_income_history.return_value = []
+        fake_bn.get_user_trades.return_value = []
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            orig_res = tb.RESULTS_DIR
+            try:
+                tb.RESULTS_DIR = tmp
+                with patch.object(tb, "send_telegram_message", side_effect=lambda cid, txt, *a, **k: sent.append(txt)), \
+                     patch.object(tb, "get_binance_client", return_value=fake_bn), \
+                     patch.object(tb, "get_fx_info", return_value={"usd_idr": 16500}):
+                    tb.handle_gear_command(123)
+                    tb.handle_memory_command(123)
+                self.assertEqual(len(sent), 2)
+                self.assertIn("Gigi 1", sent[0])
+                self.assertIn("AI CONTINUOUS TRADE MEMORY", sent[1])
+            finally:
+                tb.RESULTS_DIR = orig_res
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
