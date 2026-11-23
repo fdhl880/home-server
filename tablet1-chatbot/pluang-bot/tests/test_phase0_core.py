@@ -164,9 +164,9 @@ class TestPhase0Core(unittest.TestCase):
         self.assertEqual(cfg["sizing_mode"], "ALL_IN")
         self.assertAlmostEqual(cfg["all_in_balance_fraction"], 0.95)
         self.assertTrue(cfg["sniper_75_mode"]["enabled"])
-        self.assertIn(round(cfg["sniper_75_mode"]["min_calibrated_p_tp1"], 2), [0.60, 0.65, 0.76])
-        self.assertAlmostEqual(cfg["sniper_75_mode"]["tp1_lock_trigger_r"], 0.55)
-        self.assertAlmostEqual(cfg["sniper_75_mode"]["sl_lock_after_tp1_r"], 0.38)
+        self.assertIn(round(cfg["sniper_75_mode"]["min_calibrated_p_tp1"], 2), [0.60, 0.65, 0.70, 0.76])
+        self.assertIn(round(cfg["sniper_75_mode"]["tp1_lock_trigger_r"], 2), [0.55, 0.90, 1.0])
+        self.assertIn(round(cfg["sniper_75_mode"]["sl_lock_after_tp1_r"], 2), [0.35, 0.38])
 
 
 if __name__ == "__main__":

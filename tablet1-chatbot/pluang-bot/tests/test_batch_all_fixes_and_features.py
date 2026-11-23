@@ -297,7 +297,7 @@ class TestStreamBQuantPipelineAndAI(unittest.TestCase):
             self.assertFalse(any("BTC_USD_latest" in n for n in basenames), "Scan cache JSONs must not be copied into daily backup")
 
     def test_min_confidence_65_and_hybrid_score_exact_calculation(self):
-        """Verify min_confidence_score defaults to 65 and hybrid calculation is S_Hybrid = 0.55*P_Math + 0.45*P_AI."""
+        """Verify min_confidence_score >= 65 (72 in Sniper v3.2) and hybrid calculation is S_Hybrid = 0.55*P_Math + 0.45*P_AI."""
         import json
         import pipeline
 
@@ -305,9 +305,9 @@ class TestStreamBQuantPipelineAndAI(unittest.TestCase):
         if os.path.exists(cfg_path):
             with open(cfg_path, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
-            self.assertEqual(cfg.get("min_confidence_score"), 65, "trading_config.json must specify min_confidence_score = 65")
+            self.assertEqual(cfg.get("min_confidence_score"), 72, "trading_config.json must specify min_confidence_score = 72")
 
-        self.assertEqual(pipeline.MIN_CONFIDENCE_SCORE, 65, "pipeline.MIN_CONFIDENCE_SCORE must be 65")
+        self.assertEqual(pipeline.MIN_CONFIDENCE_SCORE, 72, "pipeline.MIN_CONFIDENCE_SCORE must match trading_config.json (72)")
 
         # Test exact hybrid score math: S_Hybrid = 0.55 * P_Math + 0.45 * P_AI
         # Case A: P_Math = 70.0, P_AI = 65.0 -> S_Hybrid = 0.55*70 + 0.45*65 = 38.5 + 29.25 = 67.75
@@ -317,12 +317,62 @@ class TestStreamBQuantPipelineAndAI(unittest.TestCase):
         self.assertEqual(s_hybrid, 67.75)
         self.assertEqual(int(round(s_hybrid)), 68)
 
-        # Case B: P_Math = 60.0, P_AI = 72.0 -> S_Hybrid = 0.55*60 + 0.45*72 = 33.0 + 32.4 = 65.40
-        p_math_b = 60.0
-        p_ai_b = 72.0
+        # Case B: P_Math = 72.0, P_AI = 75.0 -> S_Hybrid = 0.55*72 + 0.45*75 = 39.6 + 33.75 = 73.35
+        p_math_b = 72.0
+        p_ai_b = 75.0
         s_hybrid_b = round(0.55 * p_math_b + 0.45 * p_ai_b, 2)
-        self.assertEqual(s_hybrid_b, 65.40)
-        self.assertGreaterEqual(s_hybrid_b, 65.0, "Should qualify under 65% threshold")
+        self.assertEqual(s_hybrid_b, 73.35)
+        self.assertGreaterEqual(s_hybrid_b, 72.0, "Should qualify under 72% threshold")
+
+    def test_post_tp_cooldown_microcap_block_and_early_invalidation_guard(self):
+        """Regression tests for Nov 20-23 live loss root causes: Post-TP cooldown, micro-cap & 1000x meme block, basis scaling."""
+        import auto_trader as at
+
+        orig_state = dict(at.state)
+        orig_rej = dict(at._RECENT_REJECT_TS)
+        try:
+            at.state["symbol_sl_cooldowns"] = {}
+            at.state["rejection_stats"] = {}
+            at._RECENT_REJECT_TS.clear()
+
+            # 1. Post-TP cooldown blocks immediate re-entry (fixes BREV/ATOM/KAVA 41-second re-entry wipeout)
+            at._record_post_sl_symbol_cooldown("KAVAUSDT", "CLOSED_TP", +1.50, cfg={"post_tp_symbol_cooldown_hours": 2.0})
+            self.assertIn("KAVAUSDT", at.state["symbol_sl_cooldowns"])
+
+            # 2. Micro-cap (<$70M) and 1000x memecoins blocked; Top Majors prioritized
+            ranked = [
+                {"pair": "BREVUSDT", "symbol": "BREV-USD", "volume_24h_usd": 18_000_000, "price_change_24h_pct": 4.0, "opportunity_score": 8.0, "high_low_range_pct": 9.0},
+                {"pair": "1000PEPEUSDT", "symbol": "1000PEPE-USD", "volume_24h_usd": 500_000_000, "price_change_24h_pct": 4.0, "opportunity_score": 8.5, "high_low_range_pct": 9.0},
+                {"pair": "KAVAUSDT", "symbol": "KAVA-USD", "volume_24h_usd": 120_000_000, "price_change_24h_pct": 4.0, "opportunity_score": 8.5, "high_low_range_pct": 8.0},
+                {"pair": "SOLUSDT", "symbol": "SOL-USD", "volume_24h_usd": 900_000_000, "price_change_24h_pct": 3.0, "opportunity_score": 6.5, "high_low_range_pct": 5.5},
+                {"pair": "BNBUSDT", "symbol": "BNB-USD", "volume_24h_usd": 450_000_000, "price_change_24h_pct": 2.5, "opportunity_score": 6.0, "high_low_range_pct": 4.5},
+            ]
+            picks = at._technical_pre_filter(ranked, max_ai_coins=5, available_balance_usdt=100.0)
+            picked_pairs = [c["pair"] for c in picks]
+            self.assertNotIn("BREVUSDT", picked_pairs, "Illiquid micro-cap <$70M must be blocked")
+            self.assertNotIn("1000PEPEUSDT", picked_pairs, "1000x memecoins must be blocked on 20x ALL-IN")
+            self.assertNotIn("KAVAUSDT", picked_pairs, "Symbol in Post-TP cooldown must not be re-entered")
+            self.assertEqual(picked_pairs, ["SOLUSDT", "BNBUSDT"])
+
+            # 3. Realistic 25 bps basis scaling (10 bps perp discount must NOT trigger fake >=1.5 sigma reversal)
+            at._MICRO_STATE_CACHE.pop("TESTBASISUSDT", None)
+            mock_pi = MagicMock(status_code=200)
+            mock_pi.json.return_value = {"markPrice": "0.9990", "indexPrice": "1.0000"}  # 10 bps normal perp discount
+            mock_empty = MagicMock(status_code=200)
+            mock_empty.json.return_value = []
+            def _fake_get(url, *a, **kw):
+                if "premiumIndex" in url:
+                    return mock_pi
+                return mock_empty
+            with patch("auto_trader.requests.get", side_effect=_fake_get):
+                ms = at._fetch_live_micro_state("TESTBASISUSDT", bn_client=None)
+            self.assertLess(abs(ms["spot_perp_div"]), 1.0, "Normal 10 bps basis must not exceed 1.0 sigma")
+            self.assertAlmostEqual(ms["spot_perp_div"], 0.4, places=2)
+        finally:
+            at.state.clear()
+            at.state.update(orig_state)
+            at._RECENT_REJECT_TS.clear()
+            at._RECENT_REJECT_TS.update(orig_rej)
 
 
 class TestFeaturesAutoTraderAndTelegram(unittest.TestCase):

@@ -187,12 +187,12 @@ def get_trading_config():
     # Always enforce 20x fixed — never allow config file to override
     cfg["max_leverage"] = FIXED_LEVERAGE
     cfg["fixed_leverage"] = FIXED_LEVERAGE
-    # Auto-align sniper precision gate to min_confidence_score (never stay stuck at legacy 0.76)
-    min_conf_sc = float(cfg.get("min_confidence_score", 65))
-    target_min_p = min(0.60, min_conf_sc / 100.0)
+    # Auto-align legacy 0.76+ sniper precision gate only if it sits far above min_confidence_score
+    min_conf_sc = float(cfg.get("min_confidence_score", 72))
+    target_min_p = round(max(0.60, min(0.75, (min_conf_sc - 2.0) / 100.0)), 2)
     if "sniper_75_mode" in cfg and isinstance(cfg["sniper_75_mode"], dict):
-        curr_min_p = float(cfg["sniper_75_mode"].get("min_calibrated_p_tp1", 0.60))
-        if curr_min_p > target_min_p:
+        curr_min_p = float(cfg["sniper_75_mode"].get("min_calibrated_p_tp1", target_min_p))
+        if curr_min_p >= 0.76 and curr_min_p > target_min_p + 0.04:
             cfg["sniper_75_mode"]["min_calibrated_p_tp1"] = target_min_p
     return cfg
 
@@ -1608,8 +1608,14 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
     direction = setup_result.get("direction", "LONG")
 
     # Pre-compute safe SL/TP bounds (hard constraint — AI cannot override)
-    safe_sl_pct = min(2.20, max(atr_pct * 1.5, 0.8, 0.45))
-    safe_tp_pct = max(atr_pct * 3.0, safe_sl_pct * 1.8, 1.5)
+    _cfg_l3 = get_trading_config()
+    _min_sl_cfg = float(_cfg_l3.get("min_sl_pct", 0.90) or 0.90)
+    _max_sl_cfg = float(_cfg_l3.get("max_sl_pct", 2.25) or 2.25)
+    _sniper_l3 = _cfg_l3.get("sniper_75_mode") or {}
+    _tp1_r_l3 = float(_sniper_l3.get("tp1_lock_trigger_r", 0.90) or 0.90)
+    _tp2_r_l3 = float(_sniper_l3.get("tp2_runner_target_r", 2.00) or 2.00)
+    safe_sl_pct = min(_max_sl_cfg - 0.05, max(atr_pct * 1.6, max(1.10, _min_sl_cfg)))
+    safe_tp_pct = max(atr_pct * 3.2, safe_sl_pct * max(1.8, _tp2_r_l3), 2.0)
     if direction == "LONG":
         sl_safe = round(current_price * (1 - safe_sl_pct / 100), 6)
         tp_safe = round(current_price * (1 + safe_tp_pct / 100), 6)
@@ -1677,13 +1683,13 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
     if tp2 <= 0 and tp1 > 0:
         tp2 = tp1
     if ent_px > 0 and tp2 > 0 and (tp1 <= 0 or abs(tp2 - tp1) < max(1e-8, ent_px * 0.0015)):
-        tp1 = round(ent_px + dir_sign * 0.55 * sl_delta, 6)
+        tp1 = round(ent_px + dir_sign * _tp1_r_l3 * sl_delta, 6)
     result["take_profit"] = round(tp2, 6) if tp2 > 0 else 0
     result["take_profit_1"] = round(tp1, 6) if tp1 > 0 else 0
     result["take_profit_2"] = round(tp2, 6) if tp2 > 0 else 0
 
     if not result.get("order_type"):
-        result["order_type"] = "MARKET"
+        result["order_type"] = "MAKER_FIRST_GTX"
     if result["order_type"].upper() == "LIMIT" and not result.get("limit_price"):
         result["limit_price"] = result.get("entry_price", current_price)
     elif result["order_type"].upper() != "LIMIT":
@@ -1692,27 +1698,29 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
     # ENFORCE FIXED 20x — immutable
     result["leverage"] = FIXED_LEVERAGE
 
-    # SAFETY: If AI returned a bad SL (wider than 4% = almost certain margin call on 20x)
-    # Force it back to safe computed value
+    # SAFETY: Enforce structural SL corridor [min_sl_pct, max_sl_pct] (no paper-thin stop-hunt SLs, no liquidation SLs)
     ai_sl = result.get("stop_loss", 0)
     if ai_sl and current_price > 0:
         ai_sl_pct = abs(current_price - ai_sl) / current_price * 100
-        if ai_sl_pct > 2.25 or ai_sl_pct < 0.45:
-            print(f"[SL SAFETY] {symbol}: AI SL distance {ai_sl_pct:.2f}% unsafe → forcing to {sl_dist_pct:.2f}%", flush=True)
+        if ai_sl_pct > _max_sl_cfg or ai_sl_pct < _min_sl_cfg:
+            print(f"[SL SAFETY] {symbol}: AI SL distance {ai_sl_pct:.2f}% outside [{_min_sl_cfg:.2f}%, {_max_sl_cfg:.2f}%] → forcing to {sl_dist_pct:.2f}%", flush=True)
             result["stop_loss"] = sl_safe
             result["sl_distance_pct"] = sl_dist_pct
+            # Re-align TP1/TP2 with enforced SL
+            sl_d_new = abs(current_price - sl_safe)
+            result["take_profit_1"] = round(current_price + dir_sign * _tp1_r_l3 * sl_d_new, 6)
 
-    # SAFETY: If AI returned bad TP (RRR < 1.3)
+    # SAFETY: If AI returned bad TP (RRR < min_rrr)
     ai_tp = result.get("take_profit", 0)
     if ai_tp and current_price > 0 and result.get("stop_loss") and result["stop_loss"] != current_price:
         sl_d_cur = abs(current_price - result["stop_loss"])
         ai_rrr = abs(ai_tp - current_price) / sl_d_cur if sl_d_cur > 0 else 0
-        if ai_rrr < 1.3:
+        if ai_rrr < max(1.5, float(_cfg_l3.get("min_risk_reward_ratio", 1.8) or 1.8)):
             print(f"[TP SAFETY] {symbol}: AI RRR {ai_rrr:.2f} too low → forcing TP2 to {tp_safe:.6f}", flush=True)
             d_sgn = -1.0 if direction == "SHORT" else 1.0
             result["take_profit"] = tp_safe
             result["take_profit_2"] = tp_safe
-            result["take_profit_1"] = round(current_price + d_sgn * 0.55 * sl_d_cur, 6)
+            result["take_profit_1"] = round(current_price + d_sgn * _tp1_r_l3 * sl_d_cur, 6)
 
     # Keep numeric and string risk_reward_ratio synchronized with final entry/SL/TP
     _e_fin = float(result.get("entry_price") or current_price or 0)
@@ -1908,8 +1916,9 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
         d_sgn_f = -1.0 if str(result.get("direction") or direction).upper() == "SHORT" else 1.0
         sl_del_f = abs(ent_f - sl_f) if (ent_f > 0 and sl_f > 0) else (ent_f * 0.012)
         tp_val1 = float(result.get("take_profit_1") or plan_result.get("take_profit_1") or 0)
+        _tp1_r_l5 = float(((cfg.get("sniper_75_mode") or {}).get("tp1_lock_trigger_r")) or 0.90)
         if ent_f > 0 and tp_val2 > 0 and (tp_val1 <= 0 or abs(tp_val2 - tp_val1) < max(1e-8, ent_f * 0.0015)):
-            tp_val1 = round(ent_f + d_sgn_f * 0.55 * sl_del_f, 6)
+            tp_val1 = round(ent_f + d_sgn_f * _tp1_r_l5 * sl_del_f, 6)
         result["take_profit"] = round(tp_val2, 6) if tp_val2 > 0 else 0
         result["take_profit_1"] = round(tp_val1, 6) if tp_val1 > 0 else 0
         result["take_profit_2"] = round(tp_val2, 6) if tp_val2 > 0 else 0
@@ -1944,8 +1953,9 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
     sl_g = float(result.get("stop_loss") or plan_result.get("stop_loss") or 0)
     d_sgn_g = -1.0 if str(result.get("direction") or "").upper() == "SHORT" else 1.0
     sl_del_g = abs(ent_g - sl_g) if (ent_g > 0 and sl_g > 0) else (ent_g * 0.012)
+    _tp1_r_g = float(((cfg.get("sniper_75_mode") or {}).get("tp1_lock_trigger_r")) or 0.90)
     if ent_g > 0 and tp_val2 > 0 and (tp_val1 <= 0 or abs(tp_val2 - tp_val1) < max(1e-8, ent_g * 0.0015)):
-        tp_val1 = round(ent_g + d_sgn_g * 0.55 * sl_del_g, 6)
+        tp_val1 = round(ent_g + d_sgn_g * _tp1_r_g * sl_del_g, 6)
     result["take_profit"] = round(tp_val2, 6) if tp_val2 > 0 else 0
     result["take_profit_1"] = round(tp_val1, 6) if tp_val1 > 0 else 0
     result["take_profit_2"] = round(tp_val2, 6) if tp_val2 > 0 else 0
@@ -2142,7 +2152,7 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
             reasons.append(f"VPIN Toxic Buy Flow (VPIN={vp.get('vpin', 0):.2f}, CDF={vp.get('vpin_cdf', 0):.2f})")
 
         hmm = micro_risk.get("hmm") or {}
-        if float(hmm.get("p_transition_to_cascade", 0.0) or 0.0) >= 0.80 and float(mp.get("p_math_pct", 70.0) or 70.0) < float(current_min_confidence):
+        if float(hmm.get("p_transition_to_cascade", 0.0) or 0.0) >= 0.80 and float(mp.get("p_math_pct", 70.0) or 70.0) < max(75.0, float(current_min_confidence)):
             result["status"] = "REJECTED"
             reasons.append(f"HMM Cascade Transition Prob={hmm.get('p_transition_to_cascade')} too high ({hmm.get('current_state')})")
 
@@ -2189,7 +2199,7 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
                     else:
                         result["stop_loss"] = new_sl_rounded
                         d_sgn_sh = -1.0 if direction == "SHORT" else 1.0
-                        result["take_profit_1"] = round(e_px + d_sgn_sh * 0.55 * new_sl_d, 6)
+                        result["take_profit_1"] = round(e_px + d_sgn_sh * _tp1_r_g * new_sl_d, 6)
                         result["risk_reward_ratio"] = f"1:{round(rrr_after, 2)}"
                         mp["sl_liq_shielded"] = True
                         mp["sl_liq_original"] = sl_px
@@ -2380,7 +2390,7 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 except Exception as cal_exc:
                     logger.warning("Calibrator loading/evaluation failed: %s", cal_exc)
 
-                _min_p_cfg = float(sniper_cfg.get("min_calibrated_p_tp1", 0.60))
+                _min_p_cfg = float(sniper_cfg.get("min_calibrated_p_tp1", 0.70))
                 conformal_ok = True
                 conformal_set = ["WIN"]
                 try:
@@ -2416,14 +2426,14 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                     _pref_dir = str(mp.get("preferred_direction", "")).upper()
                     _fc_dir = str(final_call.get("direction", "")).upper()
                     _obi20 = float(mp.get("obi_weighted_20", 0.0) or 0.0)
-                    sniper_min_math = float(sniper_cfg.get("min_math_pct", 55.0) or 55.0)
-                    min_conf_gate = float(cfg_v2.get("min_confidence_score", 65.0) or 65.0)
+                    sniper_min_math = float(sniper_cfg.get("min_math_pct", 65.0) or 65.0)
+                    min_conf_gate = float(cfg_v2.get("min_confidence_score", 72.0) or 72.0)
                     _veto_reasons = []
                     if p_math_pct < sniper_min_math:
                         _veto_reasons.append(f"P_Math {p_math_pct:.1f}% < {sniper_min_math:.0f}% (bukti matematika belum cukup kuat)")
                     if s_hybrid_pct < min_conf_gate:
                         _veto_reasons.append(f"S_Hybrid {s_hybrid_pct:.1f}% < {min_conf_gate:.0f}% (kolaborasi Math+AI di bawah ambang Sniper)")
-                    fpt_min_p = float(sniper_cfg.get("min_first_passage_pct", 60.0) or 60.0)
+                    fpt_min_p = float(sniper_cfg.get("min_first_passage_pct", 65.0) or 65.0)
                     if _p_tp1_sl < fpt_min_p:
                         _veto_reasons.append(f"First-Passage P(TP1<SL) {_p_tp1_sl:.1f}% < {fpt_min_p:.0f}%")
                     if _pref_dir in ("LONG", "SHORT") and _fc_dir in ("LONG", "SHORT") and _pref_dir != _fc_dir and abs(_obi20) > 0.15:
@@ -2466,10 +2476,10 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 }
                 final_call["sniper_75_plan"] = {
                     "enabled": bool(sniper_cfg.get("enabled", True)),
-                    "scratch_guard_r": 0.30,
-                    "tp1_lock_trigger_r": float(sniper_cfg.get("tp1_lock_trigger_r", 0.55)),
-                    "sl_lock_after_tp1_r": float(sniper_cfg.get("sl_lock_after_tp1_r", 0.38)),
-                    "tp2_runner_r": float(sniper_cfg.get("tp2_runner_target_r", sniper_cfg.get("tp2_runner_r", 1.60))),
+                    "scratch_guard_r": float(sniper_cfg.get("stage0_be_trigger_r", 0.65)),
+                    "tp1_lock_trigger_r": float(sniper_cfg.get("tp1_lock_trigger_r", 0.90)),
+                    "sl_lock_after_tp1_r": float(sniper_cfg.get("sl_lock_after_tp1_r", 0.35)),
+                    "tp2_runner_r": float(sniper_cfg.get("tp2_runner_target_r", sniper_cfg.get("tp2_runner_r", 2.00))),
                 }
                 final_call["tp_time_prediction"] = plan_result.get("tp_time_prediction")
 
@@ -2487,8 +2497,9 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 _dir_str = str(final_call.get("direction") if final_call.get("direction") in ("LONG", "SHORT") else plan_result.get("action", "LONG")).upper()
                 _d_sign = -1.0 if _dir_str == "SHORT" else 1.0
                 _sl_d_abs = abs(_entry_px - _sl_px) if (_entry_px > 0 and _sl_px > 0) else (_entry_px * 0.012)
+                _tp1_r_proj = float(sniper_cfg.get("tp1_lock_trigger_r", 0.90) or 0.90)
                 if _entry_px > 0 and _tp2_px > 0 and (_tp1_px <= 0 or abs(_tp2_px - _tp1_px) < max(1e-8, _entry_px * 0.0015)):
-                    _tp1_px = round(_entry_px + _d_sign * 0.55 * _sl_d_abs, 6)
+                    _tp1_px = round(_entry_px + _d_sign * _tp1_r_proj * _sl_d_abs, 6)
                 _lev = float(plan_result.get("leverage") or final_call.get("leverage") or FIXED_LEVERAGE or 20)
                 _wallet_usd = 0.0
                 try:

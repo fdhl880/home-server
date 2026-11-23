@@ -29,16 +29,20 @@ DEFAULT_TRADING_CONFIG: Dict[str, Any] = {
     "risk_pct": 5.0,
     "probation_risk_pct": 2.0,
     "max_sl_pct": 2.25,
-    "min_sl_pct": 0.45,
+    "min_sl_pct": 0.90,
     "min_liq_to_sl_ratio": 2.0,
-    "min_confidence_score": 65,
-    "min_risk_reward_ratio": 1.5,
+    "min_confidence_score": 72,
+    "min_risk_reward_ratio": 1.8,
     "min_ev_r": 0.20,
     "max_drawdown_pct": 25.0,
     "breaker_daily_dd_pct": 15.0,
     "circuit_breaker_consecutive_losses": 2,
     "breaker_consecutive_losses": 2,
     "breaker_cooldown_hours": 12,
+    "post_sl_symbol_cooldown_hours": 4.0,
+    "post_tp_symbol_cooldown_hours": 2.0,
+    "prefer_maker_entries": True,
+    "min_prefilter_volume_usd": 70000000,
     "committee_enabled": False,
     "ai_manages_execution": True,
     "ai_manages_leverage": False,
@@ -47,15 +51,18 @@ DEFAULT_TRADING_CONFIG: Dict[str, Any] = {
     "sniper_75_mode": {
         "enabled": True,
         "conformal_enabled": False,
-        "min_calibrated_p_tp1": 0.60,
-        "min_first_passage_pct": 60.0,
+        "min_calibrated_p_tp1": 0.70,
+        "min_math_pct": 65.0,
+        "min_first_passage_pct": 65.0,
         "require_singleton_win": False,
         "conformal_alpha_target": 0.18,
-        "tp1_lock_trigger_r": 0.55,
-        "tp1_partial_close_pct": 0.65,
-        "sl_lock_after_tp1_r": 0.38,
-        "tp2_runner_target_r": 1.60,
-        "early_invalidation_max_loss_r": 0.35,
+        "stage0_be_trigger_r": 0.65,
+        "tp1_lock_trigger_r": 0.90,
+        "tp1_partial_close_pct": 0.50,
+        "sl_lock_after_tp1_r": 0.35,
+        "tp2_runner_target_r": 2.00,
+        "early_invalidation_enabled": False,
+        "early_invalidation_max_loss_r": 0.65,
     },
     "profit_vault": {
         "enabled": True,
@@ -300,6 +307,24 @@ def validate_trading_config(
             "sniper_75_mode.min_first_passage_pct",
             min_val=10.0,
             max_val=100.0,
+        )
+    if "min_math_pct" in sn:
+        sn["min_math_pct"] = _check_number(
+            sn["min_math_pct"],
+            "sniper_75_mode.min_math_pct",
+            min_val=10.0,
+            max_val=100.0,
+        )
+    if "stage0_be_trigger_r" in sn:
+        sn["stage0_be_trigger_r"] = _check_number(
+            sn["stage0_be_trigger_r"],
+            "sniper_75_mode.stage0_be_trigger_r",
+            min_val=0.10,
+            max_val=5.0,
+        )
+    if "early_invalidation_enabled" in sn:
+        sn["early_invalidation_enabled"] = _check_bool(
+            sn["early_invalidation_enabled"], "sniper_75_mode.early_invalidation_enabled"
         )
     if "require_singleton_win" in sn:
         sn["require_singleton_win"] = _check_bool(

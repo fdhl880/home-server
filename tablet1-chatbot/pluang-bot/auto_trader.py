@@ -847,7 +847,12 @@ def _record_rejection_telemetry(symbol: str, status: str, reason: str, gate: str
 
 
 def _record_post_sl_symbol_cooldown(pair: str, exit_reason: str, net_usd: float, cfg: dict = None) -> None:
-    """Persist a per-symbol cooldown after a losing/SL close so 20x sniper doesn't revenge-trade the same coin."""
+    """
+    Persist a per-symbol cooldown after ANY trade close:
+    - After SL / losing close: lock symbol for `post_sl_symbol_cooldown_hours` (default 4.0h) to block revenge-trades.
+    - After TP / winning close: lock symbol for `post_tp_symbol_cooldown_hours` (default 2.0h) to prevent re-entering
+      at the exact exhaustion bottom/top minutes after taking profit (fixes BREV/ATOM/KAVA instant re-entry wipeouts).
+    """
     pair_u = str(pair or "").upper().strip()
     if not pair_u:
         return
@@ -856,10 +861,13 @@ def _record_post_sl_symbol_cooldown(pair: str, exit_reason: str, net_usd: float,
         float(net_usd or 0.0) < 0.0
         or any(k in reason_u for k in ("CLOSED_SL", "EARLY_INVALIDATION", "LIQUIDATION", "IMMEDIATE_2021"))
     )
-    if not is_sl_loss:
-        return
     cfg_c = cfg or _get_config()
-    hrs = float(cfg_c.get("post_sl_symbol_cooldown_hours", 3.0) or 3.0)
+    if is_sl_loss:
+        hrs = float(cfg_c.get("post_sl_symbol_cooldown_hours", 4.0) or 4.0)
+        cd_label = "Post-SL"
+    else:
+        hrs = float(cfg_c.get("post_tp_symbol_cooldown_hours", 2.0) or 0.0)
+        cd_label = "Post-TP"
     if hrs <= 0:
         return
     now = time.time()
@@ -873,8 +881,8 @@ def _record_post_sl_symbol_cooldown(pair: str, exit_reason: str, net_usd: float,
     try:
         save_state()
     except Exception as exc:
-        logger.debug("save_state failed after post-SL cooldown on %s: %s", pair_u, exc)
-    print(f"[COOLDOWN] 🧊 {pair_u} masuk Post-SL Cooldown selama {hrs:.1f} jam (anti revenge-trade).", flush=True)
+        logger.debug("save_state failed after %s cooldown on %s: %s", cd_label, pair_u, exc)
+    print(f"[COOLDOWN] 🧊 {pair_u} masuk {cd_label} Cooldown selama {hrs:.1f} jam (anti revenge/re-entry).", flush=True)
 
 
 def _sync_external_transfers(bn_client, cfg: dict = None, force: bool = False) -> list:
@@ -1509,8 +1517,9 @@ def record_position(signal: dict):
     entry_px_init = float(entry_p or 0)
     d_sign_init = -1.0 if dir_init == "SHORT" else 1.0
     sl_dist_init = abs(entry_px_init - sl) / entry_px_init if (entry_px_init > 0 and sl > 0) else 0.012
+    tp1_r_init = float(((cfg.get("sniper_75_mode") or {}).get("tp1_lock_trigger_r")) or 0.90)
     if tp1_init <= 0 and entry_px_init > 0:
-        tp1_init = round(entry_px_init * (1.0 + d_sign_init * 0.55 * sl_dist_init), 6)
+        tp1_init = round(entry_px_init * (1.0 + d_sign_init * tp1_r_init * sl_dist_init), 6)
     tp2_init = float(tp2_init or tp or tp1_init)
 
     pos = {
@@ -2304,7 +2313,8 @@ def _build_synced_binance_pos(lp: dict, bn_client, fx_rate: float) -> dict:
 
     sl_delta = abs(entry_px - sl_px) if (entry_px > 0 and sl_px > 0) else (entry_px * 0.015)
     sgn = 1.0 if dir_str == "LONG" else -1.0
-    tp1_px = round(entry_px + sgn * 0.55 * sl_delta, 6) if entry_px > 0 else 0.0
+    _tp1_r_sync = float(((_get_config().get("sniper_75_mode") or {}).get("tp1_lock_trigger_r")) or 0.90)
+    tp1_px = round(entry_px + sgn * _tp1_r_sync * sl_delta, 6) if entry_px > 0 else 0.0
     if tp_px <= 0 and entry_px > 0 and sl_state != "UNKNOWN":
         tp_px = round(entry_px + sgn * 2.2 * sl_delta, 6)
 
@@ -2405,8 +2415,8 @@ def _fetch_live_micro_state(pair: str, bn_client=None) -> dict:
             if tot_v > 0:
                 tfi_val = (buy_v - sell_v) / tot_v
                 micro["tfi_5m"] = round(tfi_val, 4)
-                # Orderflow toxicity proxy for VPIN so IntrabarThesisMonitor sees real burst imbalance
-                micro["vpin"] = round(min(0.99, max(0.10, abs(tfi_val))), 4)
+                # Conservative VPIN proxy (80 aggTrades spans only seconds on alts; prevent false >=0.88 toxicity spikes)
+                micro["vpin"] = round(min(0.82, max(0.15, 0.25 + 0.55 * abs(tfi_val))), 4)
         elif r_ag.status_code in (418, 429):
             logger.warning("Microstate aggTrades HTTP %s on %s", r_ag.status_code, pair)
     except Exception as exc:
@@ -2420,8 +2430,8 @@ def _fetch_live_micro_state(pair: str, bn_client=None) -> dict:
             i_p = float(pi.get("indexPrice") or 0.0)
             if m_p > 0 and i_p > 0:
                 raw_basis = (i_p - m_p) / i_p
-                # Scale basis to z-score units (5 bps baseline std -> +-7.5 bps == +-1.5 sigma)
-                micro["spot_perp_div"] = round(raw_basis / 0.0005, 4)
+                # Scale basis using realistic 25 bps perp std (only >=37.5 bps dislocation hits +-1.5 sigma; prevents false basis triggers)
+                micro["spot_perp_div"] = round(max(-2.5, min(2.5, raw_basis / 0.0025)), 4)
                 micro["spot_perp_basis_raw"] = round(raw_basis, 6)
         elif r_pi.status_code in (418, 429):
             logger.warning("Microstate premiumIndex HTTP %s on %s", r_pi.status_code, pair)
@@ -3602,7 +3612,8 @@ def _monitor_and_update_positions_impl():
                     pos["take_profit"] = tp
                     pos["take_profit_2"] = tp
                 if not pos.get("take_profit_1") or abs(float(pos.get("take_profit_1") or 0) - tp) < max(1e-8, entry_price * 0.0015):
-                    pos["take_profit_1"] = round(entry_price + sgn_d * 0.55 * sl_del, 6)
+                    _tp1_r_bf = float(((cfg_mon.get("sniper_75_mode") or {}).get("tp1_lock_trigger_r")) or 0.90)
+                    pos["take_profit_1"] = round(entry_price + sgn_d * _tp1_r_bf * sl_del, 6)
 
         # T0.5 / C-7: Reconcile Guard — Verify exchange SL. Preserve UNKNOWN on API errors; ONLY re-place when MISSING!
         if is_binance_pos and bn_client:
@@ -3706,17 +3717,19 @@ def _monitor_and_update_positions_impl():
                 logger.debug("update_tca_markout failed for %s: %s", pos.get("id"), tca_exc)
 
         sniper_m = cfg_mon.get("sniper_75_mode") or {}
-        tp1_trig_r = float(sniper_m.get("tp1_lock_trigger_r", 0.55) or 0.55)
-        tp1_lock_r = float(sniper_m.get("sl_lock_after_tp1_r", 0.38) or 0.38)
-        tp1_partial_frac = float(sniper_m.get("tp1_partial_close_pct") or cfg_mon.get("tp1_partial_close_pct") or 0.65)
+        tp1_trig_r = float(sniper_m.get("tp1_lock_trigger_r", 0.90) or 0.90)
+        tp1_lock_r = float(sniper_m.get("sl_lock_after_tp1_r", 0.35) or 0.35)
+        tp1_partial_frac = float(sniper_m.get("tp1_partial_close_pct") or cfg_mon.get("tp1_partial_close_pct") or 0.50)
+        early_inv_enabled = bool(sniper_m.get("early_invalidation_enabled", True))
 
-        # Real Orderflow Intrabar First-Passage Survival & Early Invalidation (0.35R / Structural Reversal)
+        # Real Orderflow Intrabar First-Passage Survival & Early Invalidation (respects early_invalidation_enabled)
         try:
             micro_state = _fetch_live_micro_state(pair, bn_client=bn_client)
             tm = _get_thesis_monitor()
-            early_loss_lim = abs(float(sniper_m.get("early_invalidation_max_loss_r", cfg_mon.get("early_invalidation_max_loss_r", 0.35)) or 0.35))
+            early_loss_lim = abs(float(sniper_m.get("early_invalidation_max_loss_r", cfg_mon.get("early_invalidation_max_loss_r", 0.65)) or 0.65))
             allow_ai_emg = (
-                r_multiple_curr <= -early_loss_lim
+                early_inv_enabled
+                and r_multiple_curr <= -early_loss_lim
                 and (time.time() - float(pos.get("last_ai_emg_ts") or 0.0) >= 90.0)
             )
             decide_eng = None
@@ -3747,9 +3760,10 @@ def _monitor_and_update_positions_impl():
             pos["ofi_20_live"] = micro_state.get("ofi_20")
             pos["tfi_5m_live"] = micro_state.get("tfi_5m")
 
-            # Honor IntrabarThesisMonitor's own min_elapsed_sec & reversal/AI approval via `should_scratch`
+            # Honor early_invalidation_enabled + IntrabarThesisMonitor's own min_elapsed_sec & reversal/AI approval via `should_scratch`
             should_early_exit = (
-                (r_multiple_curr <= -early_loss_lim)
+                early_inv_enabled
+                and (r_multiple_curr <= -early_loss_lim)
                 and bool(th_res.get("should_scratch"))
             )
             if should_early_exit:
@@ -3812,9 +3826,10 @@ def _monitor_and_update_positions_impl():
 
         allow_sl_amend = (not is_binance_pos) or (str(pos.get("sl_state") or "").upper() != "UNKNOWN")
 
-        # Stage 0 (Early Breakeven Scratch Guard at +0.30R): skipped if already at or past TP1 trigger
-        if allow_sl_amend and 0.30 <= r_multiple_curr < tp1_trig_r and not pos.get("stage0_be_guard_set") and not pos.get("tp1_profit_lock_set"):
-            be_lock_pct = max(0.0012, 0.08 * sl_dist_pct)  # +0.08R covers roundtrip taker fees + micro profit
+        # Stage 0 (Fee-Safe Breakeven Guard): waits for +0.65R in live Sniper v3.2 (or +0.30R if tp1_trig_r <= 0.65)
+        stage0_be_trig = float(sniper_m.get("stage0_be_trigger_r", 0.65 if tp1_trig_r > 0.65 else 0.30) or 0.65)
+        if allow_sl_amend and stage0_be_trig <= r_multiple_curr < tp1_trig_r and not pos.get("stage0_be_guard_set") and not pos.get("tp1_profit_lock_set"):
+            be_lock_pct = max(0.0022, 0.15 * sl_dist_pct)  # >= +0.22% guarantees net positive close after roundtrip taker fee + slippage
             new_sl = round(entry_price * (1.0 + be_lock_pct if direction == "LONG" else 1.0 - be_lock_pct), 6)
             better = (direction == "LONG" and new_sl > sl) or (direction == "SHORT" and (sl <= 0 or new_sl < sl))
             if better:
@@ -3986,7 +4001,7 @@ def _monitor_and_update_positions_impl():
             _margin_idr = float(pos_idr if pos_idr > 0 else _margin_usd * fx_rate)
             _lev = float(leverage if leverage > 0 else 20.0)
             _tp2_px = float(pos.get("take_profit_2") or tp or (entry_price * (1.024 if direction == "LONG" else 0.976)))
-            _tp1_px = float(pos.get("take_profit_1") or (entry_price + 0.55 * abs(entry_price - init_sl) * (1.0 if direction == "LONG" else -1.0)))
+            _tp1_px = float(pos.get("take_profit_1") or (entry_price + tp1_trig_r * abs(entry_price - init_sl) * (1.0 if direction == "LONG" else -1.0)))
             _sl_px = float(sl if sl > 0 else (init_sl if init_sl > 0 else entry_price * (0.988 if direction == "LONG" else 1.012)))
             _dir_sign = 1.0 if direction == "LONG" else -1.0
 
@@ -4008,7 +4023,7 @@ def _monitor_and_update_positions_impl():
             _tp1_m = _calc_target_metrics(_tp1_px)
             _tp2_m = _calc_target_metrics(_tp2_px)
             _sl_m = _calc_target_metrics(_sl_px)
-            _lock_sl_px = round(entry_price * (1.0 + 0.38 * sl_dist_pct * _dir_sign), 6)
+            _lock_sl_px = round(entry_price * (1.0 + tp1_lock_r * sl_dist_pct * _dir_sign), 6)
             _lock_sl_m = _calc_target_metrics(_lock_sl_px)
 
             pos["take_profit_1"] = _tp1_m["price"]
@@ -4804,12 +4819,14 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=N
                 )
             screen_pool = eligible_pool
 
-    # Core 10 coin symbols — selalu disertakan tanpa filter (selama lolos minNotional)
+    # Core 10 liquid majors — restored strong priority (Nov 10-16 80% WR universe: BTC/ETH/BNB/SOL/XRP...)
     core_symbols = {c["symbol"].upper() for c in CRYPTO_FUTURES_WATCHLIST
                     if c.get("tier") in ("CORE", "MAJOR") or
                     c["symbol"].upper() in {"BTC-USD","ETH-USD","BNB-USD","SOL-USD",
-                                             "XRP-USD","DOGE-USD","ADA-USD","AVAX-USD",
-                                             "LINK-USD","DOT-USD","UNI-USD","MATIC-USD"}}
+                                             "XRP-USD","ADA-USD","AVAX-USD",
+                                             "LINK-USD","DOT-USD","UNI-USD","SUI-USD","LTC-USD"}}
+    top_liquid_majors = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "LTCUSDT"}
+    min_vol_floor = float(cfg.get("min_prefilter_volume_usd", 70_000_000) or 70_000_000)
 
     candidates = []
     now_pf = time.time()
@@ -4820,21 +4837,43 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=N
         pair_u = str(pair or "").upper()
         sym = coin.get("symbol", pair.replace("USDT", "-USD"))
 
-        # Feature #3: Persistent Post-SL Symbol Cooldown (prevent immediate 20x revenge-entry on choppy coin)
+        # Feature #3: Persistent Post-SL & Post-TP Symbol Cooldown (prevent revenge-entry & immediate bottom/top re-entry)
         cd_exp = float(sl_cooldowns.get(pair_u) or 0.0)
         if cd_exp > now_pf:
             rem_min = max(1.0, (cd_exp - now_pf) / 60.0)
             _record_rejection_telemetry(
                 pair_u or sym,
                 "POST_SL_COOLDOWN",
-                f"Post-SL cooldown active ({rem_min:.0f}m remaining)",
+                f"Symbol cooldown active ({rem_min:.0f}m remaining)",
                 gate="POST_SL_COOLDOWN",
+            )
+            continue
+
+        # Block ultra-volatile 1000x meme contracts on 20x ALL-IN (e.g. 1000PEPE, 1000SHIB, 1000BONK)
+        if pair_u.startswith("1000") or pair_u.startswith("1000000"):
+            _record_rejection_telemetry(
+                pair_u or sym,
+                "MEME_1000X_BLOCKED",
+                f"{pair_u} blocked on 20x ALL-IN (extreme meme wick volatility)",
+                gate="LIQUIDITY_GUARD",
             )
             continue
 
         change_24h = abs(float(coin.get("price_change_24h_pct", 0) or 0))
         vol_usd = float(coin.get("volume_24h_usd", 0) or 0)
         opp_score = float(coin.get("opportunity_score", 0) or 0)
+        is_major_liq = (pair_u in top_liquid_majors) or (sym.upper() in core_symbols)
+
+        # Hard liquidity floor for non-major alts: blocks thin micro-cap stop-hunt traps (BREV, KAVA, INIT, ORCA, AIGENSYN)
+        if not is_major_liq and vol_usd < min_vol_floor:
+            _record_rejection_telemetry(
+                pair_u or sym,
+                "LOW_LIQUIDITY_MICROCAP",
+                f"24h vol ${vol_usd/1e6:.1f}M < ${min_vol_floor/1e6:.0f}M floor for 20x",
+                gate="LIQUIDITY_GUARD",
+            )
+            continue
+
         raw_fr_pf = coin.get("funding_rate_raw", coin.get("lastFundingRate"))
         if raw_fr_pf is not None and raw_fr_pf != "":
             funding_abs = abs(float(raw_fr_pf or 0.0))
@@ -4842,22 +4881,24 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=N
             fr_pf_val = abs(float(coin.get("funding_rate", coin.get("funding_rate_pct", 0)) or 0.0))
             funding_abs = (fr_pf_val / 100.0) if fr_pf_val >= 0.005 else fr_pf_val
 
-        # Quantitative Opportunity Scoring (Squeeze/Pullback/Funding + Liquidity, avoiding blown-out chases)
+        # Quantitative Opportunity Scoring (Major Liquidity + Clean Range + Constructive Momentum)
         score = 0.0
 
         # 1. Liquidity & Depth Proxy (institutional futures volume)
-        if vol_usd > 150_000_000:
-            score += 2.0
-        elif vol_usd > 35_000_000:
+        if vol_usd >= 250_000_000:
+            score += 2.5
+        elif vol_usd >= 100_000_000:
+            score += 1.8
+        elif vol_usd >= 65_000_000:
             score += 1.2
 
         # 2. Constructive volatility / pullback vs overextended FOMO chase
-        if 1.2 <= change_24h <= 6.5:
+        if 1.0 <= change_24h <= 6.0:
             score += 2.0
-        elif 0.4 <= change_24h < 1.2:
+        elif 0.4 <= change_24h < 1.0:
             score += 1.2  # Squeeze coiling candidate
         elif change_24h > 8.5:
-            score -= 1.5  # Penalize late vertical exhaustion chase
+            score -= 2.0  # Penalize late vertical exhaustion chase
 
         # 3. Pre-ranker opportunity composite (supports 0..10 market_data scale or normalized 0..100)
         opp_norm = (opp_score / 10.0) if opp_score > 12.0 else opp_score
@@ -4868,18 +4909,22 @@ def _technical_pre_filter(ranked_coins, max_ai_coins=8, available_balance_usdt=N
 
         # 3b. Intraday high-low range: reward clean 20x-tradable expansion, penalize extreme wick-trap whipsaw
         hl_range = float(coin.get("high_low_range_pct", 0) or 0)
-        if 3.0 <= hl_range <= 18.0:
-            score += 1.0
-        elif hl_range > 24.0:
-            score -= 2.0  # Extreme 24%+ intraday whipsaw blows through 20x 2.25% SL / fails setup clarity
+        if 2.0 <= hl_range <= 11.5:
+            score += 1.5
+        elif 11.5 < hl_range <= 16.0:
+            score += 0.5
+        elif hl_range > 16.0:
+            score -= 2.5  # Extreme >16% intraday whipsaw blows through 20x 2.25% SL
 
         # 4. Crowded funding squeeze potential (>= 0.03% per 8h in decimal = 0.0003)
         if funding_abs >= 0.0003:
-            score += 1.5
+            score += 1.2
 
-        # 5. Small tie-breaker for CORE liquidity (never drowns out strong dynamic alts)
-        if sym.upper() in core_symbols:
-            score += 0.25
+        # 5. Strong priority for Top-10 liquid majors (restores Nov 10-16 high-WR institutional universe)
+        if pair_u in top_liquid_majors:
+            score += 2.5
+        elif sym.upper() in core_symbols:
+            score += 1.5
 
         # 6. Soft rotation cooldown for recently rejected pairs so scanner covers fresh setups
         rej_ts = _RECENT_REJECT_TS.get(pair_u, 0.0)
@@ -5218,6 +5263,9 @@ def run_full_scan_cycle():
             _ns_meta = fc.get("neuro_symbolic_3brain") or (res.get("neuro_symbolic_3brain") if isinstance(res, dict) else {}) or {}
             _mp_meta = (res.get("math_proof") if isinstance(res, dict) else None) or {}
             _order_type_exec = (fc.get("order_type") or _plan_sig.get("order_type") or cfg.get("order_type", "MAKER_FIRST_GTX")).upper()
+            # Upgrade raw MARKET entries to MAKER_FIRST_GTX (0.02% maker fee vs 0.05% taker fee, auto-fallback to IOC/MARKET)
+            if bool(cfg.get("prefer_maker_entries", True)) and _order_type_exec == "MARKET":
+                _order_type_exec = "MAKER_FIRST_GTX"
 
             _conf_score = max(conf, com_conf)
             _conf_ratio = round(_conf_score / 100.0, 4) if _conf_score > 0 else 0.80
