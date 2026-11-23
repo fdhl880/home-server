@@ -381,9 +381,11 @@ def _classify_single_series(
         or (wick_exhaustion and liq_z >= 1.8)
     ):
         regime = "CASCADE_EXHAUSTION"
-    # 2. Check TREND_BULL / TREND_BEAR
-    elif ((h > 0.54 or vr4 > 1.12) and adx_val >= 24.0 and 20.0 <= yz_pct <= 95.0) or (
-        h >= 0.58 and vr4 >= 1.15 and adx_val >= 18.0
+    # 2. Check TREND_BULL / TREND_BEAR (also catch strong ADX>=30 directional breakouts even during high-vol expansion)
+    elif (
+        (adx_val >= 30.0 and abs(plus_di - minus_di) >= 12.0)
+        or ((h > 0.54 or vr4 > 1.12) and adx_val >= 24.0 and 20.0 <= yz_pct <= 98.0)
+        or (h >= 0.58 and vr4 >= 1.15 and adx_val >= 18.0)
     ):
         regime = "TREND_BULL" if bull_bias else "TREND_BEAR"
     # 3. Check MEAN_REVERT

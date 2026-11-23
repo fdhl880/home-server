@@ -949,6 +949,69 @@ class TestFeaturesAutoTraderAndTelegram(unittest.TestCase):
         self.assertIn("AI_MEMORY(last 5): 4W/1L", l4_usr)
         self.assertIn("1.80", l4_sys)
 
+    def test_hmm_cascade_calibration_regime_adx_and_bb_percent_b_scale(self):
+        import numpy as np
+        from features.hmm_drift import GaussianHMM3Regime
+        from features.regime import detect_market_regime
+        import pipeline as pl
+
+        # 1) Normal smooth active uptrend must NOT emit false p_transition_to_cascade = 1.0
+        rng = np.random.default_rng(42)
+        rets_norm = np.concatenate([
+            rng.normal(0.0, 0.0012, size=80),
+            rng.normal(0.0018, 0.0020, size=40),
+        ])
+        closes_norm = 100.0 * np.exp(np.cumsum(rets_norm))
+        hmm_norm = GaussianHMM3Regime().fit_and_predict(closes_norm)
+        self.assertLess(
+            hmm_norm["p_transition_to_cascade"], 0.60,
+            f"Normal active trend must not false-fire cascade=1.0: {hmm_norm}",
+        )
+
+        # 2) Genuine extreme crash/cascade bar (>=4x median vol + >3% drop) MUST still flag high cascade risk
+        rets_crash = np.concatenate([
+            rng.normal(0.0, 0.0015, size=105),
+            np.array([-0.018, 0.012, -0.024, -0.032, -0.028]),
+        ])
+        closes_crash = 100.0 * np.exp(np.cumsum(rets_crash))
+        hmm_crash = GaussianHMM3Regime().fit_and_predict(closes_crash)
+        self.assertGreaterEqual(
+            hmm_crash["p_transition_to_cascade"], 0.70,
+            f"Genuine liquidation crash must still score high cascade prob: {hmm_crash}",
+        )
+
+        # 3) High-ADX breakout after quiet range must classify as TREND_BULL (not MEAN_REVERT/CHOP)
+        kl_bo = []
+        px = 100.0
+        for i in range(120):
+            if i < 90:
+                px = 100.0 + (0.15 if i % 2 == 0 else -0.15)
+                hi, lo = px * 1.002, px * 0.998
+            else:
+                px = px * 1.0035
+                hi, lo = px * 1.0025, px * 0.999
+            kl_bo.append({"open": px * 0.999, "high": hi, "low": lo, "close": px, "volume": 1000.0})
+        reg_bo = detect_market_regime(kl_bo, kl_bo)
+        self.assertEqual(reg_bo["regime"], "TREND_BULL", f"Strong breakout (ADX={reg_bo['adx14']}) must not be CHOP/MEAN_REVERT: {reg_bo}")
+
+        # 4) Gate 12d must normalize 0..100% bollinger percent_b (e.g. 50.0 = mid-range dead chop)
+        sd_mid = {
+            "symbol": "SOL-USD",
+            "rsi_1h": 50.0,
+            "ema_trend_1h": "NEUTRAL",
+            "bollinger_1h": {"percent_b": 50.0, "squeeze": False},
+            "btc_macro": {"btc_1h_trend": "NEUTRAL", "btc_4h_pct": 0.1},
+            "math_proof": {"hurst_exponent": 0.50, "statistical_regime": "CHOP_NO_TRADE", "adx_14": 12.0, "p_math_pct": 74.0},
+        }
+        md_mid = {"current_price": 100.0, "live_price": 100.0, "funding_rate": {"funding_rate": 0.0}, "math_proof": sd_mid["math_proof"], "_micro_15m": {"available": False}}
+        su = {"setup_name": "LIQUIDITY_SWEEP_REVERSAL", "direction": "LONG", "confluence_count": 3}
+        pln = {"action": "LONG", "order_type": "MAKER_FIRST_GTX", "entry_price": 100.0, "stop_loss": 98.8, "take_profit": 102.6, "risk_reward_ratio": "1:2.17"}
+        rk = {"total_score": 7, "max_score": 8, "verdict": "PASS"}
+        fc = {"status": "APPROVED", "direction": "LONG", "setup_name": "LIQUIDITY_SWEEP_REVERSAL", "confidence_score": 80, "entry_price": 100.0, "stop_loss": 98.8, "take_profit": 102.6, "risk_reward_ratio": "1:2.17", "final_reason": "ok"}
+        res_mid = pl._apply_safety_gates(fc, su, pln, rk, sd_mid, md_mid)
+        self.assertEqual(res_mid["status"], "REJECTED")
+        self.assertIn("Dead-zone random-walk chop", res_mid.get("final_reason", ""))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

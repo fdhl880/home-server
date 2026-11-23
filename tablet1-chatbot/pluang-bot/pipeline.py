@@ -1404,7 +1404,7 @@ def _get_btc_macro_context() -> dict:
 
 def _get_regime_strategy_guidance(stat_regime: str, hurst_h: float, adx_14: float) -> str:
     sr = str(stat_regime or "NORMAL").upper()
-    if "TREND" in sr or (hurst_h >= 0.55 and adx_14 >= 22.0):
+    if "TREND" in sr or adx_14 >= 28.0 or (hurst_h >= 0.55 and adx_14 >= 22.0):
         return "TREND_REGIME: Prefer TREND_CONTINUATION, EMA_PULLBACK_ENTRY, BREAKOUT_MOMENTUM aligned with trend; AVOID fading strong trend."
     if "MEAN_REVERT" in sr or (hurst_h <= 0.45 and adx_14 < 24.0):
         return "RANGE/MEAN_REVERT_REGIME: Prefer MEAN_REVERSION_BOUNCE, SMC_LIQUIDITY_SWEEP, RSI_DIVERGENCE_PLAY, BOLLINGER_SQUEEZE_BREAKOUT at S/R extremes; AVOID chasing mid-range breakouts."
@@ -2247,7 +2247,13 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
             reasons.append(f"VPIN Toxic Buy Flow (VPIN={vp.get('vpin', 0):.2f}, CDF={vp.get('vpin_cdf', 0):.2f})")
 
         hmm = micro_risk.get("hmm") or {}
-        if float(hmm.get("p_transition_to_cascade", 0.0) or 0.0) >= 0.80 and float(mp.get("p_math_pct", 70.0) or 70.0) < max(75.0, float(current_min_confidence)):
+        _hmm_p = float(hmm.get("p_transition_to_cascade", 0.0) or 0.0)
+        _hmm_corroborated = (
+            str(hk.get("state", "BASELINE")).upper() != "BASELINE"
+            or bool(vp.get("toxic_flow_veto"))
+            or float(mp.get("realized_vol_ann_pct", 0.0) or 0.0) >= 115.0
+        )
+        if _hmm_p >= 0.85 and _hmm_corroborated and float(mp.get("p_math_pct", 70.0) or 70.0) < max(78.0, float(current_min_confidence)):
             result["status"] = "REJECTED"
             reasons.append(f"HMM Cascade Transition Prob={hmm.get('p_transition_to_cascade')} too high ({hmm.get('current_state')})")
 
@@ -2274,7 +2280,9 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
             _stat_reg_u = str(mp.get("statistical_regime") or "NORMAL").upper()
             _adx_g = float(mp.get("adx_14") or 0.0)
             _bb_pb = (scan_data.get("bollinger_1h") or {}).get("percent_b")
-            _bb_pb_v = float(_bb_pb) if _bb_pb is not None else 0.50
+            _bb_pb_raw = float(_bb_pb) if _bb_pb is not None else 0.50
+            # market_data.calculate_bollinger_bands emits 0..100% scale; normalize to 0..1 fraction!
+            _bb_pb_v = (_bb_pb_raw / 100.0) if abs(_bb_pb_raw) > 2.0 else _bb_pb_raw
 
             # 1) Do NOT chase mid-range breakouts/trend-continuation inside a proven MEAN_REVERT range
             if ("MEAN_REVERT" in _stat_reg_u or hurst_h < 0.44) and (0.0 < _adx_g < 20.0):

@@ -214,11 +214,24 @@ class GaussianHMM3Regime:
         curr_probs = gamma_sorted[-1]
         curr_idx = int(np.argmax(curr_probs))
         # One-step forward probability of entering STATE_2_CASCADE_VOLATILITY
+        # Calibrate with real tail-volatility stress so normal US-session trends
+        # (top-33% of quiet 30h baseline) don't falsely emit p_cascade = 1.0!
         next_probs = curr_probs @ A_sorted
-        p_cascade = float(np.clip(max(next_probs[2], curr_probs[2]) + min(0.15, abs_fr * 0.08), 0.0, 1.0))
+        med_vol = max(float(np.median(vol_roll)), 1e-5)
+        curr_vol = float(vol_roll[-1])
+        vol_ratio = curr_vol / med_vol
+        latest_z_ret = abs(float(rets[-1])) / max(float(np.std(rets)), 1e-5)
+        rel_stress = float(np.clip((vol_ratio - 1.25) / 1.75, 0.0, 1.0))
+        abs_stress = float(np.clip((curr_vol - 0.0025) / 0.0085, 0.10, 1.0))
+        shock_boost = 0.45 if latest_z_ret >= 3.0 else (0.20 if latest_z_ret >= 2.3 else 0.0)
+        tail_scale = min(1.0, max(rel_stress * abs_stress, shock_boost))
+        raw_cascade = float(max(next_probs[2], curr_probs[2]))
+        p_cascade = float(np.clip(raw_cascade * tail_scale + min(0.12, abs_fr * 0.06), 0.0, 1.0))
+        if curr_idx == 2 and p_cascade < 0.55:
+            curr_idx = 1  # Active trend expansion, not liquidation cascade
 
-        squeeze_score = float(np.clip((curr_probs[1] * 65.0 + curr_probs[2] * 95.0 + abs_fr * 12.0), 0.0, 100.0))
-        risk_mult = 0.55 if curr_idx == 2 else (0.80 if curr_idx == 1 else 1.0)
+        squeeze_score = float(np.clip((curr_probs[1] * 60.0 + p_cascade * 95.0 + abs_fr * 12.0), 0.0, 100.0))
+        risk_mult = 0.55 if curr_idx == 2 else (0.85 if curr_idx == 1 else 1.0)
 
         return {
             "current_state": self.STATE_NAMES[curr_idx],
