@@ -827,6 +827,128 @@ class TestFeaturesAutoTraderAndTelegram(unittest.TestCase):
             finally:
                 tb.RESULTS_DIR = orig_res
 
+    def test_committee_v3_veto_only_direction_symmetric_and_zero_param_tampering(self):
+        import multi_agent_committee as mac
+        import pipeline as pl
+
+        # 1) Funding normalization check (decimal 0.0001 -> 0.01% NOT 0.0001%)
+        self.assertAlmostEqual(mac._normalize_funding_pct(0.0001), 0.01, places=4)
+        self.assertAlmostEqual(mac._normalize_funding_pct({"funding_rate_raw": -0.0006}), -0.06, places=4)
+
+        # 2) Direction-symmetric SHORT debate + Gear 2 (12x) Risk Officer Audit-Only + PM APPROVE / VETO
+        base_ctx = {
+            "scan_summary": {
+                "symbol": "ETH-USD",
+                "btc_macro": {"btc_1h_trend": "BEARISH", "btc_4h_pct": -1.8, "btc_rsi_1h": 38.0},
+                "math_proof": {
+                    "p_math_pct": 76.0,
+                    "obi_weighted_20": -0.35,
+                    "hurst_exponent": 0.61,
+                    "adx_14": 31.0,
+                    "statistical_regime": "TRENDING",
+                },
+            },
+            "market_data": {
+                "live_price": 3000.0,
+                "current_price": 3000.0,
+                "rsi_14": 42.0,
+                "ema_trend": "BEARISH",
+                "change_24h_pct": -3.2,
+                "volume_24h_usd": 900_000_000,
+                "funding_rate": {"funding_rate_raw": 0.0002},
+                "news_macro": {"market_sentiment": "BEARISH"},
+            },
+            "setup_result": {"setup_name": "TREND_CONTINUATION", "direction": "SHORT", "confluence_count": 3},
+            "plan_result": {
+                "entry_price": 3000.0,
+                "stop_loss": 3045.0,  # 1.50% SL
+                "take_profit_1": 2959.5,
+                "take_profit_2": 2910.0,  # RRR 1:2.0
+                "tp_time_prediction": {"eta_label": "~3h"},
+            },
+            "final_call": {
+                "status": "APPROVED",
+                "direction": "SHORT",
+                "confidence_score": 81,
+                "entry_price": 3000.0,
+                "stop_loss": 3045.0,
+                "take_profit_1": 2959.5,
+                "take_profit_2": 2910.0,
+                "take_profit": 2910.0,
+                "risk_reward_ratio": "1:2.0",
+            },
+            "memory_context": "AI_MEMORY(last 10): 7W/3L (WR 70%, PF 2.40)",
+            "active_gear": {"gear": 2, "code": "GEAR_2_CRUISE", "leverage": 12, "sizing_mode": "RISK_FRACTIONAL", "risk_pct": 5.0},
+        }
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            orig_th = mac.THESIS_FILE
+            orig_lg = mac.COMMITTEE_LOG_FILE
+            try:
+                mac.THESIS_FILE = os.path.join(tmp, "thesis.json")
+                mac.COMMITTEE_LOG_FILE = os.path.join(tmp, "comm_log.json")
+
+                # 2a) PM approves SHORT -> preserves exact Layer 3/5 SL=3045, TP2=2910, Gear 2 leverage=12
+                def _fake_ai_approve(prompt, system_prompt="", max_tokens=180, is_json=False):
+                    if is_json:
+                        return json.dumps({"verdict": "APPROVE", "confidence_pct": 82, "fatal_flaw": "", "decision": "Konfluensi SHORT solid."})
+                    return "Analisis singkat berbasis data."
+
+                with patch.object(mac, "call_ai", side_effect=_fake_ai_approve):
+                    res_ok = mac.run_multi_agent_committee("ETH-USD", active_positions=[], pipeline_context=base_ctx)
+                self.assertTrue(res_ok["approved"])
+                self.assertEqual(res_ok["direction"], "SHORT")
+                self.assertEqual(res_ok["risk_officer"]["recommended_leverage"], 12)
+                self.assertAlmostEqual(res_ok["risk_officer"]["sl_price"], 3045.0)
+                self.assertAlmostEqual(res_ok["risk_officer"]["tp2_price"], 2910.0)
+
+                # 2b) PM vetoes trap -> approved=False, direction=SKIP
+                def _fake_ai_veto(prompt, system_prompt="", max_tokens=180, is_json=False):
+                    if is_json:
+                        return json.dumps({"verdict": "VETO", "confidence_pct": 35, "fatal_flaw": "Fakeout trap di support besar", "decision": "Veto jebakan."})
+                    return "Red team menemukan jebakan."
+
+                with patch.object(mac, "call_ai", side_effect=_fake_ai_veto):
+                    res_veto = mac.run_multi_agent_committee("ETH-USD", active_positions=[], pipeline_context=base_ctx)
+                self.assertFalse(res_veto["approved"])
+                self.assertEqual(res_veto["direction"], "SKIP")
+                self.assertIn("Fakeout trap", res_veto["portfolio_manager"]["decision"])
+            finally:
+                mac.THESIS_FILE = orig_th
+                mac.COMMITTEE_LOG_FILE = orig_lg
+
+        # 3) Verify Layer 3 & Layer 4 prompts are synchronized with active SL corridor (0.90-2.25%), RRR 1.8, MAKER_FIRST_GTX, BTC 4H & AI_MEMORY
+        captured = []
+        def _fake_ai_json(prompt, system, max_tokens=300, temp=0.05, tag=""):
+            captured.append((tag, system, prompt))
+            if "Layer3" in tag:
+                return {"action": "LONG", "order_type": "MAKER_FIRST_GTX", "entry_price": 100.0, "stop_loss": 98.8, "take_profit": 102.6, "leverage": 20}
+            return {"total_score": 7, "max_score": 8, "pass_rate_pct": 87, "critical_failures": [], "risk_verdict": "LOW_RISK", "recommendation": "PROCEED"}
+
+        md_p = {"live_price": 100.0, "current_price": 100.0, "atr_pct": 1.0, "math_proof": {"p_math_pct": 72.0}}
+        sd_p = {
+            "price": 100.0,
+            "rsi_14_1h": 45.0,
+            "ema_trend_1h": "BULLISH",
+            "atr_pct": 1.0,
+            "levels": {"support_1": 98.5, "resistance_1": 103.0},
+            "btc_macro": {"btc_1h_trend": "BULLISH", "btc_4h_pct": 1.2},
+            "math_proof": {"p_math_pct": 72.0},
+        }
+        with patch.object(pl, "_ai_json", side_effect=_fake_ai_json):
+            plan = pl.layer3_build_plan("SOL-USD", sd_p, {"setup_name": "TREND_PULLBACK", "direction": "LONG"}, md_p)
+            pl.layer4_risk_audit("SOL-USD", sd_p, {"setup_name": "TREND_PULLBACK", "direction": "LONG"}, plan, md_p, memory_context="AI_MEMORY(last 5): 4W/1L")
+
+        l3_sys = captured[0][1]
+        l4_sys, l4_usr = captured[1][1], captured[1][2]
+        self.assertIn("0.90%", l3_sys)
+        self.assertIn("2.25%", l3_sys)
+        self.assertIn("1.80", l3_sys)
+        self.assertIn("MAKER_FIRST_GTX", l3_sys)
+        self.assertIn("BTC_4H=+1.20%", l4_usr)
+        self.assertIn("AI_MEMORY(last 5): 4W/1L", l4_usr)
+        self.assertIn("1.80", l4_sys)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

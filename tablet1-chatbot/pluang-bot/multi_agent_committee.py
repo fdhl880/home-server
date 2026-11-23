@@ -1,39 +1,39 @@
 """
 ===========================================================================
-PYROFUEL MULTI-AGENT COMMITTEE ENGINE v2.0
+PYROFUEL MULTI-AGENT COMMITTEE ENGINE v3.0 (ADVERSARIAL VETO-ONLY EDITION)
 ===========================================================================
 Terinspirasi dari:
-- TradingAgents (Tauric Research): Multi-agent LLM framework
-- ai-hedge-fund (virattt): Investor-persona agents + Kelly sizing
-- Vibe-Trading (HKUDS): Shadow account & backtest-aware risk mgmt
+- TradingAgents (Tauric Research): Multi-agent adversarial LLM framework
+- ai-hedge-fund (virattt): Investor-persona agents & conviction synthesis
+- Vibe-Trading (HKUDS): Regime & memory-aware risk governance
 - LangAlpha (ginlix): Thesis-driven persistent research workspace
-- hummingbot: Market making spread + inventory management patterns
+- hummingbot: Market making spread calculation
 
-ARSITEKTUR:
-  ANALYST TEAM (paralel):
-    - TechnicalAnalyst, SentimentAnalyst, FundamentalsAgent, MacroAnalyst
-
-  RESEARCHER TEAM (debate):
-    - BullResearcher vs BearResearcher
-
-  EXECUTION:
-    - TraderAgent -> RiskOfficer -> PortfolioManager (gatekeeper)
-
-  MARKET MAKING:
-    - SpreadCalculator (hummingbot-inspired)
-
-  THESIS ENGINE:
-    - Persistent workspace per simbol (LangAlpha-inspired)
-
-SEMUA HARUS APPROVE. SATU VETO = TRADE DITOLAK.
+ARSITEKTUR v3.0 (VETO-ONLY, DIRECTION-SYMMETRIC, GEAR & AI-MEMORY AWARE):
+  1. Dipanggil HANYA jika Layer 5 Supreme Judge sudah APPROVED (hemat token).
+  2. Reuses exact Layer 1 532-factor quant + L2 OBI-20 + Hurst + ADX + RSI15m
+     + BTC 4H Macro + AI Trade Memory (ZERO redundant market fetches).
+  3. Direction-Symmetric Adversarial Debate:
+     - Advocate Researcher (Pro-Setup) membela arah sinyal (LONG atau SHORT)
+     - Red-Team Adversary (Bear/Skeptic) mencari jebakan/fakeout/divergensi BTC/
+       pola kalah di AI Trade Memory terhadap arah sinyal tersebut
+     - Advocate Rebuttal menangkis serangan dengan SL/TP1/RRR struktural
+  4. Gear-Aware Risk Officer (Audit-Only):
+     - Mengikuti leverage & sizing Sistem Gigi aktif (G1 20x / G2 12x / G3 8x)
+     - TIDAK PERNAH menimpa SL/TP/Entry/Direction tervalidasi dari Layer 3/5!
+  5. AI Supreme Portfolio Manager (Veto-Only Judge):
+     - Menimbang seluruh debat + AI Trade Memory dan memutus APPROVE atau VETO.
 ===========================================================================
 """
-import os
+from __future__ import annotations
+
 import json
+import os
+import re
 import time
-from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 try:
     from pipeline import call_ai, get_trading_config, RESULTS_DIR
@@ -41,339 +41,595 @@ try:
 except ImportError:
     def call_ai(p, **kw): return "N/A"
     def get_trading_config(): return {}
-    def convert_usd_to_idr(x): return x * 16000
-    def convert_idr_to_usd(x): return x / 16000
+    def convert_usd_to_idr(x): return x * 16500
+    def convert_idr_to_usd(x): return x / 16500
     def get_market_indicators(s): return {}
     RESULTS_DIR = "results"
+
+try:
+    import state_io
+except ImportError:
+    state_io = None
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COMMITTEE_LOG_FILE = os.path.join(RESULTS_DIR, "committee_log.json")
 THESIS_FILE = os.path.join(RESULTS_DIR, "active_thesis.json")
 
 
-# ============================================================
-# ANALYST TEAM (TradingAgents pattern - parallel execution)
-# ============================================================
-
-def run_technical_analyst(symbol, market_data):
-    price = market_data.get("price", market_data.get("current_price", 0))
-    rsi = market_data.get("rsi_14", 50)
-    ema20 = market_data.get("ema_20", price)
-    ema50 = market_data.get("ema_50", price)
-    change_24h = market_data.get("change_24h_pct", 0)
-    volume = market_data.get("volume_24h_usd", 0)
-    high_24h = market_data.get("high_24h", price * 1.02)
-    low_24h = market_data.get("low_24h", price * 0.98)
-    bb_width = (high_24h - low_24h) / price * 100 if price > 0 else 5
-
-    trend_score = 0
-    signals = []
-    if price > ema20: trend_score += 1; signals.append("Harga > EMA20 (bullish)")
-    else: trend_score -= 1; signals.append("Harga < EMA20 (bearish)")
-    if ema20 > ema50: trend_score += 1; signals.append("EMA20 > EMA50 (golden zone)")
-    else: trend_score -= 1; signals.append("EMA20 < EMA50 (death zone)")
-    if rsi < 35: trend_score += 2; signals.append(f"RSI {rsi:.0f}  -  Oversold")
-    elif rsi > 65: trend_score -= 2; signals.append(f"RSI {rsi:.0f}  -  Overbought")
-    if volume > 500_000_000: trend_score += 1; signals.append("Volume tinggi")
-    if bb_width > 10: signals.append(f"BB Width {bb_width:.1f}%  -  High volatility")
-
-    verdict = "BULLISH" if trend_score >= 2 else ("BEARISH" if trend_score <= -2 else "NEUTRAL")
-
-    try:
-        prompt = f"Technical Analyst crypto futures. {symbol}: Harga=${price:,.4f}, RSI={rsi:.1f}, " \
-                 f"EMA alignment={'bullish' if ema20>ema50 else 'bearish'}, Change={change_24h:.1f}%, " \
-                 f"BB Width={bb_width:.1f}%. Sinyal: {', '.join(signals[:3])}. " \
-                 f"Analisis teknikal 2-3 kalimat, rekomendasi LONG/SHORT/WAIT. Bahasa Indonesia."
-        analysis = call_ai(prompt, system_prompt="You are a professional crypto technical analyst. Answer concisely in Indonesian.", max_tokens=200, is_json=False)
-    except Exception as e:
-        print(f"[Committee] TechnicalAnalyst AI error: {e}", flush=True)
-        analysis = f"Trend {verdict}. RSI {rsi:.0f}, EMA {'bullish' if ema20 > ema50 else 'bearish'}."
-
-    return {"agent": "TechnicalAnalyst", "verdict": verdict, "trend_score": trend_score,
-            "signals": signals, "rsi": rsi, "bb_width_pct": round(bb_width, 2), "analysis": analysis}
-
-
-def run_sentiment_analyst(symbol, market_data):
-    change_24h = market_data.get("change_24h_pct", 0)
-    volume = market_data.get("volume_24h_usd", 0)
-
-    if change_24h > 8: sentiment, fg = "EXTREME_BULLISH", 82
-    elif change_24h > 3: sentiment, fg = "BULLISH", 66
-    elif change_24h > 0: sentiment, fg = "SLIGHTLY_BULLISH", 54
-    elif change_24h > -3: sentiment, fg = "SLIGHTLY_BEARISH", 44
-    elif change_24h > -8: sentiment, fg = "BEARISH", 32
-    else: sentiment, fg = "EXTREME_FEAR", 18
-
-    try:
-        prompt = f"Sentiment Analyst crypto. {symbol}: Change 24h={change_24h:.1f}%, " \
-                 f"Vol=${volume/1e6:.0f}M. Sentiment proxy: {sentiment}, F&G ~{fg}. " \
-                 f"Analisis sentimen 2-3 kalimat (mood market, justified/overreaction, dampak LONG/SHORT). Bahasa Indonesia."
-        analysis = call_ai(prompt, system_prompt="You are a professional crypto sentiment analyst. Answer concisely in Indonesian.", max_tokens=180, is_json=False)
-    except Exception as e:
-        print(f"[Committee] SentimentAnalyst AI error: {e}", flush=True)
-        analysis = f"Sentimen {sentiment.replace('_',' ').title()}, Fear&Greed estimasi {fg}/100."
-
-    return {"agent": "SentimentAnalyst", "sentiment": sentiment, "fear_greed": fg,
-            "change_24h": change_24h, "analysis": analysis}
-
-
-def run_fundamentals_agent(symbol, market_data):
-    price = market_data.get("price", market_data.get("current_price", 0))
-    volume = market_data.get("volume_24h_usd", 0)
-    oi = market_data.get("open_interest_usd", volume * 0.3)
-    raw_funding = market_data.get("funding_rate", 0.0001)
+def _normalize_funding_pct(raw_funding: Any) -> float:
+    """Normalize funding rate to percentage (e.g., 0.0001 decimal -> 0.01%)."""
     if isinstance(raw_funding, dict):
-        try:
-            funding = float(raw_funding.get("funding_rate_raw", raw_funding.get("funding_rate", 0.0001)))
-        except Exception:
-            funding = 0.0001
+        if raw_funding.get("funding_rate_pct") is not None:
+            try:
+                v = float(raw_funding["funding_rate_pct"])
+                return round(v * 100.0, 4) if (0.0 < abs(v) < 0.005) else round(v, 4)
+            except (TypeError, ValueError):
+                pass
+        raw_val = raw_funding.get("funding_rate_raw", raw_funding.get("funding_rate", 0.0))
     else:
+        raw_val = raw_funding
+    try:
+        v = float(raw_val or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if 0.0 < abs(v) < 0.005:
+        return round(v * 100.0, 4)
+    return round(v, 4)
+
+
+def _extract_json_obj(raw_text: str) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        return None
+    s = raw_text.strip()
+    if "```" in s:
+        s = re.sub(r"```(?:json)?", "", s).strip()
+    try:
+        obj = json.loads(s)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        pass
+    m = re.search(r"\{[\s\S]*\}", s)
+    if m:
         try:
-            funding = float(raw_funding)
+            obj = json.loads(m.group(0))
+            return obj if isinstance(obj, dict) else None
         except Exception:
-            funding = 0.0001
+            return None
+    return None
 
-    if funding > 0.001: bias, fsig = "BEARISH", "Longs dominan berlebihan (squeeze risk)"
-    elif funding > 0.0003: bias, fsig = "NEUTRAL_BULLISH", "Bullish tapi terkendali"
-    elif funding < -0.001: bias, fsig = "BULLISH", "Shorts dominan berlebihan (short squeeze risk)"
-    elif funding < -0.0003: bias, fsig = "NEUTRAL_BEARISH", "Bearish tapi terkendali"
-    else: bias, fsig = "NEUTRAL", "Pasar seimbang"
 
-    oi_vol = oi / volume if volume > 0 else 0.3
-
+def _resolve_active_gear_profile(config: Dict[str, Any], pipeline_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if isinstance(pipeline_context, dict) and isinstance(pipeline_context.get("active_gear"), dict):
+        return dict(pipeline_context["active_gear"])
     try:
-        prompt = f"On-Chain Analyst crypto futures. {symbol}: Vol=${volume/1e6:.0f}M, " \
-                 f"OI=${oi/1e6:.0f}M, OI/Vol={oi_vol:.2f}, Funding={funding:.4f}% ({fsig}). " \
-                 f"Analisis fundamental 2-3 kalimat. Bahasa Indonesia."
-        analysis = call_ai(prompt, system_prompt="You are a professional on-chain and derivatives analyst. Answer concisely in Indonesian.", max_tokens=180, is_json=False)
-    except Exception as e:
-        print(f"[Committee] FundamentalsAgent AI error: {e}", flush=True)
-        analysis = f"Funding {funding:.4f}%  -  {fsig}. Bias: {bias}."
-
-    return {"agent": "FundamentalsAgent", "fundamental_bias": bias, "funding_rate": funding,
-            "funding_signal": fsig, "oi_vol_ratio": round(oi_vol, 3), "analysis": analysis}
-
-
-def run_macro_analyst(symbol, market_data):
-    change_24h = market_data.get("change_24h_pct", 0)
-    if abs(change_24h) > 5: regime, note = "HIGH_VOLATILITY", "Volatilitas tinggi  -  sizing kecil"
-    elif change_24h > 2: regime, note = "RISK_ON", "Risk-on  -  altcoin outperform"
-    elif change_24h < -2: regime, note = "RISK_OFF", "Risk-off  -  fokus major coins"
-    else: regime, note = "CONSOLIDATION", "Konsolidasi  -  tunggu breakout"
-    coin = symbol.replace("-USD","").replace("USDT","")
-    is_major = coin in ["BTC","ETH","BNB","SOL"]
-    macro_score = 1 if regime == "RISK_ON" else (-1 if regime == "RISK_OFF" else 0)
-    return {"agent": "MacroAnalyst", "macro_regime": regime, "macro_score": macro_score,
-            "is_major_coin": is_major, "analysis": note}
-
-
-# ============================================================
-# RESEARCHER TEAM (TradingAgents Bull vs Bear debate)
-# ============================================================
-
-def run_bull_researcher(symbol, analyst_reports):
-    bullish = [f"[{r.get('agent')}] {r.get('verdict','') or r.get('sentiment','') or r.get('fundamental_bias','')}"
-               for r in analyst_reports if any(x in str(r.get('verdict','') or r.get('sentiment','') or r.get('fundamental_bias',''))
-                                               for x in ["BULL","OVERSOLD","RISK_ON"])]
-    bearish = [r for r in analyst_reports if any(x in str(r.get('verdict','') or r.get('sentiment','') or r.get('fundamental_bias',''))
-                                                 for x in ["BEAR","OVERBOUGHT","RISK_OFF"])]
-    bull_strength = len(bullish) / max(len(analyst_reports), 1)
-    ctx = " | ".join([r.get("analysis","")[:60] for r in analyst_reports])
-    try:
-        prompt = f"Bull Researcher: argumentasikan LONG {symbol}. " \
-                 f"Sinyal positif: {bullish}. Kontra: {len(bearish)} sinyal negatif. " \
-                 f"Konteks: {ctx[:200]}. Argumen BULL 2-3 kalimat. Bahasa Indonesia."
-        argument = call_ai(prompt, system_prompt="You are an aggressive Bull Researcher advocating for a LONG thesis. Answer concisely in Indonesian.", max_tokens=200, is_json=False)
-    except Exception as e:
-        print(f"[Committee] BullResearcher AI error: {e}", flush=True)
-        argument = f"{len(bullish)} sinyal bullish mendukung LONG dengan strength {bull_strength:.0%}."
-    return {"agent": "BullResearcher", "bull_strength": round(bull_strength, 2),
-            "bullish_signals": bullish, "argument": argument}
-
-
-def run_bear_researcher(symbol, analyst_reports, bull_report=None):
-    risks = []
-    for r in analyst_reports:
-        if r.get("rsi", 50) > 70: risks.append("RSI Overbought")
-        if r.get("fundamental_bias") == "BEARISH": risks.append("Funding rate tinggi - squeeze risk")
-        if r.get("macro_regime") == "RISK_OFF": risks.append("Macro risk-off")
-        if r.get("bb_width_pct", 0) > 15: risks.append("Volatilitas ekstrem")
-    if not risks: risks = ["Ketidakpastian likuiditas orderbook", "Potensi fakeout resistensi"]
-    ctx = " | ".join([r.get("analysis","")[:60] for r in analyst_reports])
-    bull_arg = (bull_report.get("argument", "")[:120]) if bull_report else ""
-    try:
-        prompt = f"Bear Researcher (Adversarial Debater): Serang langsung tesis Bull Researcher ini: '{bull_arg}'. " \
-                 f"Gunakan risiko nyata pada {symbol}: {risks}. Analis: {ctx[:160]}. " \
-                 f"Beri serangan kontra tajam 2-3 kalimat kenapa trade ini berisiko jebakan/rugi. Bahasa Indonesia."
-        argument = call_ai(prompt, system_prompt="You are a rigorous Bear Researcher stress-testing risks. Answer concisely in Indonesian.", max_tokens=200, is_json=False)
-    except Exception as e:
-        print(f"[Committee] BearResearcher AI error: {e}", flush=True)
-        argument = f"Risiko pembalikan arah terdeteksi: {'; '.join(risks[:3])}. Tesis bull rentan fakeout."
-    bear_strength = round(min(len(risks) / 3.5, 1.0), 2)
+        g_path = os.path.join(RESULTS_DIR, "gear_state.json")
+        if state_io is not None and os.path.exists(g_path):
+            gd = state_io.read_json_safe(g_path, default=None, strict_on_corrupt=False, expected_type=dict)
+            if isinstance(gd, dict) and isinstance(gd.get("active_profile"), dict):
+                prof = dict(gd["active_profile"])
+                prof.setdefault("gear", gd.get("current_gear", 1))
+                return prof
+    except Exception:
+        pass
     return {
-        "agent": "BearResearcher",
-        "signal": "BEARISH",
-        "bias": "BEARISH",
-        "confidence_pct": round(bear_strength * 100, 1),
-        "bear_strength": bear_strength,
-        "risk_factors": risks,
-        "argument": argument,
-        "core_thesis": argument
+        "gear": 1,
+        "code": "GEAR_1_TURBO",
+        "leverage": int(config.get("fixed_leverage", 20) or 20),
+        "sizing_mode": str(config.get("sizing_mode", "ALL_IN")).upper(),
+        "all_in_balance_fraction": float(config.get("all_in_balance_fraction", 0.95) or 0.95),
+        "risk_pct": float(config.get("risk_pct", 5.0) or 5.0),
     }
 
 
-def run_bull_rebuttal(symbol, bull_report, bear_report):
-    bear_arg = bear_report.get("argument", "")[:120]
+# ============================================================
+# ANALYST TEAM (Round 1 — uses live Layer 1 quant/micro data!)
+# ============================================================
+
+def run_technical_analyst(symbol: str, market_data: dict, use_llm: bool = True):
+    price = float(market_data.get("live_price") or market_data.get("price") or market_data.get("current_price") or 0)
+    rsi = float(market_data.get("rsi_14", 50) or 50)
+    ema_trend = str(market_data.get("ema_trend") or "NEUTRAL").upper()
+    ema20 = float(market_data.get("ema_20", price) or price)
+    ema50 = float(market_data.get("ema_50", price) or price)
+    change_24h = float(market_data.get("change_24h_pct", 0) or 0)
+    volume = float(market_data.get("volume_24h_usd", 0) or 0)
+    high_24h = float(market_data.get("high_24h", price * 1.02) or (price * 1.02))
+    low_24h = float(market_data.get("low_24h", price * 0.98) or (price * 0.98))
+    bb_width = (high_24h - low_24h) / price * 100 if price > 0 else 5.0
+
+    mp = market_data.get("math_proof") if isinstance(market_data.get("math_proof"), dict) else {}
+    hurst = float(mp.get("hurst_exponent", 0.50) or 0.50)
+    adx14 = float(mp.get("adx_14", 0.0) or 0.0)
+    obi20 = float(mp.get("obi_weighted_20", 0.0) or 0.0)
+    p_math = float(mp.get("p_math_pct", 50.0) or 50.0)
+    stat_reg = str(mp.get("statistical_regime", "NORMAL") or "NORMAL")
+
+    trend_score = 0
+    signals: List[str] = []
+    if "BULL" in ema_trend or price > ema20:
+        trend_score += 1
+        signals.append("Struktur EMA Bullish")
+    elif "BEAR" in ema_trend or price < ema20:
+        trend_score -= 1
+        signals.append("Struktur EMA Bearish")
+    if ema20 > ema50:
+        trend_score += 1
+    elif ema20 < ema50:
+        trend_score -= 1
+    if rsi < 35:
+        trend_score += 2
+        signals.append(f"RSI {rsi:.1f} Oversold")
+    elif rsi > 65:
+        trend_score -= 2
+        signals.append(f"RSI {rsi:.1f} Overbought")
+    if obi20 >= 0.15:
+        trend_score += 1
+        signals.append(f"OBI-20 Beli ({obi20:+.2f})")
+    elif obi20 <= -0.15:
+        trend_score -= 1
+        signals.append(f"OBI-20 Jual ({obi20:+.2f})")
+    if volume > 250_000_000:
+        signals.append(f"Likuiditas Kuat (${volume/1e6:.0f}M)")
+    signals.append(f"Regime={stat_reg} (H={hurst:.2f}, ADX={adx14:.1f}, P_Math={p_math:.1f}%)")
+
+    verdict = "BULLISH" if trend_score >= 2 else ("BEARISH" if trend_score <= -2 else "NEUTRAL")
+    analysis = f"Trend {verdict}. RSI={rsi:.1f}, EMA={ema_trend}, OBI20={obi20:+.2f}, Regime={stat_reg} (H={hurst:.2f}, ADX={adx14:.1f})."
+    if use_llm:
+        try:
+            prompt = (
+                f"Technical Analyst crypto futures. {symbol}: Harga=${price:,.4f}, RSI={rsi:.1f}, "
+                f"EMA={ema_trend}, OBI20={obi20:+.2f}, Hurst={hurst:.2f}, ADX={adx14:.1f}, Regime={stat_reg}. "
+                f"Analisis teknikal 2 kalimat padat, Bahasa Indonesia."
+            )
+            analysis = call_ai(
+                prompt,
+                system_prompt="You are a professional crypto technical analyst. Answer concisely in Indonesian.",
+                max_tokens=160,
+                is_json=False,
+            )
+        except Exception as e:
+            print(f"[Committee] TechnicalAnalyst AI error: {e}", flush=True)
+
+    return {
+        "agent": "TechnicalAnalyst",
+        "verdict": verdict,
+        "trend_score": trend_score,
+        "signals": signals,
+        "rsi": rsi,
+        "bb_width_pct": round(bb_width, 2),
+        "obi_20": obi20,
+        "hurst": hurst,
+        "adx_14": adx14,
+        "stat_regime": stat_reg,
+        "analysis": analysis,
+    }
+
+
+def run_sentiment_analyst(symbol: str, market_data: dict, use_llm: bool = True):
+    change_24h = float(market_data.get("change_24h_pct", 0) or 0)
+    volume = float(market_data.get("volume_24h_usd", 0) or 0)
+    news_m = market_data.get("news_macro") if isinstance(market_data.get("news_macro"), dict) else {}
+    news_sent = str(news_m.get("market_sentiment", "NEUTRAL")).upper()
+
+    if change_24h > 8:
+        sentiment, fg = "EXTREME_BULLISH", 82
+    elif change_24h > 3:
+        sentiment, fg = "BULLISH", 66
+    elif change_24h > 0:
+        sentiment, fg = "SLIGHTLY_BULLISH", 54
+    elif change_24h > -3:
+        sentiment, fg = "SLIGHTLY_BEARISH", 44
+    elif change_24h > -8:
+        sentiment, fg = "BEARISH", 32
+    else:
+        sentiment, fg = "EXTREME_FEAR", 18
+
+    analysis = f"Sentimen {sentiment.replace('_', ' ').title()} (24h {change_24h:+.2f}%), News={news_sent}, F&G ~{fg}/100."
+    if use_llm:
+        try:
+            prompt = (
+                f"Sentiment Analyst crypto. {symbol}: Change 24h={change_24h:+.2f}%, "
+                f"Vol=${volume/1e6:.0f}M, News={news_sent}, Proxy={sentiment} (F&G~{fg}). "
+                f"Analisis sentimen 2 kalimat padat, Bahasa Indonesia."
+            )
+            analysis = call_ai(
+                prompt,
+                system_prompt="You are a professional crypto sentiment analyst. Answer concisely in Indonesian.",
+                max_tokens=150,
+                is_json=False,
+            )
+        except Exception as e:
+            print(f"[Committee] SentimentAnalyst AI error: {e}", flush=True)
+
+    return {
+        "agent": "SentimentAnalyst",
+        "sentiment": sentiment,
+        "news_sentiment": news_sent,
+        "fear_greed": fg,
+        "change_24h": change_24h,
+        "analysis": analysis,
+    }
+
+
+def run_fundamentals_agent(symbol: str, market_data: dict, use_llm: bool = True):
+    volume = float(market_data.get("volume_24h_usd", 0) or 0)
+    oi = float(market_data.get("open_interest_usd", volume * 0.3) or (volume * 0.3))
+    funding_pct = _normalize_funding_pct(market_data.get("funding_rate", 0.0))
+
+    if funding_pct >= 0.05:
+        bias, fsig = "BEARISH", f"Longs terlalu padat (+{funding_pct:.4f}% — risiko long squeeze)"
+    elif funding_pct >= 0.015:
+        bias, fsig = "NEUTRAL_BULLISH", f"Funding positif terkendali (+{funding_pct:.4f}%)"
+    elif funding_pct <= -0.05:
+        bias, fsig = "BULLISH", f"Shorts terlalu padat ({funding_pct:.4f}% — potensi short squeeze)"
+    elif funding_pct <= -0.015:
+        bias, fsig = "NEUTRAL_BEARISH", f"Funding negatif terkendali ({funding_pct:.4f}%)"
+    else:
+        bias, fsig = "NEUTRAL", f"Funding seimbang ({funding_pct:+.4f}%)"
+
+    oi_vol = oi / volume if volume > 0 else 0.3
+    analysis = f"Funding {funding_pct:+.4f}% — {fsig}. OI/Vol={oi_vol:.2f}, Bias={bias}."
+    if use_llm:
+        try:
+            prompt = (
+                f"On-Chain & Derivatives Analyst crypto futures. {symbol}: Vol=${volume/1e6:.0f}M, "
+                f"OI/Vol={oi_vol:.2f}, Funding={funding_pct:+.4f}% ({fsig}). "
+                f"Analisis derivatif 2 kalimat padat, Bahasa Indonesia."
+            )
+            analysis = call_ai(
+                prompt,
+                system_prompt="You are a professional on-chain and derivatives analyst. Answer concisely in Indonesian.",
+                max_tokens=150,
+                is_json=False,
+            )
+        except Exception as e:
+            print(f"[Committee] FundamentalsAgent AI error: {e}", flush=True)
+
+    return {
+        "agent": "FundamentalsAgent",
+        "fundamental_bias": bias,
+        "funding_rate": funding_pct,
+        "funding_rate_pct": funding_pct,
+        "funding_signal": fsig,
+        "oi_vol_ratio": round(oi_vol, 3),
+        "analysis": analysis,
+    }
+
+
+def run_macro_analyst(symbol: str, market_data: dict, btc_macro: Optional[dict] = None):
+    change_24h = float(market_data.get("change_24h_pct", 0) or 0)
+    btc_m = btc_macro if isinstance(btc_macro, dict) else {}
+    btc_4h = float(btc_m.get("btc_4h_pct", 0.0) or 0.0)
+    btc_tr = str(btc_m.get("btc_1h_trend", "UNKNOWN")).upper()
+
+    if abs(btc_4h) >= 1.6:
+        regime = "RISK_ON" if btc_4h > 0 else "RISK_OFF"
+        note = f"BTC 4H impulse kuat ({btc_4h:+.2f}%, {btc_tr}) — altcoin wajib searah BTC"
+    elif abs(change_24h) > 6.5:
+        regime, note = "HIGH_VOLATILITY", f"Volatilitas tinggi (24h {change_24h:+.1f}%) — waspada fakeout wick"
+    elif change_24h > 2:
+        regime, note = "RISK_ON", f"Risk-on moderat (BTC 4H {btc_4h:+.2f}%)"
+    elif change_24h < -2:
+        regime, note = "RISK_OFF", f"Risk-off moderat (BTC 4H {btc_4h:+.2f}%)"
+    else:
+        regime, note = "CONSOLIDATION", f"Konsolidasi / range (BTC 4H {btc_4h:+.2f}%)"
+
+    coin = symbol.replace("-USD", "").replace("USDT", "").upper()
+    is_major = coin in {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "AVAX", "LINK", "SUI", "LTC"}
+    macro_score = 1 if regime == "RISK_ON" else (-1 if regime == "RISK_OFF" else 0)
+    return {
+        "agent": "MacroAnalyst",
+        "macro_regime": regime,
+        "macro_score": macro_score,
+        "btc_4h_pct": btc_4h,
+        "btc_trend": btc_tr,
+        "is_major_coin": is_major,
+        "analysis": note,
+    }
+
+
+# ============================================================
+# RESEARCHER TEAM (Direction-Symmetric Pro vs Red-Team Debate)
+# ============================================================
+
+def run_bull_researcher(
+    symbol: str,
+    analyst_reports: list,
+    proposed_direction: str = "LONG",
+    setup_name: str = "AI_SETUP",
+    memory_context: str = "",
+):
+    """Advocate Researcher defending the proposed setup direction (LONG or SHORT)."""
+    dir_u = str(proposed_direction or "LONG").upper()
+    if dir_u not in ("LONG", "SHORT"):
+        dir_u = "LONG"
+
+    align_tokens = ("BULL", "OVERSOLD", "RISK_ON") if dir_u == "LONG" else ("BEAR", "OVERBOUGHT", "RISK_OFF")
+    opp_tokens = ("BEAR", "OVERBOUGHT", "RISK_OFF") if dir_u == "LONG" else ("BULL", "OVERSOLD", "RISK_ON")
+
+    pro_sigs = [
+        f"[{r.get('agent')}] {r.get('verdict', '') or r.get('sentiment', '') or r.get('fundamental_bias', '') or r.get('macro_regime', '')}"
+        for r in analyst_reports
+        if any(x in str(r.get("verdict", "") or r.get("sentiment", "") or r.get("fundamental_bias", "") or r.get("macro_regime", "")) for x in align_tokens)
+    ]
+    opp_sigs = [
+        r for r in analyst_reports
+        if any(x in str(r.get("verdict", "") or r.get("sentiment", "") or r.get("fundamental_bias", "") or r.get("macro_regime", "")) for x in opp_tokens)
+    ]
+    advocate_strength = max(0.35, min(0.95, (len(pro_sigs) + 1) / max(len(analyst_reports) + 1, 2)))
+    ctx = " | ".join([str(r.get("analysis", ""))[:95] for r in analyst_reports])
+    mem_snippet = f" Memori AI: {memory_context[:140]}." if memory_context else ""
+
     try:
-        prompt = f"Bull Researcher Rebuttal: Bear menyatakan '{bear_arg}'. " \
-                 f"Tangkis serangan Bear tersebut dengan mitigasi risiko (invalidation stop-loss ketat, absorpsi likuiditas). " \
-                 f"Jawab singkat 1-2 kalimat. Bahasa Indonesia."
-        rebuttal = call_ai(prompt, system_prompt="You are a Bull Researcher rebutting bear arguments with strict risk mitigation. Answer concisely in Indonesian.", max_tokens=150, is_json=False)
+        prompt = (
+            f"Advocate Researcher ({'Bull' if dir_u == 'LONG' else 'Short'} Thesis): "
+            f"Argumentasikan secara objektif kenapa {dir_u} {symbol} ({setup_name}) punya edge kuat. "
+            f"Konfluensi searah: {pro_sigs or ['Layer1-5 Approved']}. Kontra: {len(opp_sigs)}. "
+            f"Data: {ctx[:260]}.{mem_snippet} "
+            f"Tulis 2-3 kalimat padat berbasis data. Bahasa Indonesia."
+        )
+        argument = call_ai(
+            prompt,
+            system_prompt=f"You are an institutional trading advocate evaluating a {dir_u} futures setup. Be concise and factual in Indonesian.",
+            max_tokens=180,
+            is_json=False,
+        )
     except Exception as e:
-        print(f"[Committee] BullRebuttal AI error: {e}", flush=True)
-        rebuttal = "Risiko Bear dapat dimitigasi dengan Stop Loss ketat di bawah level support dinamis."
+        print(f"[Committee] AdvocateResearcher AI error: {e}", flush=True)
+        argument = f"Setup {setup_name} ({dir_u}) didukung {len(pro_sigs)} konfluensi analis dengan kekuatan {advocate_strength:.0%}."
+
+    return {
+        "agent": "BullResearcher",
+        "advocate_direction": dir_u,
+        "bull_strength": round(advocate_strength, 2),
+        "bullish_signals": pro_sigs,
+        "argument": argument,
+    }
+
+
+def run_bear_researcher(
+    symbol: str,
+    analyst_reports: list,
+    bull_report: Optional[dict] = None,
+    proposed_direction: str = "LONG",
+    memory_context: str = "",
+):
+    """Red-Team Adversary hunting real structural traps/fakeouts against proposed_direction."""
+    dir_u = str(proposed_direction or "LONG").upper()
+    risks: List[str] = []
+    for r in analyst_reports:
+        rsi_v = float(r.get("rsi", 50) or 50)
+        if dir_u == "LONG" and rsi_v > 68:
+            risks.append(f"RSI Overbought ({rsi_v:.1f}) rawan koreksi")
+        elif dir_u == "SHORT" and rsi_v < 32:
+            risks.append(f"RSI Oversold ({rsi_v:.1f}) rawan short-cover bounce")
+
+        fb = str(r.get("fundamental_bias", ""))
+        if dir_u == "LONG" and fb == "BEARISH":
+            risks.append("Funding sangat positif — risiko long squeeze")
+        elif dir_u == "SHORT" and fb == "BULLISH":
+            risks.append("Funding sangat negatif — risiko short squeeze")
+
+        btc_4h = float(r.get("btc_4h_pct", 0.0) or 0.0)
+        if dir_u == "LONG" and btc_4h <= -1.0:
+            risks.append(f"BTC 4H melemah ({btc_4h:+.2f}%) — headwind untuk LONG")
+        elif dir_u == "SHORT" and btc_4h >= 1.0:
+            risks.append(f"BTC 4H menguat ({btc_4h:+.2f}%) — headwind untuk SHORT")
+
+        if float(r.get("bb_width_pct", 0) or 0) > 14:
+            risks.append("Volatilitas 24h ekstrem (>14%) — risiko wick stop-hunt")
+
+    if memory_context and "CAUTION: poor history on this coin" in memory_context:
+        risks.append("AI Trade Memory mencatat performa buruk berulang di koin ini")
+
+    concrete_risk_count = len(risks)
+    if not risks:
+        risks = ["Tidak ada red-flag fatal mayor; perhatikan disiplin SL dan eksekusi maker"]
+
+    ctx = " | ".join([str(r.get("analysis", ""))[:85] for r in analyst_reports])
+    adv_arg = (bull_report.get("argument", "")[:140]) if isinstance(bull_report, dict) else ""
+    mem_snippet = f" AI_MEMORY: {memory_context[:160]}." if memory_context else ""
+
+    try:
+        prompt = (
+            f"Red-Team Adversary (Risk Skeptic): Uji ketat rencana {dir_u} {symbol}. "
+            f"Tesis Pro: '{adv_arg}'. "
+            f"Temuan risiko nyata: {risks}. Data analis: {ctx[:220]}.{mem_snippet} "
+            f"Jelaskan risiko jebakan paling nyata (atau nyatakan jika tidak ada cacat fatal) dalam 2-3 kalimat. Bahasa Indonesia."
+        )
+        argument = call_ai(
+            prompt,
+            system_prompt="You are an adversarial crypto risk skeptic stress-testing a futures trade. Distinguish real fatal flaws from minor noise. Answer concisely in Indonesian.",
+            max_tokens=180,
+            is_json=False,
+        )
+    except Exception as e:
+        print(f"[Committee] RedTeamAdversary AI error: {e}", flush=True)
+        argument = f"Audit Red-Team untuk {dir_u}: {'; '.join(risks[:3])}."
+
+    bear_strength = round(min(concrete_risk_count / 3.0, 1.0), 2) if concrete_risk_count > 0 else 0.25
+    return {
+        "agent": "BearResearcher",
+        "signal": "BEARISH" if dir_u == "LONG" else "BULLISH",
+        "bias": "ADVERSARIAL_SKEPTIC",
+        "confidence_pct": round(bear_strength * 100, 1),
+        "bear_strength": bear_strength,
+        "concrete_risk_count": concrete_risk_count,
+        "risk_factors": risks,
+        "argument": argument,
+        "core_thesis": argument,
+    }
+
+
+def run_bull_rebuttal(
+    symbol: str,
+    bull_report: dict,
+    bear_report: dict,
+    proposed_direction: str = "LONG",
+    plan_summary: str = "",
+):
+    bear_arg = (bear_report.get("argument", "")[:150]) if isinstance(bear_report, dict) else ""
+    plan_note = f" Rencana: {plan_summary}." if plan_summary else ""
+    try:
+        prompt = (
+            f"Advocate Rebuttal ({proposed_direction} {symbol}): Red-Team menyatakan '{bear_arg}'.{plan_note} "
+            f"Tangkis secara konkret dengan level invalidasi SL, TP1 profit-lock, dan struktur pasar dalam 1-2 kalimat. Bahasa Indonesia."
+        )
+        rebuttal = call_ai(
+            prompt,
+            system_prompt="You are a disciplined trading advocate rebutting risk objections using exact SL/TP structure. Answer concisely in Indonesian.",
+            max_tokens=140,
+            is_json=False,
+        )
+    except Exception as e:
+        print(f"[Committee] AdvocateRebuttal AI error: {e}", flush=True)
+        rebuttal = f"Risiko Red-Team dimitigasi oleh SL struktural ketat dan TP1 profit-lock (+0.90R) sesuai rencana Layer 3."
     return rebuttal
 
 
 # ============================================================
-# TRADER AGENT (TradingAgents Mediator & Tactical Plan)
+# TRADER AGENT (Tactical Mediator — preserves Layer 5 direction)
 # ============================================================
 
-def run_trader_agent(symbol, price, bull_report, bear_report, rebuttal, analyst_reports):
-    bs = bull_report.get("bull_strength", 0.5)
-    br = bear_report.get("bear_strength", 0.5)
-    net_conviction = bs - br * 0.75
-    confidence = max(35, min(95, 50 + net_conviction * 45))
+def run_trader_agent(
+    symbol: str,
+    price: float,
+    bull_report: dict,
+    bear_report: dict,
+    rebuttal: str,
+    analyst_reports: list,
+    proposed_direction: Optional[str] = None,
+    layer5_conf: Optional[float] = None,
+):
+    bs = float(bull_report.get("bull_strength", 0.5) or 0.5)
+    br = float(bear_report.get("bear_strength", 0.35) or 0.35)
+    net_conviction = bs - br * 0.70
 
-    if confidence >= 50 and bs >= br:
-        direction = "LONG"
-    elif confidence >= 50 and br > bs:
-        direction = "SHORT"
+    if proposed_direction in ("LONG", "SHORT"):
+        # Veto-only mode: NEVER flip LONG<->SHORT! Only confirm or express low conviction.
+        base_c = float(layer5_conf) if layer5_conf is not None else 75.0
+        adj = (bs - br) * 15.0
+        confidence = round(max(40.0, min(95.0, base_c + adj)), 1)
+        direction = proposed_direction if (confidence >= 55.0 and br < 0.90) else "SKIP"
     else:
-        direction = "SKIP"
+        confidence = round(max(35.0, min(95.0, 50.0 + net_conviction * 45.0)), 1)
+        if confidence >= 50 and bs >= br:
+            direction = "LONG"
+        elif confidence >= 50 and br > bs:
+            direction = "SHORT"
+        else:
+            direction = "SKIP"
 
-    try:
-        prompt = f"Trader Agent (Chief Execution Mediator): Simpulkan perdebatan multi-agent {symbol} @ ${price:,.4f}.\n" \
-                 f"- Bull Case: {bull_report.get('argument','')[:100]}\n" \
-                 f"- Bear Case: {bear_report.get('argument','')[:100]}\n" \
-                 f"- Bull Rebuttal: {rebuttal[:100]}\n" \
-                 f"- Keputusan Anda: {direction} (Confidence: {confidence:.0f}%).\n" \
-                 f"Buat sintesis taktis 2 kalimat dalam Bahasa Indonesia."
-        decision = call_ai(prompt, system_prompt="You are the Chief Trader Agent mediating bull vs bear debate. Answer concisely in Indonesian.", max_tokens=150, is_json=False)
-    except Exception as e:
-        print(f"[Committee] TraderAgent AI error: {e}", flush=True)
-        decision = f"Kompromi komite: Memilih {direction} dengan keyakinan {confidence:.0f}% setelah menguji tesis Bull & Bear."
+    decision = (
+        f"Sintesis taktis: Pertahankan {direction} {symbol} @ ${price:,.4f} "
+        f"(keyakinan {confidence:.0f}%, Pro={bs:.2f} vs RedTeam={br:.2f})."
+    )
+    if proposed_direction is None:
+        try:
+            prompt = (
+                f"Trader Agent: Simpulkan perdebatan {symbol} @ ${price:,.4f}. "
+                f"Pro: {bull_report.get('argument', '')[:100]} | Kontra: {bear_report.get('argument', '')[:100]} | "
+                f"Rebuttal: {rebuttal[:100]} | Arah: {direction} ({confidence:.0f}%). "
+                f"Sintesis taktis 2 kalimat, Bahasa Indonesia."
+            )
+            decision = call_ai(
+                prompt,
+                system_prompt="You are the Chief Trader Agent mediating adversarial debate. Answer concisely in Indonesian.",
+                max_tokens=140,
+                is_json=False,
+            )
+        except Exception as e:
+            print(f"[Committee] TraderAgent AI error: {e}", flush=True)
 
     return {
         "agent": "TraderAgent",
         "signal": direction,
         "direction": direction,
-        "confidence_pct": round(confidence, 1),
+        "confidence_pct": confidence,
         "net_conviction": round(net_conviction, 3),
         "decision": decision,
-        "rebuttal_accepted": True
+        "rebuttal_accepted": True,
     }
 
 
 # ============================================================
-# RISK OFFICER (Vibe-Trading + hummingbot Kelly sizing)
+# RISK OFFICER (Gear-Aware & Audit-Only — never rewrites Layer 3 SL/TP!)
 # ============================================================
 
-def run_risk_officer(symbol, price, direction, confidence, market_data, config):
+def run_risk_officer(
+    symbol: str,
+    price: float,
+    direction: str,
+    confidence: float,
+    market_data: dict,
+    config: dict,
+    pipeline_context: Optional[Dict[str, Any]] = None,
+):
     """
-    Risk Officer v2: Dynamic leverage 2x-25x (ATR-based), wallet-based Kelly sizing,
-    and estimated holding time to TP1 (inspired by ai-hedge-fund + Vibe-Trading).
+    Gear-Aware Audit-Only Risk Officer:
+    - When `pipeline_context` provides Layer 3/5 plan_result, audits its exact
+      entry/SL/TP1/TP2 geometry against active config & Gear 1/2/3 WITHOUT
+      re-fetching Binance balance or inventing conflicting SL/TP prices!
     """
-    # ── 1. Fetch live wallet balance from Binance ──────────────────────
-    try:
-        from binance_futures import BinanceFuturesClient
-        import os as _os
-        _ak = config.get("BINANCE_API_KEY") or _os.environ.get("BINANCE_API_KEY", "")
-        _sk = config.get("BINANCE_API_SECRET") or _os.environ.get("BINANCE_API_SECRET", "")
-        if _ak and _sk:
-            _bn = BinanceFuturesClient(api_key=_ak, api_secret=_sk)
-            _bal = _bn.get_balance()
-            available_usdt = float(_bal.get("available_balance", 0))
-        else:
-            available_usdt = 0.0
-    except Exception:
+    gear_prof = _resolve_active_gear_profile(config, pipeline_context)
+    leverage = int(gear_prof.get("leverage") or config.get("fixed_leverage", 20) or 20)
+    sizing_mode = str(gear_prof.get("sizing_mode") or config.get("sizing_mode", "ALL_IN")).upper()
+    min_rrr = float(config.get("min_risk_reward_ratio", 1.8) or 1.8)
+    min_sl_pct = float(config.get("min_sl_pct", 0.90) or 0.90)
+    max_sl_pct = float(config.get("max_sl_pct", 2.25) or 2.25)
+
+    change_24h = abs(float(market_data.get("change_24h_pct", 3) or 3))
+    bb_width = float(market_data.get("bb_width_pct", 5) or 5)
+    volatility = (change_24h + bb_width) / 2.0
+
+    fc = (pipeline_context or {}).get("final_call") if isinstance(pipeline_context, dict) else None
+    plan = (pipeline_context or {}).get("plan_result") if isinstance(pipeline_context, dict) else None
+
+    if isinstance(fc, dict) or isinstance(plan, dict):
+        src = fc if (isinstance(fc, dict) and float(fc.get("stop_loss") or 0) > 0) else (plan or {})
+        entry_px = float(src.get("entry_price") or price or 0)
+        sl = float(src.get("stop_loss") or 0)
+        tp1 = float(src.get("take_profit_1") or 0)
+        tp2 = float(src.get("take_profit_2") or src.get("take_profit") or 0)
+        sl_dist_pct = (abs(entry_px - sl) / entry_px * 100.0) if (entry_px > 0 and sl > 0) else 0.0
+        risk_pp = abs(entry_px - sl)
+        reward_pp = abs(tp2 - entry_px) if tp2 > 0 else abs(tp1 - entry_px)
+        actual_rrr = (reward_pp / risk_pp) if risk_pp > 1e-12 else 0.0
+        sl_ok = (min_sl_pct - 0.05) <= sl_dist_pct <= (max_sl_pct + 0.05)
+        rrr_ok = actual_rrr >= (min_rrr - 0.05)
+        risk_approved = bool(sl_ok and rrr_ok and direction in ("LONG", "SHORT") and confidence >= 55.0)
+        budget_idr = int(src.get("position_size_idr") or 0)
         available_usdt = 0.0
-
-    fx_rate = convert_usd_to_idr(1.0)   # USDT→IDR FX rate
-    wallet_idr = available_usdt * fx_rate
-
-    # ── 2. Risk parameters ─────────────────────────────────────────────
-    max_leverage = config.get("max_leverage", 25)
-    min_rrr = config.get("min_risk_reward_ratio", 1.5)
-
-    change_24h = abs(market_data.get("change_24h_pct", 3))
-    bb_width   = market_data.get("bb_width_pct", 5)
-    volatility = (change_24h + bb_width) / 2
-
-    # ── 3. Leverage: FIXED AT 20x (USER MANDATE) ──────────────────────
-    leverage = 20  # Always 20x per user mandate
-    lev_range = (20, 20)
-
-    # ── 4. ALL-IN WALLET BUDGET (USER MANDATE: 100% SALDO AKTIF) ──────────────────
-    # Modal ALL-IN: gunakan 98% saldo margin yang tersedia di wallet Binance Futures
-    # (buffer 2% untuk fee transaksi agar order terisi sempurna tanpa ditolak bursa)
-    if available_usdt > 0.5:
-        allocated_usdt = round(available_usdt * 0.98, 4)
-        budget_idr = int(allocated_usdt * fx_rate)
-    elif wallet_idr > 1000:
-        budget_idr = int(wallet_idr * 0.98)
+        time_horizon = ((plan or {}).get("tp_time_prediction") or {}).get("eta_label", "N/A")
+        var95 = round(max(0.0, volatility * 0.1 * leverage), 2)
+        risk_note = (
+            f"Audit-Only Gear {gear_prof.get('gear', 1)} ({leverage}x {sizing_mode}): "
+            f"SL={sl_dist_pct:.2f}% ({'OK' if sl_ok else 'OUT_OF_CORRIDOR'}), "
+            f"RRR=1:{actual_rrr:.2f} ({'OK' if rrr_ok else 'LOW'})"
+        )
     else:
-        budget_idr = int(config.get("max_budget_idr") or 50000)
-
-    # ── 5. SL / TP calculation ─────────────────────────────────────────
-    atr_pct = volatility * 0.6
-    if direction == "LONG":
-        sl  = price * (1 - atr_pct / 100 * 1.5)
-        tp1 = price * (1 + atr_pct / 100 * min_rrr)
-        tp2 = price * (1 + atr_pct / 100 * min_rrr * 2)
-    elif direction == "SHORT":
-        sl  = price * (1 + atr_pct / 100 * 1.5)
-        tp1 = price * (1 - atr_pct / 100 * min_rrr)
-        tp2 = price * (1 - atr_pct / 100 * min_rrr * 2)
-    else:
-        sl = tp1 = tp2 = price
-
-    risk_pp   = abs(price - sl)
-    reward_pp = abs(tp1 - price)
-    actual_rrr = reward_pp / risk_pp if risk_pp > 0 else 0
-
-    pos_usd = convert_idr_to_usd(budget_idr) * leverage
-    var95   = pos_usd * volatility / 100 * 1.65
-
-    risk_approved = actual_rrr >= min_rrr and confidence >= 50 and direction != "SKIP"
-
-    # ── 6. Estimated holding time to TP1 ──────────────────────────────
-    # Formula: hours = (TP1 dist %) / (ATR% per hour * momentum factor)
-    # ATR 1H ≈ daily ATR / sqrt(24)
-    atr_1h_pct = (change_24h / 24**0.5) if change_24h > 0 else 0.2
-    tp1_dist_pct = abs(tp1 - price) / price * 100 if price > 0 else 1
-    momentum_factor = 1.2 if confidence >= 75 else (0.9 if confidence < 60 else 1.0)
-    if atr_1h_pct > 0:
-        est_hours = tp1_dist_pct / (atr_1h_pct * momentum_factor)
-    else:
-        est_hours = 2.0
-    est_hours = max(0.25, min(est_hours, 96))
-
-    # Format as readable Indonesian duration
-    if est_hours < 1:
-        lo, hi = int(est_hours * 60 * 0.7), int(est_hours * 60 * 1.3)
-        style = "Scalp Momentum" if confidence >= 75 else "Scalp"
-        time_horizon = f"~{lo}-{hi} menit ({style})"
-    elif est_hours < 4:
-        lo, hi = round(est_hours * 0.7, 1), round(est_hours * 1.3, 1)
-        style = "Intraday Trend" if confidence >= 70 else "Intraday"
-        time_horizon = f"~{lo}-{hi} jam ({style})"
-    elif est_hours < 24:
-        lo, hi = int(est_hours * 0.7), int(est_hours * 1.3)
-        time_horizon = f"~{lo}-{hi} jam (Swing Pendek)"
-    else:
-        lo, hi = int(est_hours / 24 * 0.7), int(est_hours / 24 * 1.3)
-        time_horizon = f"~{lo}-{hi} hari (Swing)"
+        # Standalone committee call fallback (non-pipeline)
+        available_usdt = 0.0
+        fx_rate = convert_usd_to_idr(1.0)
+        budget_idr = int(config.get("max_budget_idr") or 0)
+        atr_pct = max(0.95, min(2.0, volatility * 0.5))
+        if direction == "LONG":
+            sl = price * (1.0 - atr_pct / 100.0)
+            tp1 = price * (1.0 + atr_pct / 100.0 * 0.90)
+            tp2 = price * (1.0 + atr_pct / 100.0 * max(2.0, min_rrr))
+        elif direction == "SHORT":
+            sl = price * (1.0 + atr_pct / 100.0)
+            tp1 = price * (1.0 - atr_pct / 100.0 * 0.90)
+            tp2 = price * (1.0 - atr_pct / 100.0 * max(2.0, min_rrr))
+        else:
+            sl = tp1 = tp2 = price
+        risk_pp = abs(price - sl)
+        reward_pp = abs(tp2 - price)
+        actual_rrr = (reward_pp / risk_pp) if risk_pp > 1e-12 else 0.0
+        risk_approved = bool(actual_rrr >= min_rrr and confidence >= 50.0 and direction in ("LONG", "SHORT"))
+        var95 = round(convert_idr_to_usd(budget_idr or 50000) * leverage * volatility / 100.0 * 1.65, 2)
+        time_horizon = "~2-6 jam (Intraday)"
+        risk_note = f"Standalone Audit Gear {gear_prof.get('gear', 1)} ({leverage}x {sizing_mode}): RRR=1:{actual_rrr:.2f}, Vol={volatility:.1f}%"
 
     return {
         "agent": "RiskOfficer",
@@ -381,57 +637,124 @@ def run_risk_officer(symbol, price, direction, confidence, market_data, config):
         "risk_approved": risk_approved,
         "confidence_pct": round(confidence, 1),
         "wallet_usdt_available": round(available_usdt, 4),
-        "wallet_idr_available": round(wallet_idr, 0),
         "recommended_budget_idr": budget_idr,
-        "kelly_suggested_idr": budget_idr,
         "recommended_leverage": leverage,
         "leverage": leverage,
-        "leverage_tier": f"{lev_range[0]}x-{lev_range[1]}x (vol={volatility:.1f}%)",
-        "kelly_fraction": 1.0,  # All-in wallet mode
-        "vol_adjustment": 1.0,
+        "gear_code": gear_prof.get("code", "GEAR_1_TURBO"),
+        "sizing_mode": sizing_mode,
         "sl_price": round(sl, 6),
         "tp1_price": round(tp1, 6),
         "tp2_price": round(tp2, 6),
         "actual_rrr": round(actual_rrr, 2),
         "var_95_usd": round(var95, 2),
-        "var_pct_daily": round(volatility * 1.65, 2),
         "volatility_pct": round(volatility, 2),
         "estimated_time_horizon": time_horizon,
-        "hummingbot_spread_pct": round(max(0.1, min(1.2, volatility * 0.08)), 2),
-        "risk_note": f"VaR(95%)=${var95:.2f}, RRR={actual_rrr:.2f}, Vol={volatility:.1f}%, Lev={leverage}x, Wallet All-In=${available_usdt:.2f}"
+        "risk_note": risk_note,
     }
 
 
 # ============================================================
-# PORTFOLIO MANAGER (TradingAgents + LangAlpha governance)
+# PORTFOLIO MANAGER (AI Supreme Veto-Only Judge)
 # ============================================================
 
-def run_portfolio_manager(symbol, trader_report, risk_report, existing_positions, config):
-    max_concurrent = config.get("max_concurrent_positions", 5)
-    open_pos = [p for p in (existing_positions or []) if p.get("status") == "OPEN"]
-    rejections = []
+def run_portfolio_manager(
+    symbol: str,
+    trader_report: dict,
+    risk_report: dict,
+    existing_positions: list,
+    config: dict,
+    bull_report: Optional[dict] = None,
+    bear_report: Optional[dict] = None,
+    rebuttal: str = "",
+    memory_context: str = "",
+    pipeline_context: Optional[Dict[str, Any]] = None,
+):
+    max_concurrent = int(config.get("max_concurrent_positions", 1) or 1)
+    open_pos = [p for p in (existing_positions or []) if isinstance(p, dict) and p.get("status") == "OPEN"]
+    rejections: List[str] = []
 
-    if trader_report.get("direction") == "SKIP":
-        rejections.append("Trader merekomendasikan SKIP (tidak ada conviction)")
+    if trader_report.get("direction") not in ("LONG", "SHORT"):
+        rejections.append("Trader merekomendasikan SKIP (conviction tidak cukup)")
     if not risk_report.get("risk_approved"):
-        rejections.append(f"Risk Officer Veto: RRR {risk_report.get('actual_rrr',0):.2f} < threshold")
+        rejections.append(f"Risk Officer Veto: {risk_report.get('risk_note', 'risk parameter invalid')}")
     if len(open_pos) >= max_concurrent:
         rejections.append(f"Kapasitas portofolio penuh ({len(open_pos)}/{max_concurrent})")
     if symbol in [p.get("symbol") for p in open_pos]:
         rejections.append(f"{symbol} sudah memiliki posisi terbuka")
-    if trader_report.get("confidence_pct", 0) < 50:
-        rejections.append(f"Confidence {trader_report.get('confidence_pct')}% < 50%")
 
-    approved = len(rejections) == 0
-    decision = "APPROVED (Konsensus 9 Agen Tercapai)" if approved else f"REJECTED: {'; '.join(rejections[:2])}"
+    if rejections:
+        decision = f"VETOED: {'; '.join(rejections[:2])}"
+        return {
+            "agent": "PortfolioManager",
+            "signal": "REJECTED",
+            "approved": False,
+            "rejection_reasons": rejections,
+            "open_count": len(open_pos),
+            "decision": decision,
+            "executive_summary": decision,
+        }
+
+    # AI Supreme PM Adversarial Veto Check (only runs when hard portfolio & risk checks pass!)
+    approved = True
+    decision = f"APPROVED (Konsensus Sidang 9-Agent tercapai untuk {trader_report.get('direction')} {symbol})"
+    fatal_flaw = ""
+    if isinstance(pipeline_context, dict):
+        mp = (pipeline_context.get("scan_summary") or {}).get("math_proof") or {}
+        btc_m = (pipeline_context.get("scan_summary") or {}).get("btc_macro") or {}
+        fc = pipeline_context.get("final_call") or {}
+        dir_u = str(fc.get("direction") or trader_report.get("direction") or "LONG").upper()
+        setup_u = str((pipeline_context.get("setup_result") or {}).get("setup_name") or fc.get("setup_name") or "AI_SETUP")
+
+        sys_pm = (
+            "You are the Supreme Portfolio Manager (Veto-Only Judge) of a crypto futures desk.\n"
+            "This setup ALREADY passed 5 quant+AI layers, math gates, and SL/RRR validation.\n"
+            "Your job: review the Advocate vs Red-Team debate, BTC 4H macro, microstructure, and AI_MEMORY.\n"
+            "RULES:\n"
+            "- Output APPROVE unless there is a CONCRETE, data-backed FATAL FLAW (clear fakeout trap, "
+            "strong opposite BTC 4H impulse, repeated coin/setup losses in AI_MEMORY without exceptional edge, "
+            "or severe exhaustion).\n"
+            "- NEVER veto for vague/generic caution.\n"
+            "- Respond ONLY in JSON: {\"verdict\":\"APPROVE\" or \"VETO\",\"confidence_pct\":78,\"fatal_flaw\":\"\",\"decision\":\"1 sentence in Indonesian\"}"
+        )
+        usr_pm = (
+            f"Candidate: {dir_u} {symbol} ({setup_u}), Layer5Conf={fc.get('confidence_score', 75)}%, "
+            f"P_Math={mp.get('p_math_pct', 70)}%, OBI20={mp.get('obi_weighted_20', 0)}, "
+            f"Hurst={mp.get('hurst_exponent', 0.5)}, Regime={mp.get('statistical_regime', 'NORMAL')}, "
+            f"BTC_4H={btc_m.get('btc_4h_pct', 0)}% ({btc_m.get('btc_1h_trend', 'UNKNOWN')}).\n"
+            f"RiskAudit: {risk_report.get('risk_note', 'OK')}\n"
+            f"ProAdvocate: {(bull_report or {}).get('argument', '')[:180]}\n"
+            f"RedTeamAdversary: {(bear_report or {}).get('argument', '')[:180]}\n"
+            f"Rebuttal: {str(rebuttal)[:140]}\n"
+            f"AI_MEMORY: {memory_context[:200] if memory_context else 'None'}\n"
+            f"Verdict JSON only:"
+        )
+        try:
+            raw_pm = call_ai(usr_pm, system_prompt=sys_pm, max_tokens=180, is_json=True)
+            parsed = _extract_json_obj(raw_pm)
+            if isinstance(parsed, dict):
+                v_str = str(parsed.get("verdict", "APPROVE")).upper().strip()
+                dec_str = str(parsed.get("decision") or "").strip()
+                flaw_str = str(parsed.get("fatal_flaw") or "").strip()
+                if v_str in ("VETO", "REJECT", "REJECTED"):
+                    approved = False
+                    fatal_flaw = flaw_str or dec_str or "Fatal trap terdeteksi oleh Sidang 9-Agent"
+                    rejections.append(fatal_flaw)
+                    decision = f"VETOED: {fatal_flaw}"
+                else:
+                    approved = True
+                    decision = dec_str or decision
+        except Exception as exc:
+            print(f"[Committee] Supreme PM AI fallback to deterministic PASS: {exc}", flush=True)
+
     return {
         "agent": "PortfolioManager",
         "signal": "APPROVED" if approved else "REJECTED",
         "approved": approved,
+        "fatal_flaw": fatal_flaw,
         "rejection_reasons": rejections,
         "open_count": len(open_pos),
         "decision": decision,
-        "executive_summary": decision
+        "executive_summary": decision,
     }
 
 
@@ -446,149 +769,227 @@ def calculate_optimal_spread(symbol, price, volatility, volume):
     spread = max(0.05, min(1.0, base * vol_mult * vol_disc))
     return {
         "spread_pct": round(spread, 3),
-        "bid_price": round(price * (1 - spread/100), 6),
-        "ask_price": round(price * (1 + spread/100), 6),
-        "midpoint": round(price, 6)
+        "bid_price": round(price * (1 - spread / 100), 6),
+        "ask_price": round(price * (1 + spread / 100), 6),
+        "midpoint": round(price, 6),
     }
 
 
 # ============================================================
-# THESIS ENGINE (LangAlpha persistent workspace)
+# THESIS ENGINE (LangAlpha persistent workspace — atomic I/O)
 # ============================================================
 
 def save_thesis(symbol, result):
     thesis = {}
-    if os.path.exists(THESIS_FILE):
+    if state_io is not None:
+        thesis = state_io.read_json_safe(THESIS_FILE, default={}, strict_on_corrupt=False, expected_type=dict) or {}
+    elif os.path.exists(THESIS_FILE):
         try:
             with open(THESIS_FILE, "r", encoding="utf-8") as f:
                 thesis = json.load(f)
-        except: pass
-    
+        except Exception:
+            thesis = {}
+
     consensus = result.get("consensus", {})
     thesis[symbol] = {
         "symbol": symbol,
         "direction": consensus.get("action", result.get("direction")),
         "confidence": consensus.get("confidence_pct", result.get("confidence_pct")),
         "approved": result.get("approved"),
-        "bull_arg": result.get("bull_researcher",{}).get("argument","")[:200],
-        "bear_arg": result.get("bear_researcher",{}).get("argument","")[:200],
-        "rebuttal": result.get("bull_rebuttal", "")[:150],
-        "trader_decision": result.get("trader_agent",{}).get("decision","")[:200],
-        "risk": result.get("risk_officer",{}),
+        "bull_arg": result.get("bull_researcher", {}).get("argument", "")[:220],
+        "bear_arg": result.get("bear_researcher", {}).get("argument", "")[:220],
+        "rebuttal": str(result.get("bull_rebuttal", ""))[:180],
+        "trader_decision": result.get("trader_agent", {}).get("decision", "")[:220],
+        "risk": result.get("risk_officer", {}),
         "trade_plan": result.get("trade_plan", {}),
         "collaboration_transcript": result.get("collaboration_transcript", []),
-        "updated_at": datetime.now(timezone.utc).isoformat()
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        with open(THESIS_FILE, "w", encoding="utf-8") as f:
-            json.dump(thesis, f, indent=2, ensure_ascii=False)
-    except: pass
+        if state_io is not None:
+            state_io.atomic_write_json(THESIS_FILE, thesis, make_bak=False)
+        else:
+            with open(THESIS_FILE, "w", encoding="utf-8") as f:
+                json.dump(thesis, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
 
 
 def get_active_thesis(symbol):
-    if not os.path.exists(THESIS_FILE): return None
+    if state_io is not None:
+        data = state_io.read_json_safe(THESIS_FILE, default={}, strict_on_corrupt=False, expected_type=dict) or {}
+        return data.get(symbol)
+    if not os.path.exists(THESIS_FILE):
+        return None
     try:
         with open(THESIS_FILE, "r", encoding="utf-8") as f:
             return json.load(f).get(symbol)
-    except: return None
+    except Exception:
+        return None
 
 
 # ============================================================
 # MAIN COMMITTEE ORCHESTRATOR
 # ============================================================
 
-def run_multi_agent_committee(symbol, existing_positions=None, active_positions=None):
+def run_multi_agent_committee(
+    symbol: str,
+    existing_positions=None,
+    active_positions=None,
+    pipeline_context: Optional[Dict[str, Any]] = None,
+):
     """
-    Jalankan seluruh committee 9-agent secara terstruktur & kolaboratif.
-    Returns: dict lengkap dengan transcript kolaborasi dan keputusan final.
+    Jalankan Sidang 9-Agent Adversarial Veto-Only Committee secara terstruktur.
+    Jika dipanggil dari pipeline (`pipeline_context` terisi), seluruh data Layer 1-5
+    + AI Trade Memory + Sistem Gigi digunakan ulang tanpa fetch ganda dan TANPA
+    menimpa parameter SL/TP/Direction/Leverage Layer 3-5.
     """
     if existing_positions is None:
         existing_positions = active_positions or []
     config = get_trading_config()
     t0 = time.time()
-    print(f"\n[Committee] Memulai Sidang Multi-Agent Kolaboratif untuk {symbol}...")
+    is_pipeline_mode = isinstance(pipeline_context, dict) and bool(pipeline_context)
+    print(f"\n[Committee] Memulai Sidang 9-Agent Adversarial Veto-Only untuk {symbol}...", flush=True)
 
-    try:
-        market_data = get_market_indicators(symbol)
-    except Exception as e:
-        print(f"[Committee] Market data error: {e}")
-        market_data = {}
+    scan_summary = (pipeline_context or {}).get("scan_summary") if is_pipeline_mode else None
+    market_data = dict((pipeline_context or {}).get("market_data") or {}) if is_pipeline_mode else {}
+    if not market_data:
+        try:
+            market_data = get_market_indicators(symbol) or {}
+        except Exception as e:
+            print(f"[Committee] Market data error: {e}", flush=True)
+            market_data = {}
 
-    price = market_data.get("price", market_data.get("current_price", 0))
+    if isinstance(scan_summary, dict):
+        if "math_proof" in scan_summary and "math_proof" not in market_data:
+            market_data["math_proof"] = scan_summary["math_proof"]
+        if "news_macro" in scan_summary and "news_macro" not in market_data:
+            market_data["news_macro"] = scan_summary["news_macro"]
+
+    price = float(
+        ((pipeline_context or {}).get("final_call") or {}).get("entry_price")
+        or market_data.get("live_price")
+        or market_data.get("price")
+        or market_data.get("current_price")
+        or 0
+    )
     if not price:
         return {"symbol": symbol, "error": "No market data", "approved": False, "direction": "SKIP"}
 
     if "bb_width_pct" not in market_data:
-        h = market_data.get("high_24h", price * 1.02)
-        l = market_data.get("low_24h", price * 0.98)
-        market_data["bb_width_pct"] = (h - l) / price * 100 if price > 0 else 5
+        h = float(market_data.get("high_24h", price * 1.02) or (price * 1.02))
+        l = float(market_data.get("low_24h", price * 0.98) or (price * 0.98))
+        market_data["bb_width_pct"] = (h - l) / price * 100.0 if price > 0 else 5.0
 
-    volatility = abs(market_data.get("change_24h_pct", 3))
-    volume = market_data.get("volume_24h_usd", 0)
+    volatility = abs(float(market_data.get("change_24h_pct", 3) or 3))
+    volume = float(market_data.get("volume_24h_usd", 0) or 0)
     spread_info = calculate_optimal_spread(symbol, price, volatility, volume)
 
+    fc_in = (pipeline_context or {}).get("final_call") or {}
+    setup_in = (pipeline_context or {}).get("setup_result") or {}
+    proposed_dir = str(fc_in.get("direction") or setup_in.get("direction") or "").upper()
+    if proposed_dir not in ("LONG", "SHORT"):
+        proposed_dir = None
+    setup_name = str(setup_in.get("setup_name") or fc_in.get("setup_name") or "AI_SETUP")
+    memory_context = str((pipeline_context or {}).get("memory_context") or "")
+    btc_macro = (scan_summary or {}).get("btc_macro") if isinstance(scan_summary, dict) else {}
+
     # ------------------------------------------------------------
-    # ROUND 1: 4 ANALYSTS IN PARALLEL (TradingAgents pattern)
+    # ROUND 1: 4 SPECIALIST ANALYSTS (deterministic in pipeline mode -> saves ~4,500 tokens!)
     # ------------------------------------------------------------
-    print(f"[Committee] Round 1: Menjalankan 4 Analis Spesialis paralel...")
-    analyst_map = {}
+    use_r1_llm = not is_pipeline_mode
+    analyst_map: Dict[str, Any] = {}
     with ThreadPoolExecutor(max_workers=4) as ex:
         futures = {
-            ex.submit(run_technical_analyst, symbol, market_data): "technical",
-            ex.submit(run_sentiment_analyst, symbol, market_data): "sentiment",
-            ex.submit(run_fundamentals_agent, symbol, market_data): "fundamentals",
-            ex.submit(run_macro_analyst, symbol, market_data): "macro",
+            ex.submit(run_technical_analyst, symbol, market_data, use_r1_llm): "technical",
+            ex.submit(run_sentiment_analyst, symbol, market_data, use_r1_llm): "sentiment",
+            ex.submit(run_fundamentals_agent, symbol, market_data, use_r1_llm): "fundamentals",
+            ex.submit(run_macro_analyst, symbol, market_data, btc_macro): "macro",
         }
         for fut in as_completed(futures):
             k = futures[fut]
-            try: analyst_map[k] = fut.result()
-            except Exception as e: analyst_map[k] = {"agent": k, "error": str(e), "analysis": "Error"}
+            try:
+                analyst_map[k] = fut.result()
+            except Exception as e:
+                analyst_map[k] = {"agent": k, "error": str(e), "analysis": "Error"}
 
     reports = list(analyst_map.values())
 
     # ------------------------------------------------------------
-    # ROUND 2 & 3: ADVERSARIAL DEBATE (Bull vs Bear Researcher)
+    # ROUND 2, 3, 4: DIRECTION-SYMMETRIC ADVERSARIAL DEBATE
     # ------------------------------------------------------------
-    print(f"[Committee] Round 2: Bull Researcher merumuskan tesis LONG...")
-    bull = run_bull_researcher(symbol, reports)
+    debate_dir = proposed_dir or "LONG"
+    bull = run_bull_researcher(symbol, reports, proposed_direction=debate_dir, setup_name=setup_name, memory_context=memory_context)
+    bear = run_bear_researcher(symbol, reports, bull, proposed_direction=debate_dir, memory_context=memory_context)
 
-    print(f"[Committee] Round 3: Bear Researcher menyerang tesis Bull...")
-    bear = run_bear_researcher(symbol, reports, bull)
-
-    print(f"[Committee] Round 4: Bull Researcher mengajukan tangkisan risiko (Rebuttal)...")
-    rebuttal = run_bull_rebuttal(symbol, bull, bear)
-
-    # ------------------------------------------------------------
-    # ROUND 5: TRADER AGENT MEDIATION & TACTICAL PLAN
-    # ------------------------------------------------------------
-    print(f"[Committee] Round 5: Trader Agent menimbang perdebatan & menyusun rencana eksekusi...")
-    trader = run_trader_agent(symbol, price, bull, bear, rebuttal, reports)
-
-    # ------------------------------------------------------------
-    # ROUND 6: RISK OFFICER AUDIT & KELLY CRITERION SIZING
-    # ------------------------------------------------------------
-    print(f"[Committee] Round 6: Risk Officer mengaudit VaR, volatilitas, dan Kelly sizing...")
-    risk = run_risk_officer(symbol, price, trader["direction"], trader["confidence_pct"], market_data, config)
+    plan_summary = ""
+    if is_pipeline_mode and fc_in:
+        plan_summary = (
+            f"Entry=${float(fc_in.get('entry_price') or price):.4f}, "
+            f"SL=${float(fc_in.get('stop_loss') or 0):.4f}, "
+            f"TP1=${float(fc_in.get('take_profit_1') or 0):.4f}, "
+            f"TP2=${float(fc_in.get('take_profit_2') or fc_in.get('take_profit') or 0):.4f}, "
+            f"RRR={fc_in.get('risk_reward_ratio', '1:2.0')}"
+        )
+    rebuttal = run_bull_rebuttal(symbol, bull, bear, proposed_direction=debate_dir, plan_summary=plan_summary)
 
     # ------------------------------------------------------------
-    # ROUND 7: PORTFOLIO MANAGER CONSENSUS ROLL-CALL
+    # ROUND 5: TRADER AGENT MEDIATION
     # ------------------------------------------------------------
-    print(f"[Committee] Round 7: Portfolio Manager memimpin pemungutan suara konsensus...")
-    pm = run_portfolio_manager(symbol, trader, risk, existing_positions, config)
+    l5_conf = float(fc_in.get("confidence_score")) if (is_pipeline_mode and fc_in.get("confidence_score") is not None) else None
+    trader = run_trader_agent(
+        symbol, price, bull, bear, rebuttal, reports,
+        proposed_direction=proposed_dir,
+        layer5_conf=l5_conf,
+    )
+
+    # ------------------------------------------------------------
+    # ROUND 6: GEAR-AWARE AUDIT-ONLY RISK OFFICER
+    # ------------------------------------------------------------
+    risk = run_risk_officer(
+        symbol, price, trader["direction"], trader["confidence_pct"], market_data, config,
+        pipeline_context=pipeline_context,
+    )
+
+    # ------------------------------------------------------------
+    # ROUND 7: AI SUPREME PORTFOLIO MANAGER (VETO-ONLY VERDICT)
+    # ------------------------------------------------------------
+    pm = run_portfolio_manager(
+        symbol, trader, risk, existing_positions, config,
+        bull_report=bull,
+        bear_report=bear,
+        rebuttal=rebuttal,
+        memory_context=memory_context,
+        pipeline_context=pipeline_context,
+    )
 
     elapsed = round(time.time() - t0, 2)
-    final_dir = trader["direction"] if pm["approved"] else "SKIP"
+    final_dir = (proposed_dir or trader["direction"]) if pm["approved"] else "SKIP"
     final_act = "BUY" if final_dir == "LONG" else ("SELL" if final_dir == "SHORT" else "HOLD")
 
-    # Interactive Multi-Round Collaboration Transcript
     transcript = [
-        {"round": 1, "speaker": "Analyst Team", "role": "Data Gathering", "content": f"Technical: {analyst_map.get('technical',{}).get('verdict','-')}, Sentiment: {analyst_map.get('sentiment',{}).get('sentiment','-')}, Macro: {analyst_map.get('macro',{}).get('macro_regime','-')}"},
-        {"round": 2, "speaker": "Bull Researcher", "role": "Long Thesis", "content": bull.get("argument", "")},
-        {"round": 3, "speaker": "Bear Researcher", "role": "Adversarial Counter", "content": bear.get("argument", "")},
-        {"round": 4, "speaker": "Bull Rebuttal", "role": "Risk Defense", "content": rebuttal},
-        {"round": 5, "speaker": "Trader Agent", "role": "Tactical Synthesis", "content": trader.get("decision", "")},
-        {"round": 6, "speaker": "Risk Officer", "role": "Kelly & VaR Gatekeeper", "content": f"Status: {risk.get('signal')}. Modal disetujui: Rp {risk.get('recommended_budget_idr',0):,} ({risk.get('recommended_leverage',20)}x ISOLATED). RRR: {risk.get('actual_rrr',0):.2f}"},
-        {"round": 7, "speaker": "Portfolio Manager", "role": "Supreme Verdict", "content": pm.get("decision", "")}
+        {
+            "round": 1,
+            "speaker": "Analyst Team",
+            "role": "Quant & Macro Brief",
+            "content": (
+                f"Tech: {analyst_map.get('technical', {}).get('verdict', '-')}, "
+                f"Sent: {analyst_map.get('sentiment', {}).get('sentiment', '-')}, "
+                f"Deriv: {analyst_map.get('fundamentals', {}).get('funding_signal', '-')}, "
+                f"Macro: {analyst_map.get('macro', {}).get('macro_regime', '-')}"
+            ),
+        },
+        {"round": 2, "speaker": f"Advocate Researcher ({debate_dir})", "role": "Pro-Setup Thesis", "content": bull.get("argument", "")},
+        {"round": 3, "speaker": "Red-Team Adversary", "role": "Trap & Fakeout Hunter", "content": bear.get("argument", "")},
+        {"round": 4, "speaker": "Advocate Rebuttal", "role": "Structural Defense", "content": rebuttal},
+        {"round": 5, "speaker": "Trader Agent", "role": "Tactical Mediation", "content": trader.get("decision", "")},
+        {
+            "round": 6,
+            "speaker": "Risk Officer",
+            "role": f"Gear-Aware Audit ({risk.get('gear_code', 'G1')})",
+            "content": f"Status: {risk.get('signal')} | {risk.get('risk_note', '')}",
+        },
+        {"round": 7, "speaker": "Portfolio Manager", "role": "Supreme Veto-Only Verdict", "content": pm.get("decision", "")},
     ]
 
     time_horizon = risk.get("estimated_time_horizon", "N/A")
@@ -607,6 +1008,7 @@ def run_multi_agent_committee(symbol, existing_positions=None, active_positions=
 
     result = {
         "symbol": symbol,
+        "mode": "VETO_ONLY_ADVERSARIAL" if is_pipeline_mode else "STANDALONE",
         "price": price,
         "price_idr": convert_usd_to_idr(price),
         "direction": final_dir,
@@ -614,7 +1016,7 @@ def run_multi_agent_committee(symbol, existing_positions=None, active_positions=
         "confidence_pct": trader["confidence_pct"],
         "elapsed_sec": elapsed,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "estimated_time_horizon": risk.get("estimated_time_horizon", "N/A"),
+        "estimated_time_horizon": time_horizon,
         "spread_info": spread_info,
         "consensus": {
             "action": final_act,
@@ -623,7 +1025,7 @@ def run_multi_agent_committee(symbol, existing_positions=None, active_positions=
             "approved": pm["approved"],
             "risk_reward_ratio": f"1:{risk.get('actual_rrr', 2.0):.2f}",
             "executive_summary": pm["decision"],
-            "summary": pm["decision"]
+            "summary": pm["decision"],
         },
         "agents": {
             "technical": analyst_map.get("technical", {}),
@@ -634,7 +1036,7 @@ def run_multi_agent_committee(symbol, existing_positions=None, active_positions=
             "bear_researcher": bear,
             "trader": trader,
             "risk_officer": risk,
-            "portfolio_manager": pm
+            "portfolio_manager": pm,
         },
         "collaboration_transcript": transcript,
         "bull_rebuttal": rebuttal,
@@ -648,55 +1050,85 @@ def run_multi_agent_committee(symbol, existing_positions=None, active_positions=
         "bear_researcher": bear,
         "trader_agent": trader,
         "risk_officer": risk,
-        "portfolio_manager": pm
+        "portfolio_manager": pm,
     }
 
     save_thesis(symbol, result)
     _log_result(result)
-    print(f"[Committee] {'APPROVED' if pm['approved'] else 'REJECTED'}  -  {elapsed}s")
+    print(f"[Committee] {'APPROVED' if pm['approved'] else 'VETOED'} ({final_dir}) — {elapsed}s", flush=True)
     return result
 
 
 def _log_result(result):
     logs = []
-    if os.path.exists(COMMITTEE_LOG_FILE):
+    if state_io is not None:
+        logs = state_io.read_json_safe(COMMITTEE_LOG_FILE, default=[], strict_on_corrupt=False, expected_type=list) or []
+    elif os.path.exists(COMMITTEE_LOG_FILE):
         try:
             with open(COMMITTEE_LOG_FILE, "r", encoding="utf-8") as f:
                 logs = json.load(f)
-        except: pass
+        except Exception:
+            logs = []
     logs.insert(0, {
-        "symbol": result.get("symbol"), "direction": result.get("direction"),
-        "approved": result.get("approved"), "confidence": result.get("confidence_pct"),
-        "elapsed": result.get("elapsed_sec"), "ts": result.get("timestamp")
+        "symbol": result.get("symbol"),
+        "direction": result.get("direction"),
+        "approved": result.get("approved"),
+        "confidence": result.get("confidence_pct"),
+        "mode": result.get("mode", "STANDALONE"),
+        "elapsed": result.get("elapsed_sec"),
+        "ts": result.get("timestamp"),
     })
     try:
-        with open(COMMITTEE_LOG_FILE, "w", encoding="utf-8") as f:
-            json.dump(logs[:100], f, indent=2, ensure_ascii=False)
-    except: pass
+        if state_io is not None:
+            state_io.atomic_write_json(COMMITTEE_LOG_FILE, logs[:100], make_bak=False)
+        else:
+            with open(COMMITTEE_LOG_FILE, "w", encoding="utf-8") as f:
+                json.dump(logs[:100], f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
 
 
 def run_quick_committee(symbol, market_data):
-    """Versi cepat rule-based tanpa AI  -  untuk screening massal."""
-    price = market_data.get("price", market_data.get("last_price", 0))
-    rsi = market_data.get("rsi_14", 50)
-    change_24h = market_data.get("change_24h_pct", market_data.get("price_change_24h_pct", 0))
-    volume = market_data.get("volume_24h_usd", 0)
+    """Versi cepat rule-based tanpa AI — untuk screening massal."""
+    price = float(market_data.get("price", market_data.get("last_price", 0)) or 0)
+    rsi = float(market_data.get("rsi_14", 50) or 50)
+    change_24h = float(market_data.get("change_24h_pct", market_data.get("price_change_24h_pct", 0)) or 0)
+    volume = float(market_data.get("volume_24h_usd", 0) or 0)
 
     score = 0
     signals = []
-    if rsi < 35: score += 2; signals.append("RSI oversold")
-    elif rsi > 65: score -= 1; signals.append("RSI overbought")
-    if change_24h > 3: score += 1; signals.append("Momentum positif")
-    elif change_24h < -8: score -= 2; signals.append("Downtrend kuat")
-    if volume > 5e8: score += 1; signals.append("Volume tinggi")
+    if rsi < 35:
+        score += 2
+        signals.append("RSI oversold")
+    elif rsi > 65:
+        score -= 1
+        signals.append("RSI overbought")
+    if change_24h > 3:
+        score += 1
+        signals.append("Momentum positif")
+    elif change_24h < -8:
+        score -= 2
+        signals.append("Downtrend kuat")
+    if volume > 5e8:
+        score += 1
+        signals.append("Volume tinggi")
 
-    if score >= 2: direction, confidence = "LONG", min(85, 50 + score*8)
-    elif score <= -2: direction, confidence = "SHORT", min(85, 50 + abs(score)*8)
-    else: direction, confidence = "SKIP", 40
+    if score >= 2:
+        direction, confidence = "LONG", min(85, 50 + score * 8)
+    elif score <= -2:
+        direction, confidence = "SHORT", min(85, 50 + abs(score) * 8)
+    else:
+        direction, confidence = "SKIP", 40
 
     return {
-        "symbol": symbol, "quick_score": score, "direction": direction,
-        "confidence_pct": confidence, "signals": signals,
-        "price": price, "rsi": rsi, "change_24h": change_24h,
-        "volume_m": round(volume/1e6, 1), "quick_mode": True
-    }
+        "symbol": symbol,
+        "quick_score": score,
+        "direction": direction,
+        "confidence_pct": confidence,
+        "signals": signals,
+        "price": price,
+        "rsi": rsi,
+        "change_24h": change_24h,
+        "volume_m": round(volume / 1e6, 1),
+        "quick_mode": True,
+    }

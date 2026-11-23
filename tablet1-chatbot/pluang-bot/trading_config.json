@@ -21,7 +21,7 @@
   "post_tp_symbol_cooldown_hours": 2.0,
   "prefer_maker_entries": true,
   "min_prefilter_volume_usd": 70000000,
-  "committee_enabled": false,
+  "committee_enabled": true,
   "ai_manages_execution": true,
   "ai_manages_leverage": false,
   "ai_manages_order_type": true,
@@ -106,5 +106,5 @@
   "enforce_backtest_gate": false,
   "trading_mode": "AI_QUANT_SOVEREIGN_V3",
   "updated_at": "2026-10-28 17:35:00 UTC",
-  "note": "Pyrofuel v3.1 Sovereign Edition: Fixed 20x ISOLATED, ALL_IN (95% working balance), Sniper 75% Mode (TP1 +0.55R profit-lock), High-Water Mark Profit Vault, and Tri-State AlgoOrder SL protection."
+  "note": "Pyrofuel v3.2 Sovereign Edition: Auto Gear-Shift (G1 20x ALL-IN / G2 12x 5% / G3 8x 2.5% Majors), Smart Regime Gate 12d, 100% Continuous AI Trade Memory, Adversarial Veto-Only 9-Agent Committee, Sniper Two-Stage TP1 (+0.90R) + TP2 (+2.0R), Maker GTX routing, and Profit Ratchet Vault."
 }

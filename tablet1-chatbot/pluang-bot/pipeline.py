@@ -1650,8 +1650,33 @@ def predict_tp_time(current_price: float, take_profit: float,
 # ===========================================================================
 # LAPISAN 3: TRADING PLAN ARCHITECT (Entry/TP/SL/Sizing)
 # ===========================================================================
+def _get_active_gear_profile(cfg: dict) -> dict:
+    """Resolve currently active gear profile from gear_state.json (defaults to Gear 1 / 20x)."""
+    default_prof = {
+        "gear": 1,
+        "code": "GEAR_1_TURBO",
+        "leverage": int(cfg.get("fixed_leverage", FIXED_LEVERAGE) or FIXED_LEVERAGE),
+        "margin_type": str(cfg.get("margin_type", "ISOLATED")).upper(),
+        "sizing_mode": str(cfg.get("sizing_mode", "ALL_IN")).upper(),
+    }
+    try:
+        g_cfg = cfg.get("auto_gear_system") if isinstance(cfg.get("auto_gear_system"), dict) else {}
+        if not bool(g_cfg.get("enabled", False)):
+            return default_prof
+        g_path = os.path.join(RESULTS_DIR, "gear_state.json")
+        if os.path.exists(g_path):
+            gd = state_io.read_json_safe(g_path, default=None, strict_on_corrupt=False, expected_type=dict)
+            if isinstance(gd, dict) and isinstance(gd.get("active_profile"), dict):
+                prof = dict(gd["active_profile"])
+                prof.setdefault("gear", gd.get("current_gear", 1))
+                return prof
+    except Exception:
+        pass
+    return default_prof
+
+
 def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_data: dict):
-    """Build precise trading plan — strict SL/TP to prevent margin calls"""
+    """Build precise trading plan — synchronized with active Gear, SL corridor & RRR rules."""
     current_price = float(
         market_data.get("live_price")
         or scan_data.get("live_price")
@@ -1665,13 +1690,16 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
 
     # Pre-compute safe SL/TP bounds (hard constraint — AI cannot override)
     _cfg_l3 = get_trading_config()
+    _gear_l3 = _get_active_gear_profile(_cfg_l3)
+    _eff_lev_l3 = int(_gear_l3.get("leverage") or _cfg_l3.get("fixed_leverage", FIXED_LEVERAGE) or FIXED_LEVERAGE)
     _min_sl_cfg = float(_cfg_l3.get("min_sl_pct", 0.90) or 0.90)
     _max_sl_cfg = float(_cfg_l3.get("max_sl_pct", 2.25) or 2.25)
+    _min_rrr_cfg = float(_cfg_l3.get("min_risk_reward_ratio", 1.8) or 1.8)
     _sniper_l3 = _cfg_l3.get("sniper_75_mode") or {}
     _tp1_r_l3 = float(_sniper_l3.get("tp1_lock_trigger_r", 0.90) or 0.90)
     _tp2_r_l3 = float(_sniper_l3.get("tp2_runner_target_r", 2.00) or 2.00)
     safe_sl_pct = min(_max_sl_cfg - 0.05, max(atr_pct * 1.6, max(1.10, _min_sl_cfg)))
-    safe_tp_pct = max(atr_pct * 3.2, safe_sl_pct * max(1.8, _tp2_r_l3), 2.0)
+    safe_tp_pct = max(atr_pct * 3.2, safe_sl_pct * max(_min_rrr_cfg, _tp2_r_l3), 2.0)
     if direction == "LONG":
         sl_safe = round(current_price * (1 - safe_sl_pct / 100), 6)
         tp_safe = round(current_price * (1 + safe_tp_pct / 100), 6)
@@ -1687,23 +1715,23 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
     system = (
         "Crypto futures trading plan architect. Respond ONLY in JSON, no prose.\n"
         "RULES (IMMUTABLE):\n"
-        f"1. LEVERAGE = 20x ISOLATED. NEVER change this.\n"
+        f"1. LEVERAGE = {_eff_lev_l3}x ISOLATED (Active {_gear_l3.get('code', 'GEAR_1_TURBO')}). NEVER change this.\n"
         f"2. DIRECTION = {direction}\n"
-        f"3. SL MUST be between {sl_safe:.6f} and {current_price:.6f} (ATR-based, not wider than 3% from entry)\n"
-        f"4. TP must give RRR ≥ 1.5 vs the SL distance. Suggested TP near {tp_safe:.6f}\n"
-        f"5. Use key S/R: support={support1}, resistance={resist1}\n"
-        "6. order_type: LIMIT if price near S/R level, else MARKET\n"
-        "7. position_size_idr = 0 (auto from wallet)\n"
-        "Output: {\"action\":\"LONG/SHORT/SKIP\",\"order_type\":\"MARKET/LIMIT\","
+        f"3. SL distance MUST be strictly between {_min_sl_cfg:.2f}% and {_max_sl_cfg:.2f}% from entry (suggested SL near {sl_safe:.6f}).\n"
+        f"4. TP2 must give RRR >= {_min_rrr_cfg:.2f} vs SL distance (TP1 profit-lock auto at +{_tp1_r_l3:.2f}R). Suggested TP2 near {tp_safe:.6f}.\n"
+        f"5. Anchor SL/TP to structural S/R: support={support1}, resistance={resist1}.\n"
+        "6. order_type: MAKER_FIRST_GTX (preferred for lower maker fee) or LIMIT near S/R.\n"
+        "7. position_size_idr = 0 (auto sized by Gear Engine from live wallet).\n"
+        "Output: {\"action\":\"LONG/SHORT/SKIP\",\"order_type\":\"MAKER_FIRST_GTX\","
         "\"entry_price\":0,\"limit_price\":0,\"stop_loss\":0,\"take_profit\":0,"
-        "\"risk_reward_ratio\":\"1:2.5\",\"leverage\":20,\"position_size_idr\":0,"
-        "\"sl_distance_pct\":1.5,\"tp_distance_pct\":3.75,\"reasoning\":\"brief\"}"
+        f"\"risk_reward_ratio\":\"1:{max(_min_rrr_cfg, 2.0):.1f}\",\"leverage\":{_eff_lev_l3},\"position_size_idr\":0,"
+        "\"sl_distance_pct\":1.2,\"tp_distance_pct\":2.5,\"reasoning\":\"brief\"}"
     )
 
     prompt = (
         f"{symbol} @ ${current_price}, ATR {atr_pct:.2f}%, Setup: {setup_result.get('setup_name')}.\n"
-        f"SL safe zone: {sl_safe:.6f} | TP target: {tp_safe:.6f}\n"
-        f"Output ONLY JSON plan with SL ≤ {sl_dist_pct:.2f}% from entry."
+        f"SL corridor [{_min_sl_cfg:.2f}%..{_max_sl_cfg:.2f}%] (suggested {sl_safe:.6f}) | TP2 target: {tp_safe:.6f} (RRR >= 1:{_min_rrr_cfg:.2f})\n"
+        f"Output ONLY JSON plan."
     )
 
     try:
@@ -1814,8 +1842,13 @@ def layer3_build_plan(symbol: str, scan_data: dict, setup_result: dict, market_d
 # ===========================================================================
 # LAPISAN 4: CHIEF RISK OFFICER (Professional Risk Management)
 # ===========================================================================
-def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_result: dict, market_data: dict):
-    """Risk check — compact prompt to save tokens"""
+def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_result: dict, market_data: dict, memory_context: str = ""):
+    """Risk check — synchronized with active SL corridor, RRR, BTC 4H macro & AI trade memory."""
+    _cfg_l4 = get_trading_config()
+    _min_sl_l4 = float(_cfg_l4.get("min_sl_pct", 0.90) or 0.90)
+    _max_sl_l4 = float(_cfg_l4.get("max_sl_pct", 2.25) or 2.25)
+    _min_rrr_l4 = float(_cfg_l4.get("min_risk_reward_ratio", 1.8) or 1.8)
+
     sl = plan_result.get("stop_loss", 0)
     tp = plan_result.get("take_profit", 0)
     entry = plan_result.get("entry_price", scan_data.get("price", 0))
@@ -1827,6 +1860,9 @@ def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_res
     fr_rate = _fr_l4.get("funding_rate_pct", _fr_l4.get("funding_rate", 0.0))
     atr_pct = scan_data.get("atr_pct", 0)
     news_sent = (scan_data.get("news_macro") or {}).get("market_sentiment", "NEUTRAL")
+    btc_m = scan_data.get("btc_macro") or {}
+    btc_tr = btc_m.get("btc_1h_trend", "UNKNOWN")
+    btc_4h = float(btc_m.get("btc_4h_pct", 0.0) or 0.0)
 
     # Pre-compute RRR
     if entry and sl and tp and abs(entry - sl) > 0:
@@ -1837,21 +1873,23 @@ def layer4_risk_audit(symbol: str, scan_data: dict, setup_result: dict, plan_res
     sl_dist_pct = abs(entry - sl) / entry * 100 if entry else 0
 
     system = (
-        "Risk officer. 8-point check. Respond ONLY in compact JSON.\n"
-        "PASS=1pt. FAIL=0pt. Need ≥6/8 for PROCEED.\n"
-        "Checks: RRR≥1.5, RSI not extreme against direction, Volume not LOW_INTEREST, "
-        "EMA aligned with direction, Funding rate <0.02%, ATR<6%, "
-        "SL distance <3%, News not BEARISH for LONG.\n"
+        "Chief Risk Officer. 8-point institutional audit. Respond ONLY in compact JSON.\n"
+        "PASS=1pt. FAIL=0pt. Need >=6/8 for PROCEED.\n"
+        f"Checks: (1) RRR>={_min_rrr_l4:.2f}, (2) RSI not extreme against direction, (3) Volume not LOW_INTEREST, "
+        "(4) EMA/Regime compatible with setup, (5) Funding rate abs <0.03%, (6) BTC 4H macro not strongly fighting altcoin, "
+        f"(7) SL distance within {_min_sl_l4:.2f}%-{_max_sl_l4:.2f}%, (8) News & AI_MEMORY not flagging repeated loss trap.\n"
         "Output: {\"total_score\":7,\"max_score\":8,\"pass_rate_pct\":87,"
-        "\"critical_failures\":[],\"max_drawdown_pct\":2.5,"
+        "\"critical_failures\":[],\"max_drawdown_pct\":2.0,"
         "\"risk_verdict\":\"LOW_RISK\",\"recommendation\":\"PROCEED\","
         "\"reasoning\":\"brief\"}"
     )
 
+    mem_l4 = f"\nAI_MEMORY: {memory_context}" if memory_context else ""
     prompt = (
         f"{symbol} {direction} @ ${entry:.4f}. SL={sl:.4f}({sl_dist_pct:.2f}%), "
         f"TP={tp:.4f}, RRR=1:{rrr_val}. RSI={rsi}, EMA={ema}, "
-        f"Vol={vol_trend}, Funding={fr_rate}%, ATR={atr_pct:.2f}%, News={news_sent}.\n"
+        f"Vol={vol_trend}, Funding={fr_rate}%, ATR={atr_pct:.2f}%, "
+        f"BTC_4H={btc_4h:+.2f}%({btc_tr}), News={news_sent}.{mem_l4}\n"
         f"Output ONLY risk JSON."
     )
 
@@ -2452,7 +2490,6 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
             }
         else:
             plan_result = layer3_build_plan(symbol, scan_summary, setup_result, market_data)
-            risk_result = layer4_risk_audit(symbol, scan_summary, setup_result, plan_result, market_data)
             _l5_mem_ctx = _pre_mem_ctx
             try:
                 from ai.trade_memory import get_trade_memory_engine
@@ -2466,6 +2503,7 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                 )
             except Exception:
                 pass
+            risk_result = layer4_risk_audit(symbol, scan_summary, setup_result, plan_result, market_data, memory_context=_l5_mem_ctx)
             final_call = layer5_final_judgment(
                 symbol, scan_summary, setup_result, plan_result, risk_result, market_data,
                 memory_context=_l5_mem_ctx,
@@ -2797,46 +2835,61 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
         "layer5_final_call": final_call
     }
 
-    # === LAYER 6: SIDANG MAHKAMAH 9-AGENT MULTI-COMMITTEE ===
-    # ⚡ TOKEN GUARD: Committee DINONAKTIFKAN default (hemat ~7000 token per coin).
-    # Aktifkan di trading_config.json ("committee_enabled": true) jika diinginkan.
+    # === LAYER 6: SIDANG MAHKAMAH 9-AGENT ADVERSARIAL VETO-ONLY COMMITTEE ===
+    # Token-smart: HANYA dijalankan jika Layer 5 sudah APPROVED (hemat kuota untuk koin yg ditolak).
+    # Veto-Only contract: Committee BOLEH memveto jebakan/fakeout, tetapi TIDAK PERNAH menimpa
+    # direction, entry_price, SL, TP1/TP2, atau leverage Sistem Gigi hasil Layer 3/5!
     committee_res = None
     cfg = get_trading_config()
-    committee_enabled = cfg.get("committee_enabled", False) or os.getenv("COMMITTEE_ENABLED", "false").lower() == "true"
+    committee_enabled = cfg.get("committee_enabled", True) or os.getenv("COMMITTEE_ENABLED", "false").lower() == "true"
     _layer5_approved = final_call.get("status") == "APPROVED"
 
     if not committee_enabled:
-        print(f"[PIPELINE] ⏭️ Committee DINONAKTIFKAN (hemat ~7000 token per koin) — keputusan Layer 5 final", flush=True)
+        print(f"[PIPELINE] ⏭️ Committee DINONAKTIFKAN via config — keputusan Layer 5 final", flush=True)
     elif not _layer5_approved:
         print(f"[PIPELINE] ⏭️ Committee DILEWATI untuk {symbol} (Layer 5: {final_call.get('status', 'REJECTED')})", flush=True)
     else:
         try:
             from multi_agent_committee import run_multi_agent_committee
-            print(f"[PIPELINE+SIDANG] 🏛️ Layer 5 APPROVED → Sidang 9-Agent untuk {symbol}...", flush=True)
-            committee_res = run_multi_agent_committee(symbol, active_positions=active_positions or [])
+            print(f"[PIPELINE+SIDANG] 🏛️ Layer 5 APPROVED → Sidang 9-Agent Veto-Only untuk {symbol}...", flush=True)
+            _comm_ctx = {
+                "scan_summary": scan_summary,
+                "market_data": market_data,
+                "setup_result": setup_result,
+                "plan_result": plan_result,
+                "risk_result": risk_result,
+                "final_call": dict(final_call),
+                "memory_context": locals().get("_l5_mem_ctx") or _pre_mem_ctx,
+                "active_gear": _get_active_gear_profile(cfg),
+            }
+            committee_res = run_multi_agent_committee(
+                symbol,
+                active_positions=active_positions or [],
+                pipeline_context=_comm_ctx,
+            )
             result["committee"] = committee_res
 
-            if committee_res:
+            if isinstance(committee_res, dict):
                 com_approved = bool(committee_res.get("approved"))
-                com_dir = committee_res.get("direction", "SKIP")
-                com_conf = committee_res.get("confidence_pct", 0)
+                com_dir = str(committee_res.get("direction", "SKIP")).upper()
+                l5_dir = str(final_call.get("direction", "NONE")).upper()
+                pm_dec = str((committee_res.get("portfolio_manager") or {}).get("decision") or "Veto Risiko Sidang")
 
-                if com_approved and com_dir in ("LONG", "SHORT") and com_conf >= 60:
-                    final_call["status"] = "APPROVED"
-                    final_call["direction"] = com_dir
-                    final_call["confidence_score"] = max(final_call.get("confidence_score", 0), com_conf)
+                if com_approved and com_dir == l5_dir:
+                    # Strictly preserve validated Layer 3/5 entry, SL, TP1/TP2, direction & Gear leverage!
+                    final_call["committee_verdict"] = "APPROVED"
+                    final_call["committee_summary"] = pm_dec
                     result["status"] = "APPROVED"
-                    if committee_res.get("trade_params"):
-                        tp_p = committee_res["trade_params"]
-                        if tp_p.get("entry_price"): final_call["entry_price"] = tp_p["entry_price"]
-                        if tp_p.get("tp1_price"): final_call["take_profit_1"] = tp_p["tp1_price"]
-                        if tp_p.get("tp2_price"): final_call["take_profit_2"] = tp_p["tp2_price"]
-                        if tp_p.get("sl_price"): final_call["stop_loss"] = tp_p["sl_price"]
-                        if tp_p.get("budget_idr"): final_call["position_size_idr"] = tp_p["budget_idr"]
-                elif not com_approved and final_call.get("status") == "APPROVED":
-                    pm_dec = committee_res.get("portfolio_manager", {}).get("decision", "Veto Risiko Sidang")
+                else:
+                    veto_note = (
+                        f"Konflik arah Sidang ({com_dir} vs Layer5 {l5_dir})"
+                        if (com_approved and com_dir != l5_dir)
+                        else pm_dec
+                    )
                     final_call["status"] = "REJECTED_BY_COMMITTEE"
-                    final_call["final_reason"] = f"Ditolak Sidang 9-Agent: {pm_dec}"
+                    final_call["committee_verdict"] = "VETOED"
+                    final_call["committee_summary"] = veto_note
+                    final_call["final_reason"] = f"{final_call.get('final_reason', '')} [SIDANG 9-AGENT VETO: {veto_note}]".strip()
                     result["status"] = "REJECTED_BY_COMMITTEE"
         except Exception as ce:
             print(f"[PIPELINE+SIDANG] Notice: {ce}", flush=True)

@@ -43,7 +43,7 @@ DEFAULT_TRADING_CONFIG: Dict[str, Any] = {
     "post_tp_symbol_cooldown_hours": 2.0,
     "prefer_maker_entries": True,
     "min_prefilter_volume_usd": 70000000,
-    "committee_enabled": False,
+    "committee_enabled": True,
     "ai_manages_execution": True,
     "ai_manages_leverage": False,
     "ai_manages_order_type": True,
