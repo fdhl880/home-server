@@ -72,7 +72,7 @@ function resolveWsIp(req) {
 
 function createHub(server, opts = {}) {
   if (!WebSocket || !WebSocket.WebSocketServer) {
-    return { attach() {}, close() {}, stats: () => ({ uptimeSec: 0, wsClients: 0, wsSubscriptions: 0, wsDisabled: true }) };
+    return { attach() {}, close() {}, broadcast() {}, stats: () => ({ uptimeSec: 0, wsClients: 0, wsSubscriptions: 0, wsDisabled: true }) };
   }
 
   const allowedOrigins = parseAllowedOrigins(opts.allowedOrigins);
@@ -269,7 +269,11 @@ function createHub(server, opts = {}) {
     for (const c of clients) { try { c.terminate(); } catch {} }
     try { wss.close(); } catch {}
   }
+  const broadcast = (type, data) => {
+    const m = { type, data, ts: Date.now() };
+    for (const c of clients) send(c, m);
+  };
   const stats = () => ({ uptimeSec: Math.round((Date.now() - started) / 1000), wsClients: clients.size, wsSubscriptions: chans.size });
-  return { attach, close, verifyClient, stats };
+  return { attach, close, verifyClient, broadcast, stats };
 }
 module.exports = { createHub, WS_PATH };

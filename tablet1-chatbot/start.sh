@@ -28,10 +28,13 @@ if ! node --version >/dev/null 2>&1; then
     fi
 fi
 
-# 1. Install Node.js dependencies if node_modules or ws missing
+# 1. Install Node.js dependencies if node_modules, ws, or web-push missing
 if [ ! -d "node_modules" ] || [ ! -d "node_modules/ws" ]; then
     echo "[*] Installing Node.js dependencies..."
     npm install --no-audit --no-fund --silent || echo "[!] npm install skipped or minimal"
+fi
+if [ ! -d "node_modules/web-push" ]; then
+    npm install web-push --no-audit --no-fund --silent >/dev/null 2>&1 || true
 fi
 
 # 2. Check Python & install requirements if pip available

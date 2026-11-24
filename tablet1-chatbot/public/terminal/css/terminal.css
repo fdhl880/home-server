@@ -186,6 +186,45 @@ table.t{min-width:max-content}
   #wsel{max-width:130px}
 }
 @media (hover:none){
-  button{min-height:26px}
+  button{min-height:28px}
   .split{display:none}
+}
+
+/* ===== PWA Native App Shell, Toast Rack & Institutional Diagrams ===== */
+body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+#toastRack{position:fixed;right:12px;bottom:34px;z-index:99990;display:flex;flex-direction:column;gap:6px;max-width:360px;pointer-events:none}
+.bbg-toast{pointer-events:auto;background:#07090d;border:1px solid var(--amber);border-left:4px solid var(--up);color:#fff;padding:8px 10px;box-shadow:0 8px 24px rgba(0,0,0,.85);cursor:pointer}
+.bbg-toast.warn{border-left-color:var(--amber)}
+.bbg-toast.err{border-left-color:var(--dn)}
+.bbg-toast .t-hd{display:flex;justify-content:space-between;gap:8px;color:var(--amber);font-weight:700;font-size:11px;margin-bottom:3px}
+.bbg-toast .t-bd{color:#e6edf3;font-size:11px;line-height:1.4;white-space:pre-line}
+
+.xcard{border:1px solid var(--border);background:#07080b;padding:8px;margin-bottom:8px}
+.xcard-hi{border-color:var(--amber);background:#090805}
+.xsec-hd{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:3px 6px;background:#101319;border-bottom:1px solid var(--border);color:var(--label);font-weight:700;font-size:11px;letter-spacing:.4px}
+.xgrid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.xgrid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.xgrid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.xstat{border:1px solid #1e232c;background:#050608;padding:6px 8px}
+.xstat .xl{color:var(--label);font-size:10px;text-transform:uppercase}
+.xstat .xv{font-size:15px;font-weight:700;margin-top:2px;color:#fff}
+.xstat .xs{font-size:10px;color:var(--muted);margin-top:2px}
+.xpill{display:inline-block;padding:1px 6px;font-size:10px;font-weight:700;border:1px solid currentColor;letter-spacing:.3px}
+.xpill.ok{color:var(--up);background:rgba(0,210,106,.12)}
+.xpill.no{color:var(--dn);background:rgba(255,59,48,.12)}
+.xpill.warn{color:var(--amber);background:rgba(255,176,0,.12)}
+.xpill.info{color:var(--label);background:rgba(77,163,255,.12)}
+.xbar-track{height:8px;background:#161920;border:1px solid #262b33;overflow:hidden;width:100%}
+.xbar-fill{height:100%;background:var(--up)}
+.xturn{border-left:3px solid var(--label);background:#07090d;padding:7px 9px;margin-bottom:6px;border-top:1px solid #181c24;border-right:1px solid #181c24;border-bottom:1px solid #181c24}
+.xturn.pro{border-left-color:var(--up)}
+.xturn.contra{border-left-color:var(--dn)}
+.xturn.judge{border-left-color:var(--amber);background:#100c03}
+.xturn.risk{border-left-color:#e040fb}
+.snap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;padding:6px}
+.snap-card{border:1px solid var(--border);background:#050608;display:flex;flex-direction:column}
+.snap-card img{width:100%;height:auto;display:block;border-bottom:1px solid var(--border);background:#000}
+@media (max-width:760px){
+  .xgrid2,.xgrid3,.xgrid4{grid-template-columns:1fr}
+  #appactions button{font-size:10px;padding:1px 5px}
 }

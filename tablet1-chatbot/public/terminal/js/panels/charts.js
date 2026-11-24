@@ -765,6 +765,84 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
         }
       }));
     }
+
+    // Snapshot PNG Exporter + Save to Multi-Chart Visual Gallery (G <GO> / SNAP <GO>)
+    const snapBtn = h('button', {
+      style: 'border-color:#00e5ff;color:#00e5ff;font-weight:700',
+      text: '📸 SNAP PNG',
+      title: 'Download Chart + Technical Overlays as PNG Image & Save to Gallery (G <GO>)',
+      onclick: () => {
+        try {
+          const rect = wrap.getBoundingClientRect();
+          const W = Math.max(640, Math.round(rect.width || 900));
+          const H = Math.max(320, Math.round(rect.height || 420));
+          const hdrH = 34;
+          const out = document.createElement('canvas');
+          out.width = W;
+          out.height = H + hdrH;
+          const g = out.getContext('2d');
+          g.fillStyle = '#000000';
+          g.fillRect(0, 0, out.width, out.height);
+          // Bloomberg Watermark Header
+          g.fillStyle = '#5c0808';
+          g.fillRect(0, 0, W, hdrH);
+          g.fillStyle = '#ffb000';
+          g.font = 'bold 13px Consolas, monospace';
+          const lastC = lastCandles.length ? lastCandles[lastCandles.length - 1] : null;
+          const pxTxt = lastC ? `C:${fmtPx(lastC.c)} H:${fmtPx(lastC.h)} L:${fmtPx(lastC.l)}` : '';
+          g.fillText(`BLOOMBERG // PYROFUEL   ${ctx.symbol} [${iv.toUpperCase()}]   ${pxTxt}`, 10, 21);
+          g.fillStyle = '#ffffff';
+          g.font = '11px Consolas, monospace';
+          const tsStr = new Date().toLocaleString('id-ID');
+          g.fillText(tsStr, Math.max(10, W - g.measureText(tsStr).width - 10), 21);
+
+          // Composite all chart canvases + technical master overlay canvas
+          const canvases = wrap.querySelectorAll('canvas');
+          canvases.forEach(cv => {
+            try {
+              const cr = cv.getBoundingClientRect();
+              const dx = Math.round(cr.left - rect.left);
+              const dy = Math.round(cr.top - rect.top) + hdrH;
+              if (cv.width > 0 && cv.height > 0 && cr.width > 0 && cr.height > 0) {
+                g.drawImage(cv, dx, dy, Math.round(cr.width), Math.round(cr.height));
+              }
+            } catch {}
+          });
+
+          const dataUrl = out.toDataURL('image/png');
+          // Persist into local Chart Snapshot Gallery (max 12 images to respect localStorage quota)
+          try {
+            const key = 'bbg_chart_snapshots_v1';
+            const prev = JSON.parse(localStorage.getItem(key) || '[]');
+            const arr = Array.isArray(prev) ? prev : [];
+            arr.unshift({
+              id: 'SNAP-' + Date.now(),
+              symbol: ctx.symbol,
+              interval: iv.toUpperCase(),
+              ts: Date.now(),
+              price: lastC ? lastC.c : 0,
+              note: activeTradePlan ? `OPEN ${activeTradePlan.dir} ${activeTradePlan.lev}x` : 'TECHNICAL MASTER SNAPSHOT',
+              img: dataUrl
+            });
+            localStorage.setItem(key, JSON.stringify(arr.slice(0, 10)));
+          } catch {}
+
+          const a = document.createElement('a');
+          a.href = dataUrl;
+          a.download = `${ctx.symbol.replace(/[^A-Z0-9_-]/gi, '_')}_${iv.toUpperCase()}_${Date.now()}.png`;
+          a.click();
+          snapBtn.textContent = '✓ SAVED PNG';
+          setTimeout(() => { snapBtn.textContent = '📸 SNAP PNG'; }, 1800);
+        } catch (err) {
+          alert('Snapshot error: ' + err.message);
+        }
+      }
+    });
+    tb.append(
+      snapBtn,
+      h('button', { style: 'border-color:#ffb000;color:#ffb000', text: '🔬 X-RAY', title: 'Inspect Bot Transparent Factors & Decision Process (FACT <GO>)', onclick: () => ctx.run(`${ctx.symbol} FACT`) }),
+      h('button', { style: 'border-color:#e040fb;color:#e040fb', text: '🖼 GALLERY', title: 'Open Multi-Chart Studio & Saved PNG Gallery (G <GO>)', onclick: () => ctx.run(`${ctx.symbol} G`) })
+    );
   }
 
   function renderOscillator(candles) {

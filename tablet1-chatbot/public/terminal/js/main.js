@@ -2,12 +2,13 @@ import { $, h, fmtTime, LS } from './util.js';
 import { get, net, startHub, apiFetch, setDashToken, setAuthRequiredHandler } from './api.js';
 import { dev } from './dev-adapter.js';
 
-import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261118b';
-import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261118b';
-import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261118b';
-import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261118b';
-import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261118b';
-import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261118b';
+import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261124a';
+import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261124a';
+import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261124a';
+import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261124a';
+import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261124a';
+import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261124a';
+import { mountFACT, mountTRAN, mountSTUDIO, mountBI, mountETF, mountFIN } from './panels/intelligence.js?v=20261124a';
 
 import { panels as newsPanels } from '../panels/news/index.js';
 import { panels as macroPanels } from '../panels/macro/index.js';
@@ -151,6 +152,23 @@ export const CATALOG = [
 
   // Operations, Portfolio, Risk, AI & System
   { code: 'BOT', cat: 'AI ENGINE', title: 'Pyrofuel 28-Pillar AI Bot', desc: 'Live Binance Futures Auto-Trader Telemetry, Active Positions & 5-Layer Signals', mount: mountBOT },
+  { code: 'FACT', cat: 'AI ENGINE', title: 'Bot Glass-Box Factor X-Ray', desc: '100% Transparan: Radar 8-Axis, Waterfall P_Math, Funnel Layer 1-6, 24/28 Pillars, 532 Quant Factors & FPT Cone', mount: mountFACT },
+  { code: 'XRAY', cat: 'AI ENGINE', title: 'Bot Decision X-Ray', desc: 'Transparansi Penuh Faktor & Proses Kerja Keputusan Bot Trading', mount: mountFACT },
+  { code: 'PILLAR', cat: 'AI ENGINE', title: '28-Pillar Telemetry Matrix', desc: 'Live Microstructure, Regime, Options, Risk & Gear Pillar Matrix', mount: mountFACT },
+  { code: 'TRAN', cat: 'AI ENGINE', title: '9-Agent Debate & Earnings Transcripts', desc: 'Transkrip Debat 9-Agent Committee, 5-Layer Audit Trail, AI Memory Post-Mortem & Corporate Earnings Tone', mount: mountTRAN },
+  { code: 'TRSC', cat: 'AI ENGINE', title: 'Transcripts Workbench', desc: 'AI Committee Debate Transcripts & SEC/News Catalyst Transcripts', mount: mountTRAN },
+  { code: 'G', cat: 'CHART', title: 'Multi-Chart Studio & PNG Gallery', desc: '4-Asset Live Candlestick Wall, Saved Chart PNG Snapshot Gallery & Technical Pattern Diagrams', mount: mountSTUDIO },
+  { code: 'SNAP', cat: 'CHART', title: 'Chart PNG Snapshot Gallery', desc: 'Saved Institutional Chart PNG Exports & 4-Chart Studio', mount: mountSTUDIO },
+  { code: 'PATT', cat: 'CHART', title: 'Technical Pattern & Sniper Diagrams', desc: 'Live Auto-Pattern Detector (BOS/FVG/Golden Pocket) + Sniper Two-Stage Diagrams', mount: mountSTUDIO },
+  { code: 'BI', cat: 'RESEARCH', title: 'Bloomberg Intelligence Dossier', desc: 'Institutional Bull/Bear Thesis, Quant Snapshot, Catalysts & Downloadable HTML Research Report', mount: mountBI },
+  { code: 'RES', cat: 'RESEARCH', title: 'Institutional Research Hub', desc: 'Bloomberg Intelligence Deep Research Dossier & Export', mount: mountBI },
+  { code: 'ETF', cat: 'FLOWS', title: 'Spot Crypto & Macro ETF Flows', desc: 'IBIT/FBTC/GBTC/ETHA/SPY/QQQ/TLT/GLD/EIDO Signed Flows, Futures Short Squeeze & SEC Form-4 Insiders', mount: mountETF },
+  { code: 'FLOW', cat: 'FLOWS', title: 'Institutional Money Flows', desc: 'Cross-Asset Spot ETF Flows & Perpetual Crowding Pressure Board', mount: mountETF },
+  { code: 'INS', cat: 'EQUITY', title: 'SEC Form-4 Insiders & Flows', desc: 'Corporate Insider Filings (Form 4 / 8-K) & Institutional Flow Monitor', mount: mountETF },
+  { code: 'SI', cat: 'DERIV', title: 'Short Squeeze Pressure Monitor', desc: 'Perpetual Funding Crowding & Short Squeeze Alert Matrix', mount: mountETF },
+  { code: 'FIN', cat: 'FINANCE', title: 'Keuangan Pribadi & Anti-Boros', desc: 'Catat Income/Expense/Savings IDR, Limit Harian Anti-Boros + Push Alert, Diagram Cashflow 14H, Goals & Bot Sync', mount: mountFIN },
+  { code: 'BUDGET', cat: 'FINANCE', title: 'Anti-Boros Budget & Envelopes', desc: 'Pengatur Budget Harian/Bulanan, Amplop Kategori & Target Tabungan', mount: mountFIN },
+  { code: 'CASH', cat: 'FINANCE', title: 'Personal Cashflow Manager', desc: 'Kontrol Pengeluaran Harian, Skor Disiplin & Export CSV', mount: mountFIN },
   { code: 'BTCA', cat: 'EXECUTION', title: 'Execution TCA & Quant Health', desc: 'Maker GTX Fill Share, Arrival Slippage, +1m/+5m Markouts, Risk Breaker & ADWIN Drift', mount: mountBTCA },
   { code: 'TCA', cat: 'EXECUTION', title: 'Transaction Cost Analysis (TCA)', desc: 'Execution Quality, VWAP Impact, Fee Drag & Strategy Bandit Audit', mount: mountBTCA },
   { code: 'PORT', cat: 'PORTFOLIO', title: 'Portfolio & Risk Analytics', desc: 'Institutional Multi-Asset Holdings Valuation, Weight Attribution & DMA Execution', mount: mountPORT },
@@ -219,6 +237,24 @@ const WORKSPACES = {
     { symbol: 'ETHUSDT', fn: 'GIP' },
     { symbol: 'ETHUSDT', fn: 'TRADES' },
     { symbol: 'ETHUSDT', fn: 'FNG' }
+  ],
+  'BOT X-RAY & TRANSCRIPTS': [
+    { symbol: 'BTCUSDT', fn: 'FACT' },
+    { symbol: 'BTCUSDT', fn: 'TRAN' },
+    { symbol: 'BTCUSDT', fn: 'GP' },
+    { symbol: 'BTCUSDT.P', fn: 'BOT' }
+  ],
+  'BLOOMBERG INTELLIGENCE': [
+    { symbol: 'BTCUSDT', fn: 'BI' },
+    { symbol: 'BTCUSDT', fn: 'ETF' },
+    { symbol: 'BTCUSDT', fn: 'G' },
+    { symbol: 'BTCUSDT', fn: 'TOP' }
+  ],
+  'KEUANGAN & ANTI-BOROS': [
+    { symbol: 'BTCUSDT', fn: 'FIN' },
+    { symbol: 'BTCUSDT.P', fn: 'BOT' },
+    { symbol: 'BTCUSDT', fn: 'GMAIL' },
+    { symbol: 'BTCUSDT', fn: 'TOP' }
   ],
   'COMMODITIES & GEOPOLITICAL': [
     { symbol: 'CL=F', fn: 'BMAP' },
@@ -587,8 +623,12 @@ const FKEYS = [
   ['F8', 'EQUITY', 'AAPL DES'],
   ['F9', 'SPLC', 'NVDA SPLC'],
   ['F10', 'AI BOT', 'BTCUSDT.P BOT'],
-  ['F11', 'PORT', 'SPCX PORT'],
-  ['F12', 'EMSX', 'SPCX EMSX']
+  ['F11', 'X-RAY', 'BTCUSDT FACT'],
+  ['F12', 'TRANSKRIP', 'BTCUSDT TRAN'],
+  ['STUDIO', 'CHARTS', 'BTCUSDT G'],
+  ['BI', 'RESEARCH', 'BTCUSDT BI'],
+  ['ETF', 'FLOWS', 'BTCUSDT ETF'],
+  ['FIN', 'ANTI-BOROS', 'BTCUSDT FIN']
 ];
 const fkBar = $('#fkeys');
 for (const [fk, lbl, cmd] of FKEYS) {
@@ -804,4 +844,252 @@ $('#msg').textContent = `READY (${CATALOG.length} FUNCTIONS LOADED)`;
 if (!net.adapter && hub.state === 'AUTH_REQUIRED' && !authVerifiedOnce) {
   showAuthModal('Enter DASH_TOKEN to unlock terminal feeds.');
 }
+
+// =====================================================================
+// NATIVE PWA APP INSTALLER + PUSH NOTIFICATION ENGINE (SW + VAPID + WS)
+// =====================================================================
+let swRegistration = null;
+let deferredInstallPrompt = null;
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const out = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) out[i] = rawData.charCodeAt(i);
+  return out;
+}
+
+function showBloombergToast(payload = {}) {
+  const rack = $('#toastRack');
+  if (!rack) return;
+  const evType = String(payload.eventType || 'ALERT').toUpperCase();
+  const cls = /BOROS|ERR|BREAKER|SL|VETO/i.test(evType) ? 'err' : /WARN|NEWS/i.test(evType) ? 'warn' : '';
+  const toast = h('div', {
+    class: 'bbg-toast ' + cls,
+    onclick: () => {
+      toast.remove();
+      if (payload.url && typeof payload.url === 'string') {
+        try {
+          const u = new URL(payload.url, location.origin);
+          const w = u.searchParams.get('w');
+          if (w) {
+            const first = w.split(',')[0] || '';
+            const k = first.lastIndexOf(':');
+            if (k > 0) executeCommand(`${first.slice(0, k)} ${first.slice(k + 1)}`);
+            return;
+          }
+        } catch {}
+      }
+      if (payload.symbol === 'FIN') executeCommand('BTCUSDT FIN');
+      else if (payload.symbol) executeCommand(`${payload.symbol} BOT`);
+    }
+  },
+    h('div', { class: 't-hd' },
+      h('span', { text: payload.title || 'BLOOMBERG // PYROFUEL ALERT' }),
+      h('span', { text: fmtTime(payload.ts || Date.now()) })
+    ),
+    h('div', { class: 't-bd', text: payload.body || '' })
+  );
+  rack.append(toast);
+  while (rack.children.length > 4) rack.firstElementChild.remove();
+  setTimeout(() => { try { toast.remove(); } catch {} }, 10000);
+}
+
+async function triggerOsNotification(payload = {}) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  try {
+    const reg = swRegistration || (navigator.serviceWorker && await navigator.serviceWorker.ready.catch(() => null));
+    if (reg && reg.active) {
+      reg.active.postMessage({ type: 'SHOW_NOTIFICATION', payload });
+      return;
+    }
+    if (reg && typeof reg.showNotification === 'function') {
+      await reg.showNotification(payload.title || 'BLOOMBERG // PYROFUEL', {
+        body: payload.body || '',
+        icon: '/icons/icon-192.png',
+        badge: '/icons/icon-192.png',
+        tag: payload.tag || ('bbg-' + Date.now())
+      });
+      return;
+    }
+    new Notification(payload.title || 'BLOOMBERG // PYROFUEL', {
+      body: payload.body || '',
+      icon: '/icons/icon-192.png'
+    });
+  } catch {}
+}
+
+hub.onPushAlert = (payload) => {
+  if (!payload || typeof payload !== 'object') return;
+  showBloombergToast(payload);
+  triggerOsNotification(payload);
+};
+
+// Register Service Worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', async () => {
+    try {
+      swRegistration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    } catch {}
+  });
+}
+
+// Native Install App Button (#btnInstallApp)
+const btnInstall = $('#btnInstallApp');
+const isStandalone = () => (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+
+function syncInstallBtn() {
+  if (!btnInstall) return;
+  if (isStandalone()) {
+    btnInstall.textContent = '✓ APP MODE';
+    btnInstall.style.background = '#102418';
+    btnInstall.style.color = '#00d26a';
+    btnInstall.title = 'Running as Installed Native Standalone App';
+  }
+}
+syncInstallBtn();
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  if (btnInstall) {
+    btnInstall.textContent = '📲 INSTALL APP';
+    btnInstall.style.display = 'inline-block';
+  }
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  syncInstallBtn();
+  showBloombergToast({
+    title: '📲 BLOOMBERG PYROFUEL TERINSTALL!',
+    body: 'Aplikasi sudah masuk Home Screen / Desktop dan siap jalan fullscreen seperti aplikasi native.',
+    eventType: 'PWA_INSTALLED'
+  });
+});
+
+function showInstallGuideModal() {
+  const existing = $('#pwaInstallModal');
+  if (existing) existing.remove();
+  const isHttps = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  const ov = h('div', {
+    id: 'pwaInstallModal',
+    style: 'position:fixed;inset:0;z-index:99998;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;padding:16px',
+    onclick: ev => { if (ev.target === ov) ov.remove(); }
+  },
+    h('div', { style: 'width:480px;max-width:94vw;background:#0a0d12;border:1px solid var(--amber);padding:16px 18px;color:#e6edf3;line-height:1.55' },
+      h('div', { style: 'color:var(--amber);font-weight:700;font-size:13px;border-bottom:1px solid #262b33;padding-bottom:8px;margin-bottom:10px', text: '📲 INSTALL BLOOMBERG PYROFUEL SEBAGAI APLIKASI NATIVE' }),
+      h('div', { style: 'font-size:11.5px;margin-bottom:10px' },
+        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#00d26a', text: '1. Android Chrome / Tablet (Langsung Jadi App): ' }), 'Tap menu titik tiga (⋮) di kanan atas Chrome → pilih ', h('b', { text: '"Install app" / "Tambahkan ke layar utama"' }), '.'),
+        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#4da3ff', text: '2. iPhone / iPad Safari: ' }), 'Tap tombol ', h('b', { text: 'Share (⬆)' }), ' → pilih ', h('b', { text: '"Add to Home Screen"' }), '.'),
+        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#ffb000', text: '3. PC / Laptop Chrome / Edge: ' }), 'Klik ikon ', h('b', { text: 'Install (⊕)' }), ' di ujung kanan address bar browser.'),
+        !isHttps ? h('div', { style: 'margin-top:8px;padding:7px;background:#1a1203;border:1px solid #ffb00066;font-size:11px;color:#ffd580', text: 'Tip LAN/Termux: Jika membuka lewat http://192.168.x.x (bukan localhost/HTTPS), Chrome menyembunyikan tombol auto-prompt, tapi "Tambahkan ke layar utama" dari menu ⋮ tetap membuat shortcut app, atau gunakan http://localhost:3000 di tablet yang sama agar tombol Install Native muncul langsung!' }) : null
+      ),
+      h('div', { style: 'display:flex;justify-content:flex-end;gap:8px' },
+        h('button', { class: 'on', text: 'MENGERTI / TUTUP', onclick: () => ov.remove() })
+      )
+    )
+  );
+  document.body.appendChild(ov);
+}
+
+if (btnInstall) {
+  btnInstall.addEventListener('click', async () => {
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt();
+      try { await deferredInstallPrompt.userChoice; } catch {}
+      deferredInstallPrompt = null;
+      syncInstallBtn();
+    } else {
+      showInstallGuideModal();
+    }
+  });
+}
+
+// Native Push Notification Button (#btnPush)
+const btnPush = $('#btnPush');
+function syncPushBtn(enabled) {
+  if (!btnPush) return;
+  if (enabled) {
+    btnPush.textContent = '🔔 PUSH ON';
+    btnPush.style.borderColor = '#00d26a';
+    btnPush.style.color = '#00d26a';
+    btnPush.style.background = '#041a0d';
+  } else {
+    btnPush.textContent = '🔔 PUSH';
+    btnPush.style.borderColor = '#ffb000';
+    btnPush.style.color = '#ffb000';
+    btnPush.style.background = '';
+  }
+}
+if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+  syncPushBtn(true);
+}
+
+async function enableNativePush() {
+  if (typeof Notification === 'undefined') {
+    showBloombergToast({
+      title: '🔔 IN-APP TOAST AKTIF',
+      body: 'Browser ini tidak mendukung OS Notification API, tapi alert real-time tetap muncul via Bloomberg Toast.',
+      eventType: 'WARN'
+    });
+    return;
+  }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') {
+    syncPushBtn(false);
+    showBloombergToast({
+      title: '⚠️ IZIN NOTIFIKASI DITOLAK',
+      body: 'Aktifkan izin Notifications di pengaturan situs browser agar Push Notification TP/SL & Anti-Boros masuk ke HP/Tablet.',
+      eventType: 'WARN'
+    });
+    return;
+  }
+
+  let webPushSubscribed = false;
+  try {
+    const reg = swRegistration || (navigator.serviceWorker && await navigator.serviceWorker.ready);
+    if (reg && reg.pushManager) {
+      const kRes = await fetch('/api/push/vapid-public-key', { cache: 'no-store' });
+      const kJson = kRes.ok ? await kRes.json() : null;
+      const pubKey = kJson && kJson.publicKey;
+      if (pubKey) {
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) {
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(pubKey)
+          });
+        }
+        if (sub) {
+          const sRes = await apiFetch('/api/push/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ subscription: sub.toJSON(), deviceLabel: navigator.userAgent.slice(0, 60) })
+          }, 10000);
+          webPushSubscribed = sRes.ok;
+        }
+      }
+    }
+  } catch {}
+
+  syncPushBtn(true);
+  const welcomePayload = {
+    title: '🔔 NATIVE PUSH NOTIFICATION AKTIF!',
+    body: webPushSubscribed
+      ? 'Background Web Push (VAPID) + Real-Time WS aktif! Notifikasi Futures Open/Close, TP/SL, Hot News & Anti-Boros akan masuk otomatis.'
+      : 'OS Notification + Real-Time WebSocket Push aktif! (Untuk background push saat tab ditutup total, akses via localhost atau HTTPS).',
+    eventType: 'PUSH_ENABLED',
+    symbol: 'BTCUSDT',
+    url: '/?w=BTCUSDT:FACT,BTCUSDT:TRAN,BTCUSDT:GP,BTCUSDT.P:BOT'
+  };
+  showBloombergToast(welcomePayload);
+  triggerOsNotification(welcomePayload);
+}
+
+if (btnPush) {
+  btnPush.addEventListener('click', enableNativePush);
+}
+
 

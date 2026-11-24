@@ -338,7 +338,13 @@ const PUBLIC_API_GET_EXACT = new Set([
     '/api/terminal/fundamentals',
     '/api/terminal/derivatives',
     '/api/terminal/derivatives-intel',
-    '/api/terminal/health'
+    '/api/terminal/health',
+    '/api/terminal/transcripts',
+    '/api/terminal/factors',
+    '/api/terminal/bot-xray',
+    '/api/terminal/intelligence',
+    '/api/terminal/flows',
+    '/api/push/vapid-public-key'
 ]);
 const PUBLIC_API_GET_PREFIXES = [
     '/api/quote/',
@@ -486,6 +492,17 @@ app.use('/api', (req, res, next) => {
 app.get('/', (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.sendFile(path.join(__dirname, 'public', 'terminal', 'index.html'));
+});
+app.get('/manifest.webmanifest', (req, res) => {
+    res.set('Content-Type', 'application/manifest+json; charset=utf-8');
+    res.set('Cache-Control', 'no-cache');
+    res.sendFile(path.join(__dirname, 'public', 'manifest.webmanifest'));
+});
+app.get('/sw.js', (req, res) => {
+    res.set('Content-Type', 'application/javascript; charset=utf-8');
+    res.set('Service-Worker-Allowed', '/');
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.sendFile(path.join(__dirname, 'public', 'sw.js'));
 });
 app.use(express.static(path.join(__dirname, 'public'), {
     etag: false,
@@ -5351,6 +5368,11 @@ function sanitizeBmailStore(store) {
     delete rawCfg.resendApiKey;
     rawCfg.hasSmtpPass = hasSmtpPass;
     rawCfg.hasResendKey = hasResendKey;
+    rawCfg.emailReady = Boolean(hasResendKey || hasSmtpPass);
+    rawCfg.activeGateway = hasResendKey ? 'RESEND_API' : (hasSmtpPass ? 'GMAIL_SMTP_TLS' : 'NOT_CONFIGURED');
+    rawCfg.setupHint = rawCfg.emailReady
+        ? `Active external gateway: ${rawCfg.activeGateway}`
+        : 'Set 16-char Gmail App Password below (recommended, gratis) OR set RESEND_API_KEY in .env on host.';
     copy.alertConfig = rawCfg;
     return copy;
 }
@@ -5404,10 +5426,11 @@ async function sendResendEmail({ to, subject, body, eventType = 'ALERT', symbol 
     }
 }
 
-// Zero-dependency TLS SMTP sender for Gmail (smtp.gmail.com:465)
-function sendGmailSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, to, subject, body }) {
+// Zero-dependency TLS SMTP sender for Gmail (smtp.gmail.com:465) with multiline 250- support & HTML formatting
+function sendGmailSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, to, subject, body, eventType = 'ALERT', symbol = 'BTCUSDT' }) {
     return new Promise((resolve) => {
-        if (testMode || !user || !pass || pass.length < 8) {
+        const cleanPass = String(pass || '').replace(/\s+/g, '');
+        if (testMode || !user || !cleanPass || cleanPass.length < 8) {
             return resolve({ ok: false, mode: 'QUEUED_NO_SMTP_APP_PASS' });
         }
         const safeUser = sanitizeHeaderValue(user);
@@ -5419,72 +5442,248 @@ function sendGmailSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, to, su
         const sock = tls.connect({ host, port, rejectUnauthorized: process.env.SMTP_INSECURE_TLS !== '1' }, () => {});
         let step = 0;
         let buffer = '';
-        const timer = setTimeout(() => { try { sock.destroy(); } catch {} resolve({ ok: false, mode: 'SMTP_TIMEOUT' }); }, 9000);
+        let settled = false;
+        const finish = (resObj) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            try { sock.end(); } catch {}
+            resolve(resObj);
+        };
+        const timer = setTimeout(() => { try { sock.destroy(); } catch {} finish({ ok: false, mode: 'SMTP_TIMEOUT' }); }, 11000);
         const sendLine = (line) => sock.write(line + '\r\n');
 
         sock.on('data', (chunk) => {
-            buffer += chunk.toString();
+            buffer += chunk.toString('utf8');
             if (!buffer.endsWith('\r\n')) return;
             const lines = buffer.trim().split('\r\n');
             const last = lines[lines.length - 1] || '';
+            // Wait for final line of multiline SMTP response (e.g., 250-... followed by 250 ...)
+            if (last.length >= 4 && last[3] === '-') return;
             const code = parseInt(last.slice(0, 3), 10);
             buffer = '';
 
             if (step === 0 && code === 220) { step = 1; sendLine('EHLO bloomberg.terminal.local'); }
             else if (step === 1 && code === 250) { step = 2; sendLine('AUTH LOGIN'); }
             else if (step === 2 && code === 334) { step = 3; sendLine(Buffer.from(safeUser).toString('base64')); }
-            else if (step === 3 && code === 334) { step = 4; sendLine(Buffer.from(pass.replace(/\s+/g, '')).toString('base64')); }
+            else if (step === 3 && code === 334) { step = 4; sendLine(Buffer.from(cleanPass).toString('base64')); }
             else if (step === 4 && code === 235) { step = 5; sendLine(`MAIL FROM:<${safeUser}>`); }
             else if (step === 5 && code === 250) { step = 6; sendLine(`RCPT TO:<${safeTo}>`); }
             else if (step === 6 && (code === 250 || code === 251)) { step = 7; sendLine('DATA'); }
             else if (step === 7 && code === 354) {
                 step = 8;
-                const safeBodyLines = String(body || '').replace(/\r?\n\.\r?\n/g, '\r\n..\r\n');
+                const boundary = `bbg_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
+                const safeBodyPlain = String(body || '').replace(/\r?\n\.\r?\n/g, '\r\n..\r\n');
+                const safeEvent = escapeHtml(eventType);
+                const safeSym = escapeHtml(symbol);
+                const safeBodyHtml = `<div style="background:#000;color:#ffb000;font-family:Consolas,monospace;padding:16px;border:2px solid #ffb000;max-width:680px"><div style="background:#5c0808;color:#fff;padding:8px 12px;font-weight:bold">BLOOMBERG PROFESSIONAL // ${safeEvent} (${safeSym})</div><pre style="white-space:pre-wrap;color:#ffb000;background:#080808;padding:12px;border-left:3px solid #00d26a">${escapeHtml(body || '')}</pre><div style="font-size:11px;color:#888">Delivered via Gmail TLS SMTP • Pyrofuel 28-Pillar Engine</div></div>`;
                 const msg = [
                     `From: "Bloomberg Terminal Alert" <${safeUser}>`,
                     `To: <${safeTo}>`,
                     `Subject: ${safeSub}`,
                     `MIME-Version: 1.0`,
+                    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+                    ``,
+                    `--${boundary}`,
                     `Content-Type: text/plain; charset=UTF-8`,
                     ``,
-                    safeBodyLines,
+                    safeBodyPlain,
+                    `--${boundary}`,
+                    `Content-Type: text/html; charset=UTF-8`,
+                    ``,
+                    safeBodyHtml.replace(/\r?\n\.\r?\n/g, '\r\n..\r\n'),
+                    `--${boundary}--`,
                     `.`
                 ].join('\r\n');
                 sendLine(msg);
             } else if (step === 8 && code === 250) {
                 step = 9;
                 sendLine('QUIT');
-                clearTimeout(timer);
-                try { sock.end(); } catch {}
-                resolve({ ok: true, mode: 'DELIVERED_SMTP_TLS_GMAIL' });
+                finish({ ok: true, mode: 'DELIVERED_SMTP_TLS_GMAIL' });
             } else if (code >= 400) {
-                clearTimeout(timer);
                 try { sock.destroy(); } catch {}
-                resolve({ ok: false, mode: `SMTP_ERR_${code}` });
+                const detail = U.redactSecrets(last.slice(0, 120));
+                finish({ ok: false, mode: `SMTP_ERR_${code} (${detail})` });
             }
         });
-        sock.on('error', () => { clearTimeout(timer); resolve({ ok: false, mode: 'SMTP_CONN_ERROR' }); });
+        sock.on('error', (err) => { finish({ ok: false, mode: `SMTP_CONN_ERROR: ${U.redactSecrets(err && err.message || 'conn')}` }); });
     });
 }
 
-// Mirror alert to Telegram Bot if configured
+// Mirror alert to Telegram Bot if configured (supports ALLOWED_TELEGRAM_CHAT_ID, TELEGRAM_CHAT_ID, and pluang-bot/last_chat_id.txt)
 async function sendTelegramMirror(text) {
     if (testMode) return false;
-    const token = process.env.TELEGRAM_BOT_TOKEN;
-    const chatId = process.env.ALLOWED_TELEGRAM_CHAT_ID;
+    const token = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    let chatId = String(process.env.ALLOWED_TELEGRAM_CHAT_ID || process.env.TELEGRAM_CHAT_ID || '').trim();
+    if (!chatId) {
+        try {
+            const cidPath = path.join(pluangDir, 'last_chat_id.txt');
+            if (fs.existsSync(cidPath)) chatId = fs.readFileSync(cidPath, 'utf8').trim();
+        } catch {}
+    }
     if (!token || !chatId) return false;
     try {
-        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
             method: 'POST',
             signal: AbortSignal.timeout(5000),
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chat_id: chatId, text: text.slice(0, 3900) })
         });
-        return true;
+        return r.ok;
     } catch { return false; }
 }
 
-// Unified External Email & B-Mail Alert Dispatcher
+// ============================================================
+// NATIVE PWA WEB PUSH NOTIFICATION ENGINE (VAPID P-256 + WS BRIDGE)
+// ============================================================
+const PUSH_SUBS_FILE = opts.pushSubsFile || path.join(opts.baseDir || (opts.bmailFile ? path.dirname(opts.bmailFile) : __dirname), 'push-subscriptions.json');
+const VAPID_KEYS_FILE = opts.vapidKeysFile || path.join(resultsDir, 'vapid_keys.json');
+let _webPushLib = null;
+try { _webPushLib = require('web-push'); } catch (_) { _webPushLib = null; }
+
+function b64url(buf) {
+    return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function loadOrCreateVapidKeys() {
+    if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+        return { publicKey: process.env.VAPID_PUBLIC_KEY.trim(), privateKey: process.env.VAPID_PRIVATE_KEY.trim() };
+    }
+    const existing = readJsonSafeSync(VAPID_KEYS_FILE, null);
+    if (existing && existing.publicKey && existing.privateKey) return existing;
+    try {
+        let keys;
+        if (_webPushLib && typeof _webPushLib.generateVAPIDKeys === 'function') {
+            keys = _webPushLib.generateVAPIDKeys();
+        } else {
+            const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+            const pubJwk = publicKey.export({ format: 'jwk' });
+            const privJwk = privateKey.export({ format: 'jwk' });
+            const xBuf = Buffer.from(pubJwk.x, 'base64url');
+            const yBuf = Buffer.from(pubJwk.y, 'base64url');
+            const rawPub = Buffer.concat([Buffer.from([0x04]), xBuf, yBuf]);
+            keys = { publicKey: b64url(rawPub), privateKey: privJwk.d };
+        }
+        if (!testMode) {
+            try { writeJsonAtomicSync(VAPID_KEYS_FILE, keys, 0o600); } catch {}
+        }
+        return keys;
+    } catch {
+        return { publicKey: '', privateKey: '' };
+    }
+}
+
+const VAPID_KEYS = loadOrCreateVapidKeys();
+if (_webPushLib && VAPID_KEYS.publicKey && VAPID_KEYS.privateKey) {
+    try {
+        _webPushLib.setVapidDetails('mailto:fadhilsyafiq90@gmail.com', VAPID_KEYS.publicKey, VAPID_KEYS.privateKey);
+    } catch {}
+}
+
+function loadPushSubs() {
+    const arr = readJsonSafeSync(PUSH_SUBS_FILE, []);
+    return Array.isArray(arr) ? arr : [];
+}
+function savePushSubs(arr) {
+    writeJsonAtomicSync(PUSH_SUBS_FILE, Array.isArray(arr) ? arr.slice(0, 50) : [], 0o600);
+}
+
+async function dispatchNativePushAlert({ title, body, eventType = 'ALERT', symbol = 'BTCUSDT', url = '/' }) {
+    const payload = {
+        id: 'PUSH-' + Date.now().toString(36),
+        ts: Date.now(),
+        title: String(title || 'BLOOMBERG // PYROFUEL ALERT').slice(0, 120),
+        body: String(body || '').slice(0, 320),
+        eventType: String(eventType || 'ALERT'),
+        symbol: String(symbol || 'BTCUSDT'),
+        url: String(url || '/'),
+        tag: `bbg-${String(eventType || 'alert').toLowerCase()}-${String(symbol || 'sys').toLowerCase()}`
+    };
+
+    // 1. Instant real-time WS broadcast to all active PWA / browser clients (triggers native OS Notification via Service Worker)
+    let wsSent = 0;
+    try {
+        if (terminalHub && typeof terminalHub.broadcast === 'function') {
+            terminalHub.broadcast('push_alert', payload);
+            wsSent = (terminalHub.stats && terminalHub.stats().wsClients) || 0;
+        }
+    } catch {}
+
+    // 2. Background Web Push delivery (works even when app/tab is completely closed on Android/Desktop)
+    let webPushDelivered = 0;
+    const subs = loadPushSubs();
+    if (_webPushLib && VAPID_KEYS.publicKey && VAPID_KEYS.privateKey && subs.length && !testMode) {
+        const kept = [];
+        for (const sub of subs) {
+            if (!sub || !sub.endpoint || !sub.keys) continue;
+            try {
+                await _webPushLib.sendNotification(sub, JSON.stringify(payload), { TTL: 3600 });
+                webPushDelivered++;
+                kept.push(sub);
+            } catch (err) {
+                const sc = err && err.statusCode;
+                if (sc !== 404 && sc !== 410) kept.push(sub);
+            }
+        }
+        if (kept.length !== subs.length) {
+            try { savePushSubs(kept); } catch {}
+        }
+    }
+    return { ok: true, wsSent, webPushDelivered, totalSubs: subs.length, payload };
+}
+
+app.get('/api/push/vapid-public-key', (req, res) => {
+    const subs = loadPushSubs();
+    res.json({
+        ok: true,
+        publicKey: VAPID_KEYS.publicKey || '',
+        webPushAvailable: Boolean(_webPushLib && VAPID_KEYS.publicKey),
+        subscriptionsCount: subs.length
+    });
+});
+
+app.post('/api/push/subscribe', (req, res) => {
+    const sub = req.body && (req.body.subscription || req.body);
+    if (!sub || typeof sub !== 'object' || typeof sub.endpoint !== 'string' || !/^https?:\/\//i.test(sub.endpoint)) {
+        return res.status(400).json({ ok: false, error: 'Invalid push subscription object' });
+    }
+    const subs = loadPushSubs().filter(s => s && s.endpoint !== sub.endpoint);
+    subs.unshift({
+        endpoint: sub.endpoint.slice(0, 1000),
+        keys: sub.keys && typeof sub.keys === 'object' ? { p256dh: String(sub.keys.p256dh || ''), auth: String(sub.keys.auth || '') } : null,
+        ua: String(req.headers['user-agent'] || '').slice(0, 140),
+        createdAt: Date.now()
+    });
+    try {
+        savePushSubs(subs);
+        res.json({ ok: true, count: subs.length });
+    } catch {
+        res.status(500).json({ ok: false, error: 'Failed saving push subscription' });
+    }
+});
+
+app.post('/api/push/unsubscribe', (req, res) => {
+    const endpoint = req.body && req.body.endpoint;
+    if (!endpoint || typeof endpoint !== 'string') {
+        return res.status(400).json({ ok: false, error: 'endpoint required' });
+    }
+    const subs = loadPushSubs().filter(s => s && s.endpoint !== endpoint);
+    try {
+        savePushSubs(subs);
+        res.json({ ok: true, count: subs.length });
+    } catch {
+        res.status(500).json({ ok: false, error: 'Failed removing push subscription' });
+    }
+});
+
+app.post('/api/push/test', async (req, res) => {
+    const title = (req.body && req.body.title) || 'BLOOMBERG // PYROFUEL PUSH ACTIVE';
+    const body = (req.body && req.body.body) || 'Push Notification native aktif! Alert Futures Open/Close, TP/SL & Breaking News akan masuk langsung ke HP/Desktop.';
+    const out = await dispatchNativePushAlert({ title, body, eventType: 'TEST_PUSH', symbol: 'BTCUSDT', url: '/?w=BTCUSDT:BOT,BTCUSDT:GP,BTCUSDT:TRAN,BTCUSDT:FACT' });
+    res.json(out);
+});
+
+// Unified External Email, Native Push & B-Mail Alert Dispatcher
 async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, symbol = 'BTCUSDT', attachmentFn = 'BTCUSDT BOT' }) {
     const store = loadBmail();
     const cfg = store.alertConfig || DEFAULT_BMAIL.alertConfig;
@@ -5498,14 +5697,23 @@ async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, 
         symbol
     });
 
-    const smtpRes = resendRes.ok ? { ok: false } : await sendGmailSmtp({
+    const smtpRes = resendRes.ok ? { ok: false, mode: 'SKIPPED_RESEND_OK' } : await sendGmailSmtp({
         host: cfg.smtpHost || 'smtp.gmail.com',
         port: cfg.smtpPort || 465,
         user: cfg.smtpUser || targetEmail,
         pass: cfg.smtpPass || (!testMode ? (process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || '') : ''),
         to: targetEmail,
         subject,
-        body
+        body,
+        eventType,
+        symbol
+    });
+    const pushRes = await dispatchNativePushAlert({
+        title: `[${eventType}] ${symbol}`,
+        body: `${subject}\n${String(body || '').split('\n').slice(0, 3).join(' ')}`.slice(0, 260),
+        eventType,
+        symbol,
+        url: attachmentFn ? `/?w=${encodeURIComponent(attachmentFn.replace(/\s+/g, ':'))}` : '/'
     });
     const tgOk = await sendTelegramMirror(`📧 [${eventType} -> ${targetEmail}]\n${subject}\n\n${body}`);
 
@@ -5513,7 +5721,7 @@ async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, 
         ? `✓ DELIVERED TO ${targetEmail} VIA RESEND API [ID: ${resendRes.id}]`
         : smtpRes.ok
         ? `✓ DELIVERED VIA GMAIL TLS SMTP (${targetEmail})`
-        : `LOGGED IN B-MAIL + ${tgOk ? 'TELEGRAM PUSHED + ' : ''}RESEND (${resendRes.mode})`;
+        : `NOT_SENT_NO_EMAIL_KEY (Resend: ${resendRes.mode} | SMTP: ${smtpRes.mode})${tgOk ? ' + TELEGRAM OK' : ''}${pushRes.wsSent || pushRes.webPushDelivered ? ' + PUSH OK' : ''}`;
 
     const entry = {
         id: 'ALRT-' + Date.now().toString().slice(-6),
@@ -5731,8 +5939,9 @@ app.post('/api/terminal/bmail/send', async (req, res) => {
 });
 
 // Background Watchers for Automatic Email Alerts to fadhilsyafiq90@gmail.com:
-// 1. Futures Position Open / Close Watcher (watches pluang-bot/results/positions.json)
+// 1. Futures Position Open / Close Watcher (watches pluang-bot/results/active_positions.json)
 let _knownPosStates = new Map();
+let _posWatcherInitialized = false;
 function pollFuturesPositionsForEmailAlerts() {
     try {
         // M17 Fix: Read ALL stored positions (including CLOSED_*) so OPEN -> CLOSED_* email alerts actually fire!
@@ -5742,8 +5951,9 @@ function pollFuturesPositionsForEmailAlerts() {
         const cfg = store.alertConfig || DEFAULT_BMAIL.alertConfig;
         const target = cfg.targetEmail || 'fadhilsyafiq90@gmail.com';
 
-        if (_knownPosStates.size === 0) {
+        if (!_posWatcherInitialized) {
             positions.forEach(p => { if (p && p.id) _knownPosStates.set(p.id, p.status || 'OPEN'); });
+            _posWatcherInitialized = true;
             return;
         }
         for (const p of positions) {
@@ -5814,6 +6024,23 @@ function pollHotNewsForEmailAlerts() {
 
 registerBgJob(pollFuturesPositionsForEmailAlerts, 8000, false);
 registerBgJob(pollHotNewsForEmailAlerts, 60000, false);
+
+// Mount Terminal Extensions: Transparent Bot Glass-Box (FACT/XRAY), Transcripts (TRAN), BI, ETF Flows & Personal Finance (FIN)
+try {
+    const { mountTerminalExtensions } = require('./terminal/api/extensions');
+    mountTerminalExtensions(app, {
+        resultsDir,
+        pluangDir,
+        configPath,
+        positionsPath,
+        statePath,
+        testMode,
+        writeJsonAtomicSync,
+        readJsonSafeSync,
+        dispatchNativePushAlert,
+        baseDir: opts.baseDir || (opts.bmailFile ? path.dirname(opts.bmailFile) : __dirname)
+    });
+} catch (e) { console.error('[terminal:extensions] mount error:', e.message); }
 
 // Mount PYRO / Bloomberg Terminal API & WebSocket Hub (/api/terminal/* and /terminal/ws)
 let terminalHub = null;

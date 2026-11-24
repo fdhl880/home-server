@@ -179,7 +179,8 @@ async function run() {
         assert(!/value:\s*cfg\.smtpPass/.test(opsSrc), 'ops.js must not prefill smtpPass into DOM input value');
         assert(opsSrc.includes("confirm: 'CONFIRM_RESUME'"), 'ops.js RESET BREAKER must send CONFIRM_RESUME');
         assert(termHtml.includes('id="authModal"') && mainSrc.includes('/api/auth/verify'), 'Terminal UI must wire #authModal -> /api/auth/verify');
-        assert(termHtml.includes('main.js?v=20261118b') && mainSrc.includes('charts.js?v=20261118b') && opsSrc.includes('charts.js?v=20261118b'), 'Cache-buster query string must match across index.html, main.js, ops.js');
+        const htmlVer = (termHtml.match(/main\.js\?v=([A-Za-z0-9_.-]+)/) || [])[1];
+        assert(htmlVer && mainSrc.includes(`charts.js?v=${htmlVer}`) && opsSrc.includes(`charts.js?v=${htmlVer}`) && mainSrc.includes(`intelligence.js?v=${htmlVer}`), 'Cache-buster query string must match across index.html, main.js, ops.js');
         assert(pluangHtml.includes('id="auth-modal"') && pluangHtml.includes('/api/auth/verify') && !pluangHtml.includes("executeTrade('${currentSelectedSymbol}'"), 'Pluang UI must have #auth-modal and safe event bindings');
 
         // Compile inline <script> in pluang-bot/static/index.html to guarantee valid JS syntax

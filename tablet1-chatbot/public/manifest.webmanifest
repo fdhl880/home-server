@@ -1,0 +1,71 @@
+{
+  "id": "/?source=pwa",
+  "name": "BLOOMBERG // PYROFUEL Quant Terminal",
+  "short_name": "BBG Pyrofuel",
+  "description": "Institutional Bloomberg-grade Multi-Asset Terminal & Pyrofuel 28-Pillar Autonomous Futures Engine with Live Push Alerts, 532-Factor Quant Radar, and AI Committee Transcripts.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "categories": ["finance", "business", "productivity"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Pyrofuel AI Bot",
+      "short_name": "BOT",
+      "description": "Open Live 28-Pillar Autonomous Futures Bot & Positions",
+      "url": "/?w=BTCUSDT.P:BOT,BTCUSDT:GP,BTCUSDT:FACT,BTCUSDT:TRAN&win=1",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Live Charts (GP)",
+      "short_name": "CHARTS",
+      "description": "Open Live Candlestick Chart with Technical Master Overlays",
+      "url": "/?w=BTCUSDT:GP,ETHUSDT:GP,SOLUSDT:GP,BNBUSDT:GP",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "AI Transcripts & Factors",
+      "short_name": "TRAN+FACT",
+      "description": "9-Agent Debate Transcripts & 532-Factor Quant Radar",
+      "url": "/?w=BTCUSDT:TRAN,BTCUSDT:FACT,BTCUSDT:BI,BTCUSDT:ETF",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Keuangan Anti-Boros",
+      "short_name": "KEUANGAN",
+      "description": "Catat Pengeluaran Harian, Limit Anti-Boros & Target Tabungan",
+      "url": "/?w=BTCUSDT:FIN,BTCUSDT.P:BOT,BTCUSDT:GMAIL,BTCUSDT:TOP&win=1",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "B-Mail & Push Alerts",
+      "short_name": "ALERTS",
+      "description": "Manage Auto-Email & Native Push Notifications",
+      "url": "/?w=BTCUSDT:GMAIL,BTCUSDT:TOP,BTCUSDT:ALRT,BTCUSDT:BOT&win=1",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

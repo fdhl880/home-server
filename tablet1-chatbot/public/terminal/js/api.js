@@ -248,6 +248,7 @@ class Hub {
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       if (m.channel) { const s = this.subs.get(m.channel); if (s) s.forEach(cb => cb(m.data, m)); }
       else if (m.type === 'status') this.status && this.status(m);
+      else if (m.type === 'push_alert') this.onPushAlert && this.onPushAlert(m.data);
     };
     ws.onclose = ev => {
       clearInterval(this.hb);
