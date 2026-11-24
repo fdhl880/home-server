@@ -514,6 +514,10 @@ app.get('/widgets/terminal-widget.json', (req, res) => {
     res.set('Cache-Control', 'no-cache');
     res.sendFile(path.join(__dirname, 'public', 'widgets', 'terminal-widget.json'));
 });
+app.use('/icons', express.static(path.join(__dirname, 'public', 'icons'), {
+    maxAge: '1h',
+    setHeaders: (res) => { res.set('Cache-Control', 'public, max-age=3600'); }
+}));
 app.use(express.static(path.join(__dirname, 'public'), {
     etag: false,
     maxAge: 0,

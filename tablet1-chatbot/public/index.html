@@ -14,6 +14,18 @@
 <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
 <title>Bloomberg Terminal</title>
 <link rel="stylesheet" href="/terminal/css/terminal.css?v=20261124b">
+<script>
+window.__bbgDeferredInstall = null;
+window.__bbgSwPromise = null;
+window.addEventListener('beforeinstallprompt', function(e) {
+  e.preventDefault();
+  window.__bbgDeferredInstall = e;
+  window.dispatchEvent(new CustomEvent('bbg-install-ready'));
+});
+if ('serviceWorker' in navigator) {
+  window.__bbgSwPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function() { return null; });
+}
+</script>
 </head>
 <body>
 <div id="app">

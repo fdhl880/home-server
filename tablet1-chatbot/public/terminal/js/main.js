@@ -853,7 +853,7 @@ if (!net.adapter && hub.state === 'AUTH_REQUIRED' && !authVerifiedOnce) {
 // BLOOMBERG TERMINAL PWA INSTALLER, WIDGET LAUNCHER & MULTI-CHANNEL PUSH
 // =====================================================================
 let swRegistration = null;
-let deferredInstallPrompt = null;
+let deferredInstallPrompt = window.__bbgDeferredInstall || null;
 
 function urlBase64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -954,13 +954,11 @@ hub.onPushAlert = (payload) => {
   triggerOsNotification(payload);
 };
 
-// Register Service Worker
+// Immediate Service Worker sync (picks up early <head> registration so Chrome never misses install criteria)
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', async () => {
-    try {
-      swRegistration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
-    } catch {}
-  });
+  Promise.resolve(window.__bbgSwPromise || navigator.serviceWorker.register('/sw.js', { scope: '/' }))
+    .then(reg => { if (reg) swRegistration = reg; })
+    .catch(() => {});
 }
 
 // Header Widget Button (#btnWidget)
@@ -987,21 +985,30 @@ function syncInstallBtn() {
     btnInstall.style.color = '#00d26a';
     btnInstall.style.borderColor = '#00d26a';
     btnInstall.title = 'Bloomberg Terminal running in Native Standalone Mode';
+  } else if (deferredInstallPrompt) {
+    btnInstall.textContent = 'INSTALL APP';
+    btnInstall.style.background = '#00d26a';
+    btnInstall.style.color = '#000';
+    btnInstall.style.borderColor = '#00d26a';
+    btnInstall.title = 'Native Android/Desktop Install Ready — Click to Install Bloomberg Terminal';
   }
 }
 syncInstallBtn();
 
+window.addEventListener('bbg-install-ready', () => {
+  deferredInstallPrompt = window.__bbgDeferredInstall || deferredInstallPrompt;
+  syncInstallBtn();
+});
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredInstallPrompt = e;
-  if (btnInstall) {
-    btnInstall.textContent = 'INSTALL APP';
-    btnInstall.style.display = 'inline-block';
-  }
+  window.__bbgDeferredInstall = e;
+  syncInstallBtn();
 });
 
 window.addEventListener('appinstalled', () => {
   deferredInstallPrompt = null;
+  window.__bbgDeferredInstall = null;
   syncInstallBtn();
   showBloombergToast({
     title: 'BLOOMBERG TERMINAL // APPLICATION INSTALLED',
@@ -1010,24 +1017,41 @@ window.addEventListener('appinstalled', () => {
   });
 });
 
-function showInstallGuideModal() {
+async function showInstallGuideModal() {
   const existing = $('#pwaInstallModal');
   if (existing) existing.remove();
   const isSecure = window.isSecureContext || location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  const ua = navigator.userAgent || '';
+  const isInAppBrowser = /Telegram|WhatsApp|FBAN|FBAV|Instagram|Line\/|wv\)/i.test(ua);
+  const swReady = Boolean(swRegistration && (swRegistration.active || swRegistration.installing || swRegistration.waiting)) || Boolean(navigator.serviceWorker && navigator.serviceWorker.controller);
+  let manifestOk = false;
+  try {
+    const mr = await fetch('/manifest.webmanifest', { cache: 'no-store' });
+    manifestOk = mr.ok;
+  } catch {}
+
   const ov = h('div', {
     id: 'pwaInstallModal',
     style: 'position:fixed;inset:0;z-index:99998;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;padding:16px',
     onclick: ev => { if (ev.target === ov) ov.remove(); }
   },
-    h('div', { style: 'width:490px;max-width:94vw;background:#0a0d12;border:1px solid #ff6600;padding:16px 18px;color:#e6edf3;line-height:1.55' },
-      h('div', { style: 'color:#ff6600;font-weight:700;font-size:12.5px;border-bottom:1px solid #262b33;padding-bottom:8px;margin-bottom:10px;letter-spacing:0.6px', text: 'BLOOMBERG TERMINAL // NATIVE APPLICATION INSTALLATION' }),
-      h('div', { style: 'font-size:11.5px;margin-bottom:10px' },
-        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#00d26a', text: '1. Android Chrome / Tablet: ' }), 'Open Chrome menu (three dots at top-right) and select ', h('b', { text: '"Install app" or "Add to Home screen"' }), '.'),
-        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#4da3ff', text: '2. iOS / iPadOS Safari: ' }), 'Tap the ', h('b', { text: 'Share' }), ' icon and select ', h('b', { text: '"Add to Home Screen"' }), '.'),
-        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#ffb000', text: '3. Desktop Chrome / Edge: ' }), 'Click the ', h('b', { text: 'Install' }), ' icon in the right end of the address bar.'),
-        !isSecure ? h('div', { style: 'margin-top:8px;padding:7px;background:#1a1203;border:1px solid #ffb00066;font-size:11px;color:#ffd580', text: `Note: Current origin (${location.origin}) is non-HTTPS LAN HTTP. For full native PWA install & background Web Push on the tablet itself, open http://localhost:${location.port || '4000'} or serve via HTTPS.` }) : null
+    h('div', { style: 'width:510px;max-width:95vw;background:#0a0d12;border:1px solid #ff6600;padding:16px 18px;color:#e6edf3;line-height:1.55' },
+      h('div', { style: 'color:#ff6600;font-weight:700;font-size:12.5px;border-bottom:1px solid #262b33;padding-bottom:8px;margin-bottom:10px;letter-spacing:0.6px', text: 'BLOOMBERG TERMINAL // ANDROID & DESKTOP INSTALLATION DIAGNOSTICS' }),
+      h('div', { class: 'xgrid2', style: 'margin-bottom:10px' },
+        h('div', { class: 'xstat' }, h('div', { class: 'xl', text: 'HTTPS / SECURE CONTEXT' }), h('div', { class: 'xv', style: `font-size:11.5px;color:${isSecure ? '#00d26a' : '#ff453a'}`, text: isSecure ? 'PASS (HTTPS)' : 'FAIL (HTTP)' })),
+        h('div', { class: 'xstat' }, h('div', { class: 'xl', text: 'SERVICE WORKER' }), h('div', { class: 'xv', style: `font-size:11.5px;color:${swReady ? '#00d26a' : '#ffb000'}`, text: swReady ? 'ACTIVE' : 'INITIALIZING (RELOAD)' })),
+        h('div', { class: 'xstat' }, h('div', { class: 'xl', text: 'MANIFEST.WEBMANIFEST' }), h('div', { class: 'xv', style: `font-size:11.5px;color:${manifestOk ? '#00d26a' : '#ff453a'}`, text: manifestOk ? 'VALID' : 'UNREACHABLE' })),
+        h('div', { class: 'xstat' }, h('div', { class: 'xl', text: 'BROWSER ENVIRONMENT' }), h('div', { class: 'xv', style: `font-size:11.5px;color:${isInAppBrowser ? '#ff453a' : '#00d26a'}`, text: isInAppBrowser ? 'IN-APP WEBVIEW (OPEN IN CHROME)' : 'STANDARD BROWSER' }))
+      ),
+      h('div', { style: 'font-size:11px;margin-bottom:10px' },
+        isInAppBrowser ? h('div', { style: 'margin-bottom:7px;padding:7px;background:#240c0a;border:1px solid #ff453a;color:#ffd2cf', text: 'DETECTED IN-APP BROWSER (Telegram/WhatsApp/WebView): Browser bawaan aplikasi chat TIDAK bisa install PWA. Tap menu kanan atas -> pilih "Open in Chrome".' }) : null,
+        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#00d26a', text: '1. Android Chrome (Cara Install Resmi): ' }), 'Pastikan buka di ', h('b', { text: 'Google Chrome mode normal (BUKAN Incognito)' }), ' -> tap menu titik tiga (⋮) kanan atas -> pilih ', h('b', { text: '"Add to Home screen" -> "Install"' }), ' (pada Chrome Android versi baru, tombol Install ada di dalam menu "Add to Home screen").'),
+        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#ffb000', text: '2. Jika Hanya Muncul "Create Shortcut" (Bukan Install): ' }), 'Pastikan sudah reload 1x setelah Service Worker ACTIVE, tidak dalam mode Incognito, dan tidak ada versi aplikasi lama yang masih terinstall di HP.'),
+        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#4da3ff', text: '3. iOS Safari: ' }), 'Tap tombol ', h('b', { text: 'Share' }), ' -> pilih ', h('b', { text: '"Add to Home Screen"' }), '.'),
+        !isSecure ? h('div', { style: 'margin-top:6px;padding:7px;background:#1a1203;border:1px solid #ffb00066;color:#ffd580', text: `Origin ${location.origin} bukan HTTPS. Buka melalui link HTTPS cloudflared Anda agar opsi Install Native muncul.` }) : null
       ),
       h('div', { style: 'display:flex;justify-content:flex-end;gap:8px' },
+        h('button', { style: 'border-color:#00d26a;color:#00d26a', text: 'RELOAD PAGE', onclick: () => location.reload() }),
         h('button', { class: 'on', text: 'CLOSE', onclick: () => ov.remove() })
       )
     )
@@ -1037,10 +1061,12 @@ function showInstallGuideModal() {
 
 if (btnInstall) {
   btnInstall.addEventListener('click', async () => {
-    if (deferredInstallPrompt) {
-      deferredInstallPrompt.prompt();
-      try { await deferredInstallPrompt.userChoice; } catch {}
+    const promptEv = deferredInstallPrompt || window.__bbgDeferredInstall;
+    if (promptEv) {
+      promptEv.prompt();
+      try { await promptEv.userChoice; } catch {}
       deferredInstallPrompt = null;
+      window.__bbgDeferredInstall = null;
       syncInstallBtn();
     } else {
       showInstallGuideModal();
