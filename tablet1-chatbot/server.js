@@ -594,8 +594,12 @@ function savePortfolio(data) {
 const quoteCache = {
     data: {},
     lastFetched: 0,
-    usdIdr: 16250 // fallback USD to IDR rate
+    usdIdr: 18218 // live USD to IDR rate (auto-refreshed via Yahoo + open.er-api + Frankfurter)
 };
+function getUsdIdr() {
+    const r = Number(quoteCache.usdIdr);
+    return (Number.isFinite(r) && r > 10000 && r < 50000) ? r : 18218;
+}
 
 const TRACKED_ASSETS = [
     // ------------------------------------------------------------
@@ -879,7 +883,7 @@ const TRACKED_ASSETS = [
     // ------------------------------------------------------------
     // 6. FOREX & CURRENCY MAJORS (VALAS) - 15 ASSETS
     // ------------------------------------------------------------
-    { symbol: 'USDIDR=X',name: 'USD / IDR Spot',         category: 'Forex',      currency: 'IDR', price: 16250 },
+    { symbol: 'USDIDR=X',name: 'USD / IDR Spot',         category: 'Forex',      currency: 'IDR', price: 18218 },
     { symbol: 'EURUSD=X',name: 'EUR / USD',              category: 'Forex',      currency: 'USD', price: 1.085 },
     { symbol: 'GBPUSD=X',name: 'GBP / USD',              category: 'Forex',      currency: 'USD', price: 1.305 },
     { symbol: 'USDJPY=X',name: 'USD / JPY',              category: 'Forex',      currency: 'USD', price: 149.50 },
@@ -1083,10 +1087,16 @@ let refreshRound = 0;
 
 async function refreshQuotes() {
     try {
-        // 1. Always refresh USD/IDR first
+        // 1. Always refresh USD/IDR first (Yahoo primary + open.er-api / Frankfurter fallback)
         const fxQuote = await fetchYahooQuote('USDIDR=X');
-        if (fxQuote && fxQuote.price > 10000) {
+        if (fxQuote && fxQuote.price > 10000 && fxQuote.price < 50000) {
             quoteCache.usdIdr = fxQuote.price;
+        } else {
+            try {
+                const aggFx = require('./terminal/api/aggregator');
+                const liveFx = await aggFx.getLiveUsdIdrRate(quoteCache.usdIdr);
+                if (liveFx > 10000 && liveFx < 50000) quoteCache.usdIdr = liveFx;
+            } catch (_) {}
         }
 
         // 2. Refresh priority tickers in batches of 8 (avoid Yahoo rate limit)
@@ -1262,7 +1272,7 @@ registerBgJob(refreshFearAndGreed, 30 * 60 * 1000, true);
 app.get('/api/portfolio', (req, res) => {
     try {
         const port = loadPortfolio();
-        const usdRate = quoteCache.usdIdr || 16250;
+        const usdRate = getUsdIdr();
 
         let totalHoldingsValue = 0;
         let totalInvested = 0;
@@ -1568,7 +1578,7 @@ app.post('/api/portfolio/trade', (req, res) => {
         const isMarketOpen = marketSchedule.isOpen;
 
         const port = loadPortfolio();
-        const usdRate = quoteCache.usdIdr || 16250;
+        const usdRate = getUsdIdr();
         const isUsd = (currency === 'USD');
 
         // Determine immediate execution vs working order
@@ -1896,7 +1906,7 @@ function processWorkingOrders() {
         const port = loadPortfolio();
         if (!port.workingOrders || port.workingOrders.length === 0) return;
 
-        const usdRate = quoteCache.usdIdr || 16250;
+        const usdRate = getUsdIdr();
         let modified = false;
 
         for (let i = port.workingOrders.length - 1; i >= 0; i--) {
@@ -2035,7 +2045,7 @@ const handleDmaBuy = (req, res) => {
         if (isNaN(requestedQty) || requestedQty <= 0) {
             const rawPrice = cachedQuote?.price || assetDef?.price || 0;
             const isUsd = (cachedQuote?.currency || assetDef?.currency) === 'USD';
-            const priceInIdr = isUsd ? rawPrice * (quoteCache.usdIdr || 16250) : rawPrice;
+            const priceInIdr = isUsd ? rawPrice * (getUsdIdr()) : rawPrice;
             if (priceInIdr > 50000000) {
                 requestedQty = 0.01; // e.g. BTC
             } else if (priceInIdr > 10000000) {
@@ -2055,7 +2065,7 @@ const handleDmaBuy = (req, res) => {
         const name = cachedQuote?.name || assetDef?.name || symbol;
 
         const port = loadPortfolio();
-        const usdRate = quoteCache.usdIdr || 16250;
+        const usdRate = getUsdIdr();
         const isUsd = (currency === 'USD');
         const priceInIdr = isUsd ? price * usdRate : price;
         const totalValueIdr = Math.round(qty * priceInIdr);
@@ -2396,8 +2406,8 @@ app.post('/api/quotes/batch', async (req, res) => {
                     const item = chunk[idx];
                     if (q && q.price > 0) {
                         if (q.currency === 'USD') {
-                            q.priceIdr = q.price * (quoteCache.usdIdr || 16250);
-                            q.prevCloseIdr = q.prevClose * (quoteCache.usdIdr || 16250);
+                            q.priceIdr = q.price * (getUsdIdr());
+                            q.prevCloseIdr = q.prevClose * (getUsdIdr());
                         } else {
                             q.priceIdr = q.price;
                             q.prevCloseIdr = q.prevClose;
@@ -2433,8 +2443,8 @@ app.get('/api/quote/:symbol', async (req, res) => {
             if (fetched && fetched.price > 0) {
                 q = fetched;
                 if (q.currency === 'USD') {
-                    q.priceIdr = q.price * (quoteCache.usdIdr || 16250);
-                    q.prevCloseIdr = q.prevClose * (quoteCache.usdIdr || 16250);
+                    q.priceIdr = q.price * (getUsdIdr());
+                    q.prevCloseIdr = q.prevClose * (getUsdIdr());
                 } else {
                     q.priceIdr = q.price;
                     q.prevCloseIdr = q.prevClose;
@@ -2466,8 +2476,8 @@ app.get('/api/quote/:symbol', async (req, res) => {
             low: defaultPx * 0.98,
             volume: 100000,
             currency: currency,
-            priceIdr: currency === 'USD' ? defaultPx * (quoteCache.usdIdr || 16250) : defaultPx,
-            prevCloseIdr: currency === 'USD' ? defaultPx * (quoteCache.usdIdr || 16250) : defaultPx,
+            priceIdr: currency === 'USD' ? defaultPx * (getUsdIdr()) : defaultPx,
+            prevCloseIdr: currency === 'USD' ? defaultPx * (getUsdIdr()) : defaultPx,
             sparkline: [defaultPx, defaultPx],
             timestamp: Date.now()
         };
@@ -2945,7 +2955,7 @@ registerBgJob(refreshRealBinanceState, 10000, true);
 function computeRoiPnlProjection({ entryPrice, tp1Price, tp2Price, slPrice, initSlPrice, direction = 'LONG', leverage = 20, marginIdr = 0, marginUsd = 0 }) {
     const entry = Number(entryPrice) || 0;
     const lev = Number(leverage) || 20;
-    const fx = 16500;
+    const fx = getUsdIdr();
     const realWalletUsd = Math.max(0.0, Number(getRealBinanceWallet().total_wallet_balance) || 0);
     const mUsd = Number(marginUsd) > 0 ? Number(marginUsd) : (Number(marginIdr) > 0 && Number(marginIdr) !== 50000 ? Number(marginIdr) / fx : realWalletUsd);
     const mIdr = Math.round(mUsd * fx);
@@ -3002,8 +3012,8 @@ function enrichPositionWithRoiProjection(pos) {
     const dir = String(pos.direction || pos.side || 'LONG').toUpperCase();
     const lev = Number(pos.leverage || 20);
     const realWalletUsd = Math.max(0.0, Number(getRealBinanceWallet().total_wallet_balance) || 0);
-    const mUsd = Number(pos.position_size_usd || 0) || (Number(pos.position_size_idr || 0) > 0 ? Number(pos.position_size_idr) / 16500 : realWalletUsd);
-    const mIdr = Number(pos.position_size_idr || 0) || Math.round(mUsd * 16500);
+    const mUsd = Number(pos.position_size_usd || 0) || (Number(pos.position_size_idr || 0) > 0 ? Number(pos.position_size_idr) / getUsdIdr() : realWalletUsd);
+    const mIdr = Number(pos.position_size_idr || 0) || Math.round(mUsd * getUsdIdr());
 
     const proj = computeRoiPnlProjection({
         entryPrice: entry,
@@ -3027,7 +3037,7 @@ function enrichPositionWithRoiProjection(pos) {
         livePnlIdr = Math.round((liveRoiPct / 100) * mIdr);
     } else if (mUsd > 0 && pos.unrealized_pnl !== undefined && pos.unrealized_pnl !== null && !t.lastPrice) {
         livePnlUsd = Number(Number(pos.unrealized_pnl).toFixed(3));
-        livePnlIdr = Math.round(livePnlUsd * 16500);
+        livePnlIdr = Math.round(livePnlUsd * getUsdIdr());
         liveRoiPct = Number(((livePnlUsd / mUsd) * 100).toFixed(2));
     }
 
@@ -3104,7 +3114,7 @@ function getLocalPositions() {
                         current_price: Number(lp.mark_price || p.current_price || entryPx),
                         liquidation_price: liqPx,
                         position_size_usd: isoMargin,
-                        position_size_idr: Math.round(isoMargin * 16500),
+                        position_size_idr: Math.round(isoMargin * getUsdIdr()),
                         unrealized_pnl: Number(lp.unrealized_pnl ?? p.unrealized_pnl ?? 0),
                         stop_loss: slPx,
                         take_profit: tp2Px,
@@ -3141,7 +3151,7 @@ function getLocalPositions() {
                     current_price: Number(lp.mark_price || entryPx),
                     liquidation_price: Number(lp.liquidation_price || 0),
                     position_size_usd: isoMargin,
-                    position_size_idr: Math.round(isoMargin * 16500),
+                    position_size_idr: Math.round(isoMargin * getUsdIdr()),
                     unrealized_pnl: Number(lp.unrealized_pnl || 0),
                     stop_loss: Number(lp.algo_sl || 0),
                     take_profit: Number(lp.algo_tp || 0),
@@ -3280,7 +3290,7 @@ function buildFallbackScan(symbol) {
             take_profit_2: tp2,
             risk_reward_ratio: "1:2.0",
             leverage: 20,
-            position_size_idr: Math.round((getRealBinanceWallet().total_wallet_balance || 1.78) * 16500),
+            position_size_idr: Math.round((getRealBinanceWallet().total_wallet_balance || 1.78) * getUsdIdr()),
             sl_distance_pct: 1.2,
             tp_distance_pct: 2.4,
             reasoning: "20x Isolated Sniper Plan: Stage-0 Scratch Guard +0.30R, TP1 Lock +0.55R -> SL +0.38R, Runner TP2 +2.0R.",
@@ -3465,7 +3475,7 @@ function enrichScanWithMathAndRoi(scanObj, symbol) {
     // Ensure ROI & PnL Projection (TP1, TP2, SL) dynamically sized to real live Binance Futures balance
     const lev = Number(l3.leverage || l3.recommended_leverage || l5.leverage || 20);
     const liveWalletUsd = Math.max(0.5, Number(getRealBinanceWallet().total_wallet_balance) || 1.78);
-    const marginIdr = Math.round(liveWalletUsd * 16500);
+    const marginIdr = Math.round(liveWalletUsd * getUsdIdr());
     const roiProj = computeRoiPnlProjection({
         entryPrice: px,
         tp1Price: tp1,
@@ -3763,6 +3773,7 @@ app.get('/api/crypto-futures/status', (req, res) => {
         binance_available_balance_usdt: binanceAvailable,
         binance_unrealized_pnl_usdt: effectiveUpnl,
         binance_live_equity_usdt: Number((binanceBalance + effectiveUpnl).toFixed(4)),
+        usd_idr_rate: Math.round(getUsdIdr()),
         pluang_connected: false,
         max_budget_idr: cfg.max_budget_idr || 50000,
         max_leverage: cfg.max_leverage || 20,
@@ -3885,7 +3896,7 @@ app.get('/api/futures/wallet', (req, res) => {
         cross_unrealized_pnl_usdt: Number(liveWallet.cross_unrealized_pnl || 0),
         isolated_unrealized_pnl_usdt: Number(isoUpnlW.toFixed(4)),
         total_unrealized_pnl_usdt: totalUpnlW,
-        balance_idr: Math.round(totalUsdt * 16500),
+        balance_idr: Math.round(totalUsdt * getUsdIdr()),
         leverage: cfg.max_leverage || 20,
         margin_type: cfg.margin_type || 'ISOLATED'
     });
@@ -4138,8 +4149,8 @@ app.post('/api/crypto-futures/execute', (req, res) => {
             leverage: 20,
             margin_type: "ISOLATED",
             sizing_mode: "ALL_IN",
-            position_size_idr: signal.position_size_idr || (execRes.position_size_usdt ? Math.round(execRes.position_size_usdt * 16500) : 0),
-            position_size_usd: execRes.position_size_usdt || signal.position_size_usd || (signal.position_size_idr ? (signal.position_size_idr / 16500).toFixed(2) : "0.00"),
+            position_size_idr: signal.position_size_idr || (execRes.position_size_usdt ? Math.round(execRes.position_size_usdt * getUsdIdr()) : 0),
+            position_size_usd: execRes.position_size_usdt || signal.position_size_usd || (signal.position_size_idr ? (signal.position_size_idr / getUsdIdr()).toFixed(2) : "0.00"),
             risk_reward_ratio: signal.risk_reward_ratio || "1:2.0",
             confidence_score: signal.confidence_score || 85,
             setup_name: signal.setup_name || "MANUAL_EXECUTION",
@@ -6196,6 +6207,7 @@ try {
         readJsonSafeSync,
         dispatchNativePushAlert,
         isAuthenticatedReq: (req) => tokensMatch(extractRequestToken(req), activeDashToken),
+        getUsdIdr,
         baseDir: opts.baseDir || (opts.bmailFile ? path.dirname(opts.bmailFile) : __dirname)
     });
 } catch (e) { console.error('[terminal:extensions] mount error:', e.message); }

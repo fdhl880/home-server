@@ -61,6 +61,54 @@ function otcKline(sym, interval = '1h', limit = 300) {
   return { symbol: sym, interval, source: 'otc-indicative', mode: 'N/A', candles: [] };
 }
 
+const DEFAULT_USD_IDR = 18218;
+
+async function fetchErApiRates() {
+  return U.cached('fx:erapi:usd', 180000, async () => {
+    try {
+      const j = await U.getJson('https://open.er-api.com/v6/latest/USD', { provider: 'open-er-api', timeout: 6000, mode: 'LIVE' });
+      if (j && j.rates && Number(j.rates.IDR) > 10000) return { rates: j.rates, source: 'open-er-api' };
+    } catch {}
+    const f = await U.getJson('https://api.frankfurter.app/latest?from=USD', { provider: 'frankfurter', timeout: 6000, mode: 'LIVE' });
+    if (f && f.rates && Number(f.rates.IDR) > 10000) return { rates: f.rates, source: 'frankfurter' };
+    throw new Error('fx fallback providers unavailable');
+  });
+}
+
+async function fxFallbackQuote(sym) {
+  const clean = String(sym || '').toUpperCase().replace(/=X$/, '');
+  const { rates, source } = await fetchErApiRates();
+  let px = null;
+  if (clean.startsWith('USD') && clean.length === 6) {
+    px = Number(rates[clean.slice(3)]);
+  } else if (clean.endsWith('USD') && clean.length === 6) {
+    const r = Number(rates[clean.slice(0, 3)]);
+    if (r > 0) px = 1 / r;
+  } else if (clean.length === 3 && rates[clean]) {
+    px = Number(rates[clean]);
+  }
+  if (!Number.isFinite(px) || px <= 0) throw new Error('fx pair not in fallback: ' + sym);
+  return U.tick({ symbol: sym, asset: 'forex', price: px, prevClose: px, high: px, low: px, ts: Date.now(), source, mode: 'LIVE' });
+}
+
+async function getLiveUsdIdrRate(fallback = DEFAULT_USD_IDR) {
+  try {
+    const q = await U.cached('fx:usdidr:live', 120000, async () => {
+      try {
+        const y = await yahoo.quote('USDIDR=X');
+        if (y && Number(y.price) > 10000 && Number(y.price) < 50000) return Number(y.price);
+      } catch {}
+      try {
+        const fx = await fxFallbackQuote('USDIDR=X');
+        if (fx && Number(fx.price) > 10000 && Number(fx.price) < 50000) return Number(fx.price);
+      } catch {}
+      return null;
+    });
+    if (Number.isFinite(q) && q > 10000 && q < 50000) return q;
+  } catch {}
+  return Number(fallback) > 10000 ? Number(fallback) : DEFAULT_USD_IDR;
+}
+
 async function quote(symbol, market) {
   const sym = String(symbol).trim().toUpperCase();
   const { providerSym, forceCrypto } = resolveProviderSym(sym);
@@ -76,8 +124,14 @@ async function quote(symbol, market) {
     }
     try {
       const q = await yahoo.quote(providerSym);
+      if (providerSym === 'USDIDR=X' && !(Number(q.price) > 10000 && Number(q.price) < 50000)) {
+        throw new Error('invalid yahoo USDIDR price');
+      }
       return { ...q, symbol: sym };
     } catch (e) { errs.push('yahoo: ' + e.message); }
+    if (providerSym.endsWith('=X')) {
+      try { const q = await fxFallbackQuote(providerSym); return { ...q, symbol: sym }; } catch (e) { errs.push('fx-fallback: ' + e.message); }
+    }
     if (twelve.enabled()) {
       try { const q = await twelve.quote(providerSym); return { ...q, symbol: sym }; } catch (e) { errs.push('twelvedata: ' + e.message); }
     }
@@ -122,4 +176,4 @@ async function search(q) {
   if (!out.length && res.every(r => r.status === 'rejected')) throw new Error(res.map(r => r.reason.message).join(' | '));
   return out;
 }
-module.exports = { quote, kline, search, isCrypto, resolveProviderSym, OTC_DESK };
+module.exports = { quote, kline, search, isCrypto, resolveProviderSym, getLiveUsdIdrRate, DEFAULT_USD_IDR, OTC_DESK };

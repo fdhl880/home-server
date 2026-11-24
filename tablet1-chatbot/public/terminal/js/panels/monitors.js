@@ -511,7 +511,7 @@ export function mountFXFC(body, ctx) {
     const q = qMap[activePair] || {};
     const raw = activePair.replace('=X', '');
     const base = raw.slice(0, 3), quote = raw.slice(3, 6);
-    const fallbacks = { EURUSD: 1.085, USDJPY: 153.2, GBPUSD: 1.292, USDIDR: 17968, AUDUSD: 0.658, USDSGD: 1.335, USDCHF: 0.878 };
+    const fallbacks = { EURUSD: 1.085, USDJPY: 153.2, GBPUSD: 1.292, USDIDR: 18218, AUDUSD: 0.658, USDSGD: 1.335, USDCHF: 0.878 };
     const spot = q.price || fallbacks[raw] || 1.0;
     const rB = RATES[base] ?? 4.0, rQ = RATES[quote] ?? 3.5;
     const isLarge = quote === 'JPY' || quote === 'IDR';

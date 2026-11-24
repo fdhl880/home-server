@@ -2,6 +2,8 @@ import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, fmtTime, dirCls, LS } from '.
 import { get, getRaw, tickOk, apiFetch } from '../api.js';
 import { attachTechnicalMasterCanvas } from './charts.js?v=20261124b';
 
+let liveUsdIdrRate = 18218;
+
 export function mountBOT(body, ctx) {
   body.classList.add('fill');
   const tb = h('div', { class: 'tb' });
@@ -78,8 +80,8 @@ export function mountBOT(body, ctx) {
     const e = Number(entryPx) || 0;
     const t = Number(targetPx) || 0;
     const l = Number(lev) || 20;
-    const mUsd = Number(marginUsd) > 0 ? Number(marginUsd) : (Number(marginIdr) > 0 ? Number(marginIdr) / 16500 : 0);
-    const mIdr = Number(marginIdr) > 0 ? Number(marginIdr) : Math.round(mUsd * 16500);
+    const mUsd = Number(marginUsd) > 0 ? Number(marginUsd) : (Number(marginIdr) > 0 ? Number(marginIdr) / liveUsdIdrRate : 0);
+    const mIdr = Number(marginIdr) > 0 ? Number(marginIdr) : Math.round(mUsd * liveUsdIdrRate);
     if (e <= 0 || t <= 0) return { price: 0, move_pct: 0, roi_pct: 0, pnl_idr: 0, pnl_usd: 0 };
     const sign = String(dir || 'LONG').toUpperCase() === 'SHORT' ? -1 : 1;
     const movePct = sign * ((t - e) / e) * 100;
@@ -111,9 +113,9 @@ export function mountBOT(body, ctx) {
       const { tp1, tp2 } = ensureDistinctTp(entry, sl, p.take_profit_1 || 0, p.take_profit_2 || p.take_profit || 0, dir);
       const liq = +(p.liquidation_price || 0);
       const mUsd = +(p.position_size_usd || latestWalletUsdt || 0);
-      const mIdr = +(p.position_size_idr || Math.round(mUsd * 16500));
+      const mIdr = +(p.position_size_idr || Math.round(mUsd * liveUsdIdrRate));
       const pnlUsd = +(p.pnl_usd ?? p.unrealized_pnl ?? p.unrealizedProfit ?? 0);
-      const pnlIdr = +(p.pnl_idr ?? Math.round(pnlUsd * 16500));
+      const pnlIdr = +(p.pnl_idr ?? Math.round(pnlUsd * liveUsdIdrRate));
       const pnlPct = +(p.pnl_pct ?? (mUsd > 0 ? (pnlUsd / mUsd) * 100 : 0));
       const sym = toBinanceSym(p.binance_pair || p.symbol);
       const tpSame = scanResult && toBinanceSym(scanResult.symbol) === sym
@@ -156,7 +158,7 @@ export function mountBOT(body, ctx) {
     const sl = +(l3.stop_loss || l5.stop_loss || (entry > 0 ? (dir === 'LONG' ? entry * 0.988 : entry * 1.012) : 0));
     const { tp1, tp2 } = ensureDistinctTp(entry, sl, l3.take_profit_1 || tp.tp1_price || 0, l3.take_profit_2 || l3.take_profit || tp.tp2_price || 0, dir);
     const mUsd = +(latestWalletUsdt > 0 ? latestWalletUsdt : (+(l3.roi_pnl_projection?.margin_usd || 0))).toFixed(2);
-    const mIdr = Math.round(mUsd * 16500);
+    const mIdr = Math.round(mUsd * liveUsdIdrRate);
     return {
       isLivePosition: false,
       posObj: null,
@@ -453,7 +455,7 @@ export function mountBOT(body, ctx) {
     const dirChart = vm?.dir || 'LONG';
     const levChart = +(vm?.lev || 20);
     const marginUsdChart = +(vm?.mUsd || latestWalletUsdt || 0);
-    const marginIdrChart = +(vm?.mIdr || Math.round(marginUsdChart * 16500));
+    const marginIdrChart = +(vm?.mIdr || Math.round(marginUsdChart * liveUsdIdrRate));
     const entryPx = +(vm?.entry || botActiveBar?.close || 0);
     const slPx = +(vm?.sl || 0);
     const liqPx = +(vm?.liq || 0);
@@ -839,6 +841,14 @@ export function mountBOT(body, ctx) {
     sc.textContent = '';
 
     const st = (stRes.ok && stRes.data) || {};
+    if (Number(st.usd_idr_rate) > 10000 && Number(st.usd_idr_rate) < 50000) {
+      liveUsdIdrRate = Number(st.usd_idr_rate);
+    } else {
+      get('quote', { symbols: 'USDIDR=X' }, 60000).then(fxEnv => {
+        const px = fxEnv && fxEnv.ok && Array.isArray(fxEnv.data) && fxEnv.data[0] && Number(fxEnv.data[0].price);
+        if (px > 10000 && px < 50000) liveUsdIdrRate = px;
+      }).catch(() => {});
+    }
     const posList = (pRes.ok && Array.isArray(pRes.data)) ? pRes.data : ((pRes.ok && pRes.data && pRes.data.positions) || []);
     const openPos = posList.filter(p => p.status === 'OPEN' || !p.status);
     currentOpenPositions = openPos;
@@ -892,7 +902,7 @@ export function mountBOT(body, ctx) {
     const wr = perf.win_rate_pct ?? 0;
     const netIdr = perf.net_total_pnl_idr ?? 0;
     const realizedIdr = perf.realized_pnl_idr ?? 0;
-    const netUsd = perf.net_total_pnl_usd ?? (netIdr / 16500);
+    const netUsd = perf.net_total_pnl_usd ?? (netIdr / liveUsdIdrRate);
     const pfVal = perf.profit_factor ?? 0;
     const bucketsCount = gw.total_active_buckets || 0;
 
@@ -908,7 +918,7 @@ export function mountBOT(body, ctx) {
       h('div', { class: 'k', text: 'TERMINAL NEWS SENTINEL FEED' }),
       h('div', { class: 'v lb sym', text: `BIAS: ${newsData.overall_bias || scanResult?.terminal_news_macro?.overall_bias || 'NEUTRAL'} (${newsData.overall_score ?? scanResult?.terminal_news_macro?.overall_score ?? '0.00'}) • ${auto.total_scans_done ?? st.total_scans_done ?? 0} SCANS COMPLETED` }),
       h('div', { class: 'k', text: 'LIVE BINANCE FUTURES WALLET' }),
-      h('div', { class: 'v am sym', text: `$${fmtNum(realWalletUsdt, 2)} USDT (${fmtIdr(realWalletUsdt * 16500)}) • AVAIL MARGIN: $${fmtNum(availWalletUsdt, 2)} USDT` }),
+      h('div', { class: 'v am sym', text: `$${fmtNum(realWalletUsdt, 2)} USDT (${fmtIdr(realWalletUsdt * liveUsdIdrRate)}) • AVAIL MARGIN: $${fmtNum(availWalletUsdt, 2)} USDT` }),
       h('div', { class: 'k', text: 'RISK BREAKER & QUANT HEALTH (BTCA)' }),
       (() => {
         const remSec = Number(brk.remaining_sec || (brk.breaker_until_ts ? Math.max(0, Number(brk.breaker_until_ts) - Date.now() / 1000) : 0));
@@ -958,7 +968,7 @@ export function mountBOT(body, ctx) {
       const tp1Now = vm.tp1;
       const tp2Now = vm.tp2;
       const marginUsdNow = +(vm.mUsd || 0).toFixed(2);
-      const marginIdrNow = Math.round(vm.mIdr || marginUsdNow * 16500);
+      const marginIdrNow = Math.round(vm.mIdr || marginUsdNow * liveUsdIdrRate);
       const tp1EtaClean = String(tp.eta_tp1_label || '~35m').replace(/\bmenit\b/gi, 'm').replace(/\bjam\b/gi, 'h').replace(/(\d+)j\b/gi, '$1h');
       const tp2EtaClean = String(tp.eta_label || '~2h 12m').replace(/\bmenit\b/gi, 'm').replace(/\bjam\b/gi, 'h').replace(/(\d+)j\b/gi, '$1h');
 
@@ -1245,7 +1255,7 @@ export function mountBOT(body, ctx) {
             const side = String(p.direction || p.side || 'LONG').toUpperCase();
             const lev = +(p.leverage || 20);
             const mUsd = +(p.position_size_usd || realWalletUsdt || 0).toFixed(2);
-            const mIdr = +(p.position_size_idr || Math.round(mUsd * 16500));
+            const mIdr = +(p.position_size_idr || Math.round(mUsd * liveUsdIdrRate));
             const entryPx = +(p.entry_price || p.entryPrice || 0);
             const markPx = +(p.current_price || entryPx || 0);
             const liqPx = +(p.liquidation_price || 0);
@@ -1303,7 +1313,7 @@ export function mountBOT(body, ctx) {
           style: 'padding:8px 10px;background:#040609;border-bottom:1px solid var(--border);font-size:11px;color:#99aabb;display:flex;justify-content:space-between'
         },
           h('span', { text: 'No open positions on Binance Futures (0 OPEN — Standing by on real-time scanner).' }),
-          h('span', { class: 'am sym', text: `WALLET READY: $${fmtNum(realWalletUsdt, 2)} USDT (${fmtIdr(realWalletUsdt * 16500)})` })
+          h('span', { class: 'am sym', text: `WALLET READY: $${fmtNum(realWalletUsdt, 2)} USDT (${fmtIdr(realWalletUsdt * liveUsdIdrRate)})` })
         )
       );
     }
@@ -1342,7 +1352,7 @@ export function mountBOT(body, ctx) {
               s.take_profit_2 || s.take_profit || 0,
               sDir
             );
-            const sigMarginIdr = Math.round(realWalletUsdt * 16500);
+            const sigMarginIdr = Math.round(realWalletUsdt * liveUsdIdrRate);
             const mTp1Sig = calcTargetRoiPnl(sEntry, sTp1, sDir, 20, sigMarginIdr, realWalletUsdt);
             const mTp2Sig = calcTargetRoiPnl(sEntry, sTp2, sDir, 20, sigMarginIdr, realWalletUsdt);
             const mSlSig = calcTargetRoiPnl(sEntry, sSl, sDir, 20, sigMarginIdr, realWalletUsdt);
@@ -1435,8 +1445,8 @@ export function mountPORT(body, ctx) {
     const e = Number(entryPx) || 0;
     const t = Number(targetPx) || 0;
     const l = Number(lev) || 20;
-    const mUsd = Number(marginUsd) > 0 ? Number(marginUsd) : (Number(marginIdr) > 0 ? Number(marginIdr) / 16500 : 0);
-    const mIdr = Number(marginIdr) > 0 ? Number(marginIdr) : Math.round(mUsd * 16500);
+    const mUsd = Number(marginUsd) > 0 ? Number(marginUsd) : (Number(marginIdr) > 0 ? Number(marginIdr) / liveUsdIdrRate : 0);
+    const mIdr = Number(marginIdr) > 0 ? Number(marginIdr) : Math.round(mUsd * liveUsdIdrRate);
     if (e <= 0 || t <= 0) return { price: 0, move_pct: 0, roi_pct: 0, pnl_idr: 0, pnl_usd: 0 };
     const sign = String(dir || 'LONG').toUpperCase() === 'SHORT' ? -1 : 1;
     const movePct = sign * ((t - e) / e) * 100;

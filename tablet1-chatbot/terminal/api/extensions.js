@@ -341,8 +341,21 @@ function mountTerminalExtensions(app, deps) {
     readJsonSafeSync,
     dispatchNativePushAlert,
     isAuthenticatedReq,
+    getUsdIdr,
     baseDir
   } = deps;
+
+  async function resolveLiveFxIdr() {
+    const fallback = (typeof getUsdIdr === 'function' && Number(getUsdIdr()) > 10000)
+      ? Number(getUsdIdr())
+      : (agg.DEFAULT_USD_IDR || 18218);
+    if (testMode) return fallback;
+    try {
+      const live = await agg.getLiveUsdIdrRate(fallback);
+      if (Number.isFinite(live) && live > 10000 && live < 50000) return live;
+    } catch {}
+    return fallback;
+  }
 
   const FINANCE_FILE = path.join(baseDir, 'personal-finance.json');
 
@@ -759,7 +772,7 @@ function mountTerminalExtensions(app, deps) {
     writeJsonAtomicSync(FINANCE_FILE, data, 0o600);
   }
 
-  function computeFinanceSummary(fin) {
+  function computeFinanceSummary(fin, liveFxIdr = null) {
     const now = new Date();
     const wibMs = now.getTime() + 7 * 3600 * 1000;
     const wibNow = new Date(wibMs);
@@ -844,7 +857,9 @@ function mountTerminalExtensions(app, deps) {
     const vaultState = safeReadJson(path.join(resultsDir, 'vault_state.json'), {}) || {};
     const botWalletUsd = Number(autoState.binance_wallet_balance_usdt || 0);
     const botVaultUsd = Number(vaultState.locked_profit_vault_usdt || 0);
-    const fxIdr = 16500;
+    const fxIdr = (Number(liveFxIdr) > 10000 && Number(liveFxIdr) < 50000)
+      ? Number(liveFxIdr)
+      : ((typeof getUsdIdr === 'function' && Number(getUsdIdr()) > 10000) ? Number(getUsdIdr()) : (agg.DEFAULT_USD_IDR || 18218));
     const botWalletIdr = Math.round(botWalletUsd * fxIdr);
     const netCashIdr = totalIncomeAll - totalExpenseAll - totalSavingsAll;
     const bankTotalIdr = Math.max(0, netCashIdr) + totalSavingsAll;
@@ -930,6 +945,7 @@ function mountTerminalExtensions(app, deps) {
       categoryLimits: fin.categoryLimits || {},
       dailyTrend14d: Object.values(dailyMap),
       botSync: {
+        fxRateIdr: Math.round(fxIdr),
         walletUsd: botWalletUsd,
         walletIdr: botWalletIdr,
         vaultUsd: botVaultUsd,
@@ -938,12 +954,13 @@ function mountTerminalExtensions(app, deps) {
     };
   }
 
-  app.get('/api/finance', (req, res) => {
+  app.get('/api/finance', async (req, res) => {
     const fin = loadFinance();
-    res.json({ ok: true, data: { ...fin, summary: computeFinanceSummary(fin) } });
+    const liveFx = await resolveLiveFxIdr();
+    res.json({ ok: true, data: { ...fin, summary: computeFinanceSummary(fin, liveFx) } });
   });
 
-  app.post('/api/finance/buffett-apply', (req, res) => {
+  app.post('/api/finance/buffett-apply', async (req, res) => {
     const b = req.body || {};
     const monthlyIncomeIdr = Math.round(Number(b.monthlyIncomeIdr || 1000000));
     if (!Number.isFinite(monthlyIncomeIdr) || monthlyIncomeIdr < 100000 || monthlyIncomeIdr > 1e11) {
@@ -1008,7 +1025,8 @@ function mountTerminalExtensions(app, deps) {
 
     try {
       saveFinance(fin);
-      res.json({ ok: true, plan, bookedCount: booked.length, data: { ...fin, summary: computeFinanceSummary(fin) } });
+      const liveFx = await resolveLiveFxIdr();
+      res.json({ ok: true, plan, bookedCount: booked.length, data: { ...fin, summary: computeFinanceSummary(fin, liveFx) } });
     } catch {
       res.status(500).json({ ok: false, error: 'Failed applying Warren Buffett allocation' });
     }
@@ -1050,7 +1068,8 @@ function mountTerminalExtensions(app, deps) {
     } catch {
       return res.status(500).json({ ok: false, error: 'Failed saving personal finance transaction' });
     }
-    const summary = computeFinanceSummary(fin);
+    const liveFx = await resolveLiveFxIdr();
+    const summary = computeFinanceSummary(fin, liveFx);
 
     // Budget Discipline Push Alert when daily ceiling is crossed
     if (type === 'EXPENSE' && summary.todayExpense > summary.dailyLimitIdr && typeof dispatchNativePushAlert === 'function' && !testMode) {
@@ -1162,15 +1181,22 @@ function mountTerminalExtensions(app, deps) {
   // ------------------------------------------------------------------
   app.get('/api/widget/summary', async (req, res) => {
     const syms = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'GC=F', 'USDIDR=X'];
-    const quotes = await Promise.all(syms.map(async s => {
-      const q = await agg.quote(s).catch(() => ({}));
-      return {
-        symbol: s,
-        label: s === 'GC=F' ? 'GOLD' : s === 'USDIDR=X' ? 'USD/IDR' : s.replace('USDT', ''),
-        price: Number(q.price || 0),
-        chgPct: Number(q.chgPct || 0)
-      };
-    }));
+    const [quotes, liveFx] = await Promise.all([
+      Promise.all(syms.map(async s => {
+        const q = await agg.quote(s).catch(() => ({}));
+        return {
+          symbol: s,
+          label: s === 'GC=F' ? 'GOLD' : s === 'USDIDR=X' ? 'USD/IDR' : s.replace('USDT', ''),
+          price: Number(q.price || 0),
+          chgPct: Number(q.chgPct || 0)
+        };
+      })),
+      resolveLiveFxIdr()
+    ]);
+    const fxTile = quotes.find(q => q.symbol === 'USDIDR=X');
+    if (fxTile && !(fxTile.price > 10000 && fxTile.price < 50000)) {
+      fxTile.price = Math.round(liveFx);
+    }
 
     const authed = typeof isAuthenticatedReq === 'function' ? Boolean(isAuthenticatedReq(req)) : false;
     const positions = safeReadJson(positionsPath, []) || [];
@@ -1194,7 +1220,7 @@ function mountTerminalExtensions(app, deps) {
     let financeSummary = null;
     if (authed) {
       const fin = loadFinance();
-      const s = computeFinanceSummary(fin);
+      const s = computeFinanceSummary(fin, liveFx);
       financeSummary = {
         todayExpense: s.todayExpense,
         dailyLimitIdr: s.dailyLimitIdr,

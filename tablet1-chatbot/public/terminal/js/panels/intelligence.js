@@ -1602,7 +1602,7 @@ export function mountFIN(body, ctx) {
       h('div', { class: 'xstat' },
         h('div', { class: 'xl', text: 'TOTAL INTEGRATED NET WORTH' }),
         h('div', { class: 'xv', style: 'color:#00d26a', text: fmtIdr(s.totalIntegratedWealthIdr ?? ((s.bankTotalIdr || 0) + (botSync.walletIdr || 0))) }),
-        h('div', { class: 'xs', text: `Bank ${fmtIdr(s.bankTotalIdr || 0)} + Futures $${Number(botSync.walletUsd || 0).toFixed(2)} (Vault $${Number(botSync.vaultUsd || 0).toFixed(2)})` })
+        h('div', { class: 'xs', text: `Bank ${fmtIdr(s.bankTotalIdr || 0)} + Futures $${Number(botSync.walletUsd || 0).toFixed(2)} (FX ${fmtIdr(botSync.fxRateIdr || 18218)})` })
       )
     ));
 
