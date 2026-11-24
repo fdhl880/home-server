@@ -1600,11 +1600,41 @@ export function mountFIN(body, ctx) {
         h('div', { class: 'xs', text: `Fixed Income: ${fmtIdr(s.monthlyIncomeTarget)} | Saved: ${fmtIdr(s.monthSavings)}` })
       ),
       h('div', { class: 'xstat' },
-        h('div', { class: 'xl', text: 'RESERVES + TRADING CAPITAL' }),
-        h('div', { class: 'xv', style: 'color:#00d26a', text: fmtIdr((s.totalSavingsIdr || 0) + (botSync.walletIdr || 0)) }),
-        h('div', { class: 'xs', text: `Binance Wallet $${Number(botSync.walletUsd || 0).toFixed(2)} | Vault $${Number(botSync.vaultUsd || 0).toFixed(2)}` })
+        h('div', { class: 'xl', text: 'TOTAL INTEGRATED NET WORTH' }),
+        h('div', { class: 'xv', style: 'color:#00d26a', text: fmtIdr(s.totalIntegratedWealthIdr ?? ((s.bankTotalIdr || 0) + (botSync.walletIdr || 0))) }),
+        h('div', { class: 'xs', text: `Bank ${fmtIdr(s.bankTotalIdr || 0)} + Futures $${Number(botSync.walletUsd || 0).toFixed(2)} (Vault $${Number(botSync.vaultUsd || 0).toFixed(2)})` })
       )
     ));
+
+    // Integrated Wealth Milestones Roadmap (Rp 10M -> Rp 100M -> Rp 1B)
+    const milestones = s.milestones || [];
+    if (milestones.length && (tab === 'DASH' || tab === 'BUDGET')) {
+      const mCard = h('div', { class: 'xcard', style: 'border-color:#ff6600' },
+        h('div', { class: 'xsec-hd' },
+          h('span', { style: 'color:#ff6600', text: 'INTEGRATED WEALTH MILESTONES (BANK + RESERVES + LIVE BINANCE FUTURES)' }),
+          h('span', { class: 'up', text: `NET WORTH: ${fmtIdr(s.totalIntegratedWealthIdr || 0)}` })
+        )
+      );
+      const mGrid = h('div', { class: 'xgrid3', style: 'padding:6px 2px' });
+      milestones.forEach(ms => {
+        mGrid.append(h('div', { style: `padding:7px 8px;border:1px solid #1e2530;border-left:3px solid ${ms.color};background:#05070a` },
+          h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:3px' },
+            h('span', { style: `color:${ms.color};font-size:10px;font-weight:700`, text: `${ms.tier} | ${ms.shortLabel.toUpperCase()}` }),
+            h('span', { class: `xpill ${ms.achieved ? 'ok' : 'info'}`, text: ms.achieved ? 'ACHIEVED' : `${ms.progressPct}%` })
+          ),
+          h('div', { style: 'font-size:12px;font-weight:700;color:#fff;margin-bottom:4px', text: `${fmtIdr(ms.currentIdr)} / ${fmtIdr(ms.targetIdr)}` }),
+          h('div', { class: 'xbar-track', style: 'margin-bottom:4px' },
+            h('div', { class: 'xbar-fill', style: `width:${Math.max(1, Math.min(100, ms.progressPct))}%;background:${ms.color}` })
+          ),
+          h('div', { style: 'display:flex;justify-content:space-between;font-size:9.5px;color:var(--muted)' },
+            h('span', { text: `Rem: ${fmtIdr(ms.remainingIdr)}` }),
+            h('span', { text: `Est (12% p.a.): ${ms.etaLabel}` })
+          )
+        ));
+      });
+      mCard.append(mGrid);
+      sc.append(mCard);
+    }
 
     if (tab === 'DASH') {
       // Compact Warren Buffett Auto-Allocation Bar

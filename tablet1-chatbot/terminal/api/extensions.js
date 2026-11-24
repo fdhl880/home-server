@@ -86,10 +86,41 @@ const DEFAULT_FINANCE = {
   dailyLimitIdr: _DEFAULT_WB.dailyLimitIdr,
   categoryLimits: { ..._DEFAULT_WB.categoryLimits },
   goals: [
-    { id: 'GOAL-EMERGENCY', name: 'Emergency Margin of Safety (6 Months Operating)', targetIdr: 3600000, savedIdr: 0, deadline: '2027-11-30', category: 'SAFETY' },
-    { id: 'GOAL-INVEST', name: 'Productive Investment Capital Reserve', targetIdr: 6000000, savedIdr: 0, deadline: '2028-11-30', category: 'INVEST' }
+    { id: 'GOAL-10M', name: 'Milestone I: First Rp 10.000.000', targetIdr: 10000000, savedIdr: 516000, deadline: '2028-11-30', category: 'MILESTONE', autoIntegrate: true },
+    { id: 'GOAL-100M', name: 'Milestone II: First Rp 100.000.000', targetIdr: 100000000, savedIdr: 516000, deadline: '2031-11-30', category: 'MILESTONE', autoIntegrate: true },
+    { id: 'GOAL-1B', name: 'Milestone III: First Rp 1.000.000.000 (1 Miliar)', targetIdr: 1000000000, savedIdr: 516000, deadline: '2036-11-30', category: 'MILESTONE', autoIntegrate: true },
+    { id: 'GOAL-EMERGENCY', name: 'Emergency Margin of Safety (6 Months Operating)', targetIdr: 3600000, savedIdr: 150000, deadline: '2027-11-30', category: 'SAFETY' },
+    { id: 'GOAL-INVEST', name: 'Productive Investment Capital Reserve', targetIdr: 6000000, savedIdr: 226000, deadline: '2028-11-30', category: 'INVEST' }
   ],
-  transactions: []
+  transactions: [
+    {
+      id: 'TX-INIT-INV',
+      ts: 1795526402000,
+      date: '2026-11-24',
+      type: 'SAVINGS',
+      category: 'Productive Investment Capital',
+      amountIdr: 226000,
+      note: 'Warren Buffett Surplus Lock — Productive Non-Leverage Reserve'
+    },
+    {
+      id: 'TX-INIT-EMG',
+      ts: 1795526401000,
+      date: '2026-11-24',
+      type: 'SAVINGS',
+      category: 'Emergency Margin of Safety',
+      amountIdr: 150000,
+      note: 'Warren Buffett Emergency Margin of Safety (15% Cash Buffer)'
+    },
+    {
+      id: 'TX-INIT-BAL',
+      ts: 1795526400000,
+      date: '2026-11-24',
+      type: 'INCOME',
+      category: 'Monthly Fixed Allowance',
+      amountIdr: 516000,
+      note: 'Opening Bank Account Balance (Operating Cash Remaining: Rp 140.000 for 7 days)'
+    }
+  ]
 };
 
 function normBotFilePrefix(sym) {
@@ -814,6 +845,56 @@ function mountTerminalExtensions(app, deps) {
     const botWalletUsd = Number(autoState.binance_wallet_balance_usdt || 0);
     const botVaultUsd = Number(vaultState.locked_profit_vault_usdt || 0);
     const fxIdr = 16500;
+    const botWalletIdr = Math.round(botWalletUsd * fxIdr);
+    const netCashIdr = totalIncomeAll - totalExpenseAll - totalSavingsAll;
+    const bankTotalIdr = Math.max(0, netCashIdr) + totalSavingsAll;
+    const totalIntegratedWealthIdr = bankTotalIdr + botWalletIdr;
+
+    // Live-Integrated Wealth Milestones (Rp 10M -> Rp 100M -> Rp 1B)
+    // Automatically reflects Bank Cash + Locked Reserves + Live Binance Futures Equity
+    const monthlySavePace = Math.max(50000, buffettPlan.payYourselfFirstIdr || 400000);
+    const estimateMonthsToTarget = (current, target, monthlyContrib, annualRate = 0.12) => {
+      if (current >= target) return 0;
+      const r = annualRate / 12;
+      let bal = current;
+      let m = 0;
+      while (bal < target && m < 600) {
+        bal = bal * (1 + r) + monthlyContrib;
+        m++;
+      }
+      return m;
+    };
+
+    const milestones = [
+      { id: 'GOAL-10M', tier: 'TIER I', name: 'First Rp 10.000.000', shortLabel: 'Rp 10 Juta Pertama', targetIdr: 10000000, color: '#00d26a' },
+      { id: 'GOAL-100M', tier: 'TIER II', name: 'First Rp 100.000.000', shortLabel: 'Rp 100 Juta Pertama', targetIdr: 100000000, color: '#ffb000' },
+      { id: 'GOAL-1B', tier: 'TIER III', name: 'First Rp 1.000.000.000 (1 Miliar)', shortLabel: 'Rp 1 Miliar Pertama', targetIdr: 1000000000, color: '#ff6600' }
+    ].map(ms => {
+      const pct = Math.min(100, +((totalIntegratedWealthIdr / ms.targetIdr) * 100).toFixed(2));
+      const rem = Math.max(0, ms.targetIdr - totalIntegratedWealthIdr);
+      const estMonths = estimateMonthsToTarget(totalIntegratedWealthIdr, ms.targetIdr, monthlySavePace, 0.12);
+      const etaLabel = estMonths === 0
+        ? 'ACHIEVED'
+        : estMonths < 12
+        ? `~${estMonths} mo`
+        : `~${(estMonths / 12).toFixed(1)} yr`;
+      return {
+        ...ms,
+        currentIdr: totalIntegratedWealthIdr,
+        remainingIdr: rem,
+        progressPct: pct,
+        achieved: totalIntegratedWealthIdr >= ms.targetIdr,
+        etaLabel
+      };
+    });
+
+    // Keep autoIntegrate goals synced with live integrated wealth
+    for (const g of (fin.goals || [])) {
+      if (g && (g.autoIntegrate || g.id === 'GOAL-10M' || g.id === 'GOAL-100M' || g.id === 'GOAL-1B')) {
+        g.savedIdr = totalIntegratedWealthIdr;
+        g.autoIntegrate = true;
+      }
+    }
 
     return {
       todayStr,
@@ -823,8 +904,11 @@ function mountTerminalExtensions(app, deps) {
       remainingDays,
       allocationMethod: fin.allocationMethod || 'WARREN_BUFFETT',
       buffettPlan,
-      netCashIdr: totalIncomeAll - totalExpenseAll - totalSavingsAll,
+      netCashIdr,
+      bankTotalIdr,
       totalSavingsIdr: totalSavingsAll,
+      totalIntegratedWealthIdr,
+      milestones,
       monthIncome,
       monthExpense,
       monthSavings,
@@ -847,7 +931,7 @@ function mountTerminalExtensions(app, deps) {
       dailyTrend14d: Object.values(dailyMap),
       botSync: {
         walletUsd: botWalletUsd,
-        walletIdr: Math.round(botWalletUsd * fxIdr),
+        walletIdr: botWalletIdr,
         vaultUsd: botVaultUsd,
         vaultIdr: Math.round(botVaultUsd * fxIdr)
       }
@@ -1119,6 +1203,9 @@ function mountTerminalExtensions(app, deps) {
         monthExpense: s.monthExpense,
         monthlyBudgetIdr: s.monthlyBudgetIdr,
         monthlyIncomeTarget: s.monthlyIncomeTarget,
+        totalIntegratedWealthIdr: s.totalIntegratedWealthIdr,
+        bankTotalIdr: s.bankTotalIdr,
+        milestone10m: (s.milestones && s.milestones[0]) || null,
         disciplineScore: s.disciplineScore,
         statusLabel: s.statusLabel
       };

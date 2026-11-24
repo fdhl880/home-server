@@ -189,6 +189,7 @@
         <div style="padding:0 8px 8px">
           <div style="display:flex;justify-content:space-between;font-size:10px" class="mut"><span>Spent: ${esc(fmtIdr(f.todayExpense))} / ${esc(fmtIdr(f.dailyLimitIdr))}</span><span>${esc(f.statusLabel)}</span></div>
           <div class="bar"><div style="width:${pct}%;background:${col}"></div></div>
+          ${f.milestone10m ? `<div style="display:flex;justify-content:space-between;font-size:9.5px;margin-top:6px" class="mut"><span>FIRST RP 10M GOAL</span><span class="up">${esc(fmtIdr(f.totalIntegratedWealthIdr || 0))} (${f.milestone10m.progressPct}%)</span></div><div class="bar"><div style="width:${Math.max(2, f.milestone10m.progressPct)}%;background:#ff6600"></div></div>` : ''}
         </div>`;
       } else {
         html += '<div class="row mut"><span>Unlock with DASH_TOKEN to display Warren Buffett daily budget.</span><button id="btnOpenUnlock" class="w-btn on">UNLOCK</button></div>';
