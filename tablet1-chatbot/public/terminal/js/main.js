@@ -1088,7 +1088,13 @@ async function attemptBrowserPushSubscription() {
   let vapidOk = false;
   let subErr = '';
   try {
-    const reg = swRegistration || (navigator.serviceWorker && await navigator.serviceWorker.ready);
+    if (!swRegistration && 'serviceWorker' in navigator) {
+      swRegistration = await navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => null);
+    }
+    const reg = swRegistration || (navigator.serviceWorker && await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise(res => setTimeout(() => res(null), 6000))
+    ]).catch(() => null));
     if (reg && reg.pushManager) {
       const kRes = await fetch('/api/push/vapid-public-key', { cache: 'no-store' });
       const kJson = kRes.ok ? await kRes.json() : null;

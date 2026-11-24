@@ -45,6 +45,16 @@
     <a class="w-btn" href="/" target="_top">OPEN DESK</a>
   </div>
 
+  <div id="unlockBar" style="display:none;border:1px solid var(--orange);background:#0c0f15;padding:6px 8px;margin-bottom:8px">
+    <div style="color:var(--amber);font-size:10px;font-weight:700;margin-bottom:4px">UNLOCK PERSONAL CAPITAL WIDGET (DASH_TOKEN)</div>
+    <div style="display:flex;gap:5px">
+      <input id="wTokInp" type="password" placeholder="Enter DASH_TOKEN..." style="flex:1;background:#000;color:#fff;border:1px solid var(--b);padding:4px 6px;font:inherit;font-size:11px;outline:none">
+      <button id="wTokSave" class="w-btn on">UNLOCK</button>
+      <button id="wTokClose" class="w-btn">CANCEL</button>
+    </div>
+    <div id="wTokErr" class="dn" style="font-size:10px;margin-top:3px"></div>
+  </div>
+
   <div id="content">Loading Bloomberg Terminal feed...</div>
 
   <div class="w-ft">
@@ -61,6 +71,40 @@
   const tabsEl = document.getElementById('tabs');
   const contentEl = document.getElementById('content');
   const wtsEl = document.getElementById('wts');
+  const unlockBar = document.getElementById('unlockBar');
+  const wTokInp = document.getElementById('wTokInp');
+  const wTokErr = document.getElementById('wTokErr');
+
+  document.getElementById('wTokClose').addEventListener('click', () => {
+    unlockBar.style.display = 'none';
+    wTokErr.textContent = '';
+  });
+  document.getElementById('wTokSave').addEventListener('click', async () => {
+    const tok = (wTokInp.value || '').trim();
+    if (!tok) { wTokErr.textContent = 'Enter DASH_TOKEN.'; return; }
+    wTokErr.textContent = 'Verifying...';
+    try {
+      const r = await fetch('/api/auth/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Dash-Token': tok },
+        body: JSON.stringify({ token: tok })
+      });
+      if (!r.ok) { wTokErr.textContent = 'Invalid token (HTTP ' + r.status + ')'; return; }
+      try { localStorage.setItem('pyro_dash_token', tok); } catch {}
+      wTokInp.value = '';
+      wTokErr.textContent = '';
+      unlockBar.style.display = 'none';
+      load();
+    } catch {
+      wTokErr.textContent = 'Connection error.';
+    }
+  });
+  contentEl.addEventListener('click', e => {
+    if (e.target && e.target.id === 'btnOpenUnlock') {
+      unlockBar.style.display = 'block';
+      setTimeout(() => wTokInp.focus(), 20);
+    }
+  });
 
   function syncTabs() {
     tabsEl.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.m === mode));
@@ -147,7 +191,7 @@
           <div class="bar"><div style="width:${pct}%;background:${col}"></div></div>
         </div>`;
       } else {
-        html += '<div class="row mut"><span>Authenticate inside Bloomberg Terminal once to unlock Personal Capital widget.</span><a href="/?w=BTCUSDT:FIN&win=1" target="_top">UNLOCK</a></div>';
+        html += '<div class="row mut"><span>Unlock with DASH_TOKEN to display Warren Buffett daily budget.</span><button id="btnOpenUnlock" class="w-btn on">UNLOCK</button></div>';
       }
       html += '</div>';
     }
