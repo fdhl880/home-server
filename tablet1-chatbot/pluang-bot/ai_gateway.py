@@ -358,8 +358,8 @@ class AIGateway:
             "models_url": "https://api.groq.com/openai/v1/models",
             "default_models": [
                 "openai/gpt-oss-120b",
-                "qwen/qwen3.8-27b",
                 "openai/gpt-oss-20b",
+                "qwen/qwen3.8-27b",
                 "allam-2-7b",
             ],
             "tpd_limit": DEFAULT_GROQ_TPD_LIMIT,

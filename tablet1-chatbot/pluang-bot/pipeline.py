@@ -2357,7 +2357,8 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
                 rec_sl = float(lh_check.get("recommended_safe_sl") or 0.0)
                 valid_side = (direction == "LONG" and 0 < rec_sl < e_px) or (direction == "SHORT" and rec_sl > e_px)
                 rec_dist_pct = (abs(e_px - rec_sl) / e_px) * 100.0 if rec_sl > 0 else 999.0
-                if valid_side and rec_dist_pct <= float(cfg.get("max_sl_pct", 2.5)):
+                max_sl_cap = float(cfg.get("max_sl_pct", 2.5))
+                if valid_side and rec_dist_pct <= max_sl_cap:
                     new_sl_rounded = round(rec_sl, 6)
                     new_sl_d = abs(e_px - new_sl_rounded)
                     d_sgn_sh = -1.0 if direction == "SHORT" else 1.0
@@ -2383,9 +2384,30 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
                         mp["sl_liq_shielded"] = True
                         mp["sl_liq_original"] = sl_px
                         mp["sl_liq_shielded_to"] = new_sl_rounded
-                elif rec_dist_pct > float(cfg.get("max_sl_pct", 2.5)):
-                    result["status"] = "REJECTED"
-                    reasons.append(f"SL (${sl_px:.4f}) sits in Stop-Hunt Liq Magnet and safe SL exceeds max_sl_pct ({rec_dist_pct:.2f}%)")
+                elif valid_side and rec_dist_pct > max_sl_cap:
+                    # Synthetic heatmap buffer exceeds max_sl_pct: cap SL safely at max_sl_cap instead of killing valid setups
+                    d_sgn_sh = -1.0 if direction == "SHORT" else 1.0
+                    capped_sl = round(e_px * (1.0 - d_sgn_sh * (max_sl_cap / 100.0)), 6)
+                    cap_sl_d = abs(e_px - capped_sl)
+                    rrr_cap = abs(tp_px - e_px) / cap_sl_d if (tp_px > 0 and cap_sl_d > 1e-12) else current_min_rrr
+                    if rrr_cap < current_min_rrr:
+                        ext_tp2_c = round(e_px + d_sgn_sh * current_min_rrr * cap_sl_d, 6)
+                        ext_tp2_c_pct = (abs(ext_tp2_c - e_px) / e_px) * 100.0 if e_px > 0 else 999.0
+                        if ext_tp2_c_pct <= 5.0 and ext_tp2_c > 0:
+                            tp_px = ext_tp2_c
+                            result["take_profit"] = ext_tp2_c
+                            result["take_profit_2"] = ext_tp2_c
+                            rrr_cap = current_min_rrr
+                    if rrr_cap >= current_min_rrr - 1e-6:
+                        result["stop_loss"] = capped_sl
+                        result["take_profit_1"] = round(e_px + d_sgn_sh * _tp1_r_g * cap_sl_d, 6)
+                        result["risk_reward_ratio"] = f"1:{round(rrr_cap, 2)}"
+                        mp["sl_liq_shielded"] = True
+                        mp["sl_liq_shield_capped"] = True
+                        mp["sl_liq_original"] = sl_px
+                        mp["sl_liq_shielded_to"] = capped_sl
+                    else:
+                        mp["sl_liq_shield_advisory"] = f"Synthetic liq cluster near ${sl_px:.4f} (safe SL {rec_dist_pct:.2f}% > cap {max_sl_cap:.2f}%)"
     except Exception as exc:
         logger.warning("Gate 12 institutional anti-trap check error: %s", exc)
 
@@ -2580,9 +2602,9 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
                         p_quant_ml = round(max(0.05, min(0.95, 0.55 * p_tab + 0.45 * (p_math_pct / 100.0))), 4)
 
                     ep_mem = load_episodic_memory(feature_dim=len(quant_feat_vec))
-                    if len(getattr(ep_mem, "_vectors_list", [])) >= 3:
+                    if len(getattr(ep_mem, "_vectors_list", [])) >= 12:
                         q_knn = ep_mem.query(quant_feat_vec, regime=mp.get("statistical_regime"))
-                        if isinstance(q_knn, dict) and q_knn.get("k_used", 0) > 0:
+                        if isinstance(q_knn, dict) and q_knn.get("k_used", 0) >= 5:
                             p_knn = round(float(q_knn["p_knn"]), 4)
                             knn_note = q_knn.get("prompt_summary")
 
