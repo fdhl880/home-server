@@ -3035,10 +3035,15 @@ class BinanceFuturesClient:
                     execution_log["critical_alert"] = execution_log["error"]
                     return execution_log
 
-            # Step 4 (A-6): Place Take Profit Algo Order ONLY AFTER SL is confirmed
+            # Step 4 (A-6): Place Take Profit Algo Order ONLY AFTER SL is confirmed (with closePosition fallback retry)
             if tp > 0:
                 try:
                     tp_res = self.set_take_profit(symbol, direction, trigger_price=tp, quantity=actual_qty)
+                    if not (isinstance(tp_res, dict) and "algoId" in tp_res):
+                        time.sleep(0.5)
+                        tp_res_fb = self.set_take_profit(symbol, direction, trigger_price=tp, quantity=None)
+                        if isinstance(tp_res_fb, dict) and "algoId" in tp_res_fb:
+                            tp_res = tp_res_fb
                     execution_log["steps"]["take_profit"] = tp_res
                     if isinstance(tp_res, dict) and "algoId" in tp_res:
                         execution_log["tp_algo_id"] = tp_res["algoId"]
