@@ -357,8 +357,8 @@ class AIGateway:
             "chat_url": "https://api.groq.com/openai/v1/chat/completions",
             "models_url": "https://api.groq.com/openai/v1/models",
             "default_models": [
-                "qwen/qwen3.8-27b",
                 "openai/gpt-oss-120b",
+                "qwen/qwen3.8-27b",
                 "openai/gpt-oss-20b",
                 "allam-2-7b",
             ],

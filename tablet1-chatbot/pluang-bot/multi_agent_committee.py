@@ -710,10 +710,9 @@ def run_portfolio_manager(
             "This setup ALREADY passed 5 quant+AI layers, math gates, and SL/RRR validation.\n"
             "Your job: review the Advocate vs Red-Team debate, BTC 4H macro, microstructure, and AI_MEMORY.\n"
             "RULES:\n"
-            "- Output APPROVE unless there is a CONCRETE, data-backed FATAL FLAW (clear fakeout trap, "
-            "strong opposite BTC 4H impulse, repeated coin/setup losses in AI_MEMORY without exceptional edge, "
-            "or severe exhaustion).\n"
-            "- NEVER veto for vague/generic caution.\n"
+            "- Output APPROVE unless there is a CONCRETE, live price-action/orderflow FATAL FLAW (clear fakeout trap, "
+            "strong opposite BTC 4H impulse >=1.6%, severe exhaustion, OR AI_MEMORY explicitly flags '[CAUTION: poor history on this coin]' with >=3 live losses).\n"
+            "- NEVER veto simply because AI_MEMORY has 0 closed trades yet, small kNN sample, or generic/textbook caution.\n"
             "- Respond ONLY in JSON: {\"verdict\":\"APPROVE\" or \"VETO\",\"confidence_pct\":78,\"fatal_flaw\":\"\",\"decision\":\"1 sentence in Indonesian\"}"
         )
         usr_pm = (

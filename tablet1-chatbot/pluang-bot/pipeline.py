@@ -1469,19 +1469,21 @@ def layer2_setup_hunter(symbol: str, scan_data: dict, memory_context: str = ""):
     compact_json = json.dumps(compact, ensure_ascii=False)
 
     system = (
-        "Crypto futures setup analyst (20x ISOLATED precision). Respond ONLY in valid JSON. DO NOT output internal reasoning.\n"
-        "Start your response directly with '{'.\n"
+        "Crypto futures setup analyst (precision trading desk). Respond ONLY in valid JSON. Start directly with '{'.\n"
         "Rules:\n"
-        "- Match setup to stat_regime & Hurst/ADX: TREND_CONTINUATION, EMA_PULLBACK_ENTRY, "
+        "- Choose the best setup matching stat_regime & indicators from: TREND_CONTINUATION, EMA_PULLBACK_ENTRY, "
         "MEAN_REVERSION_BOUNCE, BREAKOUT_MOMENTUM, SMC_LIQUIDITY_SWEEP, BOLLINGER_SQUEEZE_BREAKOUT, "
         "RSI_DIVERGENCE_PLAY, FUNDING_RATE_ARBITRAGE.\n"
-        "- Need >=2 independent confirmations (e.g. Trend+OFI+Volume, or S/R extreme+RSI+Sweep).\n"
-        "- In MEAN_REVERT/sideways markets, DO NOT chase mid-range breakouts — only take MEAN_REVERSION_BOUNCE / SMC_LIQUIDITY_SWEEP / RSI_DIVERGENCE at extreme S/R!\n"
+        "- If >=2 independent confirmations align (e.g. STRONG_BULLISH/BEARISH EMA + MACD + MSS + ADX>=20 + P_Math>=60%, "
+        "or extreme S/R bounce + RSI + liquidity sweep in MEAN_REVERT), you MUST output that directional setup with "
+        "2-4 concrete confluences and calibrated probability_pct (65-88).\n"
+        "- In MEAN_REVERT/sideways markets, DO NOT chase mid-range breakouts — only take MEAN_REVERSION_BOUNCE / "
+        "SMC_LIQUIDITY_SWEEP / RSI_DIVERGENCE at extreme S/R.\n"
         "- Respect AI_MEMORY past lessons: penalize setups/coins/directions with repeated losses unless confluence is exceptional.\n"
-        "- Use NO_CLEAR_SETUP if mid-range dead chop or conflicting signals.\n"
-        "Output: {\"setup_name\":\"\",\"direction\":\"LONG/SHORT/NONE\","
-        "\"confluence_count\":0,\"confluences\":[],"
-        "\"probability_pct\":50,\"explanation_id\":\"\"}"
+        "- ONLY output NO_CLEAR_SETUP (direction=NONE) when market is truly flat mid-range chop (ADX<18, RSI 42-58) or signals directly conflict.\n"
+        "Example JSON format: {\"setup_name\":\"TREND_CONTINUATION\",\"direction\":\"SHORT\","
+        "\"confluence_count\":3,\"confluences\":[\"STRONG_BEARISH EMA\",\"MACD bearish\",\"ADX 35 trend\"],"
+        "\"probability_pct\":76,\"explanation_id\":\"Tren turun terkonfirmasi EMA, MACD, dan ADX.\"}"
     )
 
     mem_line = f"\nPast Trade Learning Memory: {memory_context}" if memory_context else ""
@@ -1943,7 +1945,7 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
                           memory_context: str = ""):
     """Final gate — compact prompt, strict approve criteria enriched with AI trade learning memory"""
     cfg = get_trading_config()
-    min_conf = cfg.get("min_confidence_score", 72)
+    min_conf = cfg.get("min_confidence_score", 68)
     min_rrr = cfg.get("min_risk_reward_ratio", 1.8)
 
     entry = plan_result.get("entry_price", 0)
@@ -1975,10 +1977,11 @@ def layer5_final_judgment(symbol: str, scan_data: dict, setup_result: dict,
         f"\"final_reason\":\"brief reason\"}}"
     )
 
+    conf_cnt = int(setup_result.get("confluence_count", 0) or 0)
     mem_block = f"\nAI Learning Memory: {memory_context}" if memory_context else ""
     prompt = (
         f"{symbol}: {direction} @ ${entry:.4f}, SL=${sl:.4f}({sl_pct:.2f}%), "
-        f"TP=${tp:.4f}(RRR 1:{rrr_val}), Setup={setup_name}, "
+        f"TP=${tp:.4f}(RRR 1:{rrr_val}), Setup={setup_name}, Confluence={conf_cnt}, "
         f"Confidence={prob}%, Risk {risk_score}/{risk_max}.{mem_block}\n"
         f"APPROVE or REJECT? Output ONLY JSON."
     )
@@ -2357,15 +2360,24 @@ def _apply_safety_gates(result, setup_result, plan_result, risk_result, scan_dat
                 if valid_side and rec_dist_pct <= float(cfg.get("max_sl_pct", 2.5)):
                     new_sl_rounded = round(rec_sl, 6)
                     new_sl_d = abs(e_px - new_sl_rounded)
+                    d_sgn_sh = -1.0 if direction == "SHORT" else 1.0
                     rrr_after = abs(tp_px - e_px) / new_sl_d if (tp_px > 0 and new_sl_d > 1e-12) else current_min_rrr
                     if rrr_after < current_min_rrr:
+                        # Proportionally extend TP2 to preserve min RRR when SL Shield shifts SL outside stop-hunt magnet
+                        ext_tp2 = round(e_px + d_sgn_sh * current_min_rrr * new_sl_d, 6)
+                        ext_tp2_pct = (abs(ext_tp2 - e_px) / e_px) * 100.0 if e_px > 0 else 999.0
+                        if ext_tp2_pct <= 5.0 and ext_tp2 > 0:
+                            tp_px = ext_tp2
+                            result["take_profit"] = ext_tp2
+                            result["take_profit_2"] = ext_tp2
+                            rrr_after = current_min_rrr
+                    if rrr_after < current_min_rrr - 1e-6:
                         result["status"] = "REJECTED"
                         reasons.append(
                             f"SL Shield widened SL to ${new_sl_rounded:.4f} dropping RRR to 1:{rrr_after:.2f} < 1:{current_min_rrr}"
                         )
                     else:
                         result["stop_loss"] = new_sl_rounded
-                        d_sgn_sh = -1.0 if direction == "SHORT" else 1.0
                         result["take_profit_1"] = round(e_px + d_sgn_sh * _tp1_r_g * new_sl_d, 6)
                         result["risk_reward_ratio"] = f"1:{round(rrr_after, 2)}"
                         mp["sl_liq_shielded"] = True
@@ -2418,9 +2430,9 @@ def run_5_layer_pipeline(symbol: str, active_positions: list = None):
             from features.hmm_drift import extract_quant_feature_vector, load_episodic_memory
             _pre_qvec = extract_quant_feature_vector(_mp_pre, scan_summary)
             _pre_ep = load_episodic_memory(feature_dim=len(_pre_qvec))
-            if len(getattr(_pre_ep, "_vectors_list", [])) >= 3:
+            if len(getattr(_pre_ep, "_vectors_list", [])) >= 12:
                 _pre_q = _pre_ep.query(_pre_qvec, regime=_stat_reg_pre)
-                if isinstance(_pre_q, dict) and _pre_q.get("k_used", 0) > 0:
+                if isinstance(_pre_q, dict) and _pre_q.get("k_used", 0) >= 5:
                     _pre_knn_note = _pre_q.get("prompt_summary")
         except Exception:
             _pre_knn_note = None
