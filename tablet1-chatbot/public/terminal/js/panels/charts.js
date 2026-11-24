@@ -769,8 +769,8 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
     // Snapshot PNG Exporter + Save to Multi-Chart Visual Gallery (G <GO> / SNAP <GO>)
     const snapBtn = h('button', {
       style: 'border-color:#00e5ff;color:#00e5ff;font-weight:700',
-      text: '📸 SNAP PNG',
-      title: 'Download Chart + Technical Overlays as PNG Image & Save to Gallery (G <GO>)',
+      text: 'SNAP PNG',
+      title: 'Download Chart + Technical Overlays as PNG Image & Save to Archive (G <GO>)',
       onclick: () => {
         try {
           const rect = wrap.getBoundingClientRect();
@@ -784,16 +784,18 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
           g.fillStyle = '#000000';
           g.fillRect(0, 0, out.width, out.height);
           // Bloomberg Watermark Header
-          g.fillStyle = '#5c0808';
+          g.fillStyle = '#12151c';
           g.fillRect(0, 0, W, hdrH);
-          g.fillStyle = '#ffb000';
+          g.fillStyle = '#ff6600';
+          g.fillRect(0, hdrH - 2, W, 2);
+          g.fillStyle = '#ff6600';
           g.font = 'bold 13px Consolas, monospace';
           const lastC = lastCandles.length ? lastCandles[lastCandles.length - 1] : null;
           const pxTxt = lastC ? `C:${fmtPx(lastC.c)} H:${fmtPx(lastC.h)} L:${fmtPx(lastC.l)}` : '';
-          g.fillText(`BLOOMBERG // PYROFUEL   ${ctx.symbol} [${iv.toUpperCase()}]   ${pxTxt}`, 10, 21);
+          g.fillText(`BLOOMBERG TERMINAL   ${ctx.symbol} [${iv.toUpperCase()}]   ${pxTxt}`, 10, 21);
           g.fillStyle = '#ffffff';
           g.font = '11px Consolas, monospace';
-          const tsStr = new Date().toLocaleString('id-ID');
+          const tsStr = new Date().toLocaleString('en-GB');
           g.fillText(tsStr, Math.max(10, W - g.measureText(tsStr).width - 10), 21);
 
           // Composite all chart canvases + technical master overlay canvas
@@ -810,7 +812,6 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
           });
 
           const dataUrl = out.toDataURL('image/png');
-          // Persist into local Chart Snapshot Gallery (max 12 images to respect localStorage quota)
           try {
             const key = 'bbg_chart_snapshots_v1';
             const prev = JSON.parse(localStorage.getItem(key) || '[]');
@@ -821,7 +822,8 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
               interval: iv.toUpperCase(),
               ts: Date.now(),
               price: lastC ? lastC.c : 0,
-              note: activeTradePlan ? `OPEN ${activeTradePlan.dir} ${activeTradePlan.lev}x` : 'TECHNICAL MASTER SNAPSHOT',
+              note: activeTradePlan ? `OPEN ${activeTradePlan.dir} ${activeTradePlan.lev}x` : 'TECHNICAL OVERLAY SNAPSHOT',
+              dataUrl,
               img: dataUrl
             });
             localStorage.setItem(key, JSON.stringify(arr.slice(0, 10)));
@@ -829,10 +831,10 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
 
           const a = document.createElement('a');
           a.href = dataUrl;
-          a.download = `${ctx.symbol.replace(/[^A-Z0-9_-]/gi, '_')}_${iv.toUpperCase()}_${Date.now()}.png`;
+          a.download = `Bloomberg_Terminal_${ctx.symbol.replace(/[^A-Z0-9_-]/gi, '_')}_${iv.toUpperCase()}_${Date.now()}.png`;
           a.click();
-          snapBtn.textContent = '✓ SAVED PNG';
-          setTimeout(() => { snapBtn.textContent = '📸 SNAP PNG'; }, 1800);
+          snapBtn.textContent = 'SAVED PNG';
+          setTimeout(() => { snapBtn.textContent = 'SNAP PNG'; }, 1800);
         } catch (err) {
           alert('Snapshot error: ' + err.message);
         }
@@ -840,8 +842,8 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
     });
     tb.append(
       snapBtn,
-      h('button', { style: 'border-color:#ffb000;color:#ffb000', text: '🔬 X-RAY', title: 'Inspect Bot Transparent Factors & Decision Process (FACT <GO>)', onclick: () => ctx.run(`${ctx.symbol} FACT`) }),
-      h('button', { style: 'border-color:#e040fb;color:#e040fb', text: '🖼 GALLERY', title: 'Open Multi-Chart Studio & Saved PNG Gallery (G <GO>)', onclick: () => ctx.run(`${ctx.symbol} G`) })
+      h('button', { style: 'border-color:#ffb000;color:#ffb000', text: 'X-RAY', title: 'Inspect Transparent Execution Factors (FACT <GO>)', onclick: () => ctx.run(`${ctx.symbol} FACT`) }),
+      h('button', { style: 'border-color:#4da3ff;color:#4da3ff', text: 'ARCHIVE', title: 'Open Multi-Chart Studio & PNG Archive (G <GO>)', onclick: () => ctx.run(`${ctx.symbol} G`) })
     );
   }
 

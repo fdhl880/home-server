@@ -17,22 +17,77 @@ const edgarP = require('./providers/edgar_fundamentals');
 const newsP = require('./providers/news');
 const U = require('./util');
 
+function buildWarrenBuffettPlan(monthlyIncomeRaw = 1000000) {
+  const income = Math.max(100000, Math.round(Number(monthlyIncomeRaw) || 1000000));
+  // Warren Buffett "Pay Yourself First" Principle (Tailored for Food & Transport Only):
+  // "Do not save what is left after spending, but spend what is left after saving."
+  // 40% Pay Yourself First (25% Productive Investment Capital + 15% Emergency Margin of Safety)
+  // 60% Operating Expenses (45% Food & Refreshments + 15% Transportation)
+  const investIdr = Math.round(income * 0.25);
+  const emergencyIdr = Math.round(income * 0.15);
+  const payYourselfFirstIdr = investIdr + emergencyIdr; // 40% locked first
+
+  const spendableMonthlyIdr = income - payYourselfFirstIdr; // 60% spendable operating ceiling
+  const foodIdr = Math.round(income * 0.45);
+  const transportIdr = Math.max(0, spendableMonthlyIdr - foodIdr); // 15%
+
+  // Clean daily ceiling (Rp 20.000/day for Rp 1.000.000/month)
+  const dailyLimitIdr = Math.max(5000, Math.floor((spendableMonthlyIdr / 30) / 500) * 500);
+  const foodDailyIdr = Math.floor((foodIdr / 30) / 500) * 500;
+  const transportDailyIdr = Math.floor((transportIdr / 30) / 500) * 500;
+
+  // Future value compounding projection (monthly investIdr at annual rate r + liquid emergencyIdr at 3%)
+  const fv = (pmt, annualRate, years) => {
+    const r = annualRate / 12;
+    const n = years * 12;
+    if (r <= 0) return Math.round(pmt * n);
+    return Math.round(pmt * ((Math.pow(1 + r, n) - 1) / r));
+  };
+
+  const projections = [1, 3, 5, 10].map(yr => ({
+    years: yr,
+    principalIdr: payYourselfFirstIdr * yr * 12,
+    conservativeIdr: fv(investIdr, 0.08, yr) + fv(emergencyIdr, 0.03, yr),
+    benchmarkIdr: fv(investIdr, 0.12, yr) + fv(emergencyIdr, 0.04, yr)
+  }));
+
+  return {
+    method: 'WARREN_BUFFETT',
+    methodTitle: 'Warren Buffett Capital Allocation (Pay Yourself First)',
+    principle: 'Sisihkan 40% tabungan & modal investasi di hari pertama; gunakan 60% sisanya khusus untuk Makan/Jajan (45%) dan Transportasi (15%).',
+    monthlyIncomeIdr: income,
+    payYourselfFirstIdr,
+    payYourselfFirstPct: 40,
+    spendableMonthlyIdr,
+    spendableMonthlyPct: 60,
+    dailyLimitIdr,
+    foodDailyIdr,
+    transportDailyIdr,
+    buckets: [
+      { id: 'INVEST', tier: 'PAY YOURSELF FIRST', name: 'Productive Investment Capital', pct: 25, amountIdr: investIdr, color: '#00d26a', desc: 'Modal investasi aset produktif jangka panjang (compounding).' },
+      { id: 'EMERGENCY', tier: 'PAY YOURSELF FIRST', name: 'Emergency Margin of Safety', pct: 15, amountIdr: emergencyIdr, color: '#00e5ff', desc: 'Cadangan kas darurat likuid untuk keamanan & peluang.' },
+      { id: 'FOOD', tier: 'OPERATING EXPENSE', name: 'Food & Refreshments', pct: 45, amountIdr: foodIdr, color: '#ffb000', desc: `Alokasi makan & jajan harian (~Rp ${foodDailyIdr.toLocaleString('id-ID')}/hari).` },
+      { id: 'TRANSPORT', tier: 'OPERATING EXPENSE', name: 'Transportation', pct: 15, amountIdr: transportIdr, color: '#4da3ff', desc: `Alokasi transportasi & mobilitas harian (~Rp ${transportDailyIdr.toLocaleString('id-ID')}/hari).` }
+    ],
+    categoryLimits: {
+      'Food & Refreshments': foodIdr,
+      'Transportation': transportIdr
+    },
+    projections
+  };
+}
+
+const _DEFAULT_WB = buildWarrenBuffettPlan(1000000);
 const DEFAULT_FINANCE = {
   currency: 'IDR',
-  monthlyIncomeTarget: 5000000,
-  monthlyBudgetIdr: 3000000,
-  dailyLimitIdr: 100000,
-  categoryLimits: {
-    'Makan & Minum': 1200000,
-    'Kopi & Jajan': 350000,
-    'Transport & Bensin': 450000,
-    'Tagihan & Kos': 800000,
-    'Belanja & Hobi': 400000,
-    'Kesehatan & Lainnya': 300000
-  },
+  allocationMethod: 'WARREN_BUFFETT',
+  monthlyIncomeTarget: _DEFAULT_WB.monthlyIncomeIdr,
+  monthlyBudgetIdr: _DEFAULT_WB.spendableMonthlyIdr,
+  dailyLimitIdr: _DEFAULT_WB.dailyLimitIdr,
+  categoryLimits: { ..._DEFAULT_WB.categoryLimits },
   goals: [
-    { id: 'GOAL-DARURAT', name: 'Dana Darurat 3 Bulan', targetIdr: 9000000, savedIdr: 0, deadline: '2027-06-30', category: 'SAFETY' },
-    { id: 'GOAL-GIGI2', name: 'Target Modal Gigi 2 Bot ($600)', targetIdr: 10000000, savedIdr: 210000, deadline: '2027-11-30', category: 'INVEST' }
+    { id: 'GOAL-EMERGENCY', name: 'Emergency Margin of Safety (6 Months Operating)', targetIdr: 3600000, savedIdr: 0, deadline: '2027-11-30', category: 'SAFETY' },
+    { id: 'GOAL-INVEST', name: 'Productive Investment Capital Reserve', targetIdr: 6000000, savedIdr: 0, deadline: '2028-11-30', category: 'INVEST' }
   ],
   transactions: []
 };
@@ -254,6 +309,7 @@ function mountTerminalExtensions(app, deps) {
     writeJsonAtomicSync,
     readJsonSafeSync,
     dispatchNativePushAlert,
+    isAuthenticatedReq,
     baseDir
   } = deps;
 
@@ -660,7 +716,7 @@ function mountTerminalExtensions(app, deps) {
       return {
         ...DEFAULT_FINANCE,
         ...data,
-        categoryLimits: { ...DEFAULT_FINANCE.categoryLimits, ...(data.categoryLimits || {}) },
+        categoryLimits: (data.categoryLimits && Object.keys(data.categoryLimits).length) ? data.categoryLimits : { ...DEFAULT_FINANCE.categoryLimits },
         goals: Array.isArray(data.goals) ? data.goals : [...DEFAULT_FINANCE.goals],
         transactions: Array.isArray(data.transactions) ? data.transactions : []
       };
@@ -723,25 +779,33 @@ function mountTerminalExtensions(app, deps) {
       }
     }
 
-    const dailyLimit = Math.max(1000, Number(fin.dailyLimitIdr || 100000));
-    const monthlyBudget = Math.max(10000, Number(fin.monthlyBudgetIdr || 3000000));
+    const monthlyIncomeTarget = Math.max(100000, Number(fin.monthlyIncomeTarget || 1000000));
+    const buffettPlan = buildWarrenBuffettPlan(monthlyIncomeTarget);
+    const dailyLimit = Math.max(1000, Number(fin.dailyLimitIdr || buffettPlan.dailyLimitIdr));
+    const monthlyBudget = Math.max(10000, Number(fin.monthlyBudgetIdr || buffettPlan.spendableMonthlyIdr));
     const remainingToday = dailyLimit - todayExpense;
     const remainingMonth = monthlyBudget - monthExpense;
     const dynamicSafeDaily = Math.max(0, Math.floor(remainingMonth / remainingDays));
     const dailyUsedPct = +(todayExpense / dailyLimit * 100).toFixed(1);
     const monthUsedPct = +(monthExpense / monthlyBudget * 100).toFixed(1);
-    const savingsRatePct = monthIncome > 0 ? +(((monthIncome - monthExpense) / monthIncome) * 100).toFixed(1) : 0;
+    const savingsRatePct = monthIncome > 0 ? +(((monthSavings + Math.max(0, monthIncome - monthExpense - monthSavings)) / monthIncome) * 100).toFixed(1) : 0;
 
     let borosStatus = 'AMAN_TERKONTROL';
-    if (dailyUsedPct > 100 || monthUsedPct > 100) borosStatus = 'BOROS_OVER_BUDGET';
-    else if (dailyUsedPct >= 75 || monthUsedPct >= 80) borosStatus = 'WASPADA_HAMPIR_LIMIT';
+    let statusLabel = 'DISCIPLINED / ON TRACK';
+    if (dailyUsedPct > 100 || monthUsedPct > 100) {
+      borosStatus = 'BOROS_OVER_BUDGET';
+      statusLabel = 'LIMIT EXCEEDED';
+    } else if (dailyUsedPct >= 75 || monthUsedPct >= 80) {
+      borosStatus = 'WASPADA_HAMPIR_LIMIT';
+      statusLabel = 'BUDGET CAUTION (>=75%)';
+    }
 
     // Discipline Score (0..100)
     let disciplineScore = 100;
     if (dailyUsedPct > 100) disciplineScore -= Math.min(35, (dailyUsedPct - 100) * 0.5);
     else if (dailyUsedPct > 75) disciplineScore -= 10;
     if (monthUsedPct > 100) disciplineScore -= Math.min(40, (monthUsedPct - 100) * 0.6);
-    if (monthIncome > 0 && savingsRatePct < 20) disciplineScore -= Math.min(20, (20 - Math.max(0, savingsRatePct)));
+    if (monthIncome > 0 && savingsRatePct < 40) disciplineScore -= Math.min(20, (40 - Math.max(0, savingsRatePct)) * 0.5);
     disciplineScore = Math.max(10, Math.min(100, Math.round(disciplineScore)));
 
     // Sync live Bot Binance Balance & Vault into Wealth Overview
@@ -757,6 +821,8 @@ function mountTerminalExtensions(app, deps) {
       dayOfMonth,
       daysInMonth,
       remainingDays,
+      allocationMethod: fin.allocationMethod || 'WARREN_BUFFETT',
+      buffettPlan,
       netCashIdr: totalIncomeAll - totalExpenseAll - totalSavingsAll,
       totalSavingsIdr: totalSavingsAll,
       monthIncome,
@@ -766,7 +832,7 @@ function mountTerminalExtensions(app, deps) {
       todayExpense,
       dailyLimitIdr: dailyLimit,
       monthlyBudgetIdr: monthlyBudget,
-      monthlyIncomeTarget: Number(fin.monthlyIncomeTarget || 5000000),
+      monthlyIncomeTarget,
       remainingTodayIdr: remainingToday,
       remainingMonthIdr: remainingMonth,
       dynamicSafeDailyIdr: dynamicSafeDaily,
@@ -774,6 +840,7 @@ function mountTerminalExtensions(app, deps) {
       monthUsedPct,
       savingsRatePct,
       borosStatus,
+      statusLabel,
       disciplineScore,
       byCategory,
       categoryLimits: fin.categoryLimits || {},
@@ -792,6 +859,77 @@ function mountTerminalExtensions(app, deps) {
     res.json({ ok: true, data: { ...fin, summary: computeFinanceSummary(fin) } });
   });
 
+  app.post('/api/finance/buffett-apply', (req, res) => {
+    const b = req.body || {};
+    const monthlyIncomeIdr = Math.round(Number(b.monthlyIncomeIdr || 1000000));
+    if (!Number.isFinite(monthlyIncomeIdr) || monthlyIncomeIdr < 100000 || monthlyIncomeIdr > 1e11) {
+      return res.status(400).json({ ok: false, error: 'monthlyIncomeIdr must be between Rp 100.000 and Rp 100B' });
+    }
+    const plan = buildWarrenBuffettPlan(monthlyIncomeIdr);
+    const fin = loadFinance();
+    fin.allocationMethod = 'WARREN_BUFFETT';
+    fin.monthlyIncomeTarget = plan.monthlyIncomeIdr;
+    fin.monthlyBudgetIdr = plan.spendableMonthlyIdr;
+    fin.dailyLimitIdr = plan.dailyLimitIdr;
+    fin.categoryLimits = { ...plan.categoryLimits };
+
+    // Ensure Warren Buffett priority goals exist
+    if (!fin.goals.some(g => g.id === 'GOAL-EMERGENCY')) {
+      fin.goals.unshift({
+        id: 'GOAL-EMERGENCY',
+        name: 'Emergency Margin of Safety (6 Months)',
+        targetIdr: Math.round(plan.spendableMonthlyIdr * 6),
+        savedIdr: 0,
+        deadline: '2027-11-30',
+        category: 'SAFETY'
+      });
+    }
+    if (!fin.goals.some(g => g.id === 'GOAL-INVEST')) {
+      fin.goals.push({
+        id: 'GOAL-INVEST',
+        name: 'Productive Investment Capital Reserve',
+        targetIdr: Math.round(plan.monthlyIncomeIdr * 12),
+        savedIdr: 0,
+        deadline: '2028-11-30',
+        category: 'INVEST'
+      });
+    }
+
+    // Optional 1-click Monthly Allowance Booking + Pay Yourself First Automatic Lock
+    const booked = [];
+    if (b.recordMonthlyCycle === true) {
+      const wibToday = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
+      const investAmt = Math.round(plan.monthlyIncomeIdr * 0.25);
+      const emergAmt = Math.round(plan.monthlyIncomeIdr * 0.15);
+      const mkTx = (type, category, amountIdr, note) => ({
+        id: 'TX-' + Date.now().toString(36) + '-' + crypto.randomBytes(2).toString('hex'),
+        ts: Date.now(),
+        date: wibToday,
+        type,
+        category,
+        amountIdr,
+        note
+      });
+      const txInc = mkTx('INCOME', 'Monthly Fixed Allowance', plan.monthlyIncomeIdr, 'Fixed Monthly Income — Warren Buffett Auto-Cycle');
+      const txInv = mkTx('SAVINGS', 'Productive Investment Capital', investAmt, 'Auto Pay-Yourself-First (25% Productive Capital)');
+      const txEmg = mkTx('SAVINGS', 'Emergency Margin of Safety', emergAmt, 'Auto Pay-Yourself-First (15% Cash Reserve)');
+      fin.transactions.unshift(txEmg, txInv, txInc);
+      fin.transactions = fin.transactions.slice(0, 2000);
+      const gInv = fin.goals.find(g => g.id === 'GOAL-INVEST');
+      if (gInv) gInv.savedIdr = Number(gInv.savedIdr || 0) + investAmt;
+      const gEmg = fin.goals.find(g => g.id === 'GOAL-EMERGENCY');
+      if (gEmg) gEmg.savedIdr = Number(gEmg.savedIdr || 0) + emergAmt;
+      booked.push(txInc, txInv, txEmg);
+    }
+
+    try {
+      saveFinance(fin);
+      res.json({ ok: true, plan, bookedCount: booked.length, data: { ...fin, summary: computeFinanceSummary(fin) } });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Failed applying Warren Buffett allocation' });
+    }
+  });
+
   app.post('/api/finance/tx', async (req, res) => {
     const b = req.body || {};
     const type = String(b.type || 'EXPENSE').toUpperCase();
@@ -802,7 +940,7 @@ function mountTerminalExtensions(app, deps) {
     if (!Number.isFinite(amountIdr) || amountIdr <= 0 || amountIdr > 1e12) {
       return res.status(400).json({ ok: false, error: 'Invalid amountIdr' });
     }
-    const category = String(b.category || (type === 'INCOME' ? 'Gaji / Income' : type === 'SAVINGS' ? 'Tabungan / Investasi' : 'Makan & Minum')).trim().slice(0, 60);
+    const category = String(b.category || (type === 'INCOME' ? 'Monthly Fixed Allowance' : type === 'SAVINGS' ? 'Productive Investment Capital' : 'Food & Refreshments')).trim().slice(0, 60);
     const note = String(b.note || '').trim().slice(0, 160);
     const wibToday = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
     const date = /^\d{4}-\d{2}-\d{2}$/.test(String(b.date || '')) ? String(b.date) : wibToday;
@@ -830,13 +968,13 @@ function mountTerminalExtensions(app, deps) {
     }
     const summary = computeFinanceSummary(fin);
 
-    // Anti-Boros Push Alert if daily spend crosses limit!
+    // Budget Discipline Push Alert when daily ceiling is crossed
     if (type === 'EXPENSE' && summary.todayExpense > summary.dailyLimitIdr && typeof dispatchNativePushAlert === 'function' && !testMode) {
       const over = summary.todayExpense - summary.dailyLimitIdr;
       dispatchNativePushAlert({
-        title: '⚠️ ANTI-BOROS ALERT: BATAS HARIAN TERLEWATI!',
-        body: `Pengeluaran hari ini Rp ${summary.todayExpense.toLocaleString('id-ID')} (lebih Rp ${over.toLocaleString('id-ID')} dari limit Rp ${summary.dailyLimitIdr.toLocaleString('id-ID')}). Rem dulu ya!`,
-        eventType: 'FINANCE_BOROS_ALERT',
+        title: 'BLOOMBERG TERMINAL // DAILY BUDGET LIMIT EXCEEDED',
+        body: `Pengeluaran hari ini Rp ${summary.todayExpense.toLocaleString('id-ID')} melampaui batas harian Warren Buffett Rp ${summary.dailyLimitIdr.toLocaleString('id-ID')} (+Rp ${over.toLocaleString('id-ID')}).`,
+        eventType: 'FINANCE_LIMIT_ALERT',
         symbol: 'FIN',
         url: '/?w=BTCUSDT:FIN,BTCUSDT:BOT,BTCUSDT:GP,BTCUSDT:TOP&win=1'
       }).catch(() => {});
@@ -934,6 +1072,87 @@ function mountTerminalExtensions(app, deps) {
       res.status(500).json({ ok: false, error: 'Failed deleting goal' });
     }
   });
+
+  // ------------------------------------------------------------------
+  // 6. BLOOMBERG TERMINAL LIVE WIDGET SUMMARY (/api/widget/summary)
+  // ------------------------------------------------------------------
+  app.get('/api/widget/summary', async (req, res) => {
+    const syms = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'GC=F', 'USDIDR=X'];
+    const quotes = await Promise.all(syms.map(async s => {
+      const q = await agg.quote(s).catch(() => ({}));
+      return {
+        symbol: s,
+        label: s === 'GC=F' ? 'GOLD' : s === 'USDIDR=X' ? 'USD/IDR' : s.replace('USDT', ''),
+        price: Number(q.price || 0),
+        chgPct: Number(q.chgPct || 0)
+      };
+    }));
+
+    const authed = typeof isAuthenticatedReq === 'function' ? Boolean(isAuthenticatedReq(req)) : false;
+    const positions = safeReadJson(positionsPath, []) || [];
+    const openPos = Array.isArray(positions) ? positions.filter(p => p && p.status === 'OPEN') : [];
+    const topPos = openPos[0] || null;
+    const autoState = safeReadJson(statePath, {}) || {};
+
+    const botSummary = {
+      running: Boolean(autoState.is_running || autoState.autonomous_running),
+      openCount: openPos.length,
+      active: topPos ? {
+        symbol: String(topPos.binance_pair || topPos.symbol || '').toUpperCase(),
+        direction: String(topPos.direction || 'LONG').toUpperCase(),
+        leverage: Number(topPos.leverage || 20),
+        entryPrice: Number(topPos.entry_price || 0),
+        markPrice: Number(topPos.current_price || 0),
+        pnlPct: Number(topPos.pnl_pct || 0)
+      } : null
+    };
+
+    let financeSummary = null;
+    if (authed) {
+      const fin = loadFinance();
+      const s = computeFinanceSummary(fin);
+      financeSummary = {
+        todayExpense: s.todayExpense,
+        dailyLimitIdr: s.dailyLimitIdr,
+        remainingTodayIdr: s.remainingTodayIdr,
+        dynamicSafeDailyIdr: s.dynamicSafeDailyIdr,
+        monthExpense: s.monthExpense,
+        monthlyBudgetIdr: s.monthlyBudgetIdr,
+        monthlyIncomeTarget: s.monthlyIncomeTarget,
+        disciplineScore: s.disciplineScore,
+        statusLabel: s.statusLabel
+      };
+    }
+
+    const fmtQ = (item) => item && item.price > 0 ? `$${item.price >= 100 ? item.price.toFixed(2) : item.price.toFixed(4)}` : 'N/A';
+    const fmtC = (item) => item ? `${item.chgPct >= 0 ? '+' : ''}${item.chgPct.toFixed(2)}%` : '0.00%';
+    const btc = quotes[0], eth = quotes[1], gold = quotes[3];
+    const botHeadline = botSummary.active
+      ? `${botSummary.active.symbol} ${botSummary.active.direction} ${botSummary.active.leverage}x (${botSummary.active.pnlPct >= 0 ? '+' : ''}${botSummary.active.pnlPct.toFixed(2)}%)`
+      : (botSummary.running ? 'SCANNING MARKET — NO OPEN POSITION' : 'EXECUTION STANDBY');
+    const dailyStatus = financeSummary
+      ? `Rem Rp ${Math.round(financeSummary.remainingTodayIdr).toLocaleString('id-ID')} / Rp ${Math.round(financeSummary.dailyLimitIdr).toLocaleString('id-ID')} (${financeSummary.statusLabel})`
+      : 'Open Terminal to View Capital Allocation';
+
+    res.json({
+      ok: true,
+      ts: Date.now(),
+      authenticated: authed,
+      quotes,
+      bot: botSummary,
+      finance: financeSummary,
+      // Flat fields for W3C PWA Adaptive Card Widget template
+      btcPrice: fmtQ(btc),
+      btcChg: fmtC(btc),
+      ethPrice: fmtQ(eth),
+      ethChg: fmtC(eth),
+      goldPrice: fmtQ(gold),
+      goldChg: fmtC(gold),
+      botHeadline,
+      dailyStatus,
+      updatedAt: new Date().toISOString().slice(11, 19) + ' UTC'
+    });
+  });
 }
 
-module.exports = { mountTerminalExtensions };
+module.exports = { mountTerminalExtensions, buildWarrenBuffettPlan };

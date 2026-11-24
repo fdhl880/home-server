@@ -6,6 +6,7 @@ node_modules/
 **/bmail-store.json
 **/personal-finance.json
 **/push-subscriptions.json
+**/push-config.json
 
 # Pluang Bot
 **/tokens.json

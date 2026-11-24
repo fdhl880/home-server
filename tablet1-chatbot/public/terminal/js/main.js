@@ -2,13 +2,13 @@ import { $, h, fmtTime, LS } from './util.js';
 import { get, net, startHub, apiFetch, setDashToken, setAuthRequiredHandler } from './api.js';
 import { dev } from './dev-adapter.js';
 
-import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261124a';
-import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261124a';
-import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261124a';
-import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261124a';
-import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261124a';
-import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261124a';
-import { mountFACT, mountTRAN, mountSTUDIO, mountBI, mountETF, mountFIN } from './panels/intelligence.js?v=20261124a';
+import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261124b';
+import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261124b';
+import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261124b';
+import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261124b';
+import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261124b';
+import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261124b';
+import { mountFACT, mountTRAN, mountSTUDIO, mountBI, mountETF, mountFIN, mountWDGT } from './panels/intelligence.js?v=20261124b';
 
 import { panels as newsPanels } from '../panels/news/index.js';
 import { panels as macroPanels } from '../panels/macro/index.js';
@@ -151,24 +151,27 @@ export const CATALOG = [
   { code: 'FIW', cat: 'FIXED INC', title: 'Fixed Income Worksheet', desc: 'Senior Corporate Bond Curve, G-Spread OAS & Modified Duration Worksheet', mount: mountCRPR },
 
   // Operations, Portfolio, Risk, AI & System
-  { code: 'BOT', cat: 'AI ENGINE', title: 'Pyrofuel 28-Pillar AI Bot', desc: 'Live Binance Futures Auto-Trader Telemetry, Active Positions & 5-Layer Signals', mount: mountBOT },
-  { code: 'FACT', cat: 'AI ENGINE', title: 'Bot Glass-Box Factor X-Ray', desc: '100% Transparan: Radar 8-Axis, Waterfall P_Math, Funnel Layer 1-6, 24/28 Pillars, 532 Quant Factors & FPT Cone', mount: mountFACT },
-  { code: 'XRAY', cat: 'AI ENGINE', title: 'Bot Decision X-Ray', desc: 'Transparansi Penuh Faktor & Proses Kerja Keputusan Bot Trading', mount: mountFACT },
-  { code: 'PILLAR', cat: 'AI ENGINE', title: '28-Pillar Telemetry Matrix', desc: 'Live Microstructure, Regime, Options, Risk & Gear Pillar Matrix', mount: mountFACT },
-  { code: 'TRAN', cat: 'AI ENGINE', title: '9-Agent Debate & Earnings Transcripts', desc: 'Transkrip Debat 9-Agent Committee, 5-Layer Audit Trail, AI Memory Post-Mortem & Corporate Earnings Tone', mount: mountTRAN },
-  { code: 'TRSC', cat: 'AI ENGINE', title: 'Transcripts Workbench', desc: 'AI Committee Debate Transcripts & SEC/News Catalyst Transcripts', mount: mountTRAN },
-  { code: 'G', cat: 'CHART', title: 'Multi-Chart Studio & PNG Gallery', desc: '4-Asset Live Candlestick Wall, Saved Chart PNG Snapshot Gallery & Technical Pattern Diagrams', mount: mountSTUDIO },
-  { code: 'SNAP', cat: 'CHART', title: 'Chart PNG Snapshot Gallery', desc: 'Saved Institutional Chart PNG Exports & 4-Chart Studio', mount: mountSTUDIO },
-  { code: 'PATT', cat: 'CHART', title: 'Technical Pattern & Sniper Diagrams', desc: 'Live Auto-Pattern Detector (BOS/FVG/Golden Pocket) + Sniper Two-Stage Diagrams', mount: mountSTUDIO },
-  { code: 'BI', cat: 'RESEARCH', title: 'Bloomberg Intelligence Dossier', desc: 'Institutional Bull/Bear Thesis, Quant Snapshot, Catalysts & Downloadable HTML Research Report', mount: mountBI },
-  { code: 'RES', cat: 'RESEARCH', title: 'Institutional Research Hub', desc: 'Bloomberg Intelligence Deep Research Dossier & Export', mount: mountBI },
-  { code: 'ETF', cat: 'FLOWS', title: 'Spot Crypto & Macro ETF Flows', desc: 'IBIT/FBTC/GBTC/ETHA/SPY/QQQ/TLT/GLD/EIDO Signed Flows, Futures Short Squeeze & SEC Form-4 Insiders', mount: mountETF },
-  { code: 'FLOW', cat: 'FLOWS', title: 'Institutional Money Flows', desc: 'Cross-Asset Spot ETF Flows & Perpetual Crowding Pressure Board', mount: mountETF },
+  { code: 'BOT', cat: 'EXECUTION', title: 'Autonomous Futures Execution Desk', desc: 'Live Binance Futures Auto-Trader Telemetry, Active Positions & 5-Layer Signals', mount: mountBOT },
+  { code: 'FACT', cat: 'ANALYTICS', title: 'Quantitative Execution X-Ray', desc: 'Full Factor Transparency: 8-Axis Radar, P_Math Waterfall, Layer 1-6 Funnel, 24 Pillars, 532 Factors & FPT Cone', mount: mountFACT },
+  { code: 'XRAY', cat: 'ANALYTICS', title: 'Execution Decision X-Ray', desc: 'Transparent Inspection of Quantitative Signals, Microstructure & Risk Gates', mount: mountFACT },
+  { code: 'PILLAR', cat: 'ANALYTICS', title: '24/28-Pillar Telemetry Matrix', desc: 'Live Microstructure, Regime, Derivatives, Options & Risk Pillar Matrix', mount: mountFACT },
+  { code: 'TRAN', cat: 'RESEARCH', title: 'Committee & Earnings Transcripts', desc: '9-Agent Adversarial Debate Transcripts, 5-Layer Audit Trail, Trade Memory & Corporate Earnings Tone', mount: mountTRAN },
+  { code: 'TRSC', cat: 'RESEARCH', title: 'Transcripts Archive', desc: 'Committee Debate Logs & SEC/News Catalyst Transcripts', mount: mountTRAN },
+  { code: 'G', cat: 'CHART', title: 'Multi-Chart Studio & PNG Archive', desc: '4-Asset Live Candlestick Wall, Saved Chart PNG Archive & Technical Pattern Schematics', mount: mountSTUDIO },
+  { code: 'SNAP', cat: 'CHART', title: 'Chart PNG Snapshot Archive', desc: 'Archived Institutional Chart PNG Exports & 4-Chart Wall', mount: mountSTUDIO },
+  { code: 'PATT', cat: 'CHART', title: 'Technical Pattern Schematics', desc: 'Live Structure Detector (BOS/FVG/Golden Pocket) & Execution Architecture Diagrams', mount: mountSTUDIO },
+  { code: 'BI', cat: 'RESEARCH', title: 'Bloomberg Intelligence Dossier', desc: 'Institutional Bull/Bear Thesis, Quantitative Snapshot, Catalysts & HTML Research Export', mount: mountBI },
+  { code: 'RES', cat: 'RESEARCH', title: 'Institutional Research Hub', desc: 'Bloomberg Intelligence Research Dossier & Printable Report Export', mount: mountBI },
+  { code: 'ETF', cat: 'FLOWS', title: 'Spot Crypto & Macro ETF Flows', desc: 'IBIT/FBTC/GBTC/ETHA/SPY/QQQ/TLT/GLD/EIDO Signed Flows, Futures Crowding & SEC Form-4 Insiders', mount: mountETF },
+  { code: 'FLOW', cat: 'FLOWS', title: 'Institutional Capital Flows', desc: 'Cross-Asset Spot ETF Flows & Perpetual Short Squeeze Pressure Matrix', mount: mountETF },
   { code: 'INS', cat: 'EQUITY', title: 'SEC Form-4 Insiders & Flows', desc: 'Corporate Insider Filings (Form 4 / 8-K) & Institutional Flow Monitor', mount: mountETF },
-  { code: 'SI', cat: 'DERIV', title: 'Short Squeeze Pressure Monitor', desc: 'Perpetual Funding Crowding & Short Squeeze Alert Matrix', mount: mountETF },
-  { code: 'FIN', cat: 'FINANCE', title: 'Keuangan Pribadi & Anti-Boros', desc: 'Catat Income/Expense/Savings IDR, Limit Harian Anti-Boros + Push Alert, Diagram Cashflow 14H, Goals & Bot Sync', mount: mountFIN },
-  { code: 'BUDGET', cat: 'FINANCE', title: 'Anti-Boros Budget & Envelopes', desc: 'Pengatur Budget Harian/Bulanan, Amplop Kategori & Target Tabungan', mount: mountFIN },
-  { code: 'CASH', cat: 'FINANCE', title: 'Personal Cashflow Manager', desc: 'Kontrol Pengeluaran Harian, Skor Disiplin & Export CSV', mount: mountFIN },
+  { code: 'SI', cat: 'DERIV', title: 'Short Squeeze Pressure Monitor', desc: 'Perpetual Funding Crowding & Short Squeeze Pressure Matrix', mount: mountETF },
+  { code: 'FIN', cat: 'CAPITAL', title: 'Personal Capital Manager (Warren Buffett)', desc: 'Warren Buffett Pay-Yourself-First Automatic Allocation (40/60), Daily Ceiling, 14D Cashflow & Compounding Forecast', mount: mountFIN },
+  { code: 'BUFFETT', cat: 'CAPITAL', title: 'Warren Buffett Auto-Allocation Engine', desc: 'Automatic Fixed Monthly Income Split (25% Invest, 15% Reserve, 45% Food, 15% Transport) & Compounding Projection', mount: mountFIN },
+  { code: 'BUDGET', cat: 'CAPITAL', title: 'Operating Budget & Envelopes', desc: 'Daily Operating Ceiling, Monthly Envelopes & Capital Reserves', mount: mountFIN },
+  { code: 'CASH', cat: 'CAPITAL', title: 'Personal Cashflow Ledger', desc: 'Daily Cashflow Discipline Monitor, Ledger & CSV Export', mount: mountFIN },
+  { code: 'WDGT', cat: 'SYSTEM', title: 'Bloomberg Live Widget Studio', desc: 'Interactive Live Widgets, Always-on-Top Floating Mini-Terminal & Android Home Screen Widget Setup', mount: mountWDGT },
+  { code: 'WIDGET', cat: 'SYSTEM', title: 'Floating Mini-Terminal Widgets', desc: 'Live Market, Execution & Capital Widgets for Desktop and Android Home Screen', mount: mountWDGT },
   { code: 'BTCA', cat: 'EXECUTION', title: 'Execution TCA & Quant Health', desc: 'Maker GTX Fill Share, Arrival Slippage, +1m/+5m Markouts, Risk Breaker & ADWIN Drift', mount: mountBTCA },
   { code: 'TCA', cat: 'EXECUTION', title: 'Transaction Cost Analysis (TCA)', desc: 'Execution Quality, VWAP Impact, Fee Drag & Strategy Bandit Audit', mount: mountBTCA },
   { code: 'PORT', cat: 'PORTFOLIO', title: 'Portfolio & Risk Analytics', desc: 'Institutional Multi-Asset Holdings Valuation, Weight Attribution & DMA Execution', mount: mountPORT },
@@ -238,7 +241,7 @@ const WORKSPACES = {
     { symbol: 'ETHUSDT', fn: 'TRADES' },
     { symbol: 'ETHUSDT', fn: 'FNG' }
   ],
-  'BOT X-RAY & TRANSCRIPTS': [
+  'EXECUTION X-RAY & TRANSCRIPTS': [
     { symbol: 'BTCUSDT', fn: 'FACT' },
     { symbol: 'BTCUSDT', fn: 'TRAN' },
     { symbol: 'BTCUSDT', fn: 'GP' },
@@ -250,10 +253,10 @@ const WORKSPACES = {
     { symbol: 'BTCUSDT', fn: 'G' },
     { symbol: 'BTCUSDT', fn: 'TOP' }
   ],
-  'KEUANGAN & ANTI-BOROS': [
+  'CAPITAL MANAGEMENT (BUFFETT)': [
     { symbol: 'BTCUSDT', fn: 'FIN' },
     { symbol: 'BTCUSDT.P', fn: 'BOT' },
-    { symbol: 'BTCUSDT', fn: 'GMAIL' },
+    { symbol: 'BTCUSDT', fn: 'WDGT' },
     { symbol: 'BTCUSDT', fn: 'TOP' }
   ],
   'COMMODITIES & GEOPOLITICAL': [
@@ -622,13 +625,14 @@ const FKEYS = [
   ['F7', 'GMAIL ALRT', 'GMAIL'],
   ['F8', 'EQUITY', 'AAPL DES'],
   ['F9', 'SPLC', 'NVDA SPLC'],
-  ['F10', 'AI BOT', 'BTCUSDT.P BOT'],
+  ['F10', 'EXECUTION', 'BTCUSDT.P BOT'],
   ['F11', 'X-RAY', 'BTCUSDT FACT'],
-  ['F12', 'TRANSKRIP', 'BTCUSDT TRAN'],
+  ['F12', 'TRANSCRIPTS', 'BTCUSDT TRAN'],
   ['STUDIO', 'CHARTS', 'BTCUSDT G'],
   ['BI', 'RESEARCH', 'BTCUSDT BI'],
   ['ETF', 'FLOWS', 'BTCUSDT ETF'],
-  ['FIN', 'ANTI-BOROS', 'BTCUSDT FIN']
+  ['FIN', 'CAPITAL', 'BTCUSDT FIN'],
+  ['WDGT', 'WIDGET', 'BTCUSDT WDGT']
 ];
 const fkBar = $('#fkeys');
 for (const [fk, lbl, cmd] of FKEYS) {
@@ -846,7 +850,7 @@ if (!net.adapter && hub.state === 'AUTH_REQUIRED' && !authVerifiedOnce) {
 }
 
 // =====================================================================
-// NATIVE PWA APP INSTALLER + PUSH NOTIFICATION ENGINE (SW + VAPID + WS)
+// BLOOMBERG TERMINAL PWA INSTALLER, WIDGET LAUNCHER & MULTI-CHANNEL PUSH
 // =====================================================================
 let swRegistration = null;
 let deferredInstallPrompt = null;
@@ -860,11 +864,31 @@ function urlBase64ToUint8Array(base64String) {
   return out;
 }
 
+function playAlertChime() {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctxA = new AudioCtx();
+    const osc = ctxA.createOscillator();
+    const gain = ctxA.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, ctxA.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(1174.66, ctxA.currentTime + 0.12);
+    gain.gain.setValueAtTime(0.06, ctxA.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctxA.currentTime + 0.28);
+    osc.connect(gain);
+    gain.connect(ctxA.destination);
+    osc.start();
+    osc.stop(ctxA.currentTime + 0.29);
+    setTimeout(() => { try { ctxA.close(); } catch {} }, 400);
+  } catch {}
+}
+
 function showBloombergToast(payload = {}) {
   const rack = $('#toastRack');
   if (!rack) return;
   const evType = String(payload.eventType || 'ALERT').toUpperCase();
-  const cls = /BOROS|ERR|BREAKER|SL|VETO/i.test(evType) ? 'err' : /WARN|NEWS/i.test(evType) ? 'warn' : '';
+  const cls = /LIMIT|BOROS|ERR|BREAKER|SL|VETO/i.test(evType) ? 'err' : /WARN|NEWS/i.test(evType) ? 'warn' : '';
   const toast = h('div', {
     class: 'bbg-toast ' + cls,
     onclick: () => {
@@ -886,7 +910,7 @@ function showBloombergToast(payload = {}) {
     }
   },
     h('div', { class: 't-hd' },
-      h('span', { text: payload.title || 'BLOOMBERG // PYROFUEL ALERT' }),
+      h('span', { text: payload.title || 'BLOOMBERG TERMINAL // ALERT' }),
       h('span', { text: fmtTime(payload.ts || Date.now()) })
     ),
     h('div', { class: 't-bd', text: payload.body || '' })
@@ -897,31 +921,35 @@ function showBloombergToast(payload = {}) {
 }
 
 async function triggerOsNotification(payload = {}) {
-  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return false;
   try {
     const reg = swRegistration || (navigator.serviceWorker && await navigator.serviceWorker.ready.catch(() => null));
     if (reg && reg.active) {
       reg.active.postMessage({ type: 'SHOW_NOTIFICATION', payload });
-      return;
+      return true;
     }
     if (reg && typeof reg.showNotification === 'function') {
-      await reg.showNotification(payload.title || 'BLOOMBERG // PYROFUEL', {
+      await reg.showNotification(payload.title || 'BLOOMBERG TERMINAL', {
         body: payload.body || '',
         icon: '/icons/icon-192.png',
-        badge: '/icons/icon-192.png',
-        tag: payload.tag || ('bbg-' + Date.now())
+        badge: '/icons/favicon-64.png',
+        tag: payload.tag || ('bloomberg-' + Date.now())
       });
-      return;
+      return true;
     }
-    new Notification(payload.title || 'BLOOMBERG // PYROFUEL', {
+    new Notification(payload.title || 'BLOOMBERG TERMINAL', {
       body: payload.body || '',
       icon: '/icons/icon-192.png'
     });
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 hub.onPushAlert = (payload) => {
   if (!payload || typeof payload !== 'object') return;
+  playAlertChime();
   showBloombergToast(payload);
   triggerOsNotification(payload);
 };
@@ -935,6 +963,18 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+// Header Widget Button (#btnWidget)
+const btnWidget = $('#btnWidget');
+if (btnWidget) {
+  btnWidget.addEventListener('click', (ev) => {
+    if (ev.shiftKey) {
+      window.open('/widget?mode=all', 'BloombergTerminalWidget', 'width=430,height=520,menubar=no,toolbar=no,location=no,status=no');
+    } else {
+      executeCommand('BTCUSDT WDGT');
+    }
+  });
+}
+
 // Native Install App Button (#btnInstallApp)
 const btnInstall = $('#btnInstallApp');
 const isStandalone = () => (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
@@ -942,10 +982,11 @@ const isStandalone = () => (window.matchMedia && window.matchMedia('(display-mod
 function syncInstallBtn() {
   if (!btnInstall) return;
   if (isStandalone()) {
-    btnInstall.textContent = '✓ APP MODE';
+    btnInstall.textContent = 'APP ACTIVE';
     btnInstall.style.background = '#102418';
     btnInstall.style.color = '#00d26a';
-    btnInstall.title = 'Running as Installed Native Standalone App';
+    btnInstall.style.borderColor = '#00d26a';
+    btnInstall.title = 'Bloomberg Terminal running in Native Standalone Mode';
   }
 }
 syncInstallBtn();
@@ -954,7 +995,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredInstallPrompt = e;
   if (btnInstall) {
-    btnInstall.textContent = '📲 INSTALL APP';
+    btnInstall.textContent = 'INSTALL APP';
     btnInstall.style.display = 'inline-block';
   }
 });
@@ -963,8 +1004,8 @@ window.addEventListener('appinstalled', () => {
   deferredInstallPrompt = null;
   syncInstallBtn();
   showBloombergToast({
-    title: '📲 BLOOMBERG PYROFUEL TERINSTALL!',
-    body: 'Aplikasi sudah masuk Home Screen / Desktop dan siap jalan fullscreen seperti aplikasi native.',
+    title: 'BLOOMBERG TERMINAL // APPLICATION INSTALLED',
+    body: 'Bloomberg Terminal has been added to your device and is ready for standalone fullscreen launch.',
     eventType: 'PWA_INSTALLED'
   });
 });
@@ -972,22 +1013,22 @@ window.addEventListener('appinstalled', () => {
 function showInstallGuideModal() {
   const existing = $('#pwaInstallModal');
   if (existing) existing.remove();
-  const isHttps = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  const isSecure = window.isSecureContext || location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
   const ov = h('div', {
     id: 'pwaInstallModal',
     style: 'position:fixed;inset:0;z-index:99998;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;padding:16px',
     onclick: ev => { if (ev.target === ov) ov.remove(); }
   },
-    h('div', { style: 'width:480px;max-width:94vw;background:#0a0d12;border:1px solid var(--amber);padding:16px 18px;color:#e6edf3;line-height:1.55' },
-      h('div', { style: 'color:var(--amber);font-weight:700;font-size:13px;border-bottom:1px solid #262b33;padding-bottom:8px;margin-bottom:10px', text: '📲 INSTALL BLOOMBERG PYROFUEL SEBAGAI APLIKASI NATIVE' }),
+    h('div', { style: 'width:490px;max-width:94vw;background:#0a0d12;border:1px solid #ff6600;padding:16px 18px;color:#e6edf3;line-height:1.55' },
+      h('div', { style: 'color:#ff6600;font-weight:700;font-size:12.5px;border-bottom:1px solid #262b33;padding-bottom:8px;margin-bottom:10px;letter-spacing:0.6px', text: 'BLOOMBERG TERMINAL // NATIVE APPLICATION INSTALLATION' }),
       h('div', { style: 'font-size:11.5px;margin-bottom:10px' },
-        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#00d26a', text: '1. Android Chrome / Tablet (Langsung Jadi App): ' }), 'Tap menu titik tiga (⋮) di kanan atas Chrome → pilih ', h('b', { text: '"Install app" / "Tambahkan ke layar utama"' }), '.'),
-        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#4da3ff', text: '2. iPhone / iPad Safari: ' }), 'Tap tombol ', h('b', { text: 'Share (⬆)' }), ' → pilih ', h('b', { text: '"Add to Home Screen"' }), '.'),
-        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#ffb000', text: '3. PC / Laptop Chrome / Edge: ' }), 'Klik ikon ', h('b', { text: 'Install (⊕)' }), ' di ujung kanan address bar browser.'),
-        !isHttps ? h('div', { style: 'margin-top:8px;padding:7px;background:#1a1203;border:1px solid #ffb00066;font-size:11px;color:#ffd580', text: 'Tip LAN/Termux: Jika membuka lewat http://192.168.x.x (bukan localhost/HTTPS), Chrome menyembunyikan tombol auto-prompt, tapi "Tambahkan ke layar utama" dari menu ⋮ tetap membuat shortcut app, atau gunakan http://localhost:3000 di tablet yang sama agar tombol Install Native muncul langsung!' }) : null
+        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#00d26a', text: '1. Android Chrome / Tablet: ' }), 'Open Chrome menu (three dots at top-right) and select ', h('b', { text: '"Install app" or "Add to Home screen"' }), '.'),
+        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#4da3ff', text: '2. iOS / iPadOS Safari: ' }), 'Tap the ', h('b', { text: 'Share' }), ' icon and select ', h('b', { text: '"Add to Home Screen"' }), '.'),
+        h('div', { style: 'margin-bottom:6px' }, h('b', { style: 'color:#ffb000', text: '3. Desktop Chrome / Edge: ' }), 'Click the ', h('b', { text: 'Install' }), ' icon in the right end of the address bar.'),
+        !isSecure ? h('div', { style: 'margin-top:8px;padding:7px;background:#1a1203;border:1px solid #ffb00066;font-size:11px;color:#ffd580', text: `Note: Current origin (${location.origin}) is non-HTTPS LAN HTTP. For full native PWA install & background Web Push on the tablet itself, open http://localhost:${location.port || '4000'} or serve via HTTPS.` }) : null
       ),
       h('div', { style: 'display:flex;justify-content:flex-end;gap:8px' },
-        h('button', { class: 'on', text: 'MENGERTI / TUTUP', onclick: () => ov.remove() })
+        h('button', { class: 'on', text: 'CLOSE', onclick: () => ov.remove() })
       )
     )
   );
@@ -1007,17 +1048,17 @@ if (btnInstall) {
   });
 }
 
-// Native Push Notification Button (#btnPush)
+// Multi-Channel Push Notification Control Center (#btnPush)
 const btnPush = $('#btnPush');
 function syncPushBtn(enabled) {
   if (!btnPush) return;
   if (enabled) {
-    btnPush.textContent = '🔔 PUSH ON';
+    btnPush.textContent = 'PUSH: ON';
     btnPush.style.borderColor = '#00d26a';
     btnPush.style.color = '#00d26a';
     btnPush.style.background = '#041a0d';
   } else {
-    btnPush.textContent = '🔔 PUSH';
+    btnPush.textContent = 'PUSH ALERTS';
     btnPush.style.borderColor = '#ffb000';
     btnPush.style.color = '#ffb000';
     btnPush.style.background = '';
@@ -1027,27 +1068,25 @@ if (typeof Notification !== 'undefined' && Notification.permission === 'granted'
   syncPushBtn(true);
 }
 
-async function enableNativePush() {
+async function attemptBrowserPushSubscription() {
+  if (!window.isSecureContext) {
+    return {
+      ok: false,
+      mode: 'INSECURE_HTTP',
+      detail: `Origin ${location.origin} is not a Secure Context. Browser Web Push requires http://localhost:${location.port || '4000'} or HTTPS. Use Mobile ntfy or Android Termux Native below for non-HTTPS LAN/4G push.`
+    };
+  }
   if (typeof Notification === 'undefined') {
-    showBloombergToast({
-      title: '🔔 IN-APP TOAST AKTIF',
-      body: 'Browser ini tidak mendukung OS Notification API, tapi alert real-time tetap muncul via Bloomberg Toast.',
-      eventType: 'WARN'
-    });
-    return;
+    return { ok: false, mode: 'UNSUPPORTED', detail: 'Browser Notification API unavailable on this client. WebSocket Toast, Termux Native, and ntfy Mobile Push remain available.' };
   }
   const perm = await Notification.requestPermission();
   if (perm !== 'granted') {
     syncPushBtn(false);
-    showBloombergToast({
-      title: '⚠️ IZIN NOTIFIKASI DITOLAK',
-      body: 'Aktifkan izin Notifications di pengaturan situs browser agar Push Notification TP/SL & Anti-Boros masuk ke HP/Tablet.',
-      eventType: 'WARN'
-    });
-    return;
+    return { ok: false, mode: 'DENIED', detail: 'Browser notification permission is blocked. Enable Notifications in Chrome Site Settings for this domain.' };
   }
 
-  let webPushSubscribed = false;
+  let vapidOk = false;
+  let subErr = '';
   try {
     const reg = swRegistration || (navigator.serviceWorker && await navigator.serviceWorker.ready);
     if (reg && reg.pushManager) {
@@ -1068,28 +1107,153 @@ async function enableNativePush() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ subscription: sub.toJSON(), deviceLabel: navigator.userAgent.slice(0, 60) })
           }, 10000);
-          webPushSubscribed = sRes.ok;
+          vapidOk = sRes.ok;
+          if (!sRes.ok) subErr = `HTTP ${sRes.status}`;
         }
       }
     }
-  } catch {}
+  } catch (e) {
+    subErr = e && e.message ? e.message : 'PushManager subscription error';
+  }
 
   syncPushBtn(true);
-  const welcomePayload = {
-    title: '🔔 NATIVE PUSH NOTIFICATION AKTIF!',
-    body: webPushSubscribed
-      ? 'Background Web Push (VAPID) + Real-Time WS aktif! Notifikasi Futures Open/Close, TP/SL, Hot News & Anti-Boros akan masuk otomatis.'
-      : 'OS Notification + Real-Time WebSocket Push aktif! (Untuk background push saat tab ditutup total, akses via localhost atau HTTPS).',
-    eventType: 'PUSH_ENABLED',
-    symbol: 'BTCUSDT',
-    url: '/?w=BTCUSDT:FACT,BTCUSDT:TRAN,BTCUSDT:GP,BTCUSDT.P:BOT'
+  return {
+    ok: true,
+    mode: vapidOk ? 'VAPID_BACKGROUND' : 'OS_FOREGROUND',
+    detail: vapidOk
+      ? 'Background VAPID Web Push + Foreground OS Notification active.'
+      : `Foreground OS Notification active (Background VAPID skipped: ${subErr || 'Service Worker PushManager unavailable'}).`
   };
-  showBloombergToast(welcomePayload);
-  triggerOsNotification(welcomePayload);
+}
+
+async function openPushControlCenter() {
+  const existing = $('#pushCenterModal');
+  if (existing) existing.remove();
+
+  let serverCfg = { ntfyTopic: '', enableTermux: true, enableWebPush: true, webPushAvailable: false, termuxAvailable: false, subscriptionsCount: 0 };
+  try {
+    const r = await apiFetch('/api/push/config', { cache: 'no-store' }, 8000);
+    if (r.ok) {
+      const j = await r.json();
+      if (j && j.config) serverCfg = { ...serverCfg, ...j.config };
+    }
+  } catch {}
+
+  const statusLog = h('div', { style: 'padding:6px 8px;background:#05070a;border:1px solid #1e2430;font-size:10.5px;color:#00e5ff;min-height:28px;margin-bottom:10px;line-height:1.45', text: 'Ready. Enable Browser Push or configure Mobile ntfy Topic below, then click SEND LIVE TEST.' });
+  const ntfyInput = h('input', {
+    value: serverCfg.ntfyTopic || '',
+    placeholder: 'Private ntfy topic (e.g. bloomberg-fadhil-2026)',
+    style: 'flex:1;min-width:190px;background:#05070a;color:#fff;border:1px solid #333b48;padding:5px 8px;font:inherit;font-size:11px'
+  });
+
+  const browserState = !window.isSecureContext
+    ? `BLOCKED (HTTP LAN ${location.origin})`
+    : (typeof Notification === 'undefined' ? 'UNSUPPORTED' : Notification.permission.toUpperCase());
+  const browserCol = browserState === 'GRANTED' ? '#00d26a' : '#ffb000';
+
+  const ov = h('div', {
+    id: 'pushCenterModal',
+    style: 'position:fixed;inset:0;z-index:99998;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;padding:16px',
+    onclick: ev => { if (ev.target === ov) ov.remove(); }
+  },
+    h('div', { style: 'width:540px;max-width:95vw;background:#0a0d12;border:1px solid #ff6600;padding:16px 18px;color:#e6edf3;line-height:1.5' },
+      h('div', { style: 'display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #262b33;padding-bottom:8px;margin-bottom:10px' },
+        h('span', { style: 'color:#ff6600;font-weight:700;font-size:12.5px;letter-spacing:0.6px', text: 'BLOOMBERG TERMINAL // PUSH NOTIFICATION CONTROL CENTER' }),
+        h('button', { text: 'CLOSE', onclick: () => ov.remove() })
+      ),
+      h('div', { class: 'xgrid2', style: 'margin-bottom:10px' },
+        h('div', { class: 'xstat' },
+          h('div', { class: 'xl', text: '1. BROWSER / PWA PUSH' }),
+          h('div', { class: 'xv', style: `font-size:11.5px;color:${browserCol}`, text: browserState }),
+          h('div', { class: 'xs', text: `VAPID Engine: ${serverCfg.webPushAvailable ? 'READY' : 'INSTALL web-push'} | Subs: ${serverCfg.subscriptionsCount}` })
+        ),
+        h('div', { class: 'xstat' },
+          h('div', { class: 'xl', text: '2. WEBSOCKET LIVE STREAM' }),
+          h('div', { class: 'xv', style: `font-size:11.5px;color:${hub.state === 'OPEN' ? '#00d26a' : '#ffb000'}`, text: hub.state }),
+          h('div', { class: 'xs', text: 'Instant Terminal Toast + Audio Chime' })
+        ),
+        h('div', { class: 'xstat' },
+          h('div', { class: 'xl', text: '3. ANDROID TERMUX NATIVE' }),
+          h('div', { class: 'xv', style: `font-size:11.5px;color:${serverCfg.termuxAvailable ? '#00d26a' : '#9aa7b8'}`, text: serverCfg.termuxAvailable ? 'DETECTED (READY)' : 'NOT INSTALLED' }),
+          h('div', { class: 'xs', text: 'Android OS bar via pkg install termux-api' })
+        ),
+        h('div', { class: 'xstat' },
+          h('div', { class: 'xl', text: '4. MOBILE PUSH (NTFY.SH)' }),
+          h('div', { class: 'xv', style: `font-size:11.5px;color:${serverCfg.ntfyTopic ? '#00d26a' : '#ffb000'}`, text: serverCfg.ntfyTopic ? 'ACTIVE' : 'NOT SET' }),
+          h('div', { class: 'xs', text: 'Works on Android/iOS 4G/5G without HTTPS' })
+        )
+      ),
+      h('div', { style: 'padding:8px;background:#070a10;border:1px solid #222936;margin-bottom:10px;font-size:11px' },
+        h('div', { style: 'color:var(--amber);font-weight:700;margin-bottom:4px', text: 'RECOMMENDED FOR ANDROID / iOS (WORKS ON ANY NETWORK WITHOUT HTTPS):' }),
+        h('div', { style: 'color:#cfd8e3;margin-bottom:6px', text: 'Install free "ntfy" app from Play Store / App Store -> Subscribe to a private topic name -> Enter the same topic below and click SAVE.' }),
+        h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' },
+          ntfyInput,
+          h('button', {
+            class: 'on',
+            text: 'SAVE NTFY TOPIC',
+            onclick: async () => {
+              const r = await apiFetch('/api/push/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ntfyTopic: ntfyInput.value.trim(), enableTermux: true, enableWebPush: true })
+              }, 10000);
+              const j = await r.json();
+              statusLog.textContent = r.ok ? `Saved ntfy topic: "${j.config.ntfyTopic || '(disabled)'}". Click SEND LIVE TEST to verify phone delivery.` : `Save error: ${j.error || 'failed'}`;
+              if (r.ok && j.config.ntfyTopic) syncPushBtn(true);
+            }
+          })
+        )
+      ),
+      statusLog,
+      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end' },
+        h('button', {
+          style: 'border-color:#00d26a;color:#00d26a;font-weight:700',
+          text: 'ENABLE BROWSER PUSH',
+          onclick: async () => {
+            statusLog.textContent = 'Requesting browser notification permission and VAPID subscription...';
+            const res = await attemptBrowserPushSubscription();
+            statusLog.textContent = `[${res.mode}] ${res.detail}`;
+            if (res.ok) {
+              triggerOsNotification({
+                title: 'BLOOMBERG TERMINAL // BROWSER PUSH ENABLED',
+                body: res.detail,
+                eventType: 'PUSH_ENABLED'
+              });
+            }
+          }
+        }),
+        h('button', {
+          style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700',
+          text: 'SEND LIVE TEST ALERT',
+          onclick: async () => {
+            statusLog.textContent = 'Dispatching test alert across all active channels...';
+            try {
+              const r = await apiFetch('/api/push/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }, 12000);
+              const j = await r.json();
+              if (r.ok && j.ok) {
+                statusLog.textContent = `DELIVERED — WebSocket: ${j.wsSent || 0} | WebPush: ${j.webPushDelivered || 0}/${j.totalSubs || 0} | Android Termux: ${j.termuxDelivered ? 'SENT' : 'OFF'} | Mobile ntfy: ${j.ntfyDelivered ? 'SENT' : 'OFF'}`;
+                if (!j.wsSent) {
+                  playAlertChime();
+                  showBloombergToast(j.payload);
+                  triggerOsNotification(j.payload);
+                }
+              } else {
+                statusLog.textContent = `Test failed: ${j.error || ('HTTP ' + r.status)}`;
+              }
+            } catch (e) {
+              statusLog.textContent = 'Test error: ' + e.message;
+            }
+          }
+        })
+      )
+    )
+  );
+  document.body.appendChild(ov);
 }
 
 if (btnPush) {
-  btnPush.addEventListener('click', enableNativePush);
+  btnPush.addEventListener('click', openPushControlCenter);
 }
+
 
 

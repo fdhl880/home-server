@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="icon" type="image/png" href="/icons/favicon-64.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<title>Bloomberg Terminal — Live Widget</title>
+<style>
+  :root{--bg:#000;--panel:#080a0e;--b:#232832;--orange:#ff6600;--amber:#ffb000;--up:#00d26a;--dn:#ff453a;--lbl:#4da3ff;--mut:#7c8799;--txt:#e8edf4}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font:11.5px/1.4 Consolas,'Courier New',monospace;padding:8px;min-height:100vh}
+  .w-hd{display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid var(--orange);padding-bottom:6px;margin-bottom:8px;gap:6px}
+  .w-brand{display:flex;align-items:center;gap:6px;font-weight:700;letter-spacing:.7px;color:#fff;font-size:12px}
+  .w-b{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;background:#111;border:1px solid var(--orange);color:#fff;font-weight:900;font-size:12px}
+  .w-tabs{display:flex;gap:3px;flex-wrap:wrap}
+  .w-tabs button,.w-btn{background:#0c0f15;color:var(--mut);border:1px solid var(--b);padding:2px 7px;font:inherit;font-size:10px;font-weight:700;cursor:pointer;letter-spacing:.4px}
+  .w-tabs button.on,.w-btn.on{background:var(--orange);color:#000;border-color:var(--orange)}
+  .sec{border:1px solid var(--b);background:var(--panel);margin-bottom:8px}
+  .sec-h{display:flex;justify-content:space-between;padding:4px 7px;background:#10141c;border-bottom:1px solid var(--b);color:var(--amber);font-size:10px;font-weight:700;letter-spacing:.5px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(108px,1fr));gap:1px;background:var(--b)}
+  .tile{background:#05070a;padding:7px 8px}
+  .tile .sym{color:var(--lbl);font-size:10px;font-weight:700}
+  .tile .px{font-size:13px;font-weight:700;color:#fff;margin-top:2px}
+  .tile .ch{font-size:10.5px;font-weight:700;margin-top:1px}
+  .up{color:var(--up)}.dn{color:var(--dn)}.am{color:var(--amber)}.mut{color:var(--mut)}
+  .row{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-bottom:1px solid #161b24;gap:8px;flex-wrap:wrap}
+  .row:last-child{border-bottom:0}
+  .bar{height:6px;background:#151a24;border:1px solid #262e3d;margin-top:4px;overflow:hidden}
+  .bar > div{height:100%;background:var(--up)}
+  .w-ft{display:flex;justify-content:space-between;align-items:center;color:var(--mut);font-size:9.5px;padding-top:4px}
+  a{color:var(--amber);text-decoration:none}
+</style>
+</head>
+<body>
+  <div class="w-hd">
+    <div class="w-brand"><span class="w-b">B</span>BLOOMBERG TERMINAL</div>
+    <div class="w-tabs" id="tabs">
+      <button data-m="all">ALL</button>
+      <button data-m="market">MARKET</button>
+      <button data-m="bot">EXECUTION</button>
+      <button data-m="finance">CAPITAL</button>
+    </div>
+    <a class="w-btn" href="/" target="_top">OPEN DESK</a>
+  </div>
+
+  <div id="content">Loading Bloomberg Terminal feed...</div>
+
+  <div class="w-ft">
+    <span id="wts">SYNCING...</span>
+    <span>REFRESH: 10S</span>
+  </div>
+
+<script>
+(function(){
+  const qs = new URLSearchParams(location.search);
+  let mode = (qs.get('mode') || 'all').toLowerCase();
+  if (!['all','market','bot','finance'].includes(mode)) mode = 'all';
+
+  const tabsEl = document.getElementById('tabs');
+  const contentEl = document.getElementById('content');
+  const wtsEl = document.getElementById('wts');
+
+  function syncTabs() {
+    tabsEl.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.m === mode));
+  }
+  tabsEl.addEventListener('click', e => {
+    const btn = e.target.closest('button[data-m]');
+    if (!btn) return;
+    mode = btn.dataset.m;
+    syncTabs();
+    load();
+  });
+  syncTabs();
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+  function fmtIdr(n) {
+    const v = Math.round(Number(n) || 0);
+    return (v < 0 ? '-Rp ' : 'Rp ') + Math.abs(v).toLocaleString('id-ID');
+  }
+  function fmtPx(n, sym) {
+    const v = Number(n) || 0;
+    if (sym === 'USDIDR=X') return 'Rp ' + Math.round(v).toLocaleString('id-ID');
+    return '$' + (v >= 100 ? v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : v.toFixed(4));
+  }
+
+  async function load() {
+    const headers = {};
+    try {
+      const tok = (localStorage.getItem('pyro_dash_token') || '').trim();
+      if (tok) headers['X-Dash-Token'] = tok;
+    } catch {}
+    try {
+      const r = await fetch('/api/widget/summary', { headers, cache: 'no-store' });
+      const d = await r.json();
+      if (!r.ok || !d.ok) throw new Error('Feed unavailable');
+      render(d);
+      wtsEl.textContent = 'LIVE // ' + (d.updatedAt || '');
+    } catch (err) {
+      contentEl.innerHTML = '<div class="sec"><div class="row dn">Unable to reach Bloomberg Terminal feed (' + esc(err.message) + ')</div></div>';
+    }
+  }
+
+  function render(d) {
+    let html = '';
+    if (mode === 'all' || mode === 'market') {
+      html += '<div class="sec"><div class="sec-h"><span>MARKET SNAPSHOT</span><span>LIVE QUOTES</span></div><div class="grid">';
+      (d.quotes || []).forEach(q => {
+        const cls = q.chgPct > 0 ? 'up' : q.chgPct < 0 ? 'dn' : 'mut';
+        html += `<div class="tile"><div class="sym">${esc(q.label)}</div><div class="px">${esc(fmtPx(q.price, q.symbol))}</div><div class="ch ${cls}">${q.chgPct >= 0 ? '+' : ''}${Number(q.chgPct || 0).toFixed(2)}%</div></div>`;
+      });
+      html += '</div></div>';
+    }
+
+    if (mode === 'all' || mode === 'bot') {
+      const b = d.bot || {};
+      const act = b.active;
+      html += '<div class="sec"><div class="sec-h"><span>EXECUTION DESK (BINANCE FUTURES)</span><span class="' + (b.running ? 'up' : 'am') + '">' + (b.running ? 'AUTONOMOUS LIVE' : 'STANDBY') + '</span></div>';
+      if (act) {
+        const cls = act.pnlPct >= 0 ? 'up' : 'dn';
+        html += `<div class="row">
+          <div><b class="am">${esc(act.symbol)}</b> &nbsp;<span class="${act.direction === 'LONG' ? 'up' : 'dn'}">${esc(act.direction)} ${act.leverage}x</span></div>
+          <div class="${cls}" style="font-weight:700;font-size:13px">${act.pnlPct >= 0 ? '+' : ''}${act.pnlPct.toFixed(2)}%</div>
+        </div>
+        <div class="row mut"><span>ENTRY: $${act.entryPrice.toFixed(2)}</span><span>MARK: $${act.markPrice.toFixed(2)}</span><span>OPEN: ${b.openCount}</span></div>`;
+      } else {
+        html += `<div class="row mut"><span>${esc(d.botHeadline || 'NO ACTIVE POSITION')}</span><a href="/?w=BTCUSDT.P:BOT&win=1" target="_top">BOT &lt;GO&gt;</a></div>`;
+      }
+      html += '</div>';
+    }
+
+    if (mode === 'all' || mode === 'finance') {
+      const f = d.finance;
+      html += '<div class="sec"><div class="sec-h"><span>PERSONAL CAPITAL (WARREN BUFFETT)</span><a href="/?w=BTCUSDT:FIN&win=1" target="_top">FIN &lt;GO&gt;</a></div>';
+      if (f) {
+        const pct = Math.min(100, Math.round((f.todayExpense / Math.max(1, f.dailyLimitIdr)) * 100));
+        const col = pct > 100 ? '#ff453a' : pct >= 75 ? '#ffb000' : '#00d26a';
+        html += `<div class="row">
+          <div><div class="mut" style="font-size:9.5px">DAILY REMAINING</div><b style="font-size:13px;color:${col}">${esc(fmtIdr(f.remainingTodayIdr))}</b></div>
+          <div style="text-align:right"><div class="mut" style="font-size:9.5px">DISCIPLINE SCORE</div><b class="am" style="font-size:13px">${f.disciplineScore}/100</b></div>
+        </div>
+        <div style="padding:0 8px 8px">
+          <div style="display:flex;justify-content:space-between;font-size:10px" class="mut"><span>Spent: ${esc(fmtIdr(f.todayExpense))} / ${esc(fmtIdr(f.dailyLimitIdr))}</span><span>${esc(f.statusLabel)}</span></div>
+          <div class="bar"><div style="width:${pct}%;background:${col}"></div></div>
+        </div>`;
+      } else {
+        html += '<div class="row mut"><span>Authenticate inside Bloomberg Terminal once to unlock Personal Capital widget.</span><a href="/?w=BTCUSDT:FIN&win=1" target="_top">UNLOCK</a></div>';
+      }
+      html += '</div>';
+    }
+    contentEl.innerHTML = html;
+  }
+
+  load();
+  setInterval(() => { if (!document.hidden) load(); }, 10000);
+})();
+</script>
+</body>
+</html>

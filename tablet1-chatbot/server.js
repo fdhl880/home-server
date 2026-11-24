@@ -344,7 +344,8 @@ const PUBLIC_API_GET_EXACT = new Set([
     '/api/terminal/bot-xray',
     '/api/terminal/intelligence',
     '/api/terminal/flows',
-    '/api/push/vapid-public-key'
+    '/api/push/vapid-public-key',
+    '/api/widget/summary'
 ]);
 const PUBLIC_API_GET_PREFIXES = [
     '/api/quote/',
@@ -503,6 +504,15 @@ app.get('/sw.js', (req, res) => {
     res.set('Service-Worker-Allowed', '/');
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.sendFile(path.join(__dirname, 'public', 'sw.js'));
+});
+app.get('/widget', (req, res) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.sendFile(path.join(__dirname, 'public', 'widget.html'));
+});
+app.get('/widgets/terminal-widget.json', (req, res) => {
+    res.set('Content-Type', 'application/json; charset=utf-8');
+    res.set('Cache-Control', 'no-cache');
+    res.sendFile(path.join(__dirname, 'public', 'widgets', 'terminal-widget.json'));
 });
 app.use(express.static(path.join(__dirname, 'public'), {
     etag: false,
@@ -5534,12 +5544,24 @@ async function sendTelegramMirror(text) {
 }
 
 // ============================================================
-// NATIVE PWA WEB PUSH NOTIFICATION ENGINE (VAPID P-256 + WS BRIDGE)
+// BLOOMBERG TERMINAL MULTI-CHANNEL PUSH NOTIFICATION ENGINE
+// Channels: WebSocket + VAPID Web Push + Android Termux Native + ntfy Mobile Push
 // ============================================================
-const PUSH_SUBS_FILE = opts.pushSubsFile || path.join(opts.baseDir || (opts.bmailFile ? path.dirname(opts.bmailFile) : __dirname), 'push-subscriptions.json');
+const _pushBaseDir = opts.baseDir || (opts.bmailFile ? path.dirname(opts.bmailFile) : __dirname);
+const PUSH_SUBS_FILE = opts.pushSubsFile || path.join(_pushBaseDir, 'push-subscriptions.json');
+const PUSH_CFG_FILE = opts.pushConfigFile || path.join(_pushBaseDir, 'push-config.json');
 const VAPID_KEYS_FILE = opts.vapidKeysFile || path.join(resultsDir, 'vapid_keys.json');
+const NTFY_TOPIC_RE = /^[A-Za-z0-9._-]{4,64}$/;
 let _webPushLib = null;
 try { _webPushLib = require('web-push'); } catch (_) { _webPushLib = null; }
+
+let _termuxNotifAvailable = false;
+if (!testMode && process.platform !== 'win32') {
+    try {
+        const prefix = process.env.PREFIX || '/data/data/com.termux/files/usr';
+        _termuxNotifAvailable = fs.existsSync(path.join(prefix, 'bin', 'termux-notification'));
+    } catch (_) { _termuxNotifAvailable = false; }
+}
 
 function b64url(buf) {
     return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -5588,19 +5610,86 @@ function savePushSubs(arr) {
     writeJsonAtomicSync(PUSH_SUBS_FILE, Array.isArray(arr) ? arr.slice(0, 50) : [], 0o600);
 }
 
+function loadPushConfig() {
+    const raw = readJsonSafeSync(PUSH_CFG_FILE, {}) || {};
+    const envTopic = !testMode ? String(process.env.NTFY_TOPIC || '').trim() : '';
+    return {
+        ntfyTopic: typeof raw.ntfyTopic === 'string' && NTFY_TOPIC_RE.test(raw.ntfyTopic.trim()) ? raw.ntfyTopic.trim() : (NTFY_TOPIC_RE.test(envTopic) ? envTopic : ''),
+        enableTermux: raw.enableTermux !== false,
+        enableWebPush: raw.enableWebPush !== false
+    };
+}
+function savePushConfig(cfg) {
+    writeJsonAtomicSync(PUSH_CFG_FILE, cfg, 0o600);
+}
+
+function sendTermuxNotification(payload) {
+    if (!_termuxNotifAvailable || testMode) return Promise.resolve(false);
+    return new Promise((resolve) => {
+        const args = [
+            '--id', String(payload.tag || 'bloomberg-terminal').slice(0, 48),
+            '--title', String(payload.title || 'BLOOMBERG TERMINAL').slice(0, 100),
+            '--content', String(payload.body || '').slice(0, 280),
+            '--priority', 'high',
+            '--sound',
+            '--vibrate', '200,80,200'
+        ];
+        try {
+            execFile('termux-notification', args, { timeout: 5000 }, (err) => resolve(!err));
+        } catch (_) {
+            resolve(false);
+        }
+    });
+}
+
+function sendNtfyPush(payload, topic) {
+    if (!topic || !NTFY_TOPIC_RE.test(topic) || testMode) return Promise.resolve(false);
+    return new Promise((resolve) => {
+        try {
+            const bodyBuf = Buffer.from(String(payload.body || 'Bloomberg Terminal Alert').slice(0, 500), 'utf8');
+            const cleanTitle = String(payload.title || 'BLOOMBERG TERMINAL').replace(/[\r\n]/g, ' ').slice(0, 110);
+            const req = https.request({
+                hostname: 'ntfy.sh',
+                port: 443,
+                path: '/' + encodeURIComponent(topic),
+                method: 'POST',
+                headers: {
+                    'Title': cleanTitle,
+                    'Priority': /OPEN|CLOSE|BREAKER|LIMIT|URGENT/i.test(String(payload.eventType || '')) ? '4' : '3',
+                    'Tags': 'chart_with_upwards_trend',
+                    'Content-Type': 'text/plain; charset=utf-8',
+                    'Content-Length': bodyBuf.length
+                },
+                timeout: 6000
+            }, (res) => {
+                res.resume();
+                resolve(res.statusCode >= 200 && res.statusCode < 300);
+            });
+            req.on('error', () => resolve(false));
+            req.on('timeout', () => { try { req.destroy(); } catch {} resolve(false); });
+            req.write(bodyBuf);
+            req.end();
+        } catch (_) {
+            resolve(false);
+        }
+    });
+}
+
 async function dispatchNativePushAlert({ title, body, eventType = 'ALERT', symbol = 'BTCUSDT', url = '/' }) {
     const payload = {
         id: 'PUSH-' + Date.now().toString(36),
         ts: Date.now(),
-        title: String(title || 'BLOOMBERG // PYROFUEL ALERT').slice(0, 120),
+        title: String(title || 'BLOOMBERG TERMINAL // ALERT').slice(0, 120),
         body: String(body || '').slice(0, 320),
         eventType: String(eventType || 'ALERT'),
         symbol: String(symbol || 'BTCUSDT'),
         url: String(url || '/'),
-        tag: `bbg-${String(eventType || 'alert').toLowerCase()}-${String(symbol || 'sys').toLowerCase()}`
+        tag: `bloomberg-${String(eventType || 'alert').toLowerCase()}-${String(symbol || 'sys').toLowerCase()}`
     };
 
-    // 1. Instant real-time WS broadcast to all active PWA / browser clients (triggers native OS Notification via Service Worker)
+    const pushCfg = loadPushConfig();
+
+    // 1. Instant real-time WS broadcast to all active PWA / browser clients
     let wsSent = 0;
     try {
         if (terminalHub && typeof terminalHub.broadcast === 'function') {
@@ -5609,10 +5698,10 @@ async function dispatchNativePushAlert({ title, body, eventType = 'ALERT', symbo
         }
     } catch {}
 
-    // 2. Background Web Push delivery (works even when app/tab is completely closed on Android/Desktop)
+    // 2. Background VAPID Web Push delivery (works even when browser tab is closed)
     let webPushDelivered = 0;
     const subs = loadPushSubs();
-    if (_webPushLib && VAPID_KEYS.publicKey && VAPID_KEYS.privateKey && subs.length && !testMode) {
+    if (pushCfg.enableWebPush && _webPushLib && VAPID_KEYS.publicKey && VAPID_KEYS.privateKey && subs.length && !testMode) {
         const kept = [];
         for (const sub of subs) {
             if (!sub || !sub.endpoint || !sub.keys) continue;
@@ -5629,17 +5718,81 @@ async function dispatchNativePushAlert({ title, body, eventType = 'ALERT', symbo
             try { savePushSubs(kept); } catch {}
         }
     }
-    return { ok: true, wsSent, webPushDelivered, totalSubs: subs.length, payload };
+
+    // 3. Android Termux Native OS Notification (works directly in Android status bar)
+    const termuxDelivered = pushCfg.enableTermux ? await sendTermuxNotification(payload) : false;
+
+    // 4. ntfy.sh Mobile Push (works across 4G/5G on any Android/iOS device without HTTPS server)
+    const ntfyDelivered = pushCfg.ntfyTopic ? await sendNtfyPush(payload, pushCfg.ntfyTopic) : false;
+
+    return {
+        ok: true,
+        wsSent,
+        webPushDelivered,
+        totalSubs: subs.length,
+        webPushAvailable: Boolean(_webPushLib && VAPID_KEYS.publicKey),
+        termuxAvailable: _termuxNotifAvailable,
+        termuxDelivered,
+        ntfyConfigured: Boolean(pushCfg.ntfyTopic),
+        ntfyDelivered,
+        payload
+    };
 }
 
 app.get('/api/push/vapid-public-key', (req, res) => {
     const subs = loadPushSubs();
+    const cfg = loadPushConfig();
     res.json({
         ok: true,
         publicKey: VAPID_KEYS.publicKey || '',
         webPushAvailable: Boolean(_webPushLib && VAPID_KEYS.publicKey),
+        termuxAvailable: _termuxNotifAvailable,
+        ntfyConfigured: Boolean(cfg.ntfyTopic),
         subscriptionsCount: subs.length
     });
+});
+
+app.get('/api/push/config', (req, res) => {
+    const subs = loadPushSubs();
+    const cfg = loadPushConfig();
+    res.json({
+        ok: true,
+        config: {
+            ...cfg,
+            webPushAvailable: Boolean(_webPushLib && VAPID_KEYS.publicKey),
+            termuxAvailable: _termuxNotifAvailable,
+            subscriptionsCount: subs.length
+        }
+    });
+});
+
+app.post('/api/push/config', (req, res) => {
+    const b = req.body || {};
+    const prev = loadPushConfig();
+    const next = { ...prev };
+    if (b.ntfyTopic !== undefined) {
+        const t = String(b.ntfyTopic || '').trim();
+        if (t && !NTFY_TOPIC_RE.test(t)) {
+            return res.status(400).json({ ok: false, error: 'ntfyTopic must be 4-64 alphanumeric/hyphen/underscore characters' });
+        }
+        next.ntfyTopic = t;
+    }
+    if (b.enableTermux !== undefined) next.enableTermux = Boolean(b.enableTermux);
+    if (b.enableWebPush !== undefined) next.enableWebPush = Boolean(b.enableWebPush);
+    try {
+        savePushConfig(next);
+        res.json({
+            ok: true,
+            config: {
+                ...next,
+                webPushAvailable: Boolean(_webPushLib && VAPID_KEYS.publicKey),
+                termuxAvailable: _termuxNotifAvailable,
+                subscriptionsCount: loadPushSubs().length
+            }
+        });
+    } catch {
+        res.status(500).json({ ok: false, error: 'Failed saving push configuration' });
+    }
 });
 
 app.post('/api/push/subscribe', (req, res) => {
@@ -5677,8 +5830,8 @@ app.post('/api/push/unsubscribe', (req, res) => {
 });
 
 app.post('/api/push/test', async (req, res) => {
-    const title = (req.body && req.body.title) || 'BLOOMBERG // PYROFUEL PUSH ACTIVE';
-    const body = (req.body && req.body.body) || 'Push Notification native aktif! Alert Futures Open/Close, TP/SL & Breaking News akan masuk langsung ke HP/Desktop.';
+    const title = (req.body && req.body.title) || 'BLOOMBERG TERMINAL // NOTIFICATION VERIFIED';
+    const body = (req.body && req.body.body) || 'Real-time notification pipeline verified for Futures Execution, Market Alerts, and Daily Capital Discipline.';
     const out = await dispatchNativePushAlert({ title, body, eventType: 'TEST_PUSH', symbol: 'BTCUSDT', url: '/?w=BTCUSDT:BOT,BTCUSDT:GP,BTCUSDT:TRAN,BTCUSDT:FACT' });
     res.json(out);
 });
@@ -5715,7 +5868,7 @@ async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, 
         symbol,
         url: attachmentFn ? `/?w=${encodeURIComponent(attachmentFn.replace(/\s+/g, ':'))}` : '/'
     });
-    const tgOk = await sendTelegramMirror(`📧 [${eventType} -> ${targetEmail}]\n${subject}\n\n${body}`);
+    const tgOk = await sendTelegramMirror(`[BLOOMBERG TERMINAL // ${eventType} -> ${targetEmail}]\n${subject}\n\n${body}`);
 
     const statusLabel = resendRes.ok
         ? `✓ DELIVERED TO ${targetEmail} VIA RESEND API [ID: ${resendRes.id}]`
@@ -5891,7 +6044,7 @@ app.post('/api/terminal/bmail/send', async (req, res) => {
             subject: cleanSubject,
             body
         });
-        await sendTelegramMirror(`📧 [B-MAIL -> ${cleanTo}]\n${cleanSubject}\n\n${body}`);
+        await sendTelegramMirror(`[BLOOMBERG TERMINAL MAIL -> ${cleanTo}]\n${cleanSubject}\n\n${body}`);
         deliveryStatus = resendRes.ok
             ? `✓ DELIVERED TO ${cleanTo} VIA RESEND API [ID: ${resendRes.id}]`
             : smtpRes.ok ? `✓ DELIVERED TO ${cleanTo} (SMTP TLS)` : `DISPATCHED TO ${cleanTo} (${resendRes.mode})`;
@@ -6038,6 +6191,7 @@ try {
         writeJsonAtomicSync,
         readJsonSafeSync,
         dispatchNativePushAlert,
+        isAuthenticatedReq: (req) => tokensMatch(extractRequestToken(req), activeDashToken),
         baseDir: opts.baseDir || (opts.bmailFile ? path.dirname(opts.bmailFile) : __dirname)
     });
 } catch (e) { console.error('[terminal:extensions] mount error:', e.message); }

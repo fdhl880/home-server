@@ -1,4 +1,4 @@
-import { h, fmtPx, fmtPct, fmtVol, fmtNum, fmtTime, dirCls, LS } from '../util.js';
+import { h, fmtPx, fmtPct, fmtVol, fmtTime, dirCls, LS } from '../util.js';
 import { get, apiFetch } from '../api.js';
 
 const SNAP_KEY = 'bbg_chart_snapshots_v1';
@@ -14,8 +14,7 @@ function esc(v) {
 
 function fmtIdr(v) {
   const n = Math.round(Number(v) || 0);
-  const neg = n < 0;
-  return (neg ? '-Rp ' : 'Rp ') + Math.abs(n).toLocaleString('id-ID');
+  return (n < 0 ? '-Rp ' : 'Rp ') + Math.abs(n).toLocaleString('id-ID');
 }
 
 function fmtUsdShort(v) {
@@ -57,7 +56,7 @@ function saveSnapshotToGallery(snap) {
 }
 
 // =====================================================================
-// SVG VISUAL DIAGRAMS (Radar, Waterfall, FPT Cone, Gauge, Cashflow, ETF)
+// INSTITUTIONAL SVG VISUALIZATIONS
 // =====================================================================
 function buildRadarSvg(axes = []) {
   const list = Array.isArray(axes) && axes.length ? axes : [
@@ -169,7 +168,7 @@ function buildFptConeSvg(cone, entryPx, slPx, tp1Px, tp2Px, dir = 'LONG') {
   }
   if (!prices.length) {
     return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;background:#040608">
-      <text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="#6c788a" font-size="11" font-family="monospace">Belum ada level Entry / SL / TP untuk koin ini — jalankan scan atau pilih posisi aktif.</text>
+      <text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="#6c788a" font-size="11" font-family="monospace">No active Entry/SL/TP projection for this symbol. Select a scanned asset or live position.</text>
     </svg>`;
   }
 
@@ -192,9 +191,7 @@ function buildFptConeSvg(cone, entryPx, slPx, tp1Px, tp2Px, dir = 'LONG') {
 
   let coneMarkup = '';
   if (hasCone) {
-    const upPts = [];
-    const loPts = [];
-    const midPts = [];
+    const upPts = [], loPts = [], midPts = [];
     cone.forEach((pt, i) => {
       const x = padL + (i / (cone.length - 1)) * plotW;
       const mid = Number(pt.expected_price || pt.p_mid || pt.price || e);
@@ -209,7 +206,6 @@ function buildFptConeSvg(cone, entryPx, slPx, tp1Px, tp2Px, dir = 'LONG') {
       <polyline points="${midPts.join(' ')}" fill="none" stroke="#00e5ff" stroke-width="2"/>
     `;
   } else if (e > 0) {
-    // Synthesize visual sniper roadmap trajectory cone (Entry -> BE -> TP1 -> TP2)
     const sign = String(dir).toUpperCase() === 'SHORT' ? -1 : 1;
     const risk = sl > 0 ? Math.abs(e - sl) : e * 0.012;
     const be = e + sign * risk * 0.65;
@@ -242,7 +238,7 @@ function buildFptConeSvg(cone, entryPx, slPx, tp1Px, tp2Px, dir = 'LONG') {
   </svg>`;
 }
 
-function buildGaugeSvg(score = 50, subtitle = 'SCORE', overrideCol = null) {
+function buildGaugeSvg(score = 50, subtitle = 'INDEX', overrideCol = null) {
   const s = Math.max(0, Math.min(100, Number(score) || 0));
   const col = overrideCol || (s >= 75 ? '#00d26a' : s >= 50 ? '#ffb000' : '#ff5a52');
   const cx = 110, cy = 102, r = 74;
@@ -258,14 +254,14 @@ function buildGaugeSvg(score = 50, subtitle = 'SCORE', overrideCol = null) {
     <line x1="${cx}" y1="${cy}" x2="${nx.toFixed(1)}" y2="${ny.toFixed(1)}" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
     <circle cx="${cx}" cy="${cy}" r="5" fill="${col}" stroke="#000" stroke-width="1.5"/>
     <text x="${cx}" y="${cy - 18}" text-anchor="middle" fill="${col}" font-size="22" font-weight="700" font-family="monospace">${Math.round(s)}</text>
-    <text x="${cx}" y="${cy + 16}" text-anchor="middle" fill="#9aa7b8" font-size="9.5" font-weight="700" font-family="monospace">${esc(subtitle)}</text>
+    <text x="${cx}" y="${cy + 16}" text-anchor="middle" fill="#9aa7b8" font-size="9" font-weight="700" font-family="monospace">${esc(subtitle)}</text>
   </svg>`;
 }
 
-function buildCashflow14dSvg(days = [], dailyLimit = 100000) {
+function buildCashflow14dSvg(days = [], dailyLimit = 20000) {
   const list = Array.isArray(days) ? days : [];
   const W = 580, H = 190, padL = 62, padR = 14, padT = 18, padB = 28;
-  const maxVal = Math.max(dailyLimit * 1.25, ...list.map(d => Math.max(d.income || 0, d.expense || 0, d.savings || 0)), 10000);
+  const maxVal = Math.max(dailyLimit * 1.4, ...list.map(d => Math.max(d.income || 0, d.expense || 0, d.savings || 0)), 10000);
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const yOf = v => padT + plotH - (Math.max(0, v) / maxVal) * plotH;
@@ -282,7 +278,7 @@ function buildCashflow14dSvg(days = [], dailyLimit = 100000) {
       bars += `<rect x="${(gx + 3).toFixed(1)}" y="${(padT + plotH - incH).toFixed(1)}" width="${bw.toFixed(1)}" height="${incH.toFixed(1)}" fill="#00d26a"><title>${d.date} Income: ${fmtIdr(d.income)}</title></rect>`;
     }
     if (d.expense > 0) {
-      bars += `<rect x="${(gx + 4 + bw).toFixed(1)}" y="${(padT + plotH - expH).toFixed(1)}" width="${bw.toFixed(1)}" height="${expH.toFixed(1)}" fill="${over ? '#ff2d20' : '#ff8c42'}"><title>${d.date} Expense: ${fmtIdr(d.expense)}${over ? ' (OVER LIMIT!)' : ''}</title></rect>`;
+      bars += `<rect x="${(gx + 4 + bw).toFixed(1)}" y="${(padT + plotH - expH).toFixed(1)}" width="${bw.toFixed(1)}" height="${expH.toFixed(1)}" fill="${over ? '#ff3b30' : '#ff8c42'}"><title>${d.date} Expense: ${fmtIdr(d.expense)}${over ? ' (EXCEEDS DAILY CEILING)' : ''}</title></rect>`;
     }
     if (i % 2 === 0 || i === list.length - 1) {
       bars += `<text x="${(gx + step / 2).toFixed(1)}" y="${H - 9}" text-anchor="middle" fill="#818fa3" font-size="8.5" font-family="monospace">${esc(String(d.date || '').slice(5))}</text>`;
@@ -296,7 +292,40 @@ function buildCashflow14dSvg(days = [], dailyLimit = 100000) {
     <text x="${padL - 5}" y="${padT + plotH}" text-anchor="end" fill="#7c8799" font-size="8.5" font-family="monospace">0</text>
     ${bars}
     <line x1="${padL}" y1="${limY.toFixed(1)}" x2="${W - padR}" y2="${limY.toFixed(1)}" stroke="#ffb000" stroke-width="1.3" stroke-dasharray="4,3"/>
-    <text x="${padL + 6}" y="${Math.max(padT + 10, limY - 4).toFixed(1)}" fill="#ffb000" font-size="9" font-weight="700" font-family="monospace">BATAS HARIAN ANTI-BOROS: ${esc(fmtIdr(dailyLimit))}</text>
+    <text x="${padL + 6}" y="${Math.max(padT + 10, limY - 4).toFixed(1)}" fill="#ffb000" font-size="9" font-weight="700" font-family="monospace">DAILY OPERATING CEILING: ${esc(fmtIdr(dailyLimit))}</text>
+  </svg>`;
+}
+
+function buildCompoundingSvg(projections = []) {
+  const list = Array.isArray(projections) && projections.length ? projections : [];
+  if (!list.length) return '';
+  const W = 540, H = 160, padL = 66, padR = 16, padT = 18, padB = 26;
+  const maxVal = Math.max(1000000, ...list.map(p => p.benchmarkIdr || 0));
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const step = plotW / list.length;
+
+  let bars = '';
+  list.forEach((p, i) => {
+    const gx = padL + i * step + step * 0.14;
+    const bw = Math.max(14, step * 0.22);
+    const hPrin = (p.principalIdr / maxVal) * plotH;
+    const hCons = (p.conservativeIdr / maxVal) * plotH;
+    const hBmk = (p.benchmarkIdr / maxVal) * plotH;
+    bars += `
+      <rect x="${gx.toFixed(1)}" y="${(padT + plotH - hPrin).toFixed(1)}" width="${bw.toFixed(1)}" height="${hPrin.toFixed(1)}" fill="#4da3ff"><title>${p.years}Y Principal: ${fmtIdr(p.principalIdr)}</title></rect>
+      <rect x="${(gx + bw + 3).toFixed(1)}" y="${(padT + plotH - hCons).toFixed(1)}" width="${bw.toFixed(1)}" height="${hCons.toFixed(1)}" fill="#ffb000"><title>${p.years}Y Conservative (8%): ${fmtIdr(p.conservativeIdr)}</title></rect>
+      <rect x="${(gx + (bw + 3) * 2).toFixed(1)}" y="${(padT + plotH - hBmk).toFixed(1)}" width="${bw.toFixed(1)}" height="${hBmk.toFixed(1)}" fill="#00d26a"><title>${p.years}Y Benchmark (12%): ${fmtIdr(p.benchmarkIdr)}</title></rect>
+      <text x="${(gx + bw * 1.5).toFixed(1)}" y="${H - 8}" text-anchor="middle" fill="#cfd8e3" font-size="9.5" font-weight="700" font-family="monospace">${p.years}Y</text>
+      <text x="${(gx + (bw + 3) * 2 + bw / 2).toFixed(1)}" y="${Math.max(padT + 9, padT + plotH - hBmk - 4).toFixed(1)}" text-anchor="middle" fill="#00d26a" font-size="8.5" font-weight="700" font-family="monospace">${(p.benchmarkIdr / 1e6).toFixed(1)}M</text>
+    `;
+  });
+
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;background:#040608">
+    <rect x="${padL}" y="${padT}" width="${plotW}" height="${plotH}" fill="#06090e" stroke="#1c222d"/>
+    <text x="${padL - 5}" y="${padT + 9}" text-anchor="end" fill="#7c8799" font-size="8.5" font-family="monospace">${(maxVal / 1e6).toFixed(1)}M</text>
+    <text x="${padL - 5}" y="${padT + plotH}" text-anchor="end" fill="#7c8799" font-size="8.5" font-family="monospace">0</text>
+    ${bars}
   </svg>`;
 }
 
@@ -325,7 +354,7 @@ function buildEtfFlowSvg(etfs = []) {
 }
 
 // =====================================================================
-// 1. FACT / XRAY / PILLAR — 100% TRANSPARENT BOT GLASS-BOX X-RAY
+// 1. FACT / XRAY / PILLAR — QUANTITATIVE EXECUTION X-RAY
 // =====================================================================
 export function mountFACT(body, ctx) {
   body.classList.add('fill');
@@ -347,7 +376,7 @@ export function mountFACT(body, ctx) {
     ctx.status(env);
     if (!env.ok || !env.data) {
       sc.textContent = '';
-      sc.append(h('div', { class: 'na', text: 'Gagal memuat data Glass-Box Bot: ' + (env.error || 'source down') }));
+      sc.append(h('div', { class: 'na', text: 'Execution X-Ray feed unavailable: ' + (env.error || 'source down') }));
       return;
     }
     payload = env.data;
@@ -360,7 +389,7 @@ export function mountFACT(body, ctx) {
     const inp = h('input', { value: selectedSym, style: 'width:92px;text-transform:uppercase;font-weight:700', placeholder: 'BTCUSDT' });
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') load(inp.value); });
     tb.append(
-      h('span', { class: 'lbl', text: 'BOT GLASS-BOX X-RAY:' }),
+      h('span', { class: 'lbl', text: 'EXECUTION X-RAY:' }),
       inp,
       h('button', { class: 'on', text: 'INSPECT <GO>', onclick: () => load(inp.value) }),
       ...['OVERVIEW', 'FUNNEL L1-L6', '24 PILLARS', '532 FACTORS'].map(t => h('button', {
@@ -368,8 +397,8 @@ export function mountFACT(body, ctx) {
         text: t,
         onclick: () => { tab = t; renderToolbar(); renderBody(); }
       })),
-      h('button', { style: 'color:#00e5ff;border-color:#00e5ff66', text: '🎙 TRANSKRIP', onclick: () => ctx.run(`${selectedSym} TRAN`) }),
-      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: '📈 CHART GP', onclick: () => ctx.run(`${selectedSym} GP`) }),
+      h('button', { style: 'color:#00e5ff;border-color:#00e5ff66', text: 'TRANSCRIPTS', onclick: () => ctx.run(`${selectedSym} TRAN`) }),
+      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: 'CHART GP', onclick: () => ctx.run(`${selectedSym} GP`) }),
       h('button', { text: 'REFRESH', onclick: () => load(selectedSym) })
     );
   }
@@ -385,18 +414,17 @@ export function mountFACT(body, ctx) {
     const l4 = d.layer4 || {};
     const l5 = d.layer5 || {};
     const pos = d.activePosition;
-    const gear = d.gear && d.gear.active_profile ? `GIGI ${d.gear.current_gear} (${d.gear.active_profile.leverage}x)` : 'GIGI 1 (20x)';
+    const gear = d.gear && d.gear.active_profile ? `TIER ${d.gear.current_gear} (${d.gear.active_profile.leverage}x)` : 'TIER 1 (20x)';
     const vaultUsd = Number((d.vault && d.vault.locked_profit_vault_usdt) || 0);
 
-    // 1. Scanned Coin Selector Strip
     const strip = h('div', { style: 'display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;align-items:center' },
-      h('span', { class: 'lbl', style: 'font-size:10px', text: 'PILIH KOIN SCAN BOT:' })
+      h('span', { class: 'lbl', style: 'font-size:10px', text: 'SCANNED INSTRUMENTS:' })
     );
     if (pos) {
       const psym = String(pos.binance_pair || pos.symbol || '').toUpperCase();
       strip.append(h('button', {
         style: 'background:#072414;color:#00ff88;border-color:#00d26a;font-weight:700;font-size:10px',
-        text: `🔴 OPEN LIVE: ${psym} ${pos.direction || ''}`,
+        text: `LIVE POSITION: ${psym} ${pos.direction || ''}`,
         onclick: () => load(psym)
       }));
     }
@@ -413,7 +441,6 @@ export function mountFACT(body, ctx) {
     });
     sc.append(strip);
 
-    // 2. Top Transparent KPI Strip
     const pMath = Number(mp.p_math_pct ?? l5.math_score_pct ?? 0);
     const pAi = Number(mp.p_ai_pct ?? l2.probability_pct ?? 0);
     const sHyb = Number(mp.s_hybrid_pct ?? l5.confidence_score ?? 0);
@@ -423,9 +450,9 @@ export function mountFACT(body, ctx) {
 
     sc.append(h('div', { class: 'xgrid4', style: 'margin-bottom:8px' },
       h('div', { class: 'xstat' },
-        h('div', { class: 'xl', text: `STATUS (${d.symbol})` }),
-        h('div', { class: 'xv', style: `color:${statusTxt.includes('APPROV') || pos ? 'var(--up)' : 'var(--amber)'};font-size:13px`, text: `${statusTxt} • ${dir}` }),
-        h('div', { class: 'xs', text: `Regime: ${mp.statistical_regime || 'NORMAL'} • ${d.scanTimestamp ? String(d.scanTimestamp).slice(11, 19) : '-'}` })
+        h('div', { class: 'xl', text: `DECISION STATUS (${d.symbol})` }),
+        h('div', { class: 'xv', style: `color:${statusTxt.includes('APPROV') || pos ? 'var(--up)' : 'var(--amber)'};font-size:13px`, text: `${statusTxt} | ${dir}` }),
+        h('div', { class: 'xs', text: `Regime: ${mp.statistical_regime || 'NORMAL'} | ${d.scanTimestamp ? String(d.scanTimestamp).slice(11, 19) : '-'}` })
       ),
       h('div', { class: 'xstat' },
         h('div', { class: 'xl', text: 'P_MATH / AI / HYBRID' }),
@@ -433,19 +460,18 @@ export function mountFACT(body, ctx) {
         h('div', { class: 'xs', text: `Q532=${Number(mp.composite_532_factors || 50).toFixed(1)} | FPT P(TP1<SL)=${fpt.toFixed(1)}%` })
       ),
       h('div', { class: 'xstat' },
-        h('div', { class: 'xl', text: 'GEAR & PROFIT VAULT' }),
-        h('div', { class: 'xv', style: 'color:var(--amber);font-size:13px', text: `${gear}` }),
+        h('div', { class: 'xl', text: 'RISK TIER & PROFIT VAULT' }),
+        h('div', { class: 'xv', style: 'color:var(--amber);font-size:13px', text: gear }),
         h('div', { class: 'xs', text: `Wallet $${Number(d.walletUsdt || 0).toFixed(2)} | Vault $${vaultUsd.toFixed(2)}` })
       ),
       h('div', { class: 'xstat' },
-        h('div', { class: 'xl', text: 'SETUP & CONFLUENCE' }),
-        h('div', { class: 'xv', style: 'color:#00e5ff;font-size:12px', text: l2.setup_name || (pos && pos.setup_name) || 'WAIT_SETUP' }),
-        h('div', { class: 'xs', text: `L4 Audit: ${l4.total_score || 0}/${l4.max_score || 8} • Open Pos: ${d.openPositionsCount || 0}` })
+        h('div', { class: 'xl', text: 'STRATEGY SETUP & AUDIT' }),
+        h('div', { class: 'xv', style: 'color:#00e5ff;font-size:12px', text: l2.setup_name || (pos && pos.setup_name) || 'MONITORING' }),
+        h('div', { class: 'xs', text: `L4 Audit: ${l4.total_score || 0}/${l4.max_score || 8} | Open Positions: ${d.openPositionsCount || 0}` })
       )
     ));
 
     if (tab === 'OVERVIEW') {
-      // Active position / trade reasoning card
       const entryPx = Number(l5.entry_price || l3.entry_price || (pos && pos.entry_price) || l1.current_price || 0);
       const slPx = Number(l5.stop_loss || l3.stop_loss || (pos && pos.stop_loss) || 0);
       const tp1Px = Number(l5.take_profit_1 || l3.take_profit_1 || (pos && pos.take_profit_1) || 0);
@@ -453,67 +479,63 @@ export function mountFACT(body, ctx) {
 
       sc.append(h('div', { class: 'xcard xcard-hi' },
         h('div', { class: 'xsec-hd' },
-          h('span', { text: `TRANSPARENSI KEPUTUSAN BOT — ${d.symbol} (${dir})` }),
-          h('span', { class: `xpill ${statusTxt.includes('APPROV') || pos ? 'ok' : 'warn'}`, text: pos ? 'POSISI LIVE AKTIF DI BINANCE' : statusTxt })
+          h('span', { text: `EXECUTION DECISION TRANSPARENCY — ${d.symbol} (${dir})` }),
+          h('span', { class: `xpill ${statusTxt.includes('APPROV') || pos ? 'ok' : 'warn'}`, text: pos ? 'ACTIVE BINANCE FUTURES POSITION' : statusTxt })
         ),
         h('div', { style: 'padding:6px 4px;font-size:11px;line-height:1.45;color:#e6edf3' },
-          h('div', { text: `Alasan Keputusan Layer 5: ${l5.final_reason || (pos ? 'Posisi telah lulus seluruh filter Layer 1-6 dan aktif dengan proteksi SL + Maker TP1.' : 'Menunggu seluruh syarat matematis & AI selaras.')}` }),
-          h('div', { style: 'margin-top:4px;color:var(--label)', text: `Entry: $${fmtPx(entryPx)}  |  SL: $${fmtPx(slPx)}  |  TP1 (50% Lock): $${fmtPx(tp1Px)}  |  TP2 Runner: $${fmtPx(tp2Px)}  |  ETA: ${(l3.tp_time_prediction && l3.tp_time_prediction.eta_label) || '-'}` })
+          h('div', { text: `Layer 5 Rationale: ${l5.final_reason || (pos ? 'Position satisfied Layer 1-6 quantitative and risk gates with active SL and Maker TP1.' : 'Awaiting full alignment across deterministic and AI risk gates.')}` }),
+          h('div', { style: 'margin-top:4px;color:var(--label)', text: `Entry: $${fmtPx(entryPx)}  |  Stop Loss: $${fmtPx(slPx)}  |  TP1 (50%): $${fmtPx(tp1Px)}  |  TP2 Runner: $${fmtPx(tp2Px)}  |  ETA: ${(l3.tp_time_prediction && l3.tp_time_prediction.eta_label) || '-'}` })
         )
       ));
 
-      // Visual Diagrams: Radar + Waterfall
       sc.append(h('div', { class: 'xgrid2', style: 'margin-bottom:8px' },
         h('div', { class: 'xcard', style: 'margin-bottom:0' },
-          h('div', { class: 'xsec-hd' }, h('span', { text: '8-AXIS BOT DECISION RADAR DIAGRAM' }), h('span', { class: 'am', text: 'LIVE TELEMETRY' })),
+          h('div', { class: 'xsec-hd' }, h('span', { text: '8-AXIS QUANTITATIVE DECISION RADAR' }), h('span', { class: 'am', text: 'LIVE TELEMETRY' })),
           makeSvgBox(buildRadarSvg(d.radarAxes))
         ),
         h('div', { class: 'xcard', style: 'margin-bottom:0' },
-          h('div', { class: 'xsec-hd' }, h('span', { text: 'P_MATH CONTRIBUTION WATERFALL CHART' }), h('span', { class: 'up', text: 'FORMULA TRANSPAREN' })),
+          h('div', { class: 'xsec-hd' }, h('span', { text: 'P_MATH CONTRIBUTION WATERFALL' }), h('span', { class: 'up', text: 'FACTOR ATTRIBUTION' })),
           makeSvgBox(buildWaterfallSvg(d.waterfall, pMath))
         )
       ));
 
-      // FPT Trajectory Cone + Sniper Ladder
       sc.append(h('div', { class: 'xcard' },
         h('div', { class: 'xsec-hd' },
-          h('span', { text: 'FIRST-PASSAGE TIME (FPT) TRAJECTORY CONE & SNIPER LADDER (SL → ENTRY → BE → TP1 → TP2)' }),
+          h('span', { text: 'FIRST-PASSAGE TIME (FPT) TRAJECTORY CONE & EXECUTION LADDER' }),
           h('span', { class: 'up', text: `P(TP1 < SL) = ${fpt.toFixed(1)}%` })
         ),
         makeSvgBox(buildFptConeSvg(d.trajectoryCone, entryPx, slPx, tp1Px, tp2Px, dir))
       ));
 
-      // 3-Brain Neuro-Symbolic + Compact Funnel
       const ns = d.neuroSymbolic || {};
       sc.append(h('div', { class: 'xgrid3', style: 'margin-bottom:8px' },
         h('div', { class: 'xstat' },
-          h('div', { class: 'xl', text: 'BRAIN #1: TABULAR QUANT ML' }),
+          h('div', { class: 'xl', text: 'MODEL 1: TABULAR QUANT ML' }),
           h('div', { class: 'xv', style: 'color:#00e5ff', text: `${ns.brain1_tabular_prob_pct ?? pMath.toFixed(1)}%` }),
           h('div', { class: 'xs', text: '532-Factor + Orderbook + Regime' })
         ),
         h('div', { class: 'xstat' },
-          h('div', { class: 'xl', text: 'BRAIN #2: EPISODIC k-NN MEMORY' }),
+          h('div', { class: 'xl', text: 'MODEL 2: EPISODIC k-NN MEMORY' }),
           h('div', { class: 'xv', style: 'color:#ffb000', text: `${ns.brain2_episodic_knn_prob_pct ?? 'N/A'}%` }),
-          h('div', { class: 'xs', text: `Closed Memory: ${(d.aiMemorySummary && d.aiMemorySummary.totalClosed) || 0} trades` })
+          h('div', { class: 'xs', text: `Historical Samples: ${(d.aiMemorySummary && d.aiMemorySummary.totalClosed) || 0} trades` })
         ),
         h('div', { class: 'xstat' },
-          h('div', { class: 'xl', text: 'BRAIN #3: LLM META-JUDGE' }),
+          h('div', { class: 'xl', text: 'MODEL 3: LLM META-JUDGE' }),
           h('div', { class: 'xv', style: 'color:#00d26a', text: `${ns.brain3_llm_prob_pct ?? pAi.toFixed(1)}%` }),
           h('div', { class: 'xs', text: 'Multi-Agent Committee + Risk Audit' })
         )
       ));
 
-      // Compact Pipeline Stages preview
       const fBox = h('div', { class: 'xcard' },
         h('div', { class: 'xsec-hd' },
-          h('span', { text: 'PROSES KERJA BOT LAYER 1 → LAYER 6 (RINGKASAN)' }),
-          h('button', { style: 'font-size:10px', text: 'LIHAT DETAIL FUNNEL →', onclick: () => { tab = 'FUNNEL L1-L6'; renderToolbar(); renderBody(); } })
+          h('span', { text: 'EXECUTION DECISION PIPELINE (LAYER 1 TO LAYER 6)' }),
+          h('button', { style: 'font-size:10px', text: 'FULL PIPELINE DETAILS ->', onclick: () => { tab = 'FUNNEL L1-L6'; renderToolbar(); renderBody(); } })
         )
       );
       (d.pipelineStages || []).forEach(st => {
         fBox.append(h('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 6px;border-bottom:1px solid #161a22' },
           h('div', {},
-            h('span', { class: `xpill ${st.passed ? 'ok' : 'no'}`, text: st.passed ? 'PASS' : 'HOLD/FAIL' }),
+            h('span', { class: `xpill ${st.passed ? 'ok' : 'no'}`, text: st.passed ? 'PASS' : 'HOLD' }),
             ' ',
             h('b', { style: 'color:var(--amber)', text: st.stage + ' ' }),
             h('span', { style: 'color:#fff', text: st.name })
@@ -528,7 +550,7 @@ export function mountFACT(body, ctx) {
         sc.append(h('div', { class: `xturn ${st.passed ? 'pro' : 'contra'}` },
           h('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px' },
             h('div', {},
-              h('span', { class: `xpill ${st.passed ? 'ok' : 'no'}`, text: st.passed ? '✓ PASSED' : '✕ BLOCKED / WAITING' }),
+              h('span', { class: `xpill ${st.passed ? 'ok' : 'no'}`, text: st.passed ? 'PASSED' : 'BLOCKED / HOLD' }),
               ' ',
               h('b', { style: 'color:var(--amber)', text: `${st.stage} — ${st.name}` })
             ),
@@ -540,8 +562,8 @@ export function mountFACT(body, ctx) {
       if (d.committee) {
         sc.append(h('div', { class: 'xcard' },
           h('div', { class: 'xsec-hd' },
-            h('span', { text: 'HASIL SIDANG 9-AGENT COMMITTEE TERAKHIR' }),
-            h('button', { class: 'on', text: 'BUKA TRANSKRIP LENGKAP (TRAN) →', onclick: () => ctx.run(`${selectedSym} TRAN`) })
+            h('span', { text: 'LATEST 9-AGENT COMMITTEE VERDICT' }),
+            h('button', { class: 'on', text: 'OPEN FULL TRANSCRIPT (TRAN) ->', onclick: () => ctx.run(`${selectedSym} TRAN`) })
           ),
           h('div', { style: 'padding:6px;font-size:11px', text: `Verdict: ${d.committee.approved ? 'APPROVED' : 'VETOED'} | Direction: ${d.committee.direction || '-'} | Decision: ${(d.committee.portfolio_manager && d.committee.portfolio_manager.decision) || '-'}` })
         ));
@@ -562,8 +584,8 @@ export function mountFACT(body, ctx) {
         h('thead', {}, h('tr', {},
           h('th', { text: 'ID' }),
           h('th', { text: 'GROUP' }),
-          h('th', { text: 'PILLAR / SENSOR BOT' }),
-          h('th', { text: 'NILAI LIVE AKTUAL' }),
+          h('th', { text: 'TELEMETRY PILLAR' }),
+          h('th', { text: 'CURRENT READING' }),
           h('th', { text: 'STATUS' })
         ))
       );
@@ -574,7 +596,7 @@ export function mountFACT(body, ctx) {
           h('td', { style: 'color:var(--label)', text: p.group }),
           h('td', { style: 'color:#fff;font-weight:600', text: p.name }),
           h('td', { text: p.val }),
-          h('td', {}, h('span', { class: `xpill ${p.ok ? 'ok' : 'warn'}`, text: p.ok ? 'OK' : 'ATTN' }))
+          h('td', {}, h('span', { class: `xpill ${p.ok ? 'ok' : 'warn'}`, text: p.ok ? 'OK' : 'REVIEW' }))
         ));
       });
       tbl.append(tbdy);
@@ -584,7 +606,7 @@ export function mountFACT(body, ctx) {
       const cats = Object.entries(d.quantCategories || {});
       const catCard = h('div', { class: 'xcard' },
         h('div', { class: 'xsec-hd' },
-          h('span', { text: `BREAKDOWN SKOR KATEGORI 532-FACTOR QUANT ENGINE (${cats.length} KATEGORI)` }),
+          h('span', { text: `532-FACTOR QUANTITATIVE CATEGORY ATTRIBUTION (${cats.length} GROUPS)` }),
           h('span', { class: 'am', text: `COMPOSITE: ${Number(mp.composite_532_factors || 50).toFixed(2)}/100` })
         )
       );
@@ -603,12 +625,11 @@ export function mountFACT(body, ctx) {
         });
         catCard.append(grid);
       } else {
-        catCard.append(h('div', { class: 'na', text: 'Kategori 532-factor akan terisi otomatis saat file scan *_latest.json memiliki quant_factors.category_scores.' }));
+        catCard.append(h('div', { class: 'na', text: 'Category attribution populates automatically upon completed scan output.' }));
       }
       sc.append(catCard);
 
-      // Raw sample factors + search
-      const flt = h('input', { value: factorFilter, placeholder: 'Cari faktor mentah (contoh: rsi, ema, atr, zscore, vwap)...', style: 'width:100%;margin-bottom:6px' });
+      const flt = h('input', { value: factorFilter, placeholder: 'Filter raw quantitative factors (rsi, ema, atr, zscore, vwap)...', style: 'width:100%;margin-bottom:6px' });
       flt.addEventListener('input', () => { factorFilter = flt.value; renderFactorTable(); });
       const fWrap = h('div');
       sc.append(flt, fWrap);
@@ -623,7 +644,7 @@ export function mountFACT(body, ctx) {
           return k.toLowerCase().includes(q) || String(v).toLowerCase().includes(q);
         });
         const t = h('table', { class: 't' },
-          h('thead', {}, h('tr', {}, h('th', { text: 'NAMA FAKTOR / INDIKATOR BOT' }), h('th', { text: 'NILAI MENTAH' })))
+          h('thead', {}, h('tr', {}, h('th', { text: 'FACTOR IDENTIFIER' }), h('th', { text: 'COMPUTED VALUE' })))
         );
         const tb2 = h('tbody');
         rows.slice(0, 140).forEach(([k, v]) => {
@@ -646,7 +667,7 @@ export function mountFACT(body, ctx) {
 }
 
 // =====================================================================
-// 2. TRAN / TRSC — 9-AGENT DEBATE TRANSCRIPTS & CORPORATE EARNINGS
+// 2. TRAN / TRSC — COMMITTEE DEBATE & EARNINGS TRANSCRIPTS
 // =====================================================================
 export function mountTRAN(body, ctx) {
   body.classList.add('fill');
@@ -668,7 +689,7 @@ export function mountTRAN(body, ctx) {
     ctx.status(env);
     if (!env.ok || !env.data) {
       sc.textContent = '';
-      sc.append(h('div', { class: 'na', text: 'Transcript feed unavailable: ' + (env.error || 'error') }));
+      sc.append(h('div', { class: 'na', text: 'Transcript service unavailable: ' + (env.error || 'error') }));
       return;
     }
     data = env.data;
@@ -681,18 +702,18 @@ export function mountTRAN(body, ctx) {
     tb.textContent = '';
     const inp = h('input', { value: sym, style: 'width:88px;text-transform:uppercase;font-weight:700' });
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') load(inp.value); });
-    const qInp = h('input', { value: searchQ, placeholder: 'Filter transkrip...', style: 'width:120px' });
+    const qInp = h('input', { value: searchQ, placeholder: 'Search transcript...', style: 'width:125px' });
     qInp.addEventListener('input', () => { searchQ = qInp.value; renderBody(); });
 
     tb.append(
-      h('span', { class: 'lbl', text: 'TRANSKRIP HUB:' }),
+      h('span', { class: 'lbl', text: 'TRANSCRIPTS:' }),
       inp,
       h('button', { class: 'on', text: 'LOAD', onclick: () => load(inp.value) }),
-      h('button', { class: tab === 'DEBATE' ? 'on' : '', text: '🎙 9-AGENT DEBATE', onclick: () => { tab = 'DEBATE'; renderToolbar(); renderBody(); } }),
-      h('button', { class: tab === 'LAYERS' ? 'on' : '', text: '🧾 5-LAYER & MEMORY', onclick: () => { tab = 'LAYERS'; renderToolbar(); renderBody(); } }),
-      h('button', { class: tab === 'CORP' ? 'on' : '', text: '🏢 EARNINGS / CATALYSTS', onclick: () => { tab = 'CORP'; renderToolbar(); renderBody(); } }),
+      h('button', { class: tab === 'DEBATE' ? 'on' : '', text: '9-AGENT DEBATE', onclick: () => { tab = 'DEBATE'; renderToolbar(); renderBody(); } }),
+      h('button', { class: tab === 'LAYERS' ? 'on' : '', text: '5-LAYER & MEMORY', onclick: () => { tab = 'LAYERS'; renderToolbar(); renderBody(); } }),
+      h('button', { class: tab === 'CORP' ? 'on' : '', text: 'EARNINGS & CATALYSTS', onclick: () => { tab = 'CORP'; renderToolbar(); renderBody(); } }),
       qInp,
-      h('button', { style: 'color:#ffb000;border-color:#ffb00066', text: '🔬 X-RAY', onclick: () => ctx.run(`${sym} FACT`) })
+      h('button', { style: 'color:#ffb000;border-color:#ffb00066', text: 'X-RAY', onclick: () => ctx.run(`${sym} FACT`) })
     );
   }
 
@@ -705,12 +726,12 @@ export function mountTRAN(body, ctx) {
       const sessions = data.debateSessions || [];
       if (!sessions.length) {
         sc.append(h('div', { class: 'xcard' },
-          h('div', { class: 'xsec-hd' }, h('span', { text: 'SIDANG 9-AGENT ADVERSARIAL COMMITTEE' }), h('span', { class: 'xpill warn', text: 'MENUNGGU SIDANG' })),
+          h('div', { class: 'xsec-hd' }, h('span', { text: '9-AGENT ADVERSARIAL COMMITTEE TRANSCRIPT' }), h('span', { class: 'xpill warn', text: 'STANDBY' })),
           h('div', { style: 'padding:10px;font-size:11px;line-height:1.5;color:#cfd8e3' },
-            'Belum ada rekaman transkrip Sidang 9-Agent untuk simbol ini. Sidang 9-Agent otomatis dipanggil oleh bot tepat setelah koin lolos Layer 5 APPROVED.',
+            'No committee debate session recorded yet for this symbol. The 9-Agent Adversarial Committee convenes automatically once an instrument passes Layer 5 approval.',
             h('div', { style: 'margin-top:8px;display:flex;gap:6px' },
-              h('button', { class: 'on', text: 'LIHAT TRANSKRIP 5-LAYER & MEMORY →', onclick: () => { tab = 'LAYERS'; renderToolbar(); renderBody(); } }),
-              h('button', { text: 'LIHAT EARNINGS & CATALYST WIRE →', onclick: () => { tab = 'CORP'; renderToolbar(); renderBody(); } })
+              h('button', { class: 'on', text: 'VIEW 5-LAYER AUDIT TRAIL ->', onclick: () => { tab = 'LAYERS'; renderToolbar(); renderBody(); } }),
+              h('button', { text: 'VIEW EARNINGS & CATALYSTS ->', onclick: () => { tab = 'CORP'; renderToolbar(); renderBody(); } })
             )
           )
         ));
@@ -722,7 +743,7 @@ export function mountTRAN(body, ctx) {
         selBar.append(h('button', {
           class: i === sessionIdx ? 'on' : '',
           style: 'font-size:10px',
-          text: `#${i + 1} ${s.symbol} · ${s.approved ? 'APPROVED' : 'VETOED'} (${s.direction})`,
+          text: `#${i + 1} ${s.symbol} | ${s.approved ? 'APPROVED' : 'VETOED'} (${s.direction})`,
           onclick: () => { sessionIdx = i; renderBody(); }
         }));
       });
@@ -731,8 +752,8 @@ export function mountTRAN(body, ctx) {
       const cur = sessions[sessionIdx] || sessions[0];
       sc.append(h('div', { class: 'xcard xcard-hi' },
         h('div', { class: 'xsec-hd' },
-          h('span', { text: `SESI SIDANG: ${cur.symbol} (${cur.id}) • ${String(cur.timestamp || '').slice(0, 19)}` }),
-          h('span', { class: `xpill ${cur.approved ? 'ok' : 'no'}`, text: `${cur.approved ? 'APPROVED' : 'VETOED'} • ${cur.direction} • ${cur.confidencePct}% • ${cur.elapsedSec}s` })
+          h('span', { text: `SESSION: ${cur.symbol} (${cur.id}) | ${String(cur.timestamp || '').slice(0, 19)}` }),
+          h('span', { class: `xpill ${cur.approved ? 'ok' : 'no'}`, text: `${cur.approved ? 'APPROVED' : 'VETOED'} | ${cur.direction} | ${cur.confidencePct}% | ${cur.elapsedSec}s` })
         )
       ));
 
@@ -752,8 +773,8 @@ export function mountTRAN(body, ctx) {
       const steps = data.pipelineTranscript || [];
       const card = h('div', { class: 'xcard' },
         h('div', { class: 'xsec-hd' },
-          h('span', { text: `AUDIT TRAIL 5-LAYER REASONING BOT (${data.symbol})` }),
-          h('span', { class: 'am', text: `${steps.length} LAYER TERCATAT` })
+          h('span', { text: `5-LAYER EXECUTION AUDIT TRAIL (${data.symbol})` }),
+          h('span', { class: 'am', text: `${steps.length} STAGES LOGGED` })
         )
       );
       if (steps.length) {
@@ -767,16 +788,15 @@ export function mountTRAN(body, ctx) {
           ));
         });
       } else {
-        card.append(h('div', { class: 'na', text: 'Belum ada file scan *_latest.json untuk simbol ini.' }));
+        card.append(h('div', { class: 'na', text: 'No scan audit file found for this instrument yet.' }));
       }
       sc.append(card);
 
-      // AI Trade Memory Post-Mortems
       const pms = data.postMortems || [];
       const pmCard = h('div', { class: 'xcard' },
         h('div', { class: 'xsec-hd' },
-          h('span', { text: 'AI TRADE MEMORY — TRANSKRIP POST-MORTEM & PELAJARAN TRADE' }),
-          h('span', { class: 'up', text: `${pms.length} REKAMAN TERBARU` })
+          h('span', { text: 'TRADE MEMORY — POST-MORTEM ARCHIVE' }),
+          h('span', { class: 'up', text: `${pms.length} RECORDS` })
         )
       );
       if (pms.length) {
@@ -784,21 +804,21 @@ export function mountTRAN(body, ctx) {
           const pnl = Number(p.netPnlUsd || 0);
           pmCard.append(h('div', { class: `xturn ${pnl >= 0 ? 'pro' : 'contra'}`, style: 'margin:6px' },
             h('div', { style: 'display:flex;justify-content:space-between;margin-bottom:3px' },
-              h('b', { style: 'color:#fff', text: `${p.symbol} ${p.direction || ''} · ${p.setup || '-'}` }),
+              h('b', { style: 'color:#fff', text: `${p.symbol} ${p.direction || ''} | ${p.setup || '-'}` }),
               h('span', { class: `xpill ${pnl >= 0 ? 'ok' : 'no'}`, text: `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(4)} (${p.exitReason || 'CLOSED'})` })
             ),
             h('div', { style: 'font-size:11px;color:#cfd8e3', text: p.lesson })
           ));
         });
       } else {
-        pmCard.append(h('div', { class: 'na', text: 'Belum ada post-mortem di ai_trade_memory.json.' }));
+        pmCard.append(h('div', { class: 'na', text: 'No closed-trade post-mortems archived yet.' }));
       }
       sc.append(pmCard);
 
     } else if (tab === 'CORP') {
       const corp = data.corporateTranscript;
       if (!corp) {
-        sc.append(h('div', { class: 'na', text: 'Corporate earnings transcript tidak tersedia.' }));
+        sc.append(h('div', { class: 'na', text: 'Corporate earnings transcript unavailable.' }));
         return;
       }
       sc.append(h('div', { class: 'xgrid2', style: 'margin-bottom:8px' },
@@ -809,13 +829,13 @@ export function mountTRAN(body, ctx) {
         h('div', { class: 'xcard', style: 'margin-bottom:0' },
           h('div', { class: 'xsec-hd' }, h('span', { text: 'PREPARED REMARKS & SEC XBRL HIGHLIGHTS' }), h('span', { class: 'up', text: 'VERIFIED' })),
           h('div', { style: 'padding:8px;font-size:11px;line-height:1.6;color:#e6edf3' },
-            ...(corp.preparedRemarks || []).map(r => h('div', { style: 'margin-bottom:5px', text: '• ' + r }))
+            ...(corp.preparedRemarks || []).map(r => h('div', { style: 'margin-bottom:5px', text: '- ' + r }))
           )
         )
       ));
 
       const qaCard = h('div', { class: 'xcard' },
-        h('div', { class: 'xsec-hd' }, h('span', { text: 'CATALYST WIRE & ANALYST Q&A TRANSCRIPT FEED' }), h('span', { class: 'am', text: `${(corp.qaSnippets || []).length} ITEMS` }))
+        h('div', { class: 'xsec-hd' }, h('span', { text: 'CATALYST WIRE & ANALYST Q&A FEED' }), h('span', { class: 'am', text: `${(corp.qaSnippets || []).length} ITEMS` }))
       );
       (corp.qaSnippets || []).filter(it => !q || String(it.text).toLowerCase().includes(q)).forEach(it => {
         const cls = it.sentiment === 'POSITIVE' ? 'pro' : it.sentiment === 'NEGATIVE' ? 'contra' : '';
@@ -854,7 +874,7 @@ export function mountTRAN(body, ctx) {
 }
 
 // =====================================================================
-// 3. G / SNAP / PATT — MULTI-CHART STUDIO, PNG GALLERY & PATTERN DIAGRAMS
+// 3. G / SNAP / PATT — MULTI-CHART STUDIO & SNAPSHOT ARCHIVE
 // =====================================================================
 function drawMiniCandles(canvas, candles, sym, iv) {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -870,7 +890,7 @@ function drawMiniCandles(canvas, candles, sym, iv) {
   if (!Array.isArray(candles) || candles.length < 5) {
     ctx2d.fillStyle = '#778396';
     ctx2d.font = '11px monospace';
-    ctx2d.fillText('No candle data for ' + sym, 12, hPx / 2);
+    ctx2d.fillText('No market data for ' + sym, 12, hPx / 2);
     return { bias: 'N/A', chgPct: 0, lastPx: 0 };
   }
 
@@ -890,7 +910,6 @@ function drawMiniCandles(canvas, candles, sym, iv) {
   const yOf = p => padT + ((hi - p) / (hi - lo)) * plotH;
   const step = plotW / list.length;
 
-  // Grid lines
   ctx2d.strokeStyle = '#141923';
   ctx2d.lineWidth = 1;
   for (let i = 0; i <= 3; i++) {
@@ -902,7 +921,6 @@ function drawMiniCandles(canvas, candles, sym, iv) {
     ctx2d.fillText(fmtPx(gp), w - padR + 4, gy + 3);
   }
 
-  // EMA20
   let ema = Number(list[0].c ?? list[0].close);
   const k = 2 / 21;
   const emaPts = [];
@@ -913,7 +931,6 @@ function drawMiniCandles(canvas, candles, sym, iv) {
     const x = padL + i * step + step / 2;
     emaPts.push([x, yOf(ema)]);
 
-    // Volume bar
     if (maxV > 0) {
       const vh = (v / maxV) * 24;
       ctx2d.fillStyle = cl >= o ? 'rgba(0,210,106,0.22)' : 'rgba(255,59,48,0.22)';
@@ -933,7 +950,6 @@ function drawMiniCandles(canvas, candles, sym, iv) {
     ctx2d.fillRect(x - Math.max(1, step * 0.32), top, Math.max(2, step * 0.64), bh);
   });
 
-  // Draw EMA20 overlay
   ctx2d.strokeStyle = '#ffb000';
   ctx2d.lineWidth = 1.4;
   ctx2d.beginPath();
@@ -945,15 +961,14 @@ function drawMiniCandles(canvas, candles, sym, iv) {
   const chgPct = first > 0 ? ((last - first) / first) * 100 : 0;
   const bias = last > ema * 1.001 ? 'BULLISH > EMA20' : last < ema * 0.999 ? 'BEARISH < EMA20' : 'CONSOLIDATION';
 
-  // Watermark Header inside PNG
-  ctx2d.fillStyle = '#ffb000';
+  ctx2d.fillStyle = '#ff6600';
   ctx2d.font = 'bold 11px monospace';
   ctx2d.fillText(`${sym} [${iv.toUpperCase()}]  $${fmtPx(last)}  (${fmtPct(chgPct)})`, 8, 14);
   ctx2d.fillStyle = bias.startsWith('BULL') ? '#00d26a' : bias.startsWith('BEAR') ? '#ff5a52' : '#9aa7b8';
   ctx2d.font = 'bold 9.5px monospace';
   ctx2d.fillText(bias, 8, hPx - 7);
-  ctx2d.fillStyle = '#556173';
-  ctx2d.fillText('BLOOMBERG // PYROFUEL', w - 138, hPx - 7);
+  ctx2d.fillStyle = '#5c687a';
+  ctx2d.fillText('BLOOMBERG TERMINAL', w - 126, hPx - 7);
 
   return { bias, chgPct, lastPx: last };
 }
@@ -975,16 +990,16 @@ export function mountSTUDIO(body, ctx) {
     tb.textContent = '';
     tb.append(
       h('span', { class: 'lbl', text: 'MULTI-CHART STUDIO:' }),
-      h('button', { class: tab === 'WALL' ? 'on' : '', text: '📊 4-CHART WALL', onclick: () => { tab = 'WALL'; renderToolbar(); renderBody(); } }),
-      h('button', { class: tab === 'GALLERY' ? 'on' : '', text: '🖼 PNG GALLERY', onclick: () => { tab = 'GALLERY'; renderToolbar(); renderBody(); } }),
-      h('button', { class: tab === 'PATTERNS' ? 'on' : '', text: '📐 PATTERN DIAGRAMS', onclick: () => { tab = 'PATTERNS'; renderToolbar(); renderBody(); } }),
+      h('button', { class: tab === 'WALL' ? 'on' : '', text: '4-CHART WALL', onclick: () => { tab = 'WALL'; renderToolbar(); renderBody(); } }),
+      h('button', { class: tab === 'GALLERY' ? 'on' : '', text: 'PNG ARCHIVE', onclick: () => { tab = 'GALLERY'; renderToolbar(); renderBody(); } }),
+      h('button', { class: tab === 'PATTERNS' ? 'on' : '', text: 'PATTERN SCHEMATICS', onclick: () => { tab = 'PATTERNS'; renderToolbar(); renderBody(); } }),
       ...['5m', '15m', '1h', '4h'].map(t => h('button', {
         class: iv === t ? 'on' : '',
         text: t.toUpperCase(),
         onclick: () => { iv = t; renderToolbar(); renderBody(); }
       })),
-      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: '📸 SNAP ALL 4', onclick: snapAllFour }),
-      h('button', { text: 'OPEN FULL GP', onclick: () => ctx.run(`${ctx.symbol} GP`) })
+      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: 'SNAP ALL 4', onclick: snapAllFour }),
+      h('button', { text: 'OPEN GP', onclick: () => ctx.run(`${ctx.symbol} GP`) })
     );
   }
 
@@ -995,14 +1010,14 @@ export function mountSTUDIO(body, ctx) {
       saveSnapshotToGallery({
         id: 'SNAP-' + Date.now() + '-' + sym,
         symbol: sym,
-        interval: iv,
+        interval: iv.toUpperCase(),
         ts: Date.now(),
         dataUrl
       });
       if (downloadFile) {
         const a = document.createElement('a');
         a.href = dataUrl;
-        a.download = `BBG_${sym}_${iv}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png`;
+        a.download = `Bloomberg_Terminal_${sym}_${iv}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png`;
         document.body.appendChild(a);
         a.click();
         setTimeout(() => a.remove(), 150);
@@ -1029,7 +1044,7 @@ export function mountSTUDIO(body, ctx) {
     canvasMap.clear();
     if (tab === 'WALL') {
       const editBar = h('div', { style: 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px' },
-        h('span', { class: 'lbl', text: '4 KOIN WALL:' })
+        h('span', { class: 'lbl', text: 'WATCHLIST QUAD:' })
       );
       const inputs = wallSyms.map((s, idx) => h('input', { value: s, style: 'width:84px;text-transform:uppercase;font-weight:700', title: `Slot ${idx + 1}` }));
       editBar.append(...inputs, h('button', {
@@ -1051,7 +1066,7 @@ export function mountSTUDIO(body, ctx) {
         const hd = h('div', { class: 'xsec-hd' },
           h('span', { style: 'color:var(--amber)', text: `${sym} (${iv.toUpperCase()})` }),
           h('div', { style: 'display:flex;gap:4px' },
-            h('button', { style: 'font-size:10px', text: '📸 PNG', onclick: () => snapCanvas(sym, canvasMap.get(sym), true) }),
+            h('button', { style: 'font-size:10px', text: 'SNAP PNG', onclick: () => snapCanvas(sym, canvasMap.get(sym), true) }),
             h('button', { style: 'font-size:10px', text: 'GP', onclick: () => ctx.run(`${sym} GP`) }),
             h('button', { style: 'font-size:10px', text: 'X-RAY', onclick: () => ctx.run(`${sym} FACT`) })
           )
@@ -1071,26 +1086,28 @@ export function mountSTUDIO(body, ctx) {
     } else if (tab === 'GALLERY') {
       const snaps = LS.get(SNAP_KEY, []);
       const top = h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px' },
-        h('span', { style: 'color:var(--label);font-size:11px', text: `Galeri Chart PNG Tersimpan (${Array.isArray(snaps) ? snaps.length : 0} gambar). Klik 📸 SNAP PNG di panel GP atau 4-Chart Wall untuk menambah.` }),
-        h('button', { style: 'color:#ff5a52;border-color:#ff5a5266', text: 'HAPUS SEMUA', onclick: () => { LS.set(SNAP_KEY, []); renderBody(); } })
+        h('span', { style: 'color:var(--label);font-size:11px', text: `Archived Chart PNG Snapshots (${Array.isArray(snaps) ? snaps.length : 0} files). Capture from GP <GO> or 4-Chart Wall.` }),
+        h('button', { style: 'color:#ff5a52;border-color:#ff5a5266', text: 'CLEAR ARCHIVE', onclick: () => { LS.set(SNAP_KEY, []); renderBody(); } })
       );
       sc.append(top);
       if (!Array.isArray(snaps) || !snaps.length) {
-        sc.append(h('div', { class: 'na', text: 'Belum ada snapshot chart PNG tersimpan. Klik tombol "📸 SNAP ALL 4" di atas atau "📸 SNAP PNG" di panel GP.' }));
+        sc.append(h('div', { class: 'na', text: 'No archived chart PNGs yet. Click SNAP ALL 4 above or SNAP PNG inside GP <GO>.' }));
         return;
       }
       const g = h('div', { class: 'snap-grid' });
       snaps.forEach((s, idx) => {
+        const srcUrl = s.dataUrl || s.img || '';
+        if (!srcUrl) return;
         const card = h('div', { class: 'snap-card' },
-          h('img', { src: s.dataUrl, alt: `${s.symbol} chart snapshot`, onclick: () => openImagePreview(s) }),
+          h('img', { src: srcUrl, alt: `${s.symbol} chart snapshot`, onclick: () => openImagePreview({ ...s, dataUrl: srcUrl }) }),
           h('div', { style: 'padding:6px;display:flex;justify-content:space-between;align-items:center;gap:6px' },
             h('div', {},
               h('b', { style: 'color:var(--amber)', text: `${s.symbol} [${s.interval || '-'}]` }),
               h('div', { style: 'font-size:9.5px;color:var(--muted)', text: fmtTime(s.ts, true) })
             ),
             h('div', { style: 'display:flex;gap:4px' },
-              h('button', { style: 'font-size:10px', text: '⬇ PNG', onclick: () => { const a = document.createElement('a'); a.href = s.dataUrl; a.download = `BBG_${s.symbol}_${s.interval || 'chart'}.png`; a.click(); } }),
-              h('button', { style: 'font-size:10px;color:#ff5a52', text: '✕', onclick: () => { snaps.splice(idx, 1); LS.set(SNAP_KEY, snaps); renderBody(); } })
+              h('button', { style: 'font-size:10px', text: 'DOWNLOAD PNG', onclick: () => { const a = document.createElement('a'); a.href = srcUrl; a.download = `Bloomberg_Terminal_${s.symbol}_${s.interval || 'chart'}.png`; a.click(); } }),
+              h('button', { style: 'font-size:10px;color:#ff5a52', text: 'DEL', onclick: () => { snaps.splice(idx, 1); LS.set(SNAP_KEY, snaps); renderBody(); } })
             )
           )
         );
@@ -1099,27 +1116,25 @@ export function mountSTUDIO(body, ctx) {
       sc.append(g);
 
     } else if (tab === 'PATTERNS') {
-      // Live auto-detected pattern signals from ctx.symbol candles
       const detCard = h('div', { class: 'xcard xcard-hi' },
-        h('div', { class: 'xsec-hd' }, h('span', { text: `LIVE AUTO-PATTERN DETECTOR — ${ctx.symbol} (${iv.toUpperCase()})` }), h('span', { class: 'up', text: 'REAL CANDLES' }))
+        h('div', { class: 'xsec-hd' }, h('span', { text: `REAL-TIME STRUCTURE & PATTERN SCANNER — ${ctx.symbol} (${iv.toUpperCase()})` }), h('span', { class: 'up', text: 'LIVE OHLCV' }))
       );
-      const detBody = h('div', { style: 'padding:8px;font-size:11px;color:#cfd8e3', text: 'Memindai struktur candle real-time...' });
+      const detBody = h('div', { style: 'padding:8px;font-size:11px;color:#cfd8e3', text: 'Scanning live candle structure...' });
       detCard.append(detBody);
       sc.append(detCard);
 
-      // 4 crisp institutional SVG pattern diagrams
       const diagGrid = h('div', { class: 'xgrid2' },
         h('div', { class: 'xcard' },
-          h('div', { class: 'xsec-hd' }, h('span', { text: '1. PYROFUEL SNIPER TWO-STAGE LADDER' }), h('span', { class: 'up', text: 'TP1 50% + TP2 RUNNER' })),
+          h('div', { class: 'xsec-hd' }, h('span', { text: '1. TWO-STAGE EXECUTION LADDER' }), h('span', { class: 'up', text: 'TP1 50% + TP2 RUNNER' })),
           makeSvgBox(`<svg viewBox="0 0 360 155" style="width:100%;height:auto;background:#040608;display:block">
             <line x1="20" y1="128" x2="340" y2="128" stroke="#ff5a52" stroke-dasharray="4,3"/>
-            <text x="24" y="123" fill="#ff5a52" font-size="9" font-family="monospace">STOP LOSS (-1.0R · LIQ SHIELDED)</text>
+            <text x="24" y="123" fill="#ff5a52" font-size="9" font-family="monospace">STOP LOSS (-1.0R | LIQ SHIELDED)</text>
             <line x1="20" y1="96" x2="340" y2="96" stroke="#00e5ff" stroke-dasharray="2,2"/>
-            <text x="24" y="91" fill="#00e5ff" font-size="9" font-family="monospace">SNIPER ENTRY (0.0R · MAKER GTX)</text>
+            <text x="24" y="91" fill="#00e5ff" font-size="9" font-family="monospace">EXECUTION ENTRY (0.0R | MAKER GTX)</text>
             <line x1="20" y1="68" x2="340" y2="68" stroke="#ffb000" stroke-dasharray="3,2"/>
-            <text x="24" y="63" fill="#ffb000" font-size="9" font-family="monospace">STAGE 0: MOVE SL → BREAKEVEN (+0.65R)</text>
+            <text x="24" y="63" fill="#ffb000" font-size="9" font-family="monospace">STAGE 0: MOVE SL TO BREAKEVEN (+0.65R)</text>
             <line x1="20" y1="48" x2="340" y2="48" stroke="#00d26a"/>
-            <text x="24" y="43" fill="#00d26a" font-size="9" font-weight="700" font-family="monospace">STAGE 1: TP1 LOCK 50% PROFIT (+0.90R)</text>
+            <text x="24" y="43" fill="#00d26a" font-size="9" font-weight="700" font-family="monospace">STAGE 1: TP1 LOCK 50% (+0.90R)</text>
             <line x1="20" y1="22" x2="340" y2="22" stroke="#b388ff"/>
             <text x="24" y="17" fill="#b388ff" font-size="9" font-weight="700" font-family="monospace">STAGE 2: TP2 RUNNER (+2.0R + TRAILING)</text>
             <polyline points="35,108 85,96 150,74 215,48 265,56 325,22" fill="none" stroke="#fff" stroke-width="2"/>
@@ -1127,7 +1142,7 @@ export function mountSTUDIO(body, ctx) {
           </svg>`)
         ),
         h('div', { class: 'xcard' },
-          h('div', { class: 'xsec-hd' }, h('span', { text: '2. SMART MONEY BOS / CHoCH & ORDER BLOCK' }), h('span', { class: 'am', text: 'MARKET STRUCTURE' })),
+          h('div', { class: 'xsec-hd' }, h('span', { text: '2. MARKET STRUCTURE (BOS / ORDER BLOCK)' }), h('span', { class: 'am', text: 'PRICE ACTION' })),
           makeSvgBox(`<svg viewBox="0 0 360 155" style="width:100%;height:auto;background:#040608;display:block">
             <rect x="64" y="96" width="88" height="24" fill="rgba(0,210,106,0.18)" stroke="#00d26a" stroke-dasharray="3,2"/>
             <text x="68" y="112" fill="#00d26a" font-size="8.5" font-family="monospace">DEMAND ORDER BLOCK</text>
@@ -1139,7 +1154,7 @@ export function mountSTUDIO(body, ctx) {
           </svg>`)
         ),
         h('div', { class: 'xcard' },
-          h('div', { class: 'xsec-hd' }, h('span', { text: '3. FAIR VALUE GAP (FVG) & FIBO 0.618' }), h('span', { class: 'am', text: 'GOLDEN POCKET' })),
+          h('div', { class: 'xsec-hd' }, h('span', { text: '3. FAIR VALUE GAP (FVG) & FIBO 0.618' }), h('span', { class: 'am', text: 'IMBALANCE' })),
           makeSvgBox(`<svg viewBox="0 0 360 155" style="width:100%;height:auto;background:#040608;display:block">
             <rect x="112" y="64" width="160" height="28" fill="rgba(255,176,0,0.16)" stroke="#ffb000"/>
             <text x="120" y="81" fill="#ffb000" font-size="9" font-weight="700" font-family="monospace">FVG IMBALANCE / GOLDEN POCKET 0.618</text>
@@ -1151,21 +1166,20 @@ export function mountSTUDIO(body, ctx) {
           </svg>`)
         ),
         h('div', { class: 'xcard' },
-          h('div', { class: 'xsec-hd' }, h('span', { text: '4. LIQUIDATION SWEEP & VPIN TOXIC SHIELD' }), h('span', { class: 'dn', text: 'ANTI-STOP-HUNT' })),
+          h('div', { class: 'xsec-hd' }, h('span', { text: '4. LIQUIDATION SWEEP & VPIN SHIELD' }), h('span', { class: 'dn', text: 'MICROSTRUCTURE' })),
           makeSvgBox(`<svg viewBox="0 0 360 155" style="width:100%;height:auto;background:#040608;display:block">
             <rect x="20" y="98" width="320" height="22" fill="rgba(255,59,48,0.16)" stroke="#ff5a52" stroke-dasharray="3,2"/>
-            <text x="26" y="112" fill="#ff5a52" font-size="8.5" font-weight="700" font-family="monospace">RETAIL STOP LIQUIDATION MAGNET POOL (BOT SL SHIELDED BELOW)</text>
+            <text x="26" y="112" fill="#ff5a52" font-size="8.5" font-weight="700" font-family="monospace">STOP-LOSS LIQUIDATION POOL (SHIELDED BELOW)</text>
             <line x1="20" y1="134" x2="340" y2="134" stroke="#00d26a" stroke-width="1.3"/>
-            <text x="26" y="146" fill="#00d26a" font-size="8.5" font-family="monospace">PYROFUEL SHIELDED SL (OUTSIDE LIQUIDATION SWEEP)</text>
+            <text x="26" y="146" fill="#00d26a" font-size="8.5" font-family="monospace">PROTECTED STOP-LOSS LEVEL</text>
             <polyline points="24,62 96,76 146,116 184,72 254,48 332,26" fill="none" stroke="#fff" stroke-width="2"/>
             <circle cx="146" cy="116" r="4" fill="#ff5a52"/>
-            <text x="154" y="120" fill="#ffb000" font-size="8.5" font-family="monospace">WICK SWEEP</text>
+            <text x="154" y="120" fill="#ffb000" font-size="8.5" font-family="monospace">LIQUIDITY SWEEP</text>
           </svg>`)
         )
       );
       sc.append(diagGrid);
 
-      // Compute real pattern readouts from live candles
       const env = await get('kline', { symbol: ctx.symbol, interval: iv, limit: 80 }, 4000);
       if (unmounted) return;
       ctx.status(env);
@@ -1180,20 +1194,20 @@ export function mountSTUDIO(body, ctx) {
         const prev20Hi = Math.max(...highs.slice(-22, -2));
         const prev20Lo = Math.min(...lows.slice(-22, -2));
         const fib618 = swingHi - (swingHi - swingLo) * 0.618;
-        let fvgTxt = 'Tidak ada FVG baru pada 5 candle terakhir';
+        let fvgTxt = 'No fresh FVG imbalance within last 5 bars';
         for (let i = arr.length - 1; i >= Math.max(2, arr.length - 6); i--) {
-          if (lows[i] > highs[i - 2]) { fvgTxt = `BULLISH FVG terdeteksi ($${fmtPx(highs[i - 2])} – $${fmtPx(lows[i])})`; break; }
-          if (highs[i] < lows[i - 2]) { fvgTxt = `BEARISH FVG terdeteksi ($${fmtPx(highs[i])} – $${fmtPx(lows[i - 2])})`; break; }
+          if (lows[i] > highs[i - 2]) { fvgTxt = `BULLISH FVG ($${fmtPx(highs[i - 2])} - $${fmtPx(lows[i])})`; break; }
+          if (highs[i] < lows[i - 2]) { fvgTxt = `BEARISH FVG ($${fmtPx(highs[i])} - $${fmtPx(lows[i - 2])})`; break; }
         }
-        const struct = lastC > prev20Hi ? 'BULLISH BREAK OF STRUCTURE (BOS UP)' : lastC < prev20Lo ? 'BEARISH BREAK OF STRUCTURE (BOS DOWN)' : 'INSIDE RANGE / ACCUMULATION';
+        const struct = lastC > prev20Hi ? 'BULLISH BREAK OF STRUCTURE (BOS UP)' : lastC < prev20Lo ? 'BEARISH BREAK OF STRUCTURE (BOS DOWN)' : 'RANGE CONSOLIDATION';
         detBody.textContent = '';
         detBody.append(
-          h('div', { style: 'margin-bottom:4px' }, h('b', { style: 'color:var(--amber)', text: 'Struktur Harga: ' }), struct),
-          h('div', { style: 'margin-bottom:4px' }, h('b', { style: 'color:#00e5ff', text: 'Swing Range (30 bars): ' }), `Low $${fmtPx(swingLo)}  ↔  High $${fmtPx(swingHi)}  |  Golden Pocket 0.618: $${fmtPx(fib618)}`),
+          h('div', { style: 'margin-bottom:4px' }, h('b', { style: 'color:var(--amber)', text: 'Price Structure: ' }), struct),
+          h('div', { style: 'margin-bottom:4px' }, h('b', { style: 'color:#00e5ff', text: '30-Bar Range: ' }), `Low $${fmtPx(swingLo)}  -  High $${fmtPx(swingHi)}  |  Golden Pocket 0.618: $${fmtPx(fib618)}`),
           h('div', {}, h('b', { style: 'color:#00d26a', text: 'Fair Value Gap (FVG): ' }), fvgTxt)
         );
       } else {
-        detBody.textContent = 'Data candle belum mencukupi untuk deteksi pola otomatis.';
+        detBody.textContent = 'Insufficient OHLCV history for automated pattern scan.';
       }
     }
   }
@@ -1203,7 +1217,7 @@ export function mountSTUDIO(body, ctx) {
       style: 'position:fixed;inset:0;z-index:99995;background:rgba(0,0,0,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px',
       onclick: () => ov.remove()
     },
-      h('div', { style: 'color:var(--amber);font-weight:700;margin-bottom:8px', text: `${snap.symbol} [${snap.interval}] • ${fmtTime(snap.ts, true)} (Klik di mana saja untuk tutup)` }),
+      h('div', { style: 'color:var(--amber);font-weight:700;margin-bottom:8px', text: `${snap.symbol} [${snap.interval}] | ${fmtTime(snap.ts, true)} (Click anywhere to close)` }),
       h('img', { src: snap.dataUrl, style: 'max-width:95vw;max-height:84vh;border:1px solid var(--amber)' })
     );
     document.body.appendChild(ov);
@@ -1246,17 +1260,17 @@ export function mountBI(body, ctx) {
     if (!dossier) return;
     const d = dossier;
     const q = d.quote || {};
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Bloomberg Intelligence Report — ${esc(d.symbol)}</title>
-    <style>body{font-family:Arial,sans-serif;background:#0a0c10;color:#e6edf3;padding:28px;max-width:900px;margin:0 auto}h1{color:#ffb000;border-bottom:2px solid #ffb000;padding-bottom:8px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.box{border:1px solid #2b3240;background:#11151d;padding:12px}ul{margin:6px 0;padding-left:18px}.up{color:#00d26a}.dn{color:#ff5a52}</style></head><body>
-    <h1>BLOOMBERG INTELLIGENCE DOSSIER // ${esc(d.symbol)} — ${esc(d.name)}</h1>
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Bloomberg Terminal Intelligence — ${esc(d.symbol)}</title>
+    <style>body{font-family:Arial,sans-serif;background:#0a0c10;color:#e6edf3;padding:28px;max-width:900px;margin:0 auto}h1{color:#ff6600;border-bottom:2px solid #ff6600;padding-bottom:8px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.box{border:1px solid #2b3240;background:#11151d;padding:12px}ul{margin:6px 0;padding-left:18px}.up{color:#00d26a}.dn{color:#ff5a52}</style></head><body>
+    <h1>BLOOMBERG TERMINAL INTELLIGENCE // ${esc(d.symbol)} — ${esc(d.name)}</h1>
     <p><b>Asset Class:</b> ${esc(d.assetClass)} &nbsp;|&nbsp; <b>Rating:</b> ${esc(d.rating)} &nbsp;|&nbsp; <b>Price:</b> $${esc(fmtPx(q.price))} (${esc(fmtPct(q.chgPct))}) &nbsp;|&nbsp; <b>Generated:</b> ${new Date().toISOString()}</p>
     <div class="grid">
       <div class="box"><h3 class="up">BULL CASE CONVICTION</h3><ul>${(d.bullPoints || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>
-      <div class="box"><h3 class="dn">BEAR CASE & TAIL RISKS</h3><ul>${(d.bearPoints || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>
+      <div class="box"><h3 class="dn">BEAR CASE &amp; TAIL RISKS</h3><ul>${(d.bearPoints || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>
     </div>
     <div class="box" style="margin-top:14px"><h3>RECENT MARKET CATALYSTS</h3><ul>${(d.catalysts || []).map(c => `<li><b>${esc(c.source || 'WIRE')}:</b> ${esc(c.title)}</li>`).join('')}</ul></div>
     </body></html>`;
-    downloadBlob(`BI_Report_${d.symbol}_${new Date().toISOString().slice(0, 10)}.html`, html, 'text/html;charset=utf-8');
+    downloadBlob(`Bloomberg_Terminal_BI_${d.symbol}_${new Date().toISOString().slice(0, 10)}.html`, html, 'text/html;charset=utf-8');
   }
 
   function renderToolbar() {
@@ -1267,8 +1281,8 @@ export function mountBI(body, ctx) {
       h('span', { class: 'lbl', text: 'BLOOMBERG INTELLIGENCE (BI):' }),
       inp,
       h('button', { class: 'on', text: 'RESEARCH <GO>', onclick: () => load(inp.value) }),
-      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: '📄 EXPORT HTML DOSSIER', onclick: exportHtmlReport }),
-      h('button', { text: '🔬 BOT X-RAY', onclick: () => ctx.run(`${sym} FACT`) }),
+      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: 'EXPORT REPORT (HTML)', onclick: exportHtmlReport }),
+      h('button', { text: 'X-RAY', onclick: () => ctx.run(`${sym} FACT`) }),
       h('button', { text: 'REFRESH', onclick: () => load(sym) })
     );
   }
@@ -1285,27 +1299,27 @@ export function mountBI(body, ctx) {
       h('div', { style: 'display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px' },
         h('div', {},
           h('div', { style: 'color:var(--amber);font-size:14px;font-weight:700', text: `${d.symbol} — ${d.name}` }),
-          h('div', { style: 'color:var(--label);font-size:10.5px', text: `${d.assetClass}  •  Last: $${fmtPx(q.price)} (${fmtPct(q.chgPct)})  •  Vol: ${fmtVol(q.vol)}` })
+          h('div', { style: 'color:var(--label);font-size:10.5px', text: `${d.assetClass}  |  Last: $${fmtPx(q.price)} (${fmtPct(q.chgPct)})  |  Vol: ${fmtVol(q.vol)}` })
         ),
         h('span', { class: `xpill ${rCls}`, style: 'font-size:11px;padding:3px 8px', text: d.rating })
       )
     ));
 
     sc.append(h('div', { class: 'xgrid4', style: 'margin-bottom:8px' },
-      h('div', { class: 'xstat' }, h('div', { class: 'xl', text: 'PYROFUEL P_MATH' }), h('div', { class: 'xv', text: qs.pMath != null ? `${Number(qs.pMath).toFixed(1)}%` : 'N/A' }), h('div', { class: 'xs', text: `Regime: ${qs.regime || '-'}` })),
+      h('div', { class: 'xstat' }, h('div', { class: 'xl', text: 'QUANT P_MATH' }), h('div', { class: 'xv', text: qs.pMath != null ? `${Number(qs.pMath).toFixed(1)}%` : 'N/A' }), h('div', { class: 'xs', text: `Regime: ${qs.regime || '-'}` })),
       h('div', { class: 'xstat' }, h('div', { class: 'xl', text: 'ADX-14 / HURST' }), h('div', { class: 'xv', text: `${qs.adx14 != null ? Number(qs.adx14).toFixed(1) : '-'} / ${qs.hurst != null ? Number(qs.hurst).toFixed(2) : '-'}` }), h('div', { class: 'xs', text: `OBI-20: ${qs.obi20 != null ? Number(qs.obi20).toFixed(3) : '-'}` })),
       h('div', { class: 'xstat' }, h('div', { class: 'xl', text: 'OPTIONS DVOL' }), h('div', { class: 'xv', text: qs.dvol != null ? String(qs.dvol) : 'N/A' }), h('div', { class: 'xs', text: `Hybrid: ${qs.hybridConf != null ? qs.hybridConf + '%' : '-'}` })),
-      h('div', { class: 'xstat' }, h('div', { class: 'xl', text: 'AI SETUP BIAS' }), h('div', { class: 'xv', style: 'font-size:12px;color:#00e5ff', text: qs.setup || 'MONITORING' }), h('div', { class: 'xs', text: `Direction: ${qs.direction || 'NEUTRAL'}` }))
+      h('div', { class: 'xstat' }, h('div', { class: 'xl', text: 'SIGNAL BIAS' }), h('div', { class: 'xv', style: 'font-size:12px;color:#00e5ff', text: qs.setup || 'MONITORING' }), h('div', { class: 'xs', text: `Direction: ${qs.direction || 'NEUTRAL'}` }))
     ));
 
     sc.append(h('div', { class: 'xgrid2', style: 'margin-bottom:8px' },
       h('div', { class: 'xcard', style: 'margin-bottom:0;border-left:3px solid var(--up)' },
-        h('div', { class: 'xsec-hd' }, h('span', { style: 'color:var(--up)', text: '▲ BULL CASE / UPSIDE THESIS' })),
-        h('div', { style: 'padding:8px;font-size:11px;line-height:1.55' }, ...(d.bullPoints || []).map(p => h('div', { style: 'margin-bottom:5px', text: '• ' + p })))
+        h('div', { class: 'xsec-hd' }, h('span', { style: 'color:var(--up)', text: 'BULL CASE / UPSIDE THESIS' })),
+        h('div', { style: 'padding:8px;font-size:11px;line-height:1.55' }, ...(d.bullPoints || []).map(p => h('div', { style: 'margin-bottom:5px', text: '- ' + p })))
       ),
       h('div', { class: 'xcard', style: 'margin-bottom:0;border-left:3px solid var(--dn)' },
-        h('div', { class: 'xsec-hd' }, h('span', { style: 'color:var(--dn)', text: '▼ BEAR CASE / RISK FACTORS' })),
-        h('div', { style: 'padding:8px;font-size:11px;line-height:1.55' }, ...(d.bearPoints || []).map(p => h('div', { style: 'margin-bottom:5px', text: '• ' + p })))
+        h('div', { class: 'xsec-hd' }, h('span', { style: 'color:var(--dn)', text: 'BEAR CASE / RISK FACTORS' })),
+        h('div', { style: 'padding:8px;font-size:11px;line-height:1.55' }, ...(d.bearPoints || []).map(p => h('div', { style: 'margin-bottom:5px', text: '- ' + p })))
       )
     ));
 
@@ -1327,7 +1341,7 @@ export function mountBI(body, ctx) {
 }
 
 // =====================================================================
-// 5. ETF / FLOW / INS / SI — INSTITUTIONAL FLOWS, SQUEEZE & INSIDERS
+// 5. ETF / FLOW / INS / SI — INSTITUTIONAL FLOWS & INSIDERS
 // =====================================================================
 export function mountETF(body, ctx) {
   body.classList.add('fill');
@@ -1374,10 +1388,9 @@ export function mountETF(body, ctx) {
     const sq = payload.squeezeBoard || [];
     const ins = payload.insiderFilings || [];
 
-    // 1. ETF Diverging Bar Diagram + Table
     sc.append(h('div', { class: 'xcard' },
       h('div', { class: 'xsec-hd' },
-        h('span', { text: 'SPOT CRYPTO & MACRO ETF SIGNED MONEY FLOW PROXY (IBIT, FBTC, GBTC, ETHA, SPY, QQQ, TLT, GLD, EIDO)' }),
+        h('span', { text: 'SPOT CRYPTO & MACRO ETF SIGNED FLOW PROXY (IBIT, FBTC, GBTC, ETHA, SPY, QQQ, TLT, GLD, EIDO)' }),
         h('span', { class: 'up', text: 'LIVE QUOTES' })
       ),
       makeSvgBox(buildEtfFlowSvg(etfs))
@@ -1409,14 +1422,13 @@ export function mountETF(body, ctx) {
     etfTbl.append(etfB);
     sc.append(etfTbl);
 
-    // 2. Futures Short Squeeze Pressure Matrix
     sc.append(h('div', { class: 'xsec-hd', style: 'margin-bottom:4px' },
       h('span', { text: 'BINANCE FUTURES SHORT SQUEEZE & CROWDING PRESSURE BOARD' }),
       h('span', { class: 'am', text: `${sq.length} PERPS` })
     ));
     const sqTbl = h('table', { class: 't', style: 'margin-bottom:10px' },
       h('thead', {}, h('tr', {},
-        h('th', { text: 'PERP' }),
+        h('th', { text: 'CONTRACT' }),
         h('th', { class: 'r', text: 'MARK' }),
         h('th', { class: 'r', text: 'FUNDING %' }),
         h('th', { class: 'r', text: 'ANN %' }),
@@ -1439,7 +1451,6 @@ export function mountETF(body, ctx) {
     sqTbl.append(sqB);
     sc.append(sqTbl);
 
-    // 3. SEC Form-4 / Regulatory Insiders
     sc.append(h('div', { class: 'xsec-hd', style: 'margin-bottom:4px' },
       h('span', { text: `SEC FORM-4 & REGULATORY INSIDER FILINGS (${payload.insiderSymbol})` }),
       h('span', { class: 'am', text: `${ins.length} FILINGS` })
@@ -1457,7 +1468,7 @@ export function mountETF(body, ctx) {
       iTbl.append(ib);
       sc.append(iTbl);
     } else {
-      sc.append(h('div', { class: 'na', text: 'Masukkan ticker saham AS (misal NVDA, AAPL, MSFT, TSLA) di toolbar untuk melihat SEC Form-4 Insiders.' }));
+      sc.append(h('div', { class: 'na', text: 'Enter a US equity ticker (e.g. NVDA, AAPL, MSFT) in the toolbar to inspect SEC Form-4 filings.' }));
     }
   }
 
@@ -1467,7 +1478,7 @@ export function mountETF(body, ctx) {
 }
 
 // =====================================================================
-// 6. FIN / BUDGET / CASH — PERSONAL FINANCE & ANTI-BOROS MONEY MANAGER
+// 6. FIN / BUDGET / CASH / BUFFETT — PERSONAL CAPITAL MANAGER (WARREN BUFFETT)
 // =====================================================================
 export function mountFIN(body, ctx) {
   body.classList.add('fill');
@@ -1478,7 +1489,7 @@ export function mountFIN(body, ctx) {
   let tab = 'DASH';
   let finData = null;
   let historyFilter = 'ALL';
-  let toastNote = '';
+  let statusNote = '';
   let unmounted = false;
 
   async function load() {
@@ -1486,41 +1497,61 @@ export function mountFIN(body, ctx) {
       const r = await apiFetch('/api/finance', { cache: 'no-store' }, 10000);
       if (unmounted) return;
       if (!r.ok) {
-        ctx.status({ ok: false, source: 'finance', ts: Date.now(), mode: 'NA' });
+        ctx.status({ ok: false, source: 'capital-desk', ts: Date.now(), mode: 'NA' });
         sc.textContent = '';
-        sc.append(h('div', { class: 'na', text: `Auth diperlukan atau gagal memuat Keuangan (HTTP ${r.status}).` }));
+        sc.append(h('div', { class: 'na', text: `Authentication required to access Personal Capital Desk (HTTP ${r.status}).` }));
         return;
       }
       const j = await r.json();
       finData = j.data;
-      ctx.status({ ok: true, source: 'personal-finance', ts: Date.now(), mode: 'LIVE' });
+      ctx.status({ ok: true, source: 'capital-desk', ts: Date.now(), mode: 'LIVE' });
       renderToolbar();
       renderBody();
     } catch (e) {
       if (!unmounted) {
         sc.textContent = '';
-        sc.append(h('div', { class: 'na', text: 'Error memuat Keuangan: ' + e.message }));
+        sc.append(h('div', { class: 'na', text: 'Capital Desk error: ' + e.message }));
       }
     }
   }
 
   function exportCsv() {
     if (!finData) return;
-    const rows = [['ID', 'Tanggal', 'Tipe', 'Kategori', 'Nominal_IDR', 'Catatan']];
+    const rows = [['ID', 'Date', 'Type', 'Category', 'Amount_IDR', 'Note']];
     (finData.transactions || []).forEach(t => {
       rows.push([t.id, t.date, t.type, t.category, t.amountIdr, String(t.note || '').replace(/[\r\n,]+/g, ' ')]);
     });
-    downloadBlob(`Keuangan_AntiBoros_${new Date().toISOString().slice(0, 10)}.csv`, rows.map(r => r.join(',')).join('\n'), 'text/csv;charset=utf-8');
+    downloadBlob(`Bloomberg_Terminal_Capital_${new Date().toISOString().slice(0, 10)}.csv`, rows.map(r => r.join(',')).join('\n'), 'text/csv;charset=utf-8');
+  }
+
+  async function applyBuffett(monthlyIncomeIdr, recordMonthlyCycle = false) {
+    const r = await apiFetch('/api/finance/buffett-apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ monthlyIncomeIdr: Number(monthlyIncomeIdr || 1000000), recordMonthlyCycle })
+    }, 10000);
+    const j = await r.json();
+    if (r.ok && j.ok) {
+      finData = j.data;
+      statusNote = recordMonthlyCycle
+        ? `WARREN BUFFETT CYCLE BOOKED: Income ${fmtIdr(j.plan.monthlyIncomeIdr)} recorded & ${fmtIdr(j.plan.payYourselfFirstIdr)} (40%) locked first. Daily ceiling: ${fmtIdr(j.plan.dailyLimitIdr)}/day.`
+        : `WARREN BUFFETT ALLOCATION APPLIED (${fmtIdr(j.plan.monthlyIncomeIdr)}/month): 40% Pay-Yourself-First (${fmtIdr(j.plan.payYourselfFirstIdr)}) | 60% Operating (${fmtIdr(j.plan.spendableMonthlyIdr)}, ${fmtIdr(j.plan.dailyLimitIdr)}/day).`;
+      renderBody();
+    } else {
+      statusNote = 'Allocation error: ' + (j.error || 'failed');
+      renderBody();
+    }
   }
 
   function renderToolbar() {
     tb.textContent = '';
     tb.append(
-      h('span', { class: 'lbl', text: 'KEUANGAN & ANTI-BOROS:' }),
-      h('button', { class: tab === 'DASH' ? 'on' : '', text: '💰 DASHBOARD & CATAT', onclick: () => { tab = 'DASH'; renderToolbar(); renderBody(); } }),
-      h('button', { class: tab === 'BUDGET' ? 'on' : '', text: '🎯 GOALS & LIMIT BUDGET', onclick: () => { tab = 'BUDGET'; renderToolbar(); renderBody(); } }),
-      h('button', { class: tab === 'HIST' ? 'on' : '', text: '📋 RIWAYAT & CSV', onclick: () => { tab = 'HIST'; renderToolbar(); renderBody(); } }),
-      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: '⬇ EXPORT CSV', onclick: exportCsv }),
+      h('span', { class: 'lbl', text: 'PERSONAL CAPITAL (WARREN BUFFETT):' }),
+      h('button', { class: tab === 'DASH' ? 'on' : '', text: 'DASHBOARD & ENTRY', onclick: () => { tab = 'DASH'; renderToolbar(); renderBody(); } }),
+      h('button', { class: tab === 'BUFFETT' ? 'on' : '', text: 'WARREN BUFFETT AUTO-PLAN', onclick: () => { tab = 'BUFFETT'; renderToolbar(); renderBody(); } }),
+      h('button', { class: tab === 'BUDGET' ? 'on' : '', text: 'GOALS & LIMITS', onclick: () => { tab = 'BUDGET'; renderToolbar(); renderBody(); } }),
+      h('button', { class: tab === 'HIST' ? 'on' : '', text: 'LEDGER & CSV', onclick: () => { tab = 'HIST'; renderToolbar(); renderBody(); } }),
+      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: 'EXPORT CSV', onclick: exportCsv }),
       h('button', { text: 'REFRESH', onclick: load })
     );
   }
@@ -1529,64 +1560,93 @@ export function mountFIN(body, ctx) {
     sc.textContent = '';
     if (!finData) return;
     const s = finData.summary || {};
+    const wb = s.buffettPlan || {};
+    const botSync = s.botSync || {};
 
-    // Top Anti-Boros Status Banner
-    const isBoros = s.borosStatus === 'BOROS_OVER_BUDGET';
+    const isOver = s.borosStatus === 'BOROS_OVER_BUDGET';
     const isWarn = s.borosStatus === 'WASPADA_HAMPIR_LIMIT';
-    const bannerCol = isBoros ? '#ff453a' : isWarn ? '#ffb000' : '#00d26a';
-    const bannerTxt = isBoros
-      ? '🚨 MODE ANTI-BOROS: PENGELUARAN MELEWATI BATAS! REM BELANJA HARI INI!'
+    const bannerCol = isOver ? '#ff453a' : isWarn ? '#ffb000' : '#00d26a';
+    const bannerTxt = isOver
+      ? 'CAPITAL DISCIPLINE ALERT: DAILY OR MONTHLY OPERATING CEILING EXCEEDED'
       : isWarn
-      ? '⚠️ WASPADA: PENGELUARAN SUDAH ≥75% DARI LIMIT — JAGA PENGELUARAN SISA HARI INI!'
-      : '✅ KEUANGAN AMAN & TERKONTROL — PERTAHANKAN DISIPLIN ANTI-BOROS!';
+      ? 'CAPITAL CAUTION: OPERATING UTILIZATION ABOVE 75% — MONITOR REMAINING ALLOWANCE'
+      : 'CAPITAL DISCIPLINE: ON TRACK UNDER WARREN BUFFETT PAY-YOURSELF-FIRST FRAMEWORK';
 
     sc.append(h('div', {
       class: 'xcard',
-      style: `border-color:${bannerCol};border-left:5px solid ${bannerCol};background:${isBoros ? '#1c0505' : isWarn ? '#1a1203' : '#03190d'}`
+      style: `border-color:${bannerCol};border-left:5px solid ${bannerCol};background:${isOver ? '#1c0505' : isWarn ? '#1a1203' : '#03190d'}`
     },
       h('div', { style: 'display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px' },
-        h('b', { style: `color:${bannerCol};font-size:12px`, text: bannerTxt }),
-        h('span', { class: `xpill ${isBoros ? 'no' : isWarn ? 'warn' : 'ok'}`, text: `SKOR DISIPLIN: ${s.disciplineScore || 100}/100` })
+        h('b', { style: `color:${bannerCol};font-size:11.5px`, text: bannerTxt }),
+        h('span', { class: `xpill ${isOver ? 'no' : isWarn ? 'warn' : 'ok'}`, text: `DISCIPLINE INDEX: ${s.disciplineScore || 100}/100` })
       ),
-      toastNote ? h('div', { style: 'margin-top:4px;color:#00e5ff;font-size:11px', text: toastNote }) : null
+      statusNote ? h('div', { style: 'margin-top:4px;color:#00e5ff;font-size:11px', text: statusNote }) : null
     ));
 
-    // Top 4 KPI Cards
-    const botSync = s.botSync || {};
     sc.append(h('div', { class: 'xgrid4', style: 'margin-bottom:8px' },
       h('div', { class: 'xstat' },
-        h('div', { class: 'xl', text: 'SISA JATAH HARI INI' }),
+        h('div', { class: 'xl', text: 'DAILY ALLOWANCE REMAINING' }),
         h('div', { class: 'xv', style: `color:${(s.remainingTodayIdr || 0) >= 0 ? 'var(--up)' : 'var(--dn)'}`, text: fmtIdr(s.remainingTodayIdr) }),
-        h('div', { class: 'xs', text: `Terpakai: ${fmtIdr(s.todayExpense)} / ${fmtIdr(s.dailyLimitIdr)} (${s.dailyUsedPct || 0}%)` })
+        h('div', { class: 'xs', text: `Spent: ${fmtIdr(s.todayExpense)} / ${fmtIdr(s.dailyLimitIdr)} (${s.dailyUsedPct || 0}%)` })
       ),
       h('div', { class: 'xstat' },
-        h('div', { class: 'xl', text: 'JATAH AMAN HARIAN DINAMIS' }),
+        h('div', { class: 'xl', text: 'DYNAMIC SAFE DAILY SPEND' }),
         h('div', { class: 'xv', style: 'color:#00e5ff', text: fmtIdr(s.dynamicSafeDailyIdr) }),
-        h('div', { class: 'xs', text: `Sisa bulan ${fmtIdr(s.remainingMonthIdr)} ÷ ${s.remainingDays || 1} hari` })
+        h('div', { class: 'xs', text: `Remaining Pool ${fmtIdr(s.remainingMonthIdr)} / ${s.remainingDays || 1} days` })
       ),
       h('div', { class: 'xstat' },
-        h('div', { class: 'xl', text: 'CASHFLOW BULAN INI' }),
-        h('div', { class: 'xv', style: 'color:var(--amber)', text: fmtIdr((s.monthIncome || 0) - (s.monthExpense || 0)) }),
-        h('div', { class: 'xs', text: `Masuk ${fmtIdr(s.monthIncome)} | Keluar ${fmtIdr(s.monthExpense)} (${s.monthUsedPct || 0}%)` })
+        h('div', { class: 'xl', text: 'MONTHLY OPERATING BUDGET (60%)' }),
+        h('div', { class: 'xv', style: 'color:var(--amber)', text: `${fmtIdr(s.monthExpense)} / ${fmtIdr(s.monthlyBudgetIdr)}` }),
+        h('div', { class: 'xs', text: `Fixed Income: ${fmtIdr(s.monthlyIncomeTarget)} | Saved: ${fmtIdr(s.monthSavings)}` })
       ),
       h('div', { class: 'xstat' },
-        h('div', { class: 'xl', text: 'TABUNGAN + BOT BINANCE' }),
+        h('div', { class: 'xl', text: 'RESERVES + TRADING CAPITAL' }),
         h('div', { class: 'xv', style: 'color:#00d26a', text: fmtIdr((s.totalSavingsIdr || 0) + (botSync.walletIdr || 0)) }),
-        h('div', { class: 'xs', text: `Bot Wallet $${Number(botSync.walletUsd || 0).toFixed(2)} | Vault $${Number(botSync.vaultUsd || 0).toFixed(2)}` })
+        h('div', { class: 'xs', text: `Binance Wallet $${Number(botSync.walletUsd || 0).toFixed(2)} | Vault $${Number(botSync.vaultUsd || 0).toFixed(2)}` })
       )
     ));
 
     if (tab === 'DASH') {
-      // Quick-Add Transaction + Discipline Score Gauge side-by-side
+      // Compact Warren Buffett Auto-Allocation Bar
+      const buckets = wb.buckets || [];
+      if (buckets.length) {
+        const segBar = h('div', { style: 'display:flex;height:14px;width:100%;overflow:hidden;border:1px solid #262e3d;margin:6px 0' });
+        buckets.forEach(b => {
+          segBar.append(h('div', {
+            style: `width:${b.pct}%;background:${b.color};height:100%`,
+            title: `${b.name}: ${b.pct}% (${fmtIdr(b.amountIdr)})`
+          }));
+        });
+        const leg = h('div', { style: 'display:flex;gap:10px;flex-wrap:wrap;font-size:10px;color:#cfd8e3' });
+        buckets.forEach(b => {
+          leg.append(h('span', {},
+            h('span', { style: `display:inline-block;width:8px;height:8px;background:${b.color};margin-right:4px` }),
+            `${b.name}: `,
+            h('b', { style: 'color:#fff', text: `${b.pct}% (${fmtIdr(b.amountIdr)})` })
+          ));
+        });
+        sc.append(h('div', { class: 'xcard xcard-hi' },
+          h('div', { class: 'xsec-hd' },
+            h('span', { text: `WARREN BUFFETT AUTO-ALLOCATION — FIXED MONTHLY INCOME ${fmtIdr(wb.monthlyIncomeIdr)}` }),
+            h('div', { style: 'display:flex;gap:5px' },
+              h('button', { class: 'on', style: 'font-size:10px', text: 'BOOK MONTHLY INCOME + LOCK 40%', onclick: () => applyBuffett(wb.monthlyIncomeIdr, true) }),
+              h('button', { style: 'font-size:10px', text: 'FULL BUFFETT PLAN ->', onclick: () => { tab = 'BUFFETT'; renderToolbar(); renderBody(); } })
+            )
+          ),
+          h('div', { style: 'padding:4px 4px 2px' }, segBar, leg)
+        ));
+      }
+
+      // Quick Transaction Form + Discipline Gauge
       const typeSel = h('select', { style: 'width:100%' },
-        h('option', { value: 'EXPENSE', text: '💸 PENGELUARAN (EXPENSE)' }),
-        h('option', { value: 'INCOME', text: '💵 PEMASUKAN (INCOME)' }),
-        h('option', { value: 'SAVINGS', text: '🏦 TABUNGAN / INVESTASI (SAVINGS)' })
+        h('option', { value: 'EXPENSE', text: 'EXPENSE (OPERATING OUTFLOW)' }),
+        h('option', { value: 'INCOME', text: 'INCOME (ALLOWANCE / INFLOW)' }),
+        h('option', { value: 'SAVINGS', text: 'SAVINGS / INVESTMENT LOCK' })
       );
       const expenseCats = Object.keys(finData.categoryLimits || {});
       const catSel = h('select', { style: 'width:100%' });
       const goalSel = h('select', { style: 'width:100%;display:none' },
-        h('option', { value: '', text: '-- Tanpa Link Goal --' }),
+        h('option', { value: '', text: '-- Optional Goal Attribution --' }),
         ...(finData.goals || []).map(g => h('option', { value: g.id, text: `${g.name} (${fmtIdr(g.savedIdr)} / ${fmtIdr(g.targetIdr)})` }))
       );
 
@@ -1595,29 +1655,29 @@ export function mountFIN(body, ctx) {
         const t = typeSel.value;
         goalSel.style.display = t === 'SAVINGS' ? 'block' : 'none';
         const opts = t === 'INCOME'
-          ? ['Gaji / Bulanan', 'Profit Trading Bot', 'Freelance / Bonus', 'Pemasukan Lainnya']
+          ? ['Monthly Fixed Allowance', 'Trading Realized Profit', 'Additional Income']
           : t === 'SAVINGS'
-          ? ['Dana Darurat', 'Modal Bot Gigi 2', 'Investasi Saham/Crypto', 'Tabungan Impian']
-          : (expenseCats.length ? expenseCats : ['Makan & Minum', 'Kopi & Jajan', 'Transport & Bensin', 'Tagihan & Kos', 'Belanja & Hobi', 'Kesehatan & Lainnya']);
+          ? ['Productive Investment Capital', 'Emergency Margin of Safety']
+          : (expenseCats.length ? expenseCats : ['Food & Refreshments', 'Transportation']);
         opts.forEach(c => catSel.append(h('option', { value: c, text: c })));
       };
       typeSel.addEventListener('change', syncCats);
       syncCats();
 
-      const amtInp = h('input', { type: 'number', min: '500', step: '500', placeholder: 'Nominal Rupiah (contoh: 25000)', style: 'width:100%;font-weight:700;font-size:13px' });
-      const noteInp = h('input', { placeholder: 'Catatan singkat (misal: Nasi padang + es teh)', style: 'width:100%' });
+      const amtInp = h('input', { type: 'number', min: '500', step: '500', placeholder: 'Amount in IDR (e.g. 15000)', style: 'width:100%;font-weight:700;font-size:13px' });
+      const noteInp = h('input', { placeholder: 'Description (e.g. Lunch, Fuel, Commute)', style: 'width:100%' });
       const quickChips = h('div', { style: 'display:flex;gap:4px;flex-wrap:wrap;margin:4px 0' },
-        ...[15000, 25000, 50000, 100000, 250000].map(v => h('button', {
+        ...[5000, 10000, 15000, 20000, 50000].map(v => h('button', {
           type: 'button',
           style: 'font-size:10px',
-          text: `+${v / 1000}rb`,
+          text: `+${v / 1000}k`,
           onclick: () => { amtInp.value = String((Number(amtInp.value) || 0) + v); }
         }))
       );
 
       const submitTx = async () => {
         const amountIdr = Math.round(Number(amtInp.value));
-        if (!amountIdr || amountIdr <= 0) { toastNote = '⚠️ Masukkan nominal Rupiah yang valid.'; renderBody(); return; }
+        if (!amountIdr || amountIdr <= 0) { statusNote = 'Enter a valid IDR amount.'; renderBody(); return; }
         const r = await apiFetch('/api/finance/tx', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1632,16 +1692,16 @@ export function mountFIN(body, ctx) {
         const j = await r.json();
         if (r.ok && j.ok) {
           finData = j.data;
-          toastNote = `✅ Tercatat: ${typeSel.value} ${fmtIdr(amountIdr)} (${catSel.value})`;
+          statusNote = `RECORDED: ${typeSel.value} ${fmtIdr(amountIdr)} (${catSel.value})`;
           renderBody();
         } else {
-          toastNote = '❌ Gagal menyimpan: ' + (j.error || 'error');
+          statusNote = 'Transaction failed: ' + (j.error || 'error');
           renderBody();
         }
       };
 
       const formCard = h('div', { class: 'xcard', style: 'margin-bottom:0' },
-        h('div', { class: 'xsec-hd' }, h('span', { text: 'CATAT TRANSAKSI CEPAT (ANTI-BOROS)' }), h('span', { class: 'am', text: s.todayStr || '' })),
+        h('div', { class: 'xsec-hd' }, h('span', { text: 'RECORD TRANSACTION' }), h('span', { class: 'am', text: s.todayStr || '' })),
         h('div', { style: 'padding:6px;display:flex;flex-direction:column;gap:6px' },
           typeSel,
           catSel,
@@ -1649,36 +1709,34 @@ export function mountFIN(body, ctx) {
           amtInp,
           quickChips,
           noteInp,
-          h('button', { class: 'on', style: 'padding:7px;font-weight:700;background:#00d26a;color:#000;border-color:#00d26a', text: '+ SIMPAN TRANSAKSI', onclick: submitTx })
+          h('button', { class: 'on', style: 'padding:7px;font-weight:700;background:#ff6600;color:#000;border-color:#ff6600', text: 'POST TRANSACTION <GO>', onclick: submitTx })
         )
       );
 
       const gaugeCard = h('div', { class: 'xcard', style: 'margin-bottom:0' },
-        h('div', { class: 'xsec-hd' }, h('span', { text: 'SKOR DISIPLIN KEUANGAN & ATURAN 50/30/20' }), h('span', { class: 'up', text: `SAVING RATE ${s.savingsRatePct || 0}%` })),
-        makeSvgBox(buildGaugeSvg(s.disciplineScore || 100, isBoros ? 'BOROS ALERT' : isWarn ? 'WASPADA LIMIT' : 'DISIPLIN MANTAP', bannerCol)),
+        h('div', { class: 'xsec-hd' }, h('span', { text: 'CAPITAL DISCIPLINE INDEX' }), h('span', { class: 'up', text: `SAVING RATE ${s.savingsRatePct || 0}%` })),
+        makeSvgBox(buildGaugeSvg(s.disciplineScore || 100, s.statusLabel || 'DISCIPLINED', bannerCol)),
         h('div', { style: 'padding:4px 8px;font-size:10.5px;line-height:1.5;color:#cfd8e3' },
-          h('div', { text: `• Batas Harian Anti-Boros: ${fmtIdr(s.dailyLimitIdr)} (Otomatis kirim Push Notif jika jebol!)` }),
-          h('div', { text: `• Budget Bulanan: ${fmtIdr(s.monthlyBudgetIdr)} | Target Income: ${fmtIdr(s.monthlyIncomeTarget)}` }),
-          h('div', { text: `• Saldo Bot Binance: $${Number(botSync.walletUsd || 0).toFixed(2)} (~${fmtIdr(botSync.walletIdr)}) | Vault: $${Number(botSync.vaultUsd || 0).toFixed(2)}` })
+          h('div', { text: `- Daily Operating Ceiling: ${fmtIdr(s.dailyLimitIdr)} (Food ~${fmtIdr(wb.foodDailyIdr || 15000)} + Transport ~${fmtIdr(wb.transportDailyIdr || 5000)})` }),
+          h('div', { text: `- Pay-Yourself-First Target: ${fmtIdr(wb.payYourselfFirstIdr || 400000)}/month (40% locked first)` }),
+          h('div', { text: `- Synced Futures Desk: Wallet $${Number(botSync.walletUsd || 0).toFixed(2)} | Vault $${Number(botSync.vaultUsd || 0).toFixed(2)}` })
         )
       );
 
       sc.append(h('div', { class: 'xgrid2', style: 'margin-bottom:8px' }, formCard, gaugeCard));
 
-      // 14-Day Cashflow Bar Chart
       sc.append(h('div', { class: 'xcard' },
         h('div', { class: 'xsec-hd' },
-          h('span', { text: 'DIAGRAM CASHFLOW 14 HARI TERAKHIR (HIJAU = INCOME | ORANYE/MERAH = EXPENSE vs BATAS HARIAN)' }),
-          h('span', { class: 'am', text: 'ANTI-BOROS MONITOR' })
+          h('span', { text: '14-DAY CASHFLOW MONITOR (GREEN = INFLOW | ORANGE/RED = EXPENSE VS DAILY CEILING)' }),
+          h('span', { class: 'am', text: 'DAILY TRACKER' })
         ),
         makeSvgBox(buildCashflow14dSvg(s.dailyTrend14d, s.dailyLimitIdr))
       ));
 
-      // Category Envelopes Visual Bars
       const envCard = h('div', { class: 'xcard' },
         h('div', { class: 'xsec-hd' },
-          h('span', { text: 'AMPLOP BUDGET PER KATEGORI BULAN INI' }),
-          h('button', { style: 'font-size:10px', text: 'ATUR LIMIT →', onclick: () => { tab = 'BUDGET'; renderToolbar(); renderBody(); } })
+          h('span', { text: 'MONTHLY OPERATING ENVELOPES (FOOD & TRANSPORTATION)' }),
+          h('button', { style: 'font-size:10px', text: 'CONFIGURE LIMITS ->', onclick: () => { tab = 'BUDGET'; renderToolbar(); renderBody(); } })
         )
       );
       const envGrid = h('div', { class: 'xgrid2', style: 'padding:6px 2px' });
@@ -1688,10 +1746,10 @@ export function mountFIN(body, ctx) {
         const lim = Number((s.categoryLimits && s.categoryLimits[cat]) || 0);
         const pct = lim > 0 ? Math.min(130, (spent / lim) * 100) : (spent > 0 ? 100 : 0);
         const col = pct > 100 ? 'var(--dn)' : pct >= 75 ? 'var(--amber)' : 'var(--up)';
-        envGrid.append(h('div', { style: 'padding:5px 7px;border:1px solid #181d26;background:#05070a' },
+        envGrid.append(h('div', { style: 'padding:6px 8px;border:1px solid #181d26;background:#05070a' },
           h('div', { style: 'display:flex;justify-content:space-between;font-size:10.5px;margin-bottom:3px' },
             h('b', { style: 'color:#e6edf3', text: cat }),
-            h('span', { style: `color:${col};font-weight:700`, text: `${fmtIdr(spent)} / ${lim > 0 ? fmtIdr(lim) : 'No Limit'}` })
+            h('span', { style: `color:${col};font-weight:700`, text: `${fmtIdr(spent)} / ${lim > 0 ? fmtIdr(lim) : 'Unallocated'}` })
           ),
           h('div', { class: 'xbar-track' }, h('div', { class: 'xbar-fill', style: `width:${Math.min(100, pct)}%;background:${col}` }))
         ));
@@ -1699,32 +1757,102 @@ export function mountFIN(body, ctx) {
       envCard.append(envGrid);
       sc.append(envCard);
 
+    } else if (tab === 'BUFFETT') {
+      const incInp = h('input', { type: 'number', value: String(wb.monthlyIncomeIdr || 1000000), min: '100000', step: '50000', style: 'width:170px;font-weight:700;font-size:13px' });
+      sc.append(h('div', { class: 'xcard xcard-hi' },
+        h('div', { class: 'xsec-hd' },
+          h('span', { text: 'WARREN BUFFETT AUTOMATIC CAPITAL ALLOCATION ENGINE' }),
+          h('span', { class: 'up', text: 'PAY YOURSELF FIRST (40% / 60%)' })
+        ),
+        h('div', { style: 'padding:8px;font-size:11px;line-height:1.55;color:#dce4ee' },
+          h('div', { style: 'color:var(--amber);font-style:italic;margin-bottom:6px', text: '"Do not save what is left after spending, but spend what is left after saving." — Warren Buffett' }),
+          h('div', { style: 'margin-bottom:8px', text: wb.principle || 'Allocate 40% to productive investment & emergency reserves on Day 1; operate strictly within 60% for Food & Transportation.' }),
+          h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
+            h('span', { class: 'lbl', text: 'FIXED MONTHLY INCOME (IDR):' }),
+            incInp,
+            h('button', { class: 'on', style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'APPLY AUTOMATIC SPLIT', onclick: () => applyBuffett(incInp.value, false) }),
+            h('button', { style: 'background:#00d26a;color:#000;border-color:#00d26a;font-weight:700', text: 'BOOK INCOME + AUTO-LOCK 40% SAVINGS', onclick: () => applyBuffett(incInp.value, true) })
+          )
+        )
+      ));
+
+      const tbl = h('table', { class: 't', style: 'margin-bottom:8px' },
+        h('thead', {}, h('tr', {},
+          h('th', { text: 'PRIORITY TIER' }),
+          h('th', { text: 'ALLOCATION BUCKET' }),
+          h('th', { class: 'r', text: 'SHARE' }),
+          h('th', { class: 'r', text: 'MONTHLY (IDR)' }),
+          h('th', { class: 'r', text: 'DAILY EQUIV' }),
+          h('th', { text: 'PURPOSE' })
+        ))
+      );
+      const tbdy = h('tbody');
+      (wb.buckets || []).forEach(b => {
+        tbdy.append(h('tr', {},
+          h('td', { style: `color:${b.color};font-weight:700`, text: b.tier }),
+          h('td', { style: 'color:#fff;font-weight:700', text: b.name }),
+          h('td', { class: 'r am', text: `${b.pct}%` }),
+          h('td', { class: 'r up', style: 'font-weight:700', text: fmtIdr(b.amountIdr) }),
+          h('td', { class: 'r', text: fmtIdr(Math.floor(b.amountIdr / 30)) }),
+          h('td', { style: 'color:var(--muted)', text: b.desc })
+        ));
+      });
+      tbl.append(tbdy);
+      sc.append(tbl);
+
+      sc.append(h('div', { class: 'xcard' },
+        h('div', { class: 'xsec-hd' },
+          h('span', { text: `LONG-TERM COMPOUNDING PROJECTION (${fmtIdr(wb.payYourselfFirstIdr || 400000)}/MONTH LOCKED)` }),
+          h('span', { class: 'up', text: 'BLUE=PRINCIPAL | AMBER=8% P.A. | GREEN=12% P.A.' })
+        ),
+        makeSvgBox(buildCompoundingSvg(wb.projections || []))
+      ));
+
+      const pTbl = h('table', { class: 't' },
+        h('thead', {}, h('tr', {},
+          h('th', { text: 'HORIZON' }),
+          h('th', { class: 'r', text: 'TOTAL PRINCIPAL' }),
+          h('th', { class: 'r', text: 'CONSERVATIVE (8% P.A.)' }),
+          h('th', { class: 'r', text: 'EQUITY BENCHMARK (12% P.A.)' })
+        ))
+      );
+      const pBody = h('tbody');
+      (wb.projections || []).forEach(p => {
+        pBody.append(h('tr', {},
+          h('td', { class: 'am', style: 'font-weight:700', text: `${p.years} Year${p.years > 1 ? 's' : ''}` }),
+          h('td', { class: 'r', text: fmtIdr(p.principalIdr) }),
+          h('td', { class: 'r am', text: fmtIdr(p.conservativeIdr) }),
+          h('td', { class: 'r up', style: 'font-weight:700', text: fmtIdr(p.benchmarkIdr) })
+        ));
+      });
+      pTbl.append(pBody);
+      sc.append(pTbl);
+
     } else if (tab === 'BUDGET') {
-      // Budget Limits Editor
-      const dLim = h('input', { type: 'number', value: String(finData.dailyLimitIdr || 100000), style: 'width:100%' });
-      const mBud = h('input', { type: 'number', value: String(finData.monthlyBudgetIdr || 3000000), style: 'width:100%' });
-      const mInc = h('input', { type: 'number', value: String(finData.monthlyIncomeTarget || 5000000), style: 'width:100%' });
+      const dLim = h('input', { type: 'number', value: String(finData.dailyLimitIdr || 20000), style: 'width:100%' });
+      const mBud = h('input', { type: 'number', value: String(finData.monthlyBudgetIdr || 600000), style: 'width:100%' });
+      const mInc = h('input', { type: 'number', value: String(finData.monthlyIncomeTarget || 1000000), style: 'width:100%' });
       const catInputs = {};
 
       const budCard = h('div', { class: 'xcard' },
-        h('div', { class: 'xsec-hd' }, h('span', { text: 'PENGATURAN BATAS ANTI-BOROS & AMPLOP BULANAN' }), h('span', { class: 'am', text: 'OTOMATIS PUSH ALERT JIKA JEBOL' })),
+        h('div', { class: 'xsec-hd' }, h('span', { text: 'OPERATING LIMITS & ENVELOPE CONFIGURATION' }), h('span', { class: 'am', text: 'AUTO PUSH ALERT ON BREACH' })),
         h('div', { class: 'xgrid3', style: 'padding:8px 2px' },
-          h('div', {}, h('div', { class: 'lbl', style: 'margin-bottom:3px', text: 'Batas Pengeluaran Harian (Rp)' }), dLim),
-          h('div', {}, h('div', { class: 'lbl', style: 'margin-bottom:3px', text: 'Total Budget Bulanan (Rp)' }), mBud),
-          h('div', {}, h('div', { class: 'lbl', style: 'margin-bottom:3px', text: 'Target Pemasukan Bulanan (Rp)' }), mInc)
+          h('div', {}, h('div', { class: 'lbl', style: 'margin-bottom:3px', text: 'Daily Operating Ceiling (IDR)' }), dLim),
+          h('div', {}, h('div', { class: 'lbl', style: 'margin-bottom:3px', text: 'Monthly Operating Budget (IDR)' }), mBud),
+          h('div', {}, h('div', { class: 'lbl', style: 'margin-bottom:3px', text: 'Fixed Monthly Income (IDR)' }), mInc)
         )
       );
-      const cGrid = h('div', { class: 'xgrid3', style: 'padding:4px 2px' });
+      const cGrid = h('div', { class: 'xgrid2', style: 'padding:4px 2px' });
       Object.entries(finData.categoryLimits || {}).forEach(([k, v]) => {
         const el = h('input', { type: 'number', value: String(v), style: 'width:100%' });
         catInputs[k] = el;
         cGrid.append(h('div', {}, h('div', { style: 'font-size:10px;color:var(--label);margin-bottom:2px', text: k }), el));
       });
-      budCard.append(cGrid, h('div', { style: 'padding:6px 2px' },
+      budCard.append(cGrid, h('div', { style: 'padding:6px 2px;display:flex;gap:8px;flex-wrap:wrap' },
         h('button', {
           class: 'on',
-          style: 'background:#ffb000;color:#000;font-weight:700;padding:6px 14px',
-          text: '💾 SIMPAN PENGATURAN BUDGET',
+          style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700;padding:6px 14px',
+          text: 'SAVE BUDGET LIMITS',
           onclick: async () => {
             const categoryLimits = {};
             for (const [k, el] of Object.entries(catInputs)) categoryLimits[k] = Number(el.value) || 0;
@@ -1739,24 +1867,28 @@ export function mountFIN(body, ctx) {
               })
             }, 10000);
             const j = await r.json();
-            if (r.ok && j.ok) { finData = j.data; toastNote = '✅ Pengaturan Budget & Batas Anti-Boros tersimpan!'; renderBody(); }
+            if (r.ok && j.ok) { finData = j.data; statusNote = 'Budget limits saved successfully.'; renderBody(); }
           }
+        }),
+        h('button', {
+          style: 'color:#00d26a;border-color:#00d26a',
+          text: 'RESET TO WARREN BUFFETT AUTO-SPLIT',
+          onclick: () => applyBuffett(Number(mInc.value || 1000000), false)
         })
       ));
       sc.append(budCard);
 
-      // Savings Goals
       const gCard = h('div', { class: 'xcard' },
-        h('div', { class: 'xsec-hd' }, h('span', { text: 'TARGET TABUNGAN & DANA DARURAT (SAVINGS GOALS)' }), h('span', { class: 'up', text: `${(finData.goals || []).length} GOALS` }))
+        h('div', { class: 'xsec-hd' }, h('span', { text: 'CAPITAL RESERVES & SAVINGS GOALS' }), h('span', { class: 'up', text: `${(finData.goals || []).length} GOALS` }))
       );
       (finData.goals || []).forEach(g => {
         const pct = g.targetIdr > 0 ? Math.min(100, (g.savedIdr / g.targetIdr) * 100) : 0;
         gCard.append(h('div', { style: 'padding:8px;border-bottom:1px solid #181d26' },
           h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px' },
-            h('div', {}, h('b', { style: 'color:#fff', text: g.name }), h('span', { style: 'color:var(--muted);font-size:10px;margin-left:8px', text: `Target: ${g.deadline || '-'}` })),
+            h('div', {}, h('b', { style: 'color:#fff', text: g.name }), h('span', { style: 'color:var(--muted);font-size:10px;margin-left:8px', text: `Target Date: ${g.deadline || '-'}` })),
             h('div', { style: 'display:flex;gap:6px;align-items:center' },
               h('span', { style: 'color:var(--up);font-weight:700', text: `${fmtIdr(g.savedIdr)} / ${fmtIdr(g.targetIdr)} (${pct.toFixed(1)}%)` }),
-              h('button', { style: 'font-size:10px;color:#ff5a52', text: '✕', onclick: async () => {
+              h('button', { style: 'font-size:10px;color:#ff5a52', text: 'DEL', onclick: async () => {
                 const r = await apiFetch(`/api/finance/goal/${encodeURIComponent(g.id)}`, { method: 'DELETE' }, 10000);
                 const j = await r.json();
                 if (r.ok && j.ok) { finData = j.data; renderBody(); }
@@ -1767,13 +1899,13 @@ export function mountFIN(body, ctx) {
         ));
       });
 
-      const gName = h('input', { placeholder: 'Nama Goal baru (misal: Laptop Baru / DP Rumah)', style: 'width:100%' });
-      const gTarget = h('input', { type: 'number', placeholder: 'Target Rp (misal: 5000000)', style: 'width:100%' });
-      const gSaved = h('input', { type: 'number', placeholder: 'Sudah terkumpul Rp (0)', style: 'width:100%' });
+      const gName = h('input', { placeholder: 'Goal title (e.g. Emergency Reserve / Equipment)', style: 'width:100%' });
+      const gTarget = h('input', { type: 'number', placeholder: 'Target amount (IDR)', style: 'width:100%' });
+      const gSaved = h('input', { type: 'number', placeholder: 'Current saved (IDR)', style: 'width:100%' });
       gCard.append(h('div', { class: 'xgrid3', style: 'padding:8px 4px' }, gName, gTarget, gSaved),
         h('div', { style: 'padding:0 4px 6px' }, h('button', {
           class: 'on',
-          text: '+ TAMBAH SAVINGS GOAL',
+          text: 'ADD CAPITAL GOAL',
           onclick: async () => {
             if (!gName.value.trim() || !Number(gTarget.value)) return;
             const r = await apiFetch('/api/finance/goal', {
@@ -1782,7 +1914,7 @@ export function mountFIN(body, ctx) {
               body: JSON.stringify({ name: gName.value.trim(), targetIdr: Number(gTarget.value), savedIdr: Number(gSaved.value || 0) })
             }, 10000);
             const j = await r.json();
-            if (r.ok && j.ok) { finData = j.data; toastNote = '✅ Goal baru ditambahkan!'; renderBody(); }
+            if (r.ok && j.ok) { finData = j.data; statusNote = 'Capital goal added.'; renderBody(); }
           }
         }))
       );
@@ -1800,16 +1932,16 @@ export function mountFIN(body, ctx) {
 
       const list = (finData.transactions || []).filter(t => historyFilter === 'ALL' || t.type === historyFilter);
       if (!list.length) {
-        sc.append(h('div', { class: 'na', text: 'Belum ada transaksi tercatat. Mulai catat di tab "💰 DASHBOARD & CATAT".' }));
+        sc.append(h('div', { class: 'na', text: 'No ledger entries recorded yet.' }));
         return;
       }
       const tbl = h('table', { class: 't' },
         h('thead', {}, h('tr', {},
-          h('th', { text: 'TANGGAL' }),
-          h('th', { text: 'TIPE' }),
-          h('th', { text: 'KATEGORI' }),
-          h('th', { text: 'CATATAN' }),
-          h('th', { class: 'r', text: 'NOMINAL' }),
+          h('th', { text: 'DATE' }),
+          h('th', { text: 'TYPE' }),
+          h('th', { text: 'CATEGORY' }),
+          h('th', { text: 'DESCRIPTION' }),
+          h('th', { class: 'r', text: 'AMOUNT' }),
           h('th', { text: '' })
         ))
       );
@@ -1822,7 +1954,7 @@ export function mountFIN(body, ctx) {
           h('td', { style: 'color:#e6edf3', text: t.category }),
           h('td', { style: 'color:var(--muted)', text: t.note || '-' }),
           h('td', { class: `r ${cls}`, style: 'font-weight:700', text: (t.type === 'EXPENSE' ? '-' : '+') + fmtIdr(t.amountIdr) }),
-          h('td', {}, h('button', { style: 'font-size:10px;color:#ff5a52', text: 'HAPUS', onclick: async () => {
+          h('td', {}, h('button', { style: 'font-size:10px;color:#ff5a52', text: 'DELETE', onclick: async () => {
             const r = await apiFetch(`/api/finance/tx/${encodeURIComponent(t.id)}`, { method: 'DELETE' }, 10000);
             const j = await r.json();
             if (r.ok && j.ok) { finData = j.data; renderBody(); }
@@ -1837,4 +1969,86 @@ export function mountFIN(body, ctx) {
   renderToolbar();
   load();
   ctx.cleanup(() => { unmounted = true; });
+}
+
+// =====================================================================
+// 7. WDGT / WIDGET — BLOOMBERG TERMINAL WIDGET STUDIO & FLOATING DESK
+// =====================================================================
+export function mountWDGT(body, ctx) {
+  body.classList.add('fill');
+  const tb = h('div', { class: 'tb' });
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  let mode = 'all';
+
+  async function launchFloatingWidget() {
+    const widgetUrl = `${location.origin}/widget?mode=${mode}`;
+    try {
+      if (window.documentPictureInPicture && typeof window.documentPictureInPicture.requestWindow === 'function') {
+        const pipWin = await window.documentPictureInPicture.requestWindow({ width: 420, height: 500 });
+        pipWin.document.body.style.margin = '0';
+        pipWin.document.body.style.background = '#000';
+        const ifr = pipWin.document.createElement('iframe');
+        ifr.src = widgetUrl;
+        ifr.style.cssText = 'width:100vw;height:100vh;border:0;display:block';
+        pipWin.document.body.appendChild(ifr);
+        return;
+      }
+    } catch {}
+    window.open(widgetUrl, 'BloombergTerminalWidget', 'width=430,height=520,menubar=no,toolbar=no,location=no,status=no');
+  }
+
+  function renderToolbar() {
+    tb.textContent = '';
+    tb.append(
+      h('span', { class: 'lbl', text: 'BLOOMBERG WIDGET STUDIO:' }),
+      ...[['all', 'UNIFIED DESK'], ['market', 'MARKET QUOTES'], ['bot', 'EXECUTION'], ['finance', 'CAPITAL']].map(([m, lbl]) => h('button', {
+        class: mode === m ? 'on' : '',
+        text: lbl,
+        onclick: () => { mode = m; renderToolbar(); renderBody(); }
+      })),
+      h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'LAUNCH FLOATING WIDGET', onclick: launchFloatingWidget })
+    );
+  }
+
+  function renderBody() {
+    sc.textContent = '';
+    const widgetUrl = `${location.origin}/widget?mode=${mode}`;
+    const termuxCmd = 'mkdir -p ~/.shortcuts && cp ~/home-server/tablet1-chatbot/scripts/termux-widget-bloomberg.sh ~/.shortcuts/"Bloomberg Terminal.sh" && chmod +x ~/.shortcuts/"Bloomberg Terminal.sh"';
+
+    sc.append(h('div', { class: 'xgrid2', style: 'margin-bottom:8px' },
+      h('div', { class: 'xcard', style: 'margin-bottom:0' },
+        h('div', { class: 'xsec-hd' }, h('span', { text: 'LIVE WIDGET PREVIEW' }), h('span', { class: 'up', text: mode.toUpperCase() })),
+        h('iframe', { src: `/widget?mode=${mode}`, style: 'width:100%;height:340px;border:0;background:#000;display:block' })
+      ),
+      h('div', { class: 'xcard', style: 'margin-bottom:0' },
+        h('div', { class: 'xsec-hd' }, h('span', { text: 'DEPLOYMENT & HOME SCREEN SETUP' }), h('span', { class: 'am', text: 'ANDROID / WINDOWS / PWA' })),
+        h('div', { style: 'padding:8px;font-size:11px;line-height:1.55;color:#dce4ee' },
+          h('div', { style: 'margin-bottom:8px' },
+            h('b', { style: 'color:var(--amber)', text: '1. Floating Always-on-Top Widget (Desktop / Tablet):' }),
+            h('div', { text: 'Click "LAUNCH FLOATING WIDGET" above to pop out a compact live mini-terminal window.' })
+          ),
+          h('div', { style: 'margin-bottom:8px' },
+            h('b', { style: 'color:#00d26a', text: '2. Android Home Screen Live Web Widget:' }),
+            h('div', { text: 'Use Android Web Widget / Hermit / KWGT and point it to this live widget endpoint:' }),
+            h('input', { value: widgetUrl, readonly: 'readonly', style: 'width:100%;margin-top:4px;color:#00e5ff' })
+          ),
+          h('div', { style: 'margin-bottom:8px' },
+            h('b', { style: 'color:#4da3ff', text: '3. Android Termux:Widget Home Screen Shortcut:' }),
+            h('div', { text: 'Run once in Termux, then add "Termux:Widget" to your Android Home Screen:' }),
+            h('input', { value: termuxCmd, readonly: 'readonly', style: 'width:100%;margin-top:4px;color:#ffb000;font-size:10px' })
+          ),
+          h('div', {},
+            h('b', { style: 'color:#b388ff', text: '4. Windows / Edge PWA Widgets Manifest:' }),
+            h('div', { text: 'Declared in /manifest.webmanifest via /widgets/terminal-widget.json & /api/widget/summary (60s auto-refresh).' })
+          )
+        )
+      )
+    ));
+    ctx.status({ ok: true, source: 'widget-studio', ts: Date.now(), mode: 'LIVE' });
+  }
+
+  renderToolbar();
+  renderBody();
 }

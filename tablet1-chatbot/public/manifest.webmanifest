@@ -1,8 +1,8 @@
 {
   "id": "/?source=pwa",
-  "name": "BLOOMBERG // PYROFUEL Quant Terminal",
-  "short_name": "BBG Pyrofuel",
-  "description": "Institutional Bloomberg-grade Multi-Asset Terminal & Pyrofuel 28-Pillar Autonomous Futures Engine with Live Push Alerts, 532-Factor Quant Radar, and AI Committee Transcripts.",
+  "name": "Bloomberg Terminal",
+  "short_name": "Bloomberg",
+  "description": "Bloomberg Terminal Professional Multi-Asset Market Data, Quantitative Execution Telemetry, Institutional Research, and Personal Capital Management.",
   "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",
@@ -33,39 +33,64 @@
   ],
   "shortcuts": [
     {
-      "name": "Pyrofuel AI Bot",
-      "short_name": "BOT",
-      "description": "Open Live 28-Pillar Autonomous Futures Bot & Positions",
+      "name": "Execution Desk (BOT)",
+      "short_name": "BOT DESK",
+      "description": "Live Autonomous Futures Positions, Risk Telemetry & Signals",
       "url": "/?w=BTCUSDT.P:BOT,BTCUSDT:GP,BTCUSDT:FACT,BTCUSDT:TRAN&win=1",
       "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
     },
     {
-      "name": "Live Charts (GP)",
+      "name": "Market Charts (GP)",
       "short_name": "CHARTS",
-      "description": "Open Live Candlestick Chart with Technical Master Overlays",
+      "description": "Multi-Asset Candlestick Charts & Technical Overlays",
       "url": "/?w=BTCUSDT:GP,ETHUSDT:GP,SOLUSDT:GP,BNBUSDT:GP",
       "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
     },
     {
-      "name": "AI Transcripts & Factors",
-      "short_name": "TRAN+FACT",
-      "description": "9-Agent Debate Transcripts & 532-Factor Quant Radar",
-      "url": "/?w=BTCUSDT:TRAN,BTCUSDT:FACT,BTCUSDT:BI,BTCUSDT:ETF",
+      "name": "Execution X-Ray (FACT)",
+      "short_name": "X-RAY",
+      "description": "Transparent Factor Breakdown, 6-Stage Funnel & 9-Agent Transcripts",
+      "url": "/?w=BTCUSDT:FACT,BTCUSDT:TRAN,BTCUSDT:BI,BTCUSDT:ETF",
       "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
     },
     {
-      "name": "Keuangan Anti-Boros",
-      "short_name": "KEUANGAN",
-      "description": "Catat Pengeluaran Harian, Limit Anti-Boros & Target Tabungan",
+      "name": "Capital Management (FIN)",
+      "short_name": "CAPITAL",
+      "description": "Personal Capital Allocation (Warren Buffett Method) & Daily Cashflow",
       "url": "/?w=BTCUSDT:FIN,BTCUSDT.P:BOT,BTCUSDT:GMAIL,BTCUSDT:TOP&win=1",
       "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
     },
     {
-      "name": "B-Mail & Push Alerts",
-      "short_name": "ALERTS",
-      "description": "Manage Auto-Email & Native Push Notifications",
-      "url": "/?w=BTCUSDT:GMAIL,BTCUSDT:TOP,BTCUSDT:ALRT,BTCUSDT:BOT&win=1",
+      "name": "Live Widget Desk",
+      "short_name": "WIDGET",
+      "description": "Compact Live Market, Position & Budget Widget",
+      "url": "/widget?mode=all",
       "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ],
+  "widgets": [
+    {
+      "name": "Bloomberg Terminal Live Desk",
+      "short_name": "Bloomberg Live",
+      "tag": "bloomberg-terminal-desk",
+      "description": "Live market quotes, active futures execution status, and daily capital allowance.",
+      "ms_ac_template": "/widgets/terminal-widget.json",
+      "data": "/api/widget/summary",
+      "type": "application/json",
+      "screenshots": [
+        {
+          "src": "/icons/icon-512.png",
+          "sizes": "512x512",
+          "label": "Bloomberg Terminal Widget"
+        }
+      ],
+      "icons": [
+        {
+          "src": "/icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ],
+      "update": 60
     }
   ]
 }

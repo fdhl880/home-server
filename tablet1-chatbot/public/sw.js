@@ -1,11 +1,13 @@
-/* BLOOMBERG // PYROFUEL Native PWA Service Worker v20261124 */
-const CACHE_NAME = 'bbg-pyrofuel-shell-v20261124a';
+/* Bloomberg Terminal Native PWA Service Worker v20261124b */
+const CACHE_NAME = 'bloomberg-terminal-shell-v20261124b';
 const APP_SHELL = [
   '/',
+  '/widget',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
-  '/terminal/css/terminal.css?v=20261124a',
+  '/icons/favicon-64.png',
+  '/terminal/css/terminal.css?v=20261124b',
   '/terminal/vendor/lightweight-charts.standalone.production.js'
 ];
 
@@ -25,7 +27,6 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Network-first for HTML/API/JS so live updates are immediate; cache fallback for offline resilience
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
@@ -46,15 +47,15 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// Real Background Web Push Handler (fires even when app/tab is closed!)
+// Background Web Push Handler (VAPID encrypted push — fires even when browser is closed)
 self.addEventListener('push', (event) => {
   let data = {
-    title: 'BLOOMBERG // PYROFUEL ALERT',
-    body: 'New real-time trading or macro market alert received.',
+    title: 'BLOOMBERG TERMINAL // ALERT',
+    body: 'New institutional market or execution notification received.',
     eventType: 'ALERT',
     symbol: 'BTCUSDT',
     url: '/',
-    tag: 'bbg-alert'
+    tag: 'bloomberg-alert'
   };
   try {
     if (event.data) {
@@ -68,31 +69,31 @@ self.addEventListener('push', (event) => {
   const options = {
     body: data.body,
     icon: '/icons/icon-192.png',
-    badge: '/icons/icon-192.png',
-    tag: data.tag || 'bbg-alert',
+    badge: '/icons/favicon-64.png',
+    tag: data.tag || 'bloomberg-alert',
     renotify: true,
     vibrate: [180, 70, 180],
-    requireInteraction: /OPEN|CLOSE|BREAKER|URGENT/i.test(String(data.eventType || '')),
+    requireInteraction: /OPEN|CLOSE|BREAKER|LIMIT|URGENT/i.test(String(data.eventType || '')),
     data: { url: data.url || '/', symbol: data.symbol || 'BTCUSDT', eventType: data.eventType || 'ALERT' },
     actions: [
-      { action: 'open_bot', title: 'Open Terminal' },
+      { action: 'open_terminal', title: 'Open Terminal' },
       { action: 'dismiss', title: 'Dismiss' }
     ]
   };
   event.waitUntil(self.registration.showNotification(data.title, options));
 });
 
-// Bridge for instant foreground/WebSocket-triggered native OS notifications
+// Instant Foreground / WebSocket OS Notification Bridge
 self.addEventListener('message', (event) => {
   const msg = event.data;
   if (!msg || typeof msg !== 'object') return;
   if (msg.type === 'SHOW_NOTIFICATION' && msg.payload) {
     const p = msg.payload;
-    self.registration.showNotification(p.title || 'BLOOMBERG // PYROFUEL', {
+    self.registration.showNotification(p.title || 'BLOOMBERG TERMINAL', {
       body: p.body || '',
       icon: '/icons/icon-192.png',
-      badge: '/icons/icon-192.png',
-      tag: p.tag || ('bbg-' + Date.now()),
+      badge: '/icons/favicon-64.png',
+      tag: p.tag || ('bloomberg-' + Date.now()),
       renotify: true,
       vibrate: [160, 60, 160],
       data: { url: p.url || '/', symbol: p.symbol || 'BTCUSDT', eventType: p.eventType || 'ALERT' }

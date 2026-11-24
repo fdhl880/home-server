@@ -1,6 +1,6 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, fmtTime, dirCls, LS } from '../util.js';
 import { get, getRaw, tickOk, apiFetch } from '../api.js';
-import { attachTechnicalMasterCanvas } from './charts.js?v=20261124a';
+import { attachTechnicalMasterCanvas } from './charts.js?v=20261124b';
 
 export function mountBOT(body, ctx) {
   body.classList.add('fill');
@@ -364,9 +364,9 @@ export function mountBOT(body, ctx) {
         onclick: () => { botChartIv = tf; renderToolbar(); mountAdaptiveBotChart(); }
       })),
       h('button', { style: 'color:#00e5ff;border-color:#00e5ff55', text: '+ADD API KEY', onclick: promptAddApiKey }),
-      h('button', { style: 'color:#ffb000;border-color:#ffb00066', text: '🔬 X-RAY', onclick: () => ctx.run(`${toBinanceSym(scanSym)} FACT`) }),
-      h('button', { style: 'color:#4da3ff;border-color:#4da3ff66', text: '🎙 TRANSKRIP', onclick: () => ctx.run(`${toBinanceSym(scanSym)} TRAN`) }),
-      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: '💰 KEUANGAN', onclick: () => ctx.run('BTCUSDT FIN') }),
+      h('button', { style: 'color:#ffb000;border-color:#ffb00066', text: 'X-RAY', onclick: () => ctx.run(`${toBinanceSym(scanSym)} FACT`) }),
+      h('button', { style: 'color:#4da3ff;border-color:#4da3ff66', text: 'TRANSCRIPTS', onclick: () => ctx.run(`${toBinanceSym(scanSym)} TRAN`) }),
+      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: 'CAPITAL', onclick: () => ctx.run('BTCUSDT FIN') }),
       h('button', { style: autoBtnStyle, text: autoBtnText, onclick: toggleAuto }),
       h('button', { text: 'REFRESH', onclick: load })
     );
@@ -2273,16 +2273,16 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
       };
 
       const triggerPushTest = async () => {
-        alertStatusBanner = 'SENDING LIVE NATIVE PUSH NOTIFICATION...';
+        alertStatusBanner = 'DISPATCHING MULTI-CHANNEL PUSH NOTIFICATION...';
         render();
         try {
           const r = await apiFetch('/api/push/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }, 12000);
           const j = await r.json();
           alertStatusBanner = r.ok
-            ? `✓ NATIVE PUSH DISPATCHED (WS Clients: ${j.wsSent || 0} | Background WebPush: ${j.webPushDelivered || 0}/${j.totalSubs || 0})`
-            : `✗ PUSH TEST ERROR: ${j.error || ('HTTP ' + r.status)}`;
+            ? `PUSH DISPATCHED — WS: ${j.wsSent || 0} | WebPush: ${j.webPushDelivered || 0}/${j.totalSubs || 0} | Termux: ${j.termuxDelivered ? 'SENT' : (j.termuxAvailable ? 'READY' : 'N/A')} | ntfy: ${j.ntfyDelivered ? 'SENT' : 'OFF'}`
+            : `PUSH TEST FAILED: ${j.error || ('HTTP ' + r.status)}`;
         } catch (e) {
-          alertStatusBanner = '✗ PUSH TEST ERROR: ' + e.message;
+          alertStatusBanner = 'PUSH TEST ERROR: ' + e.message;
         }
         render();
       };
@@ -2293,34 +2293,34 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
       sc.append(
         h('div', { style: 'padding:8px;border:1px solid var(--amber);background:#050505;margin:6px' },
           h('div', { class: 'tb', style: 'background:#160f00;justify-content:space-between;margin-bottom:6px' },
-            h('span', { class: 'lbl', text: 'BLOOMBERG AUTOMATIC EXTERNAL EMAIL & NATIVE PUSH DISPATCHER' }),
-            h('span', { class: isEmailReady ? 'up sym' : 'dn sym', text: `GATEWAY: ${gwLabel} • TARGET: ${cfg.targetEmail || 'fadhilsyafiq90@gmail.com'}` })
+            h('span', { class: 'lbl', text: 'BLOOMBERG TERMINAL // EXTERNAL EMAIL & PUSH DISPATCHER' }),
+            h('span', { class: isEmailReady ? 'up sym' : 'dn sym', text: `GATEWAY: ${gwLabel} | TARGET: ${cfg.targetEmail || 'fadhilsyafiq90@gmail.com'}` })
           ),
           !isEmailReady ? h('div', { style: 'background:#240c0a;border:1px solid var(--dn);color:#ffd2cf;padding:8px 10px;margin-bottom:8px;line-height:1.45' },
-            h('div', { style: 'color:var(--dn);font-weight:bold;margin-bottom:4px', text: '⚠️ KENAPA EMAIL BELUM MASUK KE GMAIL? (GATEWAY BELUM DIAKTIFKAN)' }),
-            h('div', { text: 'Kunci Resend lama telah dicabut demi keamanan, sehingga server butuh salah satu kunci pengiriman:' }),
-            h('div', { style: 'color:var(--amber);margin-top:4px', text: 'CARA TERCEPAT (GRATIS 100%, 30 DETIK): Buka myaccount.google.com/apppasswords → buat App Password 16 huruf → tempel di kotak "GMAIL TLS SMTP APP PASS" di bawah lalu klik SAVE SMTP KEY → klik TEST!' }),
-            h('div', { style: 'color:var(--label);margin-top:2px', text: 'Atau masukkan RESEND_API_KEY=re_... di file .env server lalu restart. Sementara itu, Push Notification Native (tombol 🔔 PUSH di atas) langsung aktif tanpa perlu password!' })
-          ) : h('div', { style: 'background:#07210f;border:1px solid var(--up);color:var(--up);padding:5px 8px;margin-bottom:6px;font-weight:bold', text: `✓ EMAIL GATEWAY AKTIF (${gwLabel}) — Semua alert Hot News & Futures Open/Close otomatis masuk ke ${cfg.targetEmail || 'fadhilsyafiq90@gmail.com'}.` }),
+            h('div', { style: 'color:var(--dn);font-weight:bold;margin-bottom:4px', text: 'EMAIL GATEWAY NOT CONFIGURED (REQUIRED FOR EXTERNAL GMAIL DELIVERY)' }),
+            h('div', { text: 'Configure either a 16-character Gmail App Password below or RESEND_API_KEY in server .env to enable outbound email delivery.' }),
+            h('div', { style: 'color:var(--amber);margin-top:4px', text: 'SETUP (30s): Open myaccount.google.com/apppasswords -> Generate 16-char App Password -> Paste into "GMAIL TLS SMTP APP PASS" below -> Click SAVE SMTP KEY -> Click TEST.' }),
+            h('div', { style: 'color:var(--label);margin-top:2px', text: 'For real-time mobile notifications without SMTP credentials, click PUSH ALERTS in the top bar to configure Browser Push, Android Termux Native, or ntfy Mobile Push.' })
+          ) : h('div', { style: 'background:#07210f;border:1px solid var(--up);color:var(--up);padding:5px 8px;margin-bottom:6px;font-weight:bold', text: `EMAIL GATEWAY ACTIVE (${gwLabel}) — Automated alerts routing to ${cfg.targetEmail || 'fadhilsyafiq90@gmail.com'}.` }),
           alertStatusBanner ? h('div', { style: 'background:#07210f;border:1px solid var(--up);color:var(--up);padding:5px 8px;margin-bottom:6px;font-weight:bold', text: alertStatusBanner }) : null,
           h('div', { class: 'kv', style: 'margin-bottom:8px;padding:6px;background:#090909;border:1px solid #222' },
             h('div', { class: 'k', text: 'TARGET RECIPIENT EMAIL' }),
             h('div', { class: 'v' }, iEmail, h('button', { class: 'on', style: 'margin-left:8px', text: 'SAVE TARGET EMAIL', onclick: () => saveCfg() })),
             h('div', { class: 'k', text: 'AUTO-TRIGGER RULES' }),
             h('div', { class: 'v', style: 'display:flex;gap:6px;flex-wrap:wrap' },
-              h('button', { class: cfg.enableHotNews !== false ? 'on' : '', text: `${cfg.enableHotNews !== false ? '✓' : '✗'} 1. BREAKING HOT NEWS WIRE`, onclick: () => saveCfg({ enableHotNews: cfg.enableHotNews === false }) }),
-              h('button', { class: cfg.enableFuturesOpen !== false ? 'on' : '', text: `${cfg.enableFuturesOpen !== false ? '✓' : '✗'} 2. FUTURES POSITION OPEN (20x)`, onclick: () => saveCfg({ enableFuturesOpen: cfg.enableFuturesOpen === false }) }),
-              h('button', { class: cfg.enableFuturesClose !== false ? 'on' : '', text: `${cfg.enableFuturesClose !== false ? '✓' : '✗'} 3. FUTURES POSITION CLOSE (TP/SL)`, onclick: () => saveCfg({ enableFuturesClose: cfg.enableFuturesClose === false }) }),
-              h('button', { class: cfg.enableEmsxOrders !== false ? 'on' : '', text: `${cfg.enableEmsxOrders !== false ? '✓' : '✗'} 4. EMSX PORTFOLIO ORDERS`, onclick: () => saveCfg({ enableEmsxOrders: cfg.enableEmsxOrders === false }) })
+              h('button', { class: cfg.enableHotNews !== false ? 'on' : '', text: `${cfg.enableHotNews !== false ? '[ON]' : '[OFF]'} BREAKING NEWS WIRE`, onclick: () => saveCfg({ enableHotNews: cfg.enableHotNews === false }) }),
+              h('button', { class: cfg.enableFuturesOpen !== false ? 'on' : '', text: `${cfg.enableFuturesOpen !== false ? '[ON]' : '[OFF]'} FUTURES POSITION OPEN`, onclick: () => saveCfg({ enableFuturesOpen: cfg.enableFuturesOpen === false }) }),
+              h('button', { class: cfg.enableFuturesClose !== false ? 'on' : '', text: `${cfg.enableFuturesClose !== false ? '[ON]' : '[OFF]'} FUTURES POSITION CLOSE`, onclick: () => saveCfg({ enableFuturesClose: cfg.enableFuturesClose === false }) }),
+              h('button', { class: cfg.enableEmsxOrders !== false ? 'on' : '', text: `${cfg.enableEmsxOrders !== false ? '[ON]' : '[OFF]'} EMSX PORTFOLIO ORDERS`, onclick: () => saveCfg({ enableEmsxOrders: cfg.enableEmsxOrders === false }) })
             ),
             h('div', { class: 'k', text: 'GMAIL TLS SMTP APP PASS' }),
             h('div', { class: 'v' }, iPass, h('button', { class: 'on', style: 'margin-left:6px', text: 'SAVE SMTP KEY', onclick: () => saveCfg() })),
-            h('div', { class: 'k', text: 'INSTANT LIVE TEST DISPATCH' }),
+            h('div', { class: 'k', text: 'LIVE DISPATCH VERIFICATION' }),
             h('div', { class: 'v', style: 'display:flex;gap:6px;flex-wrap:wrap' },
-              h('button', { style: 'background:#ffb000;color:#000;font-weight:bold', text: '⚡ TEST HOT NEWS EMAIL', onclick: () => triggerTest('HOT_NEWS') }),
-              h('button', { style: 'background:var(--up);color:#000;font-weight:bold', text: '⚡ TEST FUTURES OPEN EMAIL', onclick: () => triggerTest('FUTURES_OPEN') }),
-              h('button', { style: 'background:#4da3ff;color:#000;font-weight:bold', text: '⚡ TEST FUTURES CLOSE EMAIL', onclick: () => triggerTest('FUTURES_CLOSE') }),
-              h('button', { style: 'background:#e040fb;color:#000;font-weight:bold', text: '🔔 TEST NATIVE PUSH NOTIF', onclick: triggerPushTest })
+              h('button', { style: 'background:#ffb000;color:#000;font-weight:bold', text: 'TEST HOT NEWS EMAIL', onclick: () => triggerTest('HOT_NEWS') }),
+              h('button', { style: 'background:var(--up);color:#000;font-weight:bold', text: 'TEST FUTURES OPEN EMAIL', onclick: () => triggerTest('FUTURES_OPEN') }),
+              h('button', { style: 'background:#4da3ff;color:#000;font-weight:bold', text: 'TEST FUTURES CLOSE EMAIL', onclick: () => triggerTest('FUTURES_CLOSE') }),
+              h('button', { style: 'background:#ff6600;color:#000;font-weight:bold', text: 'TEST MULTI-CHANNEL PUSH', onclick: triggerPushTest })
             )
           ),
           h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: `LIVE AUTO-EMAIL DISPATCH LOG (-> ${cfg.targetEmail || 'fadhilsyafiq90@gmail.com'})` })),

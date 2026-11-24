@@ -1,0 +1,37 @@
+{
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "type": "AdaptiveCard",
+  "version": "1.5",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "BLOOMBERG TERMINAL // LIVE DESK",
+      "weight": "Bolder",
+      "color": "Warning",
+      "size": "Small"
+    },
+    {
+      "type": "FactSet",
+      "facts": [
+        { "title": "BTC / USD", "value": "${btcPrice} (${btcChg})" },
+        { "title": "ETH / USD", "value": "${ethPrice} (${ethChg})" },
+        { "title": "GOLD / USD", "value": "${goldPrice} (${goldChg})" },
+        { "title": "EXECUTION DESK", "value": "${botHeadline}" },
+        { "title": "DAILY CAPITAL", "value": "${dailyStatus}" }
+      ]
+    },
+    {
+      "type": "TextBlock",
+      "text": "Updated ${updatedAt}",
+      "isSubtle": true,
+      "size": "Small"
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.OpenUrl",
+      "title": "Open Bloomberg Terminal",
+      "url": "/"
+    }
+  ]
+}

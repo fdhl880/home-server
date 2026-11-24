@@ -7,32 +7,34 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="BBG Pyrofuel">
+<meta name="apple-mobile-web-app-title" content="Bloomberg Terminal">
 <link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="64x64" href="/icons/favicon-64.png">
 <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
-<title>BLOOMBERG PROFESSIONAL // PYROFUEL</title>
-<link rel="stylesheet" href="/terminal/css/terminal.css?v=20261124a">
+<title>Bloomberg Terminal</title>
+<link rel="stylesheet" href="/terminal/css/terminal.css?v=20261124b">
 </head>
 <body>
 <div id="app">
   <div id="devbanner">DEV ADAPTER ACTIVE - SYNTHETIC DATA</div>
   <header id="top">
     <button id="btnCancel" title="Cancel / Reset Active Command (ESC)" style="background:#d91e18;color:#fff;border:1px solid #ff4d4d;font-weight:700;padding:0 7px;font-size:11px">CANCEL</button>
-    <span class="brand">BLOOMBERG</span>
+    <span class="brand">BLOOMBERG TERMINAL</span>
     <div id="cmdwrap">
       <span id="cmdctx"></span>
-      <input id="cmd" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ENTER [SECURITY] [FUNCTION] <GO> (GP, BOT, FACT, TRAN, FIN, G, BI, ETF, GMAIL, F1=HELP)">
+      <input id="cmd" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ENTER [SECURITY] [FUNCTION] <GO> (GP, BOT, FACT, TRAN, FIN, WDGT, G, BI, ETF, GMAIL, F1=HELP)">
       <button id="go">&lt;GO&gt;</button>
       <div id="ac"></div>
     </div>
     <div id="fkeys"></div>
     <div id="appactions" style="display:flex;gap:3px;flex:none;align-items:center">
-      <button id="btnPush" title="Enable Native Push Notifications (Futures Open/Close, TP/SL, Hot News)" style="border-color:#ffb000;color:#ffb000;font-weight:700;font-size:11px">🔔 PUSH</button>
-      <button id="btnInstallApp" title="Download & Install as Native Standalone App (Android/Desktop PWA)" style="background:#00d26a;color:#000;border-color:#00d26a;font-weight:700;font-size:11px">📲 INSTALL</button>
+      <button id="btnWidget" title="Open Bloomberg Live Widget Studio & Floating Mini-Terminal (WDGT <GO>)" style="border-color:#4da3ff;color:#4da3ff;font-weight:700;font-size:10.5px">WIDGET</button>
+      <button id="btnPush" title="Configure & Test Multi-Channel Push Notifications (Browser, Termux Android, Mobile ntfy)" style="border-color:#ffb000;color:#ffb000;font-weight:700;font-size:10.5px">PUSH ALERTS</button>
+      <button id="btnInstallApp" title="Install Bloomberg Terminal as Native Standalone Application" style="background:#ff6600;color:#000;border-color:#ff6600;font-weight:700;font-size:10.5px">INSTALL APP</button>
     </div>
     <div id="winmodes" style="display:flex;gap:2px;flex:none">
-      <button data-mode="4" class="on" title="4-Window Quad Bloomberg Terminal (1-BLOOMBERG..4-BLOOMBERG)">4-WIN</button>
+      <button data-mode="4" class="on" title="4-Window Quad Bloomberg Terminal">4-WIN</button>
       <button data-mode="2" title="2-Window Dual Split Screen">2-WIN</button>
       <button data-mode="1" title="1-Window Full Screen">1-WIN</button>
     </div>
@@ -53,21 +55,21 @@
 </div>
 <div id="toastRack" aria-live="polite"></div>
 <div id="authModal" role="dialog" aria-modal="true" aria-labelledby="authModalTitle" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.88);align-items:center;justify-content:center;font-family:var(--font, monospace);">
-  <div style="width:420px;max-width:92vw;background:var(--panel,#0d1016);border:1px solid var(--amber,#ff9900);padding:16px 18px;color:#e8eaed;box-shadow:0 8px 32px rgba(0,0,0,0.75);">
-    <div id="authModalTitle" style="color:var(--amber,#ff9900);font-weight:700;font-size:12px;letter-spacing:0.8px;border-bottom:1px solid var(--border,#262b33);padding-bottom:8px;margin-bottom:10px;">TERMINAL SECURITY // AUTHENTICATION REQUIRED</div>
+  <div style="width:420px;max-width:92vw;background:var(--panel,#0d1016);border:1px solid #ff6600;padding:16px 18px;color:#e8eaed;box-shadow:0 8px 32px rgba(0,0,0,0.75);">
+    <div id="authModalTitle" style="color:#ff6600;font-weight:700;font-size:12px;letter-spacing:0.8px;border-bottom:1px solid var(--border,#262b33);padding-bottom:8px;margin-bottom:10px;">BLOOMBERG TERMINAL // AUTHENTICATION REQUIRED</div>
     <div style="font-size:11px;line-height:1.45;color:var(--label,#9aa4b2);margin-bottom:10px;">
-      Enter the server <code style="color:#fff;">DASH_TOKEN</code> (from host <code style="color:#fff;">pluang-bot/.dash_token</code> or environment) to unlock authenticated feeds, WS streaming, Push Alerts, and execution controls.
+      Enter the server <code style="color:#fff;">DASH_TOKEN</code> (from host <code style="color:#fff;">pluang-bot/.dash_token</code> or environment) to unlock authenticated feeds, WebSocket streaming, Push Notifications, and execution controls.
     </div>
     <form id="authModalForm" autocomplete="off">
       <input id="authTokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="Enter DASH_TOKEN..." style="width:100%;box-sizing:border-box;background:#05070a;color:#fff;border:1px solid var(--border,#333b48);padding:7px 9px;font-family:inherit;font-size:12px;outline:none;">
       <div id="authModalErr" style="color:var(--dn,#ff4d4f);font-size:11px;min-height:16px;margin-top:6px;"></div>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px;">
-        <button id="authSubmitBtn" type="submit" style="background:var(--amber,#ff9900);color:#000;border:none;padding:6px 14px;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:0.5px;">AUTHENTICATE</button>
+        <button id="authSubmitBtn" type="submit" style="background:#ff6600;color:#000;border:none;padding:6px 14px;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:0.5px;">AUTHENTICATE</button>
       </div>
     </form>
   </div>
 </div>
 <script src="/terminal/vendor/lightweight-charts.standalone.production.js"></script>
-<script type="module" src="/terminal/js/main.js?v=20261124a"></script>
+<script type="module" src="/terminal/js/main.js?v=20261124b"></script>
 </body>
 </html>
