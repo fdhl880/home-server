@@ -990,16 +990,160 @@ const COMMON_ALIASES = {
     'USDJPY': 'USDJPY=X',
 };
 
+function isCryptoSymbolPattern(rawSym, category = '') {
+    const sym = String(rawSym || '').trim().toUpperCase();
+    const cat = String(category || '').trim();
+    if (cat === 'Crypto') return true;
+    if (sym.includes('-USD') || sym.includes('-USDT')) return true;
+    if (/^[A-Z0-9]{2,12}(USDT|BUSD|USDC)(\.P)?$/.test(sym)) return true;
+    const alias = COMMON_ALIASES[sym];
+    if (alias && (alias.endsWith('-USD') || alias.endsWith('-USDT'))) return true;
+    return false;
+}
+
 function resolveCanonicalSymbol(rawSym) {
     if (!rawSym) return '';
     let sym = rawSym.trim().toUpperCase();
     if (COMMON_ALIASES[sym]) return COMMON_ALIASES[sym];
-    if (TRACKED_ASSETS.some(a => a.symbol === sym)) return sym;
-    if (/^[A-Z]{4}$/.test(sym)) {
-        if (TRACKED_ASSETS.some(a => a.symbol === sym + '.JK')) return sym + '.JK';
+    if (assetMap.has(sym)) return sym;
+    const noP = sym.replace(/\.P$/, '');
+    if (/^[A-Z0-9]{2,12}USDT$/.test(noP)) {
+        const dashUsd = noP.slice(0, -4) + '-USD';
+        return dashUsd;
     }
-    if (TRACKED_ASSETS.some(a => a.symbol === sym + '-USD')) return sym + '-USD';
+    if (/^[A-Z]{4}$/.test(sym)) {
+        if (assetMap.has(sym + '.JK')) return sym + '.JK';
+    }
+    if (assetMap.has(sym + '-USD')) return sym + '-USD';
     return sym;
+}
+
+function lookupCachedAssetQuote(rawSym) {
+    const sym = String(rawSym || '').trim().toUpperCase();
+    if (!sym) return { quote: null, assetDef: null, matchedSymbol: null };
+    const noP = sym.replace(/\.P$/, '');
+    const candidates = [sym];
+    if (noP !== sym) candidates.push(noP);
+    if (COMMON_ALIASES[sym]) candidates.push(COMMON_ALIASES[sym]);
+    if (/^[A-Z0-9]{2,12}USDT$/.test(noP)) candidates.push(noP.slice(0, -4) + '-USD');
+    if (/^[A-Z0-9]{2,12}-USD$/.test(noP)) candidates.push(noP.slice(0, -4) + 'USDT');
+    const canonical = resolveCanonicalSymbol(sym);
+    if (canonical && !candidates.includes(canonical)) candidates.push(canonical);
+
+    let bestQuote = null;
+    let bestQuoteSym = null;
+    let bestAssetDef = null;
+
+    for (const cand of candidates) {
+        if (!bestAssetDef && assetMap.has(cand)) bestAssetDef = assetMap.get(cand);
+        const q = quoteCache.data[cand];
+        if (q && Number(q.price) > 0) {
+            if (!bestQuote || ((q.liveFetchedAt || 0) > (bestQuote.liveFetchedAt || 0))) {
+                bestQuote = q;
+                bestQuoteSym = cand;
+            }
+        }
+    }
+    return { quote: bestQuote, assetDef: bestAssetDef, matchedSymbol: bestQuoteSym || (bestAssetDef ? bestAssetDef.symbol : null) };
+}
+
+function inferPortfolioAssetMeta(sym, provided = {}, quoteObj = null, assetDef = null) {
+    const upper = String(sym || '').trim().toUpperCase();
+    const provCcy = typeof provided.currency === 'string' ? provided.currency.trim().toUpperCase() : '';
+    const provCat = typeof provided.category === 'string' ? provided.category.trim() : '';
+    const provName = typeof provided.name === 'string' ? provided.name.trim() : '';
+    const isCrypto = isCryptoSymbolPattern(upper, provCat || quoteObj?.category || assetDef?.category);
+    const isIndo = upper.endsWith('.JK')
+        || /^(USDIDR|SGDIDR)=X$/.test(upper)
+        || (assetDef && assetDef.currency === 'IDR')
+        || (quoteObj && quoteObj.currency === 'IDR')
+        || provCat === 'Saham Indo';
+
+    let currency = (provCcy === 'USD' || provCcy === 'IDR') ? provCcy : '';
+    if (!currency) {
+        if (isIndo) currency = 'IDR';
+        else currency = 'USD';
+    }
+    // Guard against mis-tagged USD instruments (e.g. BTCUSDT, AAPL) passed with empty/wrong default
+    if (isCrypto && !provCcy) currency = 'USD';
+    if (upper.endsWith('.JK') && !provCcy) currency = 'IDR';
+
+    let category = provCat || quoteObj?.category || assetDef?.category || '';
+    if (!category || category === 'General') {
+        if (isCrypto) category = 'Crypto';
+        else if (isIndo) category = 'Saham Indo';
+        else if (upper.endsWith('=F')) category = 'Komoditas';
+        else if (upper.endsWith('=X')) category = 'Forex';
+        else if (upper.startsWith('^')) category = 'Index Global';
+        else if (['SPACEX', 'OPENAI', 'ANTHROPIC', 'STRIPE', 'BYTEDANCE'].includes(upper)) category = 'Pre-IPO';
+        else category = 'Saham US';
+    }
+
+    const name = provName || quoteObj?.name || assetDef?.name || upper;
+    return { name, category, currency };
+}
+
+async function resolvePortfolioAssetQuote(sym, provided = {}) {
+    const upper = String(sym || '').trim().toUpperCase();
+    const cached = lookupCachedAssetQuote(upper);
+    const cacheAge = cached.quote && cached.quote.liveFetchedAt ? (Date.now() - cached.quote.liveFetchedAt) : Infinity;
+
+    if (!testMode && (!cached.quote || !(Number(cached.quote.price) > 0) || cacheAge > 20000)) {
+        try {
+            const agg = require('./terminal/api/aggregator');
+            const liveQ = await Promise.race([
+                agg.quote(upper),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('quote timeout')), 4500))
+            ]);
+            if (liveQ && Number(liveQ.price) > 0 && Number.isFinite(Number(liveQ.price))) {
+                const meta = inferPortfolioAssetMeta(upper, provided, liveQ, cached.assetDef);
+                const livePx = Number(liveQ.price);
+                const prevClose = Number(liveQ.prevClose) > 0 ? Number(liveQ.prevClose) : livePx;
+                const change = livePx - prevClose;
+                const changePct = prevClose > 0 ? (change / prevClose) * 100 : (Number(liveQ.changePct) || 0);
+                const cachedEntry = {
+                    symbol: upper,
+                    name: meta.name,
+                    category: meta.category,
+                    price: livePx,
+                    prevClose,
+                    change,
+                    changePct,
+                    high: Number(liveQ.high) || livePx,
+                    low: Number(liveQ.low) || livePx,
+                    volume: Number(liveQ.vol || liveQ.volume) || 0,
+                    currency: meta.currency,
+                    priceIdr: meta.currency === 'USD' ? livePx * getUsdIdr() : livePx,
+                    prevCloseIdr: meta.currency === 'USD' ? prevClose * getUsdIdr() : prevClose,
+                    timestamp: Date.now(),
+                    liveFetchedAt: Date.now()
+                };
+                quoteCache.data[upper] = cachedEntry;
+                return { price: livePx, quote: cachedEntry, assetDef: cached.assetDef, meta, source: liveQ.source || 'aggregator' };
+            }
+        } catch (_) {}
+
+        if (!cached.quote || !(Number(cached.quote.price) > 0)) {
+            try {
+                const yq = await Promise.race([
+                    fetchYahooQuote(upper),
+                    new Promise((res) => setTimeout(() => res(null), 4000))
+                ]);
+                if (yq && Number(yq.price) > 0) {
+                    const meta = inferPortfolioAssetMeta(upper, provided, yq, cached.assetDef);
+                    yq.liveFetchedAt = Date.now();
+                    yq.currency = meta.currency;
+                    yq.category = meta.category;
+                    quoteCache.data[upper] = yq;
+                    return { price: Number(yq.price), quote: yq, assetDef: cached.assetDef, meta, source: 'yahoo' };
+                }
+            } catch (_) {}
+        }
+    }
+
+    const fallbackPx = Number(cached.quote?.price || cached.assetDef?.price || 0);
+    const meta = inferPortfolioAssetMeta(upper, provided, cached.quote, cached.assetDef);
+    return { price: fallbackPx, quote: cached.quote, assetDef: cached.assetDef, meta, source: cached.quote ? 'cache' : 'universe' };
 }
 
 // Fetch single quote from Yahoo Finance internal
@@ -1141,7 +1285,11 @@ async function refreshQuotes() {
                         q.goldGramIdr = Math.round((q.price / 31.1034768) * quoteCache.usdIdr);
                     }
 
+                    q.liveFetchedAt = Date.now();
                     quoteCache.data[q.symbol] = q;
+                    if (sym && sym !== q.symbol) {
+                        quoteCache.data[sym] = { ...q, symbol: sym };
+                    }
                 }
             });
             await new Promise(r => setTimeout(r, 200));
@@ -1172,7 +1320,11 @@ async function refreshQuotes() {
                         q.priceIdr = q.price;
                         q.prevCloseIdr = q.prevClose;
                     }
+                    q.liveFetchedAt = Date.now();
                     quoteCache.data[q.symbol] = q;
+                    if (sym && sym !== q.symbol) {
+                        quoteCache.data[sym] = { ...q, symbol: sym };
+                    }
                 }
             });
             await new Promise(r => setTimeout(r, 200));
@@ -1286,7 +1438,8 @@ function computePortfolioSnapshot() {
     let totalInvested = 0;
 
     const enrichedHoldings = port.holdings.map(h => {
-        const quote = quoteCache.data[h.symbol];
+        const looked = lookupCachedAssetQuote(h.symbol);
+        const quote = looked && looked.quote;
         let currentPrice = h.avgPrice;
         let change24h = 0;
 
@@ -1398,8 +1551,8 @@ function getMarketSchedule(symbol, category) {
     const wibM = wibTotalMin % 60;
     const wibTimeStr = `${String(wibH).padStart(2,'0')}:${String(wibM).padStart(2,'0')} WIB`;
 
-    // 1. CRYPTO: 24/7/365 Non-stop
-    if (cat === 'Crypto' || sym.includes('-USD') || sym.includes('-USDT')) {
+    // 1. CRYPTO: 24/7/365 Non-stop (supports BTC-USD, BTCUSDT, BTCUSDT.P, ETHUSDT, etc.)
+    if (isCryptoSymbolPattern(sym, cat)) {
         return {
             exchange: 'CRYPTO (24/7)',
             status: 'OPEN',
@@ -1565,30 +1718,64 @@ app.get('/api/market-status/:symbol', (req, res) => {
     const valid = validateSymbol(req.params.symbol);
     if (!valid) return res.status(400).json({ error: 'Invalid symbol' });
     const sym = valid.toUpperCase();
-    const q = quoteCache.data[sym] || TRACKED_ASSETS.find(a => a.symbol.toUpperCase() === sym);
-    const schedule = getMarketSchedule(sym, q?.category);
+    const looked = lookupCachedAssetQuote(sym);
+    const schedule = getMarketSchedule(sym, looked?.quote?.category || looked?.assetDef?.category);
     res.json(schedule);
 });
 
 // 2. POST /api/portfolio/trade -> Direct Market Access (DMA) Execution with Order Types (MARKET, LIMIT, STOP, STOP_LIMIT)
-app.post('/api/portfolio/trade', (req, res) => {
+app.post('/api/portfolio/trade', async (req, res) => {
     try {
         const {
             type, symbol: rawSymbol, name, category, qty: rawQty, price: rawPrice, currency,
-            queueIfClosed, forceExecute,
+            queueIfClosed, allowQueue, forceExecute,
             orderType = 'MARKET',
             limitPrice, stopPrice, trailPct,
             tif = 'GTC'
         } = req.body || {};
 
         const normType = typeof type === 'string' ? type.trim().toUpperCase() : '';
-        const symbol = validateSymbol(rawSymbol);
+        let symbol = validateSymbol(rawSymbol);
         const qty = Number(rawQty);
-        const price = Number(rawPrice);
 
-        if ((normType !== 'BUY' && normType !== 'SELL') || !symbol || !Number.isFinite(qty) || !Number.isFinite(price) || qty <= 0 || qty > 1e9 || price <= 0 || price > 1e12) {
+        if ((normType !== 'BUY' && normType !== 'SELL') || !symbol || !Number.isFinite(qty) || qty <= 0 || qty > 1e9) {
             return res.status(400).json({ error: 'Parameter transaksi tidak lengkap atau tidak valid.' });
         }
+
+        // Normalize bare aliases (e.g. BTC -> BTC-USD, GOLD -> GC=F, BBCA -> BBCA.JK) while preserving exact Binance pairs (BTCUSDT)
+        if (!quoteCache.data[symbol] && !assetMap.has(symbol)) {
+            if (COMMON_ALIASES[symbol]) {
+                symbol = COMMON_ALIASES[symbol];
+            } else if (/^[A-Z]{4}$/.test(symbol) && assetMap.has(symbol + '.JK')) {
+                symbol = symbol + '.JK';
+            }
+        }
+
+        const hasExplicitPrice = rawPrice !== undefined && rawPrice !== null && rawPrice !== '';
+        let price = hasExplicitPrice ? Number(rawPrice) : NaN;
+        let resolvedMeta = null;
+
+        if (hasExplicitPrice) {
+            if (!Number.isFinite(price) || price <= 0 || price > 1e12) {
+                return res.status(400).json({ error: 'Parameter transaksi tidak lengkap atau tidak valid.' });
+            }
+            const looked = lookupCachedAssetQuote(symbol);
+            resolvedMeta = inferPortfolioAssetMeta(symbol, { name, category, currency }, looked?.quote, looked?.assetDef);
+        } else {
+            const resolved = await resolvePortfolioAssetQuote(symbol, { name, category, currency });
+            price = Number(resolved.price);
+            resolvedMeta = resolved.meta;
+            if (!Number.isFinite(price) || price <= 0 || price > 1e12) {
+                return res.status(400).json({
+                    error: `Harga pasar real-time tidak tersedia untuk instrumen ${symbol}. Pastikan ticker valid (misal: BTCUSDT, AAPL, BBCA.JK, GC=F).`
+                });
+            }
+        }
+
+        const effName = resolvedMeta.name || symbol;
+        const effCategory = resolvedMeta.category || 'General';
+        const effCurrency = resolvedMeta.currency || 'USD';
+        const shouldQueue = Boolean(queueIfClosed || allowQueue);
 
         const normalizedOrderType = typeof orderType === 'string' ? orderType.trim().toUpperCase() : 'MARKET';
         if (!['MARKET', 'LIMIT', 'STOP', 'STOP_LIMIT'].includes(normalizedOrderType)) {
@@ -1611,14 +1798,16 @@ app.post('/api/portfolio/trade', (req, res) => {
             if (!Number.isFinite(effectiveStopPrice) || effectiveStopPrice <= 0 || effectiveStopPrice > 1e12) {
                 return res.status(400).json({ error: 'Invalid stopPrice' });
             }
+        } else if (normalizedOrderType === 'STOP') {
+            effectiveStopPrice = effectiveLimitPrice;
         }
 
-        const marketSchedule = getMarketSchedule(symbol, category);
+        const marketSchedule = getMarketSchedule(symbol, effCategory);
         const isMarketOpen = marketSchedule.isOpen;
 
         const port = loadPortfolio();
         const usdRate = getUsdIdr();
-        const isUsd = (currency === 'USD');
+        const isUsd = (effCurrency === 'USD');
 
         // Determine immediate execution vs working order
         let willFillImmediately = false;
@@ -1630,12 +1819,12 @@ app.post('/api/portfolio/trade', (req, res) => {
                 executionPrice = price;
             }
         } else if (normalizedOrderType === 'LIMIT') {
-            if (type.toUpperCase() === 'BUY') {
+            if (normType === 'BUY') {
                 if (price <= effectiveLimitPrice && (isMarketOpen || forceExecute)) {
                     willFillImmediately = true;
                     executionPrice = price; // Best execution
                 }
-            } else if (type.toUpperCase() === 'SELL') {
+            } else if (normType === 'SELL') {
                 if (price >= effectiveLimitPrice && (isMarketOpen || forceExecute)) {
                     willFillImmediately = true;
                     executionPrice = price;
@@ -1647,7 +1836,7 @@ app.post('/api/portfolio/trade', (req, res) => {
         const totalValueIdr = Math.round(qty * priceInIdr);
         const brokerFee = Math.round(totalValueIdr * 0.0015); // 0.15% fee
 
-        if (type.toUpperCase() === 'BUY') {
+        if (normType === 'BUY') {
             const pricingPx = normalizedOrderType === 'LIMIT' ? effectiveLimitPrice : executionPrice;
             const requiredPriceInIdr = isUsd ? pricingPx * usdRate : pricingPx;
             const requiredTotalIdr = Math.round(qty * requiredPriceInIdr);
@@ -1678,9 +1867,9 @@ app.post('/api/portfolio/trade', (req, res) => {
                 } else {
                     port.holdings.push({
                         symbol,
-                        name: name || symbol,
-                        category: category || 'General',
-                        currency: currency || 'IDR',
+                        name: effName,
+                        category: effCategory,
+                        currency: effCurrency,
                         qty,
                         avgPrice: executionPrice,
                         createdAt: Date.now(),
@@ -1695,12 +1884,12 @@ app.post('/api/portfolio/trade', (req, res) => {
                     orderType: normalizedOrderType,
                     tif: normalizedTif,
                     symbol,
-                    name: name || symbol,
-                    category: category || 'General',
+                    name: effName,
+                    category: effCategory,
                     qty,
                     price: executionPrice,
                     limitPrice: normalizedOrderType === 'LIMIT' ? effectiveLimitPrice : null,
-                    currency: currency || 'IDR',
+                    currency: effCurrency,
                     priceInIdr,
                     totalValueIdr,
                     brokerFee,
@@ -1720,7 +1909,7 @@ app.post('/api/portfolio/trade', (req, res) => {
                     schedule: marketSchedule
                 });
             } else {
-                if (!isMarketOpen && !queueIfClosed && !forceExecute && normalizedOrderType === 'MARKET') {
+                if (!isMarketOpen && !shouldQueue && !forceExecute && normalizedOrderType === 'MARKET') {
                     return res.status(400).json({
                         error: `[EMSX REJECT] ${marketSchedule.exchange} SEDANG TUTUP. ${marketSchedule.reason}`,
                         marketClosed: true,
@@ -1739,14 +1928,14 @@ app.post('/api/portfolio/trade', (req, res) => {
                     orderType: normalizedOrderType,
                     tif: normalizedTif,
                     symbol,
-                    name: name || symbol,
-                    category: category || 'General',
+                    name: effName,
+                    category: effCategory,
                     qty,
                     price: executionPrice,
                     limitPrice: normalizedOrderType === 'LIMIT' ? effectiveLimitPrice : null,
                     stopPrice: effectiveStopPrice,
                     trailPct: parseFloat(trailPct) || null,
-                    currency: currency || 'IDR',
+                    currency: effCurrency,
                     priceInIdr: requiredPriceInIdr,
                     totalValueIdr: requiredTotalIdr,
                     brokerFee: requiredBrokerFee,
@@ -1768,9 +1957,10 @@ app.post('/api/portfolio/trade', (req, res) => {
                     schedule: marketSchedule
                 });
             }
-        } else if (type.toUpperCase() === 'SELL') {
-            const existingIdx = port.holdings.findIndex(h => h.symbol === symbol);
-            if (existingIdx < 0 || port.holdings[existingIdx].qty < qty) {
+        } else if (normType === 'SELL') {
+            const canonSym = resolveCanonicalSymbol(symbol);
+            const existingIdx = port.holdings.findIndex(h => h.symbol === symbol || resolveCanonicalSymbol(h.symbol) === canonSym);
+            if (existingIdx < 0 || port.holdings[existingIdx].qty + 1e-9 < qty) {
                 const available = existingIdx >= 0 ? port.holdings[existingIdx].qty : 0;
                 return res.status(400).json({
                     error: `Posisi tidak mencukupi! Anda hanya memiliki ${available} ${symbol}`
@@ -1778,10 +1968,15 @@ app.post('/api/portfolio/trade', (req, res) => {
             }
 
             const holding = port.holdings[existingIdx];
-            const avgPriceInIdr = isUsd ? holding.avgPrice * usdRate : holding.avgPrice;
+            const sellSymbol = holding.symbol;
+            const sellIsUsd = (holding.currency || effCurrency) === 'USD';
+            const sellPriceInIdr = sellIsUsd ? executionPrice * usdRate : executionPrice;
+            const sellTotalValueIdr = Math.round(qty * sellPriceInIdr);
+            const sellBrokerFee = Math.round(sellTotalValueIdr * 0.0015);
+            const avgPriceInIdr = sellIsUsd ? holding.avgPrice * usdRate : holding.avgPrice;
             const costBasisIdr = Math.round(qty * avgPriceInIdr);
-            const netCashInflow = totalValueIdr - brokerFee;
-            const tradePnL = (totalValueIdr - costBasisIdr) - brokerFee;
+            const netCashInflow = sellTotalValueIdr - sellBrokerFee;
+            const tradePnL = (sellTotalValueIdr - costBasisIdr) - sellBrokerFee;
 
             if (willFillImmediately) {
                 port.cash += netCashInflow;
@@ -1800,32 +1995,39 @@ app.post('/api/portfolio/trade', (req, res) => {
                     type: 'SELL',
                     orderType: normalizedOrderType,
                     tif: normalizedTif,
-                    symbol,
-                    name: name || symbol,
-                    category: category || 'General',
+                    symbol: sellSymbol,
+                    name: holding.name || effName,
+                    category: holding.category || effCategory,
                     qty,
                     price: executionPrice,
                     limitPrice: normalizedOrderType === 'LIMIT' ? effectiveLimitPrice : null,
-                    currency: currency || 'IDR',
-                    priceInIdr,
-                    totalValueIdr,
-                    brokerFee,
+                    currency: holding.currency || effCurrency,
+                    priceInIdr: sellPriceInIdr,
+                    totalValueIdr: sellTotalValueIdr,
+                    brokerFee: sellBrokerFee,
                     realizedPnL: tradePnL,
                     status: 'FILLED',
                     exchange: marketSchedule.exchange,
                     marketStatus: marketSchedule.status,
-                    note: `Eksekusi DMA SELL ${normalizedOrderType}: ${qty} @ ${isUsd ? '$' + executionPrice.toFixed(2) : 'Rp ' + Math.round(executionPrice).toLocaleString('id-ID')}`
+                    note: `Eksekusi DMA SELL ${normalizedOrderType}: ${qty} @ ${sellIsUsd ? '$' + executionPrice.toFixed(2) : 'Rp ' + Math.round(executionPrice).toLocaleString('id-ID')}`
                 };
                 port.trades.push(tradeLog);
                 savePortfolio(port);
 
                 return res.json({
                     success: true,
-                    message: `Berhasil MENJUAL ${qty} ${symbol}. P&L: Rp ${tradePnL.toLocaleString('id-ID')}`,
+                    message: `Berhasil MENJUAL ${qty} ${sellSymbol}. P&L: Rp ${tradePnL.toLocaleString('id-ID')}`,
                     trade: tradeLog,
                     schedule: marketSchedule
                 });
             } else {
+                if (!isMarketOpen && !shouldQueue && !forceExecute && normalizedOrderType === 'MARKET') {
+                    return res.status(400).json({
+                        error: `[EMSX REJECT] ${marketSchedule.exchange} SEDANG TUTUP. ${marketSchedule.reason}`,
+                        marketClosed: true,
+                        schedule: marketSchedule
+                    });
+                }
                 holding.qty -= qty;
                 if (holding.qty <= 0.000001) {
                     port.holdings.splice(existingIdx, 1);
@@ -1837,24 +2039,24 @@ app.post('/api/portfolio/trade', (req, res) => {
                     type: 'SELL',
                     orderType: normalizedOrderType,
                     tif: normalizedTif,
-                    symbol,
-                    name: name || symbol,
-                    category: category || 'General',
+                    symbol: sellSymbol,
+                    name: holding.name || effName,
+                    category: holding.category || effCategory,
                     qty,
                     price: executionPrice,
                     limitPrice: normalizedOrderType === 'LIMIT' ? effectiveLimitPrice : null,
                     stopPrice: effectiveStopPrice,
                     trailPct: parseFloat(trailPct) || null,
-                    currency: currency || 'IDR',
-                    priceInIdr,
-                    totalValueIdr,
-                    brokerFee,
+                    currency: holding.currency || effCurrency,
+                    priceInIdr: sellPriceInIdr,
+                    totalValueIdr: sellTotalValueIdr,
+                    brokerFee: sellBrokerFee,
                     reservedQty: qty,
                     originalHoldingAvgPrice: holding.avgPrice,
                     status: orderStatus,
                     exchange: marketSchedule.exchange,
                     marketStatus: marketSchedule.status,
-                    note: `${normalizedOrderType} SELL pada ${isUsd ? '$' + effectiveLimitPrice.toFixed(2) : 'Rp ' + Math.round(effectiveLimitPrice).toLocaleString('id-ID')} (${normalizedTif})`
+                    note: `${normalizedOrderType} SELL pada ${sellIsUsd ? '$' + effectiveLimitPrice.toFixed(2) : 'Rp ' + Math.round(effectiveLimitPrice).toLocaleString('id-ID')} (${normalizedTif})`
                 };
                 port.workingOrders.push(workingOrder);
                 port.trades.push(workingOrder);
@@ -1862,7 +2064,7 @@ app.post('/api/portfolio/trade', (req, res) => {
 
                 return res.json({
                     success: true,
-                    message: `Order SELL ${normalizedOrderType} ${qty} ${symbol} AKTIF DI ORDER BLOTTER [${orderStatus}]`,
+                    message: `Order SELL ${normalizedOrderType} ${qty} ${sellSymbol} AKTIF DI ORDER BLOTTER [${orderStatus}]`,
                     order: workingOrder,
                     trade: workingOrder,
                     schedule: marketSchedule
@@ -1950,7 +2152,8 @@ function processWorkingOrders() {
 
         for (let i = port.workingOrders.length - 1; i >= 0; i--) {
             const ord = port.workingOrders[i];
-            const quote = quoteCache.data[ord.symbol];
+            const looked = lookupCachedAssetQuote(ord.symbol);
+            const quote = looked && looked.quote;
             if (!quote || quote.price <= 0) continue;
 
             const schedule = getMarketSchedule(ord.symbol, ord.category);
@@ -2540,7 +2743,11 @@ app.post('/api/quotes/batch', async (req, res) => {
                             q.priceIdr = q.price;
                             q.prevCloseIdr = q.prevClose;
                         }
+                        q.liveFetchedAt = Date.now();
                         quoteCache.data[q.symbol] = q;
+                        if (item.sym && item.sym !== q.symbol) {
+                            quoteCache.data[item.sym] = { ...q, symbol: item.sym };
+                        }
                         results[item.raw] = q;
                         results[item.sym] = q;
                     } else if (quoteCache.data[item.sym]) {

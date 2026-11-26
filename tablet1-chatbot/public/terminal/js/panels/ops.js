@@ -1,7 +1,7 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, fmtTime, dirCls, LS } from '../util.js';
 import { get, getRaw, tickOk, apiFetch } from '../api.js';
-import { attachTechnicalMasterCanvas } from './charts.js?v=20261126f';
-import { openRoeShareModal } from './intelligence.js?v=20261126f';
+import { attachTechnicalMasterCanvas } from './charts.js?v=20261126g';
+import { openRoeShareModal } from './intelligence.js?v=20261126g';
 
 let liveUsdIdrRate = 18218;
 
@@ -1470,14 +1470,69 @@ export function mountBOT(body, ctx) {
 export function mountPORT(body, ctx) {
   body.classList.add('fill');
   const tb = h('div', { class: 'tb' });
+  const noticeBar = h('div', { style: 'display:none;padding:4px 8px;font-size:11px;font-weight:700;border-bottom:1px solid var(--border);background:#080c12' });
   const sc = h('div', { class: 'pb' });
-  body.append(tb, sc);
+  body.append(tb, noticeBar, sc);
   let portUnmounted = false;
   let portLoading = false;
+  let latestPortSnap = {};
+  let userEditedQty = false;
 
   function fmtIdr(v) {
     const n = Number(v) || 0;
     return 'Rp ' + Math.round(n).toLocaleString('id-ID');
+  }
+
+  function smartDefaultQtyStr(sym) {
+    const s = String(sym || '').toUpperCase();
+    if (/^BTC(-USD|USDT|$)/.test(s)) return '0.05';
+    if (/^ETH(-USD|USDT|$)/.test(s) || s === 'GC=F' || s === 'GOLD') return '0.5';
+    if (s.endsWith('.JK')) return '100';
+    return '1';
+  }
+
+  function showNotice(text, tone = 'am') {
+    const cols = {
+      up: { fg: '#00d26a', bg: '#051a0f', bd: '#00d26a66' },
+      am: { fg: '#ffb000', bg: '#1a1205', bd: '#ffb00066' },
+      dn: { fg: '#ff5a52', bg: '#1f0707', bd: '#ff3b3088' }
+    };
+    const c = cols[tone] || cols.am;
+    noticeBar.style.display = 'flex';
+    noticeBar.style.justifyContent = 'space-between';
+    noticeBar.style.alignItems = 'center';
+    noticeBar.style.color = c.fg;
+    noticeBar.style.background = c.bg;
+    noticeBar.style.borderBottom = `1px solid ${c.bd}`;
+    noticeBar.textContent = '';
+    noticeBar.append(
+      h('span', { text }),
+      h('button', { style: 'font-size:10px;padding:0 5px', text: 'X', onclick: () => { noticeBar.style.display = 'none'; } })
+    );
+  }
+
+  async function resolveQuoteForTrade(symbol) {
+    const sym = String(symbol || '').trim().toUpperCase();
+    let q = {};
+    try {
+      const qEnv = await get('quote', { symbols: sym }, 2000);
+      if (qEnv.ok && Array.isArray(qEnv.data) && qEnv.data[0] && Number(qEnv.data[0].price) > 0) {
+        q = qEnv.data[0];
+      }
+    } catch {}
+    if (!(Number(q.price) > 0)) {
+      try {
+        const rawQ = await getRaw('/api/quote/' + encodeURIComponent(sym));
+        if (rawQ.ok && rawQ.data && Number(rawQ.data.price) > 0) q = rawQ.data;
+      } catch {}
+    }
+    const isIndo = /\.JK$/i.test(sym) || /^(USDIDR|SGDIDR)=X$/i.test(sym) || q.currency === 'IDR';
+    return {
+      price: Number(q.price) > 0 ? Number(q.price) : undefined,
+      currency: q.currency || (isIndo ? 'IDR' : 'USD'),
+      name: q.name || undefined,
+      category: q.category || undefined
+    };
   }
 
   function calcTargetRoiPnl(entryPx, targetPx, dir = 'LONG', lev = 20, marginIdr = 0, marginUsd = 0) {
@@ -1496,19 +1551,86 @@ export function mountPORT(body, ctx) {
   }
 
   async function execQuickTrade(type, symbol, qty, orderType = 'MARKET', limitPrice = null) {
+    const sym = String(symbol || '').trim().toUpperCase();
+    const qNum = Number(qty);
+    if (!sym || !Number.isFinite(qNum) || qNum <= 0) {
+      showNotice('DMA REJECT // Enter a valid ticker symbol and positive quantity.', 'dn');
+      return;
+    }
+    showNotice(`ROUTING DMA ${type} ${qNum} ${sym} (${orderType})...`, 'am');
     try {
+      const qMeta = await resolveQuoteForTrade(sym);
       const r = await apiFetch('/api/portfolio/trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type, symbol, qty: Number(qty), orderType, limitPrice, tif: 'GTC', allowQueue: true })
+        body: JSON.stringify({
+          type,
+          symbol: sym,
+          qty: qNum,
+          price: qMeta.price,
+          currency: qMeta.currency,
+          name: qMeta.name,
+          category: qMeta.category,
+          orderType,
+          limitPrice,
+          tif: 'GTC',
+          queueIfClosed: true,
+          allowQueue: true
+        })
       }, 15000);
       const j = await r.json();
-      if (!r.ok && j.error) alert('DMA Order Notice: ' + j.error);
+      if (r.ok && j.success) {
+        const st = j.trade?.status || 'FILLED';
+        const pxStr = j.trade?.currency === 'USD' ? ('$' + fmtPx(j.trade.price)) : fmtIdr(j.trade?.price);
+        showNotice(`${st} // ${type} ${qNum} ${j.trade?.symbol || sym} @ ${pxStr} (${fmtIdr(j.trade?.totalValueIdr || 0)}) [${j.schedule?.exchange || 'DMA'}]`, st === 'FILLED' ? 'up' : 'am');
+      } else {
+        showNotice(`DMA REJECT // ${j.error || ('HTTP ' + r.status)}`, 'dn');
+      }
     } catch (e) {
-      alert('DMA Trade Error: ' + e.message);
+      showNotice('DMA ERROR // ' + e.message, 'dn');
     }
     load();
   }
+
+  async function cancelWorkingOrder(orderId) {
+    if (!orderId) return;
+    showNotice(`CANCELLING ORDER ${orderId}...`, 'am');
+    try {
+      const r = await apiFetch('/api/portfolio/orders/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId })
+      }, 12000);
+      const j = await r.json();
+      if (r.ok && j.success) showNotice(`CANCELLED // ${j.message || orderId}`, 'am');
+      else showNotice(`CANCEL REJECT // ${j.error || ('HTTP ' + r.status)}`, 'dn');
+    } catch (e) {
+      showNotice('CANCEL ERROR // ' + e.message, 'dn');
+    }
+    load();
+  }
+
+  // Persistent toolbar built ONCE so 8s refresh never wipes user's typed ticker/qty
+  const initSym = (ctx.symbol && ctx.symbol !== 'SPCX') ? ctx.symbol : 'BTCUSDT';
+  const iSym = h('input', { value: initSym, placeholder: 'TICKER', style: 'width:84px;text-transform:uppercase' });
+  const iQty = h('input', { type: 'number', step: 'any', value: smartDefaultQtyStr(initSym), placeholder: 'QTY', style: 'width:62px' });
+  iQty.addEventListener('input', () => { userEditedQty = true; });
+  iSym.addEventListener('change', () => {
+    const s = iSym.value.trim().toUpperCase();
+    iSym.value = s;
+    if (!userEditedQty && s) iQty.value = smartDefaultQtyStr(s);
+  });
+  tb.append(
+    h('span', { class: 'lbl', text: 'PORT — Portfolio & Risk Analytics:' }),
+    iSym, iQty,
+    h('button', { class: 'on', style: 'background:var(--up);color:#000;border-color:var(--up)', text: '+BUY DMA', onclick: () => execQuickTrade('BUY', iSym.value.trim().toUpperCase(), iQty.value) }),
+    h('button', { style: 'background:var(--dn);color:#fff;border-color:var(--dn)', text: '-SELL DMA', onclick: () => execQuickTrade('SELL', iSym.value.trim().toUpperCase(), iQty.value) }),
+    h('button', { style: 'color:#00d26a;border-color:#00d26a88;font-weight:700', text: '+DEPOSIT WIRE', onclick: () => openTreasuryWireModal('DEPOSIT', latestPortSnap) }),
+    h('button', { style: 'color:#ffb000;border-color:#ffb00088;font-weight:700', text: '-WITHDRAW', onclick: () => openTreasuryWireModal('WITHDRAW', latestPortSnap) }),
+    h('button', { style: 'color:#5aa9ff;border-color:#5aa9ff88', text: 'MONTHLY STATEMENT', onclick: openMonthlyStatementPreview }),
+    h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'EMAIL REPORT', onclick: sendMonthlyStatementEmail }),
+    h('button', { text: 'EMSX <GO>', onclick: () => ctx.run('EMSX') })
+  );
 
   async function sendMonthlyStatementEmail() {
     try {
@@ -1735,23 +1857,9 @@ export function mountPORT(body, ctx) {
     const pRes = await getRaw('/api/portfolio');
     if (portUnmounted) return;
     ctx.status({ source: 'b-pipe-portfolio', ts: Date.now(), mode: pRes.ok ? 'LIVE' : 'N/A' });
-    tb.textContent = '';
     sc.textContent = '';
 
-    const portObj = (pRes.ok && pRes.data) || {};
-    const iSym = h('input', { value: (ctx.symbol && ctx.symbol !== 'SPCX') ? ctx.symbol : 'BTCUSDT', placeholder: 'TICKER', style: 'width:84px;text-transform:uppercase' });
-    const iQty = h('input', { value: '1', placeholder: 'QTY', style: 'width:55px' });
-    tb.append(
-      h('span', { class: 'lbl', text: 'PORT — Portfolio & Risk Analytics:' }),
-      iSym, iQty,
-      h('button', { class: 'on', style: 'background:var(--up);color:#000;border-color:var(--up)', text: '+BUY DMA', onclick: () => execQuickTrade('BUY', iSym.value.trim().toUpperCase(), iQty.value) }),
-      h('button', { style: 'background:var(--dn);color:#fff;border-color:var(--dn)', text: '-SELL DMA', onclick: () => execQuickTrade('SELL', iSym.value.trim().toUpperCase(), iQty.value) }),
-      h('button', { style: 'color:#00d26a;border-color:#00d26a88;font-weight:700', text: '+DEPOSIT WIRE', onclick: () => openTreasuryWireModal('DEPOSIT', portObj) }),
-      h('button', { style: 'color:#ffb000;border-color:#ffb00088;font-weight:700', text: '-WITHDRAW', onclick: () => openTreasuryWireModal('WITHDRAW', portObj) }),
-      h('button', { style: 'color:#5aa9ff;border-color:#5aa9ff88', text: 'MONTHLY STATEMENT', onclick: openMonthlyStatementPreview }),
-      h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'EMAIL REPORT', onclick: sendMonthlyStatementEmail }),
-      h('button', { text: 'EMSX <GO>', onclick: () => ctx.run('EMSX') })
-    );
+    latestPortSnap = (pRes.ok && pRes.data) || {};
 
     if (!pRes.ok || !pRes.data) {
       sc.append(h('div', { class: 'na', text: `N/A (${pRes.error || 'portfolio service unavailable'})` }));
@@ -1835,6 +1943,29 @@ export function mountPORT(body, ctx) {
       )
     );
 
+    // Working / Queued DMA Orders
+    const workingOrders = Array.isArray(port.workingOrders) ? port.workingOrders : [];
+    if (workingOrders.length) {
+      sc.append(
+        h('div', { class: 'tb', style: 'background:#070707;margin-top:6px' }, h('span', { class: 'lbl', text: `ACTIVE WORKING / QUEUED DMA ORDERS (${workingOrders.length})` })),
+        h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Order ID', 'Time', 'Side', 'Type', 'Ticker', 'Qty', 'Price', 'Reserved (IDR)', 'Status', 'Action'].map(x => h('th', { text: x })))),
+          h('tbody', null, workingOrders.map(o => h('tr', { class: 'row' },
+            h('td', { class: 'l mu', text: String(o.id || '').slice(-10) }),
+            h('td', { class: 'l mu', text: fmtTime(o.timestamp) }),
+            h('td', { class: (o.type === 'BUY' ? 'up' : 'dn') + ' sym', text: o.type }),
+            h('td', { class: 'lb', text: o.orderType || 'MARKET' }),
+            h('td', { class: 'l sym am', text: o.symbol }),
+            h('td', { text: fmtNum(o.qty, o.qty < 1 ? 4 : 0) }),
+            h('td', { class: 'am', text: o.currency === 'USD' ? '$' + fmtPx(o.limitPrice || o.price) : fmtIdr(o.limitPrice || o.price) }),
+            h('td', { text: fmtIdr(o.reservedCash || o.totalValueIdr || 0) }),
+            h('td', { class: 'am sym', text: o.status || 'WORKING' }),
+            h('td', null, h('button', { style: 'color:var(--dn)', text: 'CANCEL', onclick: () => cancelWorkingOrder(o.id) }))
+          )))
+        )
+      );
+    }
+
     // Trade Blotter Snapshot
     if (trades.length) {
       sc.append(
@@ -1903,32 +2034,90 @@ export function mountEMSX(body, ctx) {
   const sc = h('div', { class: 'pb', style: 'padding:6px' });
   body.append(tb, sc);
 
-  let side = 'BUY', ordType = 'MARKET', tif = 'GTC', sym = ctx.symbol || 'SPCX', qty = 1, limPx = '';
+  function smartDefaultQtyNum(s) {
+    const u = String(s || '').toUpperCase();
+    if (/^BTC(-USD|USDT|$)/.test(u)) return 0.05;
+    if (/^ETH(-USD|USDT|$)/.test(u) || u === 'GC=F' || u === 'GOLD') return 0.5;
+    if (u.endsWith('.JK')) return 100;
+    return 1;
+  }
+
+  let side = 'BUY', ordType = 'MARKET', tif = 'GTC';
+  let sym = (ctx.symbol && ctx.symbol !== 'SPCX') ? ctx.symbol : 'BTCUSDT';
+  let qty = smartDefaultQtyNum(sym), limPx = '', lastBanner = null;
 
   function fmtIdr(v) { return 'Rp ' + Math.round(Number(v) || 0).toLocaleString('id-ID'); }
 
+  async function fetchLiveQuoteObj(ticker) {
+    const s = String(ticker || '').trim().toUpperCase();
+    let q = {};
+    try {
+      const qEnv = await get('quote', { symbols: s }, 2000);
+      if (qEnv.ok && Array.isArray(qEnv.data) && qEnv.data[0] && Number(qEnv.data[0].price) > 0) {
+        return { q: qEnv.data[0], env: qEnv };
+      }
+    } catch {}
+    try {
+      const raw = await getRaw('/api/quote/' + encodeURIComponent(s));
+      if (raw.ok && raw.data && Number(raw.data.price) > 0) {
+        return { q: raw.data, env: { ok: true, source: 'quote-api', ts: Date.now(), mode: 'LIVE' } };
+      }
+    } catch {}
+    return { q, env: { ok: false, source: 'emsx-dma', ts: Date.now(), mode: 'LIVE' } };
+  }
+
+  async function cancelOrder(orderId) {
+    try {
+      const r = await apiFetch('/api/portfolio/orders/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId })
+      }, 12000);
+      const j = await r.json();
+      lastBanner = (r.ok && j.success)
+        ? { tone: 'am', text: `CANCELLED // ${j.message || orderId}` }
+        : { tone: 'dn', text: `CANCEL REJECT // ${j.error || ('HTTP ' + r.status)}` };
+    } catch (e) {
+      lastBanner = { tone: 'dn', text: 'CANCEL ERROR // ' + e.message };
+    }
+    render();
+  }
+
   async function render() {
-    const [pRes, qEnv] = await Promise.all([
+    const [pRes, qPack] = await Promise.all([
       getRaw('/api/portfolio'),
-      get('quote', { symbols: sym }, 2000)
+      fetchLiveQuoteObj(sym)
     ]);
-    ctx.status(qEnv.ok ? qEnv : { source: 'emsx-dma', ts: Date.now(), mode: 'LIVE' });
+    ctx.status(qPack.env.ok ? qPack.env : { source: 'emsx-dma', ts: Date.now(), mode: 'LIVE' });
     sc.textContent = '';
 
-    const port = (pRes.ok && pRes.data) || { cash: 200000000, usdRate: 17968, holdings: [], trades: [], workingOrders: [] };
-    const q = (qEnv.ok && Array.isArray(qEnv.data) && qEnv.data[0]) || {};
-    const usdRate = port.usdRate || 17968;
-    const isIndo = sym.endsWith('.JK');
-    const rawPx = Number(ordType === 'LIMIT' && limPx ? limPx : (q.price || 151.20));
+    const port = (pRes.ok && pRes.data) || { cash: 200000000, usdRate: 18218, holdings: [], trades: [], workingOrders: [] };
+    const q = qPack.q || {};
+    const usdRate = port.usdRate || 18218;
+    const isIndo = /\.JK$/i.test(sym) || /^(USDIDR|SGDIDR)=X$/i.test(sym) || q.currency === 'IDR';
+    const livePx = Number(q.price) || 0;
+    const rawPx = Number(ordType !== 'MARKET' && limPx ? limPx : livePx);
     const pxIdr = isIndo ? rawPx : rawPx * usdRate;
     const grossIdr = qty * pxIdr;
     const feeIdr = Math.round(grossIdr * 0.0015);
     const netIdr = side === 'BUY' ? grossIdr + feeIdr : grossIdr - feeIdr;
     const postCash = side === 'BUY' ? (port.cash || 0) - netIdr : (port.cash || 0) + netIdr;
 
+    if (lastBanner) {
+      const bCols = {
+        up: 'color:#00d26a;background:#051a0f;border:1px solid #00d26a66',
+        am: 'color:#ffb000;background:#1a1205;border:1px solid #ffb00066',
+        dn: 'color:#ff5a52;background:#1f0707;border:1px solid #ff3b3088'
+      };
+      sc.append(h('div', { style: `display:flex;justify-content:space-between;align-items:center;padding:5px 8px;margin-bottom:8px;font-size:11px;font-weight:700;${bCols[lastBanner.tone] || bCols.am}` },
+        h('span', { text: lastBanner.text }),
+        h('button', { style: 'font-size:10px;padding:0 5px', text: 'X', onclick: () => { lastBanner = null; render(); } })
+      ));
+    }
+
     const iSym = h('input', { value: sym, style: 'width:100px;text-transform:uppercase;font-weight:bold' });
     const iQty = h('input', { type: 'number', value: String(qty), step: 'any', style: 'width:90px' });
-    const iLim = h('input', { type: 'number', value: String(limPx || (q.price || '')), step: 'any', style: 'width:100px' });
+    const iLim = h('input', { type: 'number', value: String(limPx || (livePx > 0 ? livePx : '')), step: 'any', style: 'width:100px' });
 
     const setCashFraction = frac => {
       if (pxIdr <= 0) return;
@@ -1939,23 +2128,61 @@ export function mountEMSX(body, ctx) {
     };
 
     const submitOrder = async () => {
-      sym = iSym.value.trim().toUpperCase() || sym;
-      qty = parseFloat(iQty.value) || qty;
-      const r = await apiFetch('/api/portfolio/trade', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: side,
-          symbol: sym,
-          qty,
-          orderType: ordType,
-          limitPrice: ordType === 'LIMIT' ? parseFloat(iLim.value) : null,
-          tif,
-          allowQueue: true
-        })
-      }, 15000);
-      const j = await r.json();
-      if (!r.ok && j.error) alert('EMSX Rejection: ' + j.error);
+      const nextSym = iSym.value.trim().toUpperCase() || sym;
+      const nextQty = parseFloat(iQty.value);
+      if (!Number.isFinite(nextQty) || nextQty <= 0) {
+        lastBanner = { tone: 'dn', text: 'EMSX REJECT // Quantity must be greater than zero.' };
+        render();
+        return;
+      }
+      const symChanged = nextSym !== sym;
+      sym = nextSym;
+      qty = nextQty;
+      let orderQuote = q;
+      if (symChanged || !(Number(orderQuote.price) > 0)) {
+        const fresh = await fetchLiveQuoteObj(sym);
+        orderQuote = fresh.q || {};
+      }
+      const ordIsIndo = /\.JK$/i.test(sym) || /^(USDIDR|SGDIDR)=X$/i.test(sym) || orderQuote.currency === 'IDR';
+      const ordCcy = orderQuote.currency || (ordIsIndo ? 'IDR' : 'USD');
+      const ordPx = Number(orderQuote.price) > 0 ? Number(orderQuote.price) : undefined;
+      const limVal = ordType === 'LIMIT' ? parseFloat(iLim.value) : null;
+      const stopVal = ordType === 'STOP' ? parseFloat(iLim.value) : null;
+
+      try {
+        const r = await apiFetch('/api/portfolio/trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: side,
+            symbol: sym,
+            qty,
+            price: ordPx,
+            currency: ordCcy,
+            name: orderQuote.name || undefined,
+            category: orderQuote.category || undefined,
+            orderType: ordType,
+            limitPrice: Number.isFinite(limVal) ? limVal : null,
+            stopPrice: Number.isFinite(stopVal) ? stopVal : null,
+            tif,
+            queueIfClosed: true,
+            allowQueue: true
+          })
+        }, 15000);
+        const j = await r.json();
+        if (r.ok && j.success) {
+          const st = j.trade?.status || 'FILLED';
+          const pxFmt = j.trade?.currency === 'USD' ? ('$' + fmtPx(j.trade.price)) : fmtIdr(j.trade?.price);
+          lastBanner = {
+            tone: st === 'FILLED' ? 'up' : 'am',
+            text: `${st} // ${side} ${qty} ${j.trade?.symbol || sym} @ ${pxFmt} (${fmtIdr(j.trade?.totalValueIdr || 0)}) [${j.schedule?.exchange || 'EMSX'}]`
+          };
+        } else {
+          lastBanner = { tone: 'dn', text: `EMSX REJECT // ${j.error || ('HTTP ' + r.status)}` };
+        }
+      } catch (e) {
+        lastBanner = { tone: 'dn', text: 'EMSX ERROR // ' + e.message };
+      }
       render();
     };
 
@@ -1969,9 +2196,9 @@ export function mountEMSX(body, ctx) {
             h('button', { class: side === 'SELL' ? 'on' : '', style: side === 'SELL' ? 'background:var(--dn);color:#fff;font-weight:bold' : '', text: 'SELL / CLOSE', onclick: () => { side = 'SELL'; render(); } })
           ),
           h('div', { class: 'k', text: 'SECURITY TICKER' }),
-          h('div', { class: 'v' }, iSym, h('button', { style: 'margin-left:4px', text: 'QUOTE', onclick: () => { sym = iSym.value.trim().toUpperCase(); render(); } })),
+          h('div', { class: 'v' }, iSym, h('button', { style: 'margin-left:4px', text: 'QUOTE', onclick: () => { const s = iSym.value.trim().toUpperCase(); if (s && s !== sym) { sym = s; qty = smartDefaultQtyNum(s); limPx = ''; } render(); } })),
           h('div', { class: 'k', text: 'LIVE MARKET PRICE' }),
-          h('div', { class: 'v am sym', text: `${isIndo ? fmtIdr(q.price) : '$' + fmtPx(q.price)} (${fmtIdr(pxIdr)})` }),
+          h('div', { class: 'v am sym', text: livePx > 0 ? `${isIndo ? fmtIdr(livePx) : '$' + fmtPx(livePx)} (${fmtIdr(pxIdr)})` : 'RESOLVING LIVE QUOTE ON EXEC' }),
           h('div', { class: 'k', text: 'ORDER TYPE' }),
           h('div', { class: 'v' },
             ...['MARKET', 'LIMIT', 'STOP'].map(ot => h('button', { class: ordType === ot ? 'on' : '', style: 'margin-right:3px', text: ot, onclick: () => { ordType = ot; render(); } }))
@@ -2008,6 +2235,26 @@ export function mountEMSX(body, ctx) {
       )
     );
     sc.append(formGrid);
+
+    if (Array.isArray(port.workingOrders) && port.workingOrders.length) {
+      sc.append(
+        h('div', { class: 'tb', style: 'background:#070707;margin-bottom:4px' }, h('span', { class: 'lbl', text: `EMSX WORKING / QUEUED ORDERS (${port.workingOrders.length})` })),
+        h('table', { class: 't', style: 'margin-bottom:8px' },
+          h('thead', null, h('tr', null, ['Order ID', 'Time', 'Side', 'Type', 'Symbol', 'Qty', 'Price', 'Status', 'Action'].map(x => h('th', { text: x })))),
+          h('tbody', null, port.workingOrders.map(o => h('tr', { class: 'row' },
+            h('td', { class: 'l mu', text: String(o.id || '').slice(-10) }),
+            h('td', { class: 'l mu', text: fmtTime(o.timestamp) }),
+            h('td', { class: (o.type === 'BUY' ? 'up' : 'dn') + ' sym', text: o.type }),
+            h('td', { class: 'lb', text: o.orderType || 'MARKET' }),
+            h('td', { class: 'l sym am', text: o.symbol }),
+            h('td', { text: fmtNum(o.qty, o.qty < 1 ? 4 : 0) }),
+            h('td', { class: 'am', text: o.currency === 'USD' ? '$' + fmtPx(o.limitPrice || o.price) : fmtIdr(o.limitPrice || o.price) }),
+            h('td', { class: 'am sym', text: o.status || 'WORKING' }),
+            h('td', null, h('button', { style: 'color:var(--dn)', text: 'CANCEL', onclick: () => cancelOrder(o.id) }))
+          )))
+        )
+      );
+    }
 
     if (Array.isArray(port.trades) && port.trades.length) {
       sc.append(
