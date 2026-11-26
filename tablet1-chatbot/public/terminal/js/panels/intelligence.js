@@ -2262,6 +2262,17 @@ async function fetchRoeSparkCandles(sym) {
   return [];
 }
 
+function formatBbgUtcStamp() {
+  const d = new Date();
+  const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const mon = months[d.getUTCMonth()];
+  const yyyy = d.getUTCFullYear();
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${dd} ${mon} ${yyyy}  ${hh}:${mm} UTC`;
+}
+
 function renderRoeCardCanvas(canvas, cfg = {}, candles = []) {
   const isStory = cfg.aspect === '9:16';
   const W = isStory ? 1080 : 1200;
@@ -2285,140 +2296,220 @@ function renderRoeCardCanvas(canvas, cfg = {}, candles = []) {
   const fxRate = Number(cfg.fxRateIdr) > 10000 ? Number(cfg.fxRateIdr) : 18218;
   const pnlUsd = Number(cfg.pnlUsd) || 0;
   const pnlIdr = Number(cfg.pnlIdr) || Math.round(pnlUsd * fxRate);
-  const setup = String(cfg.setup || 'QUANT_EXECUTION').toUpperCase();
-  const statusTag = String(cfg.status || 'OPEN').toUpperCase().startsWith('OPEN') ? 'LIVE OPEN POSITION' : 'REALIZED EXECUTION';
-  const confScore = Number(cfg.hybridConf || cfg.pMath || 0);
+  const isOpen = String(cfg.status || 'OPEN').toUpperCase().startsWith('OPEN');
 
   const themes = {
-    CLASSIC: {
-      bg0: '#030508', bg1: '#080d16', accent: '#ff6600', accentText: '#000000',
-      border: '#253042', subText: '#8e9cb2', cardBg: '#090e17', grid: 'rgba(255,255,255,0.032)'
+    BLACK: {
+      bg: '#000000',
+      mastheadBg: '#0c0d10',
+      mastheadInk: '#ffffff',
+      mastheadSub: '#9aa0a6',
+      panelBg: '#000000',
+      secHdrBg: '#121418',
+      footerBg: '#0a0b0e',
+      border: '#2a2e35',
+      rule: '#1c2026',
+      grid: '#181c22',
+      ink: '#ffffff',
+      muted: '#9aa0a6',
+      subtle: '#6e7681',
+      amber: '#ff9900',
+      orange: '#ff6600',
+      gain: '#00c853',
+      loss: '#e53935',
+      gainFill: 'rgba(0, 200, 83, 0.08)',
+      lossFill: 'rgba(229, 57, 53, 0.09)',
+      tagGainInk: '#000000',
+      tagLossInk: '#ffffff',
+      tagAmberInk: '#000000'
     },
-    GOLD: {
-      bg0: '#070603', bg1: '#120e05', accent: '#ffb000', accentText: '#000000',
-      border: '#59410d', subText: '#cbb682', cardBg: '#0e0b05', grid: 'rgba(255,176,0,0.04)'
+    LAUNCHPAD: {
+      bg: '#0b0e14',
+      mastheadBg: '#121722',
+      mastheadInk: '#f3f5f8',
+      mastheadSub: '#8a94a6',
+      panelBg: '#0e131b',
+      secHdrBg: '#161d29',
+      footerBg: '#090c11',
+      border: '#263042',
+      rule: '#1b2230',
+      grid: '#192130',
+      ink: '#f3f5f8',
+      muted: '#8a94a6',
+      subtle: '#647084',
+      amber: '#ff9e00',
+      orange: '#ff6600',
+      gain: '#16c784',
+      loss: '#ea3943',
+      gainFill: 'rgba(22, 199, 132, 0.08)',
+      lossFill: 'rgba(234, 57, 67, 0.09)',
+      tagGainInk: '#000000',
+      tagLossInk: '#ffffff',
+      tagAmberInk: '#000000'
     },
-    MATRIX: {
-      bg0: '#02080d', bg1: '#051521', accent: '#00e5ff', accentText: '#000000',
-      border: '#114a5c', subText: '#7ec8d9', cardBg: '#06121c', grid: 'rgba(0,229,255,0.04)'
+    PAPER: {
+      bg: '#ffffff',
+      mastheadBg: '#000000',
+      mastheadInk: '#ffffff',
+      mastheadSub: '#a8b0ba',
+      panelBg: '#ffffff',
+      secHdrBg: '#f3f4f6',
+      footerBg: '#f7f8fa',
+      border: '#cfd6df',
+      rule: '#e5e9ef',
+      grid: '#eceff3',
+      ink: '#11161c',
+      muted: '#5a6472',
+      subtle: '#7a8594',
+      amber: '#d95300',
+      orange: '#ff6600',
+      gain: '#00873e',
+      loss: '#c62828',
+      gainFill: 'rgba(0, 135, 62, 0.07)',
+      lossFill: 'rgba(198, 40, 40, 0.07)',
+      tagGainInk: '#ffffff',
+      tagLossInk: '#ffffff',
+      tagAmberInk: '#ffffff'
     }
   };
-  const th = themes[cfg.theme] || themes.CLASSIC;
-  const gainCol = isGain ? '#00d26a' : '#ff453a';
+  const th = themes[cfg.theme] || themes.BLACK;
+  const gainCol = isGain ? th.gain : th.loss;
+  const sideCol = dir === 'LONG' ? th.gain : th.loss;
+  const sideInk = dir === 'LONG' ? th.tagGainInk : th.tagLossInk;
+  const SANS = '"Helvetica Neue", "Segoe UI", Arial, sans-serif';
+  const MONO = 'Consolas, "JetBrains Mono", "Courier New", monospace';
 
-  // Background gradient
-  const bgGrad = ctx.createLinearGradient(0, 0, W, H);
-  bgGrad.addColorStop(0, th.bg0);
-  bgGrad.addColorStop(1, th.bg1);
-  ctx.fillStyle = bgGrad;
+  // Flat solid background (authentic Bloomberg matte surface — no neon glow or gradients)
+  ctx.fillStyle = th.bg;
   ctx.fillRect(0, 0, W, H);
 
-  // Ambient radial glow behind ROE readout
-  const radGlow = ctx.createRadialGradient(
-    isStory ? W * 0.5 : W * 0.34,
-    isStory ? H * 0.30 : H * 0.44,
-    20,
-    isStory ? W * 0.5 : W * 0.34,
-    isStory ? H * 0.30 : H * 0.44,
-    isStory ? 520 : 390
-  );
-  radGlow.addColorStop(0, isGain ? 'rgba(0, 210, 106, 0.16)' : 'rgba(255, 69, 58, 0.16)');
-  radGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-  ctx.fillStyle = radGlow;
-  ctx.fillRect(0, 0, W, H);
+  const padX = isStory ? 56 : 40;
+  const mastH = isStory ? 104 : 56;
+  const footH = isStory ? 74 : 40;
+  const utcStr = formatBbgUtcStamp();
 
-  // Precision institutional grid
-  ctx.strokeStyle = th.grid;
-  ctx.lineWidth = 1;
-  const gStep = isStory ? 60 : 48;
-  for (let gx = gStep; gx < W; gx += gStep) {
-    ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
-  }
-  for (let gy = gStep; gy < H; gy += gStep) {
-    ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
-  }
-
-  // Outer institutional frame
+  // 1. Authentic Bloomberg Top Masthead
+  ctx.fillStyle = th.mastheadBg;
+  ctx.fillRect(0, 0, W, mastH);
+  ctx.fillStyle = th.orange;
+  ctx.fillRect(0, 0, W, isStory ? 5 : 3);
   ctx.strokeStyle = th.border;
-  ctx.lineWidth = 2;
-  ctx.strokeRect(16, 16, W - 32, H - 32);
-  ctx.strokeStyle = th.accent;
-  ctx.lineWidth = 2;
-  // Corner brackets
-  const cb = 28;
-  [
-    [16, 16 + cb, 16, 16, 16 + cb, 16],
-    [W - 16 - cb, 16, W - 16, 16, W - 16, 16 + cb],
-    [16, H - 16 - cb, 16, H - 16, 16 + cb, H - 16],
-    [W - 16 - cb, H - 16, W - 16, H - 16, W - 16, H - 16 - cb]
-  ].forEach(([x1, y1, x2, y2, x3, y3]) => {
-    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.lineTo(x3, y3); ctx.stroke();
-  });
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, mastH + 0.5); ctx.lineTo(W, mastH + 0.5); ctx.stroke();
 
-  const padX = isStory ? 64 : 52;
-  const topY = isStory ? 68 : 44;
+  ctx.fillStyle = th.mastheadInk;
+  ctx.font = `700 ${isStory ? 34 : 21}px ${SANS}`;
+  ctx.fillText('Bloomberg', padX, isStory ? 66 : 37);
+  const bbgW = ctx.measureText('Bloomberg').width;
 
-  // Top Header: [B] Monogram + BLOOMBERG TERMINAL
-  ctx.fillStyle = th.accent;
-  ctx.fillRect(padX, topY, isStory ? 48 : 38, isStory ? 48 : 38);
-  ctx.fillStyle = th.accentText;
-  ctx.font = `900 ${isStory ? 30 : 24}px Consolas, "JetBrains Mono", monospace`;
-  ctx.fillText('B', padX + (isStory ? 14 : 11), topY + (isStory ? 35 : 28));
+  ctx.fillStyle = th.border;
+  ctx.fillRect(padX + bbgW + (isStory ? 18 : 13), isStory ? 38 : 20, 1.5, isStory ? 34 : 21);
 
-  ctx.fillStyle = '#ffffff';
-  ctx.font = `bold ${isStory ? 28 : 21}px Consolas, "JetBrains Mono", monospace`;
-  ctx.fillText('BLOOMBERG TERMINAL', padX + (isStory ? 64 : 50), topY + (isStory ? 24 : 18));
-  ctx.fillStyle = th.accent;
-  ctx.font = `bold ${isStory ? 16 : 12.5}px Consolas, "JetBrains Mono", monospace`;
-  ctx.fillText('QUANTITATIVE FUTURES EXECUTION DESK // VERIFIED ROE RECORD', padX + (isStory ? 64 : 50), topY + (isStory ? 46 : 35));
+  ctx.fillStyle = th.mastheadSub;
+  ctx.font = `600 ${isStory ? 21 : 12.5}px ${SANS}`;
+  ctx.fillText('TERMINAL', padX + bbgW + (isStory ? 36 : 25), isStory ? 63 : 35);
 
-  const utcStr = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
-  const refHash = 'REF #BBG-' + Math.abs(
-    `${sym}${dir}${entry}${mark}`.split('').reduce((a, ch) => ((a << 5) - a + ch.charCodeAt(0)) | 0, 0)
-  ).toString(16).toUpperCase().padStart(6, '0').slice(0, 6);
+  // Subtle Bloomberg function key chip (PNL)
+  const fnX = padX + bbgW + (isStory ? 168 : 112);
+  const fnW = isStory ? 78 : 48;
+  const fnH = isStory ? 34 : 21;
+  const fnY = isStory ? 38 : 20;
+  ctx.fillStyle = '#241700';
+  ctx.fillRect(fnX, fnY, fnW, fnH);
+  ctx.strokeStyle = '#ff9900';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(fnX + 0.5, fnY + 0.5, fnW - 1, fnH - 1);
+  ctx.fillStyle = '#ff9900';
+  ctx.font = `700 ${isStory ? 18 : 11}px ${MONO}`;
+  ctx.textAlign = 'center';
+  ctx.fillText('PNL', fnX + fnW / 2, fnY + (isStory ? 23 : 14.5));
+
   ctx.textAlign = 'right';
-  ctx.fillStyle = th.subText;
-  ctx.font = `bold ${isStory ? 16 : 12.5}px Consolas, "JetBrains Mono", monospace`;
-  ctx.fillText(utcStr, W - padX, topY + (isStory ? 22 : 17));
-  ctx.fillStyle = th.accent;
-  ctx.fillText(refHash, W - padX, topY + (isStory ? 45 : 35));
+  ctx.fillStyle = th.mastheadSub;
+  ctx.font = `500 ${isStory ? 20 : 12.5}px ${MONO}`;
+  ctx.fillText(utcStr, W - padX, isStory ? 63 : 35);
   ctx.textAlign = 'left';
 
-  // Divider line
-  const divY = topY + (isStory ? 68 : 52);
-  ctx.strokeStyle = th.border;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.moveTo(padX, divY); ctx.lineTo(W - padX, divY); ctx.stroke();
+  // 2. Security Header Band (Ticker + Perpetual Exchange + Side/Leverage)
+  const secTop = mastH;
+  const secH = isStory ? 132 : 72;
+  const secBot = secTop + secH;
 
-  // Helper to draw embedded sparkline chart inside a rect
-  const drawEmbeddedChart = (cx, cy, cw, ch) => {
-    ctx.fillStyle = th.cardBg;
+  ctx.fillStyle = th.amber;
+  ctx.font = `700 ${isStory ? 54 : 30}px ${MONO}`;
+  ctx.fillText(sym, padX, secTop + (isStory ? 68 : 41));
+  const symW = ctx.measureText(sym).width;
+
+  ctx.fillStyle = th.muted;
+  ctx.font = `600 ${isStory ? 26 : 14.5}px ${SANS}`;
+  ctx.fillText('PERP', padX + symW + (isStory ? 16 : 10), secTop + (isStory ? 66 : 40));
+
+  ctx.fillStyle = th.subtle;
+  ctx.font = `600 ${isStory ? 20 : 11.5}px ${SANS}`;
+  ctx.fillText('BINANCE FUTURES  •  USD-M PERPETUAL', padX, secTop + (isStory ? 106 : 60));
+
+  // Right-aligned sharp Bloomberg tags (Side/Lev + Margin Mode)
+  const badgeTxt = `${dir} ${lev}X`;
+  const modeTxt = marginMode;
+  ctx.font = `700 ${isStory ? 24 : 13.5}px ${MONO}`;
+  const bw = ctx.measureText(badgeTxt).width + (isStory ? 34 : 22);
+  ctx.font = `600 ${isStory ? 20 : 11.5}px ${MONO}`;
+  const mw = ctx.measureText(modeTxt).width + (isStory ? 28 : 18);
+  const tagH = isStory ? 44 : 26;
+  const tagY = secTop + (isStory ? 34 : 23);
+
+  ctx.fillStyle = th.secHdrBg;
+  ctx.fillRect(W - padX - mw, tagY, mw, tagH);
+  ctx.strokeStyle = th.border;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(W - padX - mw + 0.5, tagY + 0.5, mw - 1, tagH - 1);
+  ctx.fillStyle = th.muted;
+  ctx.font = `600 ${isStory ? 20 : 11.5}px ${MONO}`;
+  ctx.textAlign = 'center';
+  ctx.fillText(modeTxt, W - padX - mw / 2, tagY + (isStory ? 29 : 17));
+
+  const bxSide = W - padX - mw - (isStory ? 12 : 8) - bw;
+  ctx.fillStyle = sideCol;
+  ctx.fillRect(bxSide, tagY, bw, tagH);
+  ctx.fillStyle = sideInk;
+  ctx.font = `700 ${isStory ? 24 : 13.5}px ${MONO}`;
+  ctx.fillText(badgeTxt, bxSide + bw / 2, tagY + (isStory ? 30 : 17.5));
+  ctx.textAlign = 'left';
+
+  ctx.strokeStyle = th.border;
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(padX, secBot + 0.5); ctx.lineTo(W - padX, secBot + 0.5); ctx.stroke();
+
+  // Helper: Authentic Bloomberg GP Price Chart Panel
+  const drawBloombergChart = (cx, cy, cw, ch) => {
+    ctx.fillStyle = th.panelBg;
     ctx.fillRect(cx, cy, cw, ch);
     ctx.strokeStyle = th.border;
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(cx, cy, cw, ch);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cx + 0.5, cy + 0.5, cw - 1, ch - 1);
 
-    ctx.fillStyle = th.subText;
-    ctx.font = `bold ${isStory ? 16 : 12}px Consolas, "JetBrains Mono", monospace`;
-    ctx.fillText(`${sym} PRICE TRAJECTORY (15M FEED • ENTRY TO MARK)`, cx + 16, cy + (isStory ? 28 : 22));
+    const hdrH = isStory ? 50 : 32;
+    ctx.fillStyle = th.secHdrBg;
+    ctx.fillRect(cx + 1, cy + 1, cw - 2, hdrH);
+    ctx.strokeStyle = th.border;
+    ctx.beginPath(); ctx.moveTo(cx, cy + hdrH + 0.5); ctx.lineTo(cx + cw, cy + hdrH + 0.5); ctx.stroke();
 
-    let series = Array.isArray(candles) ? candles.slice(-36).map(c => ({
+    let series = Array.isArray(candles) ? candles.slice(-40).map(c => ({
       o: Number(c.o ?? c.open ?? c.c ?? c.close),
       h: Number(c.h ?? c.high ?? c.c ?? c.close),
       l: Number(c.l ?? c.low ?? c.c ?? c.close),
       c: Number(c.c ?? c.close ?? 0)
     })).filter(c => c.c > 0) : [];
 
-    // Ensure chart reflects live mark & entry if klines unavailable
     if (series.length < 4 && entry > 0) {
       series = [];
-      const steps = 28;
+      const steps = 32;
       for (let i = 0; i < steps; i++) {
         const t = i / (steps - 1);
-        const wave = Math.sin(i * 0.65) * Math.abs(mark - entry || entry * 0.004) * 0.18 * (1 - t * 0.5);
-        const cl = entry + (mark - entry) * Math.pow(t, 0.88) + wave;
+        const wave = Math.sin(i * 0.6) * Math.abs(mark - entry || entry * 0.004) * 0.16 * (1 - t * 0.5);
+        const cl = entry + (mark - entry) * Math.pow(t, 0.9) + wave;
         const op = i === 0 ? entry : series[i - 1].c;
-        const sp = Math.max(Math.abs(cl - op) * 0.6, entry * 0.0012);
+        const sp = Math.max(Math.abs(cl - op) * 0.55, entry * 0.001);
         series.push({ o: op, c: cl, h: Math.max(op, cl) + sp, l: Math.min(op, cl) - sp });
       }
     } else if (series.length >= 4 && mark > 0) {
@@ -2430,243 +2521,266 @@ function renderRoeCardCanvas(canvas, cfg = {}, candles = []) {
       };
     }
 
+    let rawHi = 0, rawLo = Infinity;
+    series.forEach(b => { rawHi = Math.max(rawHi, b.h); rawLo = Math.min(rawLo, b.l); });
+
+    ctx.fillStyle = th.amber;
+    ctx.font = `700 ${isStory ? 19 : 11.5}px ${SANS}`;
+    ctx.fillText(`${sym}  •  15M PRICE`, cx + (isStory ? 20 : 14), cy + (isStory ? 32 : 20.5));
+
+    if (series.length >= 2 && Number.isFinite(rawLo) && rawHi > 0) {
+      ctx.textAlign = 'right';
+      ctx.fillStyle = th.muted;
+      ctx.font = `500 ${isStory ? 17 : 10.5}px ${MONO}`;
+      ctx.fillText(`H ${fmtPx(rawHi)}   L ${fmtPx(rawLo)}`, cx + cw - (isStory ? 20 : 14), cy + (isStory ? 32 : 20.5));
+      ctx.textAlign = 'left';
+    }
+
     if (series.length < 2) return;
-    const pL = cx + 16, pR = cx + cw - (isStory ? 116 : 96), pT = cy + (isStory ? 46 : 36), pB = cy + ch - 18;
-    const pW = pR - pL, pH = pB - pT;
-    let lo = Infinity, hi = -Infinity;
-    series.forEach(b => { lo = Math.min(lo, b.l); hi = Math.max(hi, b.h); });
+
+    const axisW = isStory ? 148 : 98;
+    const pL = cx + (isStory ? 20 : 14);
+    const pR = cx + cw - axisW;
+    const pT = cy + hdrH + (isStory ? 28 : 18);
+    const pB = cy + ch - (isStory ? 28 : 18);
+    const pW = pR - pL;
+    const pH = pB - pT;
+
+    let lo = rawLo, hi = rawHi;
     if (entry > 0) { lo = Math.min(lo, entry); hi = Math.max(hi, entry); }
     if (mark > 0) { lo = Math.min(lo, mark); hi = Math.max(hi, mark); }
     const span = Math.max(1e-8, hi - lo);
-    lo -= span * 0.12;
-    hi += span * 0.12;
+    lo -= span * 0.14;
+    hi += span * 0.14;
     const yOf = px => pT + ((hi - px) / (hi - lo)) * pH;
 
-    // Shaded zone between Entry and Mark
-    if (entry > 0 && mark > 0) {
-      const yE = yOf(entry), yM = yOf(mark);
-      ctx.fillStyle = isGain ? 'rgba(0, 210, 106, 0.09)' : 'rgba(255, 69, 58, 0.09)';
-      ctx.fillRect(pL, Math.min(yE, yM), pW, Math.max(2, Math.abs(yM - yE)));
+    // Right price axis separator
+    ctx.strokeStyle = th.rule;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(pR + 0.5, cy + hdrH); ctx.lineTo(pR + 0.5, cy + ch); ctx.stroke();
+
+    // Subtle horizontal gridlines + price axis labels
+    const ticks = 4;
+    ctx.font = `500 ${isStory ? 17 : 10.5}px ${MONO}`;
+    for (let i = 0; i <= ticks; i++) {
+      const gy = pT + (i / ticks) * pH;
+      const gp = hi - (i / ticks) * (hi - lo);
+      ctx.strokeStyle = th.grid;
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(pL, Math.round(gy) + 0.5); ctx.lineTo(pR, Math.round(gy) + 0.5); ctx.stroke();
+      ctx.fillStyle = th.subtle;
+      ctx.fillText(fmtPx(gp), pR + (isStory ? 12 : 8), gy + (isStory ? 6 : 3.5));
     }
 
-    // Mini candles
+    // Subtle shaded zone between Entry and Mark
+    if (entry > 0 && mark > 0) {
+      const yE = yOf(entry), yM = yOf(mark);
+      ctx.fillStyle = isGain ? th.gainFill : th.lossFill;
+      ctx.fillRect(pL, Math.min(yE, yM), pW, Math.max(1, Math.abs(yM - yE)));
+    }
+
+    // Crisp Bloomberg Candlesticks
     const step = pW / series.length;
     series.forEach((b, idx) => {
       const x = pL + idx * step + step * 0.5;
       const up = b.c >= b.o;
-      ctx.strokeStyle = up ? '#00d26a' : '#ff453a';
-      ctx.fillStyle = up ? '#00d26a' : '#ff453a';
-      ctx.lineWidth = 1.4;
+      const col = up ? th.gain : th.loss;
+      ctx.strokeStyle = col;
+      ctx.fillStyle = col;
+      ctx.lineWidth = isStory ? 2 : 1.3;
       ctx.beginPath(); ctx.moveTo(x, yOf(b.h)); ctx.lineTo(x, yOf(b.l)); ctx.stroke();
       const bt = Math.min(yOf(b.o), yOf(b.c));
-      const bh = Math.max(2, Math.abs(yOf(b.c) - yOf(b.o)));
-      ctx.fillRect(x - Math.max(1.5, step * 0.3), bt, Math.max(3, step * 0.6), bh);
+      const bh = Math.max(isStory ? 2.5 : 1.5, Math.abs(yOf(b.c) - yOf(b.o)));
+      const bwC = Math.max(isStory ? 5 : 3, step * 0.58);
+      ctx.fillRect(x - bwC / 2, bt, bwC, bh);
     });
 
-    // Entry dashed line
+    // Entry & Mark horizontal lines + solid right-axis Bloomberg price flags (anti-overlap)
+    const flagH = isStory ? 30 : 20;
+    let yEntFlag = entry > 0 ? yOf(entry) : -999;
+    let yMrkFlag = mark > 0 ? yOf(mark) : -999;
+    if (entry > 0 && mark > 0 && Math.abs(yEntFlag - yMrkFlag) < flagH + 3) {
+      if (yMrkFlag <= yEntFlag) {
+        yMrkFlag = Math.max(pT + flagH / 2, yMrkFlag - (flagH + 3 - Math.abs(yEntFlag - yMrkFlag)) / 2);
+        yEntFlag = yMrkFlag + flagH + 3;
+      } else {
+        yEntFlag = Math.max(pT + flagH / 2, yEntFlag - (flagH + 3 - Math.abs(yEntFlag - yMrkFlag)) / 2);
+        yMrkFlag = yEntFlag + flagH + 3;
+      }
+    }
+
     if (entry > 0) {
       const yE = yOf(entry);
       ctx.save();
-      ctx.strokeStyle = '#ffb000';
-      ctx.lineWidth = 1.6;
+      ctx.strokeStyle = th.amber;
+      ctx.lineWidth = isStory ? 2 : 1.25;
       ctx.setLineDash([6, 4]);
       ctx.beginPath(); ctx.moveTo(pL, yE); ctx.lineTo(pR, yE); ctx.stroke();
       ctx.restore();
-      ctx.fillStyle = '#ffb000';
-      ctx.font = `bold ${isStory ? 14 : 11}px Consolas, monospace`;
-      ctx.fillText('ENT ' + fmtPx(entry), pR + 6, yE + 4);
+
+      ctx.fillStyle = th.amber;
+      ctx.font = `700 ${isStory ? 15 : 10}px ${MONO}`;
+      ctx.fillText('ENTRY', pL + 4, yE - (isStory ? 8 : 5));
+
+      ctx.fillStyle = th.amber;
+      ctx.fillRect(pR + 2, yEntFlag - flagH / 2, axisW - 4, flagH);
+      ctx.fillStyle = th.tagAmberInk;
+      ctx.font = `700 ${isStory ? 17 : 10.5}px ${MONO}`;
+      ctx.fillText(fmtPx(entry), pR + (isStory ? 10 : 7), yEntFlag + (isStory ? 6 : 3.5));
     }
 
-    // Mark dashed line & live beacon
     if (mark > 0) {
       const yM = yOf(mark);
       ctx.save();
       ctx.strokeStyle = gainCol;
-      ctx.lineWidth = 1.8;
-      ctx.setLineDash([3, 3]);
+      ctx.lineWidth = isStory ? 2 : 1.3;
+      ctx.setLineDash([2, 3]);
       ctx.beginPath(); ctx.moveTo(pL, yM); ctx.lineTo(pR, yM); ctx.stroke();
       ctx.restore();
 
-      const lastX = pL + (series.length - 0.5) * step;
-      ctx.beginPath();
-      ctx.arc(lastX, yM, isStory ? 6 : 5, 0, Math.PI * 2);
       ctx.fillStyle = gainCol;
-      ctx.fill();
-
-      ctx.fillStyle = gainCol;
-      ctx.font = `bold ${isStory ? 14 : 11}px Consolas, monospace`;
-      ctx.fillText('MRK ' + fmtPx(mark), pR + 6, yM + (entry > 0 && Math.abs(yM - yOf(entry)) < 14 ? -6 : 4));
+      ctx.fillRect(pR + 2, yMrkFlag - flagH / 2, axisW - 4, flagH);
+      ctx.fillStyle = isGain ? th.tagGainInk : th.tagLossInk;
+      ctx.font = `700 ${isStory ? 17 : 10.5}px ${MONO}`;
+      ctx.fillText(fmtPx(mark), pR + (isStory ? 10 : 7), yMrkFlag + (isStory ? 6 : 3.5));
     }
   };
 
+  // Build authentic Bloomberg Position Summary table rows
   const roeSign = roePct >= 0 ? '+' : '';
   const roeText = `${roeSign}${roePct.toFixed(2)}%`;
-  const pnlText = cfg.showPnlAmount
-    ? `${pnlUsd >= 0 ? '+$' : '-$'}${Math.abs(pnlUsd).toFixed(2)} USDT   |   ${pnlIdr >= 0 ? '+Rp ' : '-Rp '}${Math.abs(pnlIdr).toLocaleString('id-ID')} IDR`
-    : 'NOMINAL SIZE PROTECTED  •  VERIFIED PERCENTAGE RETURN ON MARGIN';
+  const pnlUsdTxt = `${pnlUsd >= 0 ? '+$' : '-$'}${Math.abs(pnlUsd).toFixed(2)}`;
+  const pnlIdrTxt = `${pnlIdr >= 0 ? '+Rp ' : '-Rp '}${Math.abs(pnlIdr).toLocaleString('id-ID')}`;
 
-  const metrics = [
-    ['ENTRY PRICE', entry > 0 ? '$' + fmtPx(entry) : 'N/A', '#ffb000'],
-    [statusTag.startsWith('LIVE') ? 'LIVE MARK PRICE' : 'EXIT PRICE', mark > 0 ? '$' + fmtPx(mark) : 'N/A', '#ffffff'],
-    ['UNLEVERED MOVE', `${unleveredPct >= 0 ? '+' : ''}${unleveredPct.toFixed(2)}% (${lev}x)`, gainCol],
-    ['QUANT TELEMETRY', confScore > 0 ? `CONF ${confScore.toFixed(1)}% • ${setup.slice(0, 12)}` : setup.slice(0, 18), th.accent]
+  const rows = [
+    ['Contract', `${sym} Perpetual`, th.ink],
+    ['Direction / Leverage', `${dir}  •  ${lev}x ${marginMode === 'CROSS' ? 'Cross' : 'Isolated'}`, sideCol],
+    ['Entry Price', entry > 0 ? '$' + fmtPx(entry) : '—', th.amber],
+    [isOpen ? 'Mark Price' : 'Exit Price', mark > 0 ? '$' + fmtPx(mark) : '—', th.ink],
+    ['Price Change', `${unleveredPct >= 0 ? '+' : ''}${unleveredPct.toFixed(2)}%`, gainCol]
   ];
-
-  if (!isStory) {
-    // ================= 16:9 DESK CARD LAYOUT (1200 x 675) =================
-    const bodyTop = divY + 26;
-    // Left Half: Contract Badge, Giant ROE %, PnL Sub-banner
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '900 36px Consolas, "JetBrains Mono", monospace';
-    ctx.fillText(`${sym} PERP`, padX, bodyTop + 32);
-
-    // Direction + Leverage Pill
-    const badgeTxt = `${dir} ${lev}X ${marginMode}`;
-    ctx.font = 'bold 15px Consolas, "JetBrains Mono", monospace';
-    const bw = ctx.measureText(badgeTxt).width + 24;
-    ctx.fillStyle = dir === 'LONG' ? 'rgba(0,210,106,0.18)' : 'rgba(255,69,58,0.18)';
-    ctx.strokeStyle = dir === 'LONG' ? '#00d26a' : '#ff453a';
-    ctx.lineWidth = 1.5;
-    ctx.fillRect(padX, bodyTop + 48, bw, 28);
-    ctx.strokeRect(padX, bodyTop + 48, bw, 28);
-    ctx.fillStyle = dir === 'LONG' ? '#00d26a' : '#ff453a';
-    ctx.fillText(badgeTxt, padX + 12, bodyTop + 67);
-
-    // Status Pill
-    ctx.font = 'bold 13px Consolas, "JetBrains Mono", monospace';
-    const sw = ctx.measureText(statusTag).width + 20;
-    ctx.fillStyle = 'rgba(255,176,0,0.12)';
-    ctx.strokeStyle = th.accent;
-    ctx.fillRect(padX + bw + 10, bodyTop + 48, sw, 28);
-    ctx.strokeRect(padX + bw + 10, bodyTop + 48, sw, 28);
-    ctx.fillStyle = th.accent;
-    ctx.fillText(statusTag, padX + bw + 20, bodyTop + 67);
-
-    // ROE Label & Giant Readout
-    ctx.fillStyle = th.subText;
-    ctx.font = 'bold 14px Consolas, "JetBrains Mono", monospace';
-    ctx.fillText('RETURN ON EQUITY (ROE %)', padX, bodyTop + 114);
-
-    ctx.save();
-    ctx.shadowColor = isGain ? 'rgba(0,210,106,0.35)' : 'rgba(255,69,58,0.35)';
-    ctx.shadowBlur = 22;
-    ctx.fillStyle = gainCol;
-    ctx.font = `900 ${roeText.length > 8 ? 76 : 88}px Consolas, "JetBrains Mono", monospace`;
-    ctx.fillText(roeText, padX, bodyTop + 198);
-    ctx.restore();
-
-    // Nominal PnL or Privacy Strip
-    ctx.fillStyle = cfg.showPnlAmount ? '#e6edf3' : th.subText;
-    ctx.font = 'bold 15px Consolas, "JetBrains Mono", monospace';
-    ctx.fillText(pnlText, padX, bodyTop + 236);
-
-    // Right Half: Embedded Sparkline Chart
-    drawEmbeddedChart(610, bodyTop + 4, W - 610 - padX, 258);
-
-    // Bottom 4-Column Telemetry Grid
-    const gridY = 428;
-    const boxW = (W - padX * 2 - 36) / 4;
-    metrics.forEach(([k, val, col], idx) => {
-      const bx = padX + idx * (boxW + 12);
-      ctx.fillStyle = th.cardBg;
-      ctx.strokeStyle = th.border;
-      ctx.lineWidth = 1.5;
-      ctx.fillRect(bx, gridY, boxW, 128);
-      ctx.strokeRect(bx, gridY, boxW, 128);
-      ctx.fillStyle = th.accent;
-      ctx.fillRect(bx, gridY, 4, 128);
-
-      ctx.fillStyle = th.subText;
-      ctx.font = 'bold 13px Consolas, "JetBrains Mono", monospace';
-      ctx.fillText(k, bx + 16, gridY + 34);
-      ctx.fillStyle = col;
-      ctx.font = '900 22px Consolas, "JetBrains Mono", monospace';
-      ctx.fillText(val, bx + 16, gridY + 84);
-    });
+  if (cfg.showPnlAmount) {
+    rows.push([isOpen ? 'Unrealized P&L' : 'Realized P&L', `${pnlUsdTxt}  (${pnlIdrTxt})`, gainCol]);
   } else {
-    // ================= 9:16 STORY / STATUS LAYOUT (1080 x 1920) =================
-    const sTop = divY + 54;
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '900 62px Consolas, "JetBrains Mono", monospace';
-    ctx.fillText(`${sym} PERPETUAL`, padX, sTop + 52);
-
-    const badgeTxt = `${dir} ${lev}X ${marginMode}`;
-    ctx.font = 'bold 26px Consolas, "JetBrains Mono", monospace';
-    const bw = ctx.measureText(badgeTxt).width + 38;
-    ctx.fillStyle = dir === 'LONG' ? 'rgba(0,210,106,0.18)' : 'rgba(255,69,58,0.18)';
-    ctx.strokeStyle = dir === 'LONG' ? '#00d26a' : '#ff453a';
-    ctx.lineWidth = 2;
-    ctx.fillRect(padX, sTop + 82, bw, 48);
-    ctx.strokeRect(padX, sTop + 82, bw, 48);
-    ctx.fillStyle = dir === 'LONG' ? '#00d26a' : '#ff453a';
-    ctx.fillText(badgeTxt, padX + 19, sTop + 115);
-
-    ctx.font = 'bold 24px Consolas, "JetBrains Mono", monospace';
-    const sw = ctx.measureText(statusTag).width + 34;
-    ctx.fillStyle = 'rgba(255,176,0,0.12)';
-    ctx.strokeStyle = th.accent;
-    ctx.fillRect(padX + bw + 16, sTop + 82, sw, 48);
-    ctx.strokeRect(padX + bw + 16, sTop + 82, sw, 48);
-    ctx.fillStyle = th.accent;
-    ctx.fillText(statusTag, padX + bw + 33, sTop + 115);
-
-    ctx.fillStyle = th.subText;
-    ctx.font = 'bold 26px Consolas, "JetBrains Mono", monospace';
-    ctx.fillText('RETURN ON EQUITY (ROE %)', padX, sTop + 216);
-
-    ctx.save();
-    ctx.shadowColor = isGain ? 'rgba(0,210,106,0.4)' : 'rgba(255,69,58,0.4)';
-    ctx.shadowBlur = 32;
-    ctx.fillStyle = gainCol;
-    ctx.font = `900 ${roeText.length > 8 ? 128 : 148}px Consolas, "JetBrains Mono", monospace`;
-    ctx.fillText(roeText, padX, sTop + 362);
-    ctx.restore();
-
-    ctx.fillStyle = cfg.showPnlAmount ? '#ffffff' : th.subText;
-    ctx.font = 'bold 24px Consolas, "JetBrains Mono", monospace';
-    ctx.fillText(pnlText, padX, sTop + 422);
-
-    // Embedded Chart (Full Width)
-    drawEmbeddedChart(padX, sTop + 474, W - padX * 2, 540);
-
-    // 2x2 Telemetry Grid
-    const gTop = sTop + 1060;
-    const cellW = (W - padX * 2 - 28) / 2;
-    const cellH = 190;
-    metrics.forEach(([k, val, col], idx) => {
-      const colIdx = idx % 2;
-      const rowIdx = Math.floor(idx / 2);
-      const bx = padX + colIdx * (cellW + 28);
-      const by = gTop + rowIdx * (cellH + 26);
-      ctx.fillStyle = th.cardBg;
-      ctx.strokeStyle = th.border;
-      ctx.lineWidth = 2;
-      ctx.fillRect(bx, by, cellW, cellH);
-      ctx.strokeRect(bx, by, cellW, cellH);
-      ctx.fillStyle = th.accent;
-      ctx.fillRect(bx, by, 6, cellH);
-
-      ctx.fillStyle = th.subText;
-      ctx.font = 'bold 22px Consolas, "JetBrains Mono", monospace';
-      ctx.fillText(k, bx + 26, by + 56);
-      ctx.fillStyle = col;
-      ctx.font = '900 36px Consolas, "JetBrains Mono", monospace';
-      ctx.fillText(val, bx + 26, by + 132);
-    });
+    rows.push(['Position Status', isOpen ? 'Open Position' : 'Closed Position', th.muted]);
   }
 
-  // Footer Watermark Strip
-  const footY = H - (isStory ? 64 : 38);
-  ctx.strokeStyle = th.border;
-  ctx.lineWidth = 1.2;
-  ctx.beginPath(); ctx.moveTo(padX, footY - (isStory ? 34 : 22)); ctx.lineTo(W - padX, footY - (isStory ? 34 : 22)); ctx.stroke();
+  const drawSummaryTable = (tx, ty, tw, rowH, hdrH) => {
+    ctx.fillStyle = th.secHdrBg;
+    ctx.fillRect(tx, ty, tw, hdrH);
+    ctx.strokeStyle = th.border;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(tx, ty + 0.5); ctx.lineTo(tx + tw, ty + 0.5);
+    ctx.moveTo(tx, ty + hdrH + 0.5); ctx.lineTo(tx + tw, ty + hdrH + 0.5);
+    ctx.stroke();
 
-  ctx.fillStyle = th.subText;
-  ctx.font = `bold ${isStory ? 18 : 12.5}px Consolas, "JetBrains Mono", monospace`;
-  ctx.fillText('BLOOMBERG TERMINAL // 5-LAYER QUANT + AI EXECUTION ENGINE • ISOLATED RISK GUARD', padX, footY);
+    ctx.fillStyle = th.amber;
+    ctx.font = `700 ${isStory ? 19 : 11.5}px ${SANS}`;
+    ctx.fillText('POSITION SUMMARY', tx + (isStory ? 16 : 10), ty + (isStory ? 32 : 20));
+    ctx.textAlign = 'right';
+    ctx.fillStyle = th.subtle;
+    ctx.font = `600 ${isStory ? 18 : 11}px ${MONO}`;
+    ctx.fillText('USD', tx + tw - (isStory ? 16 : 10), ty + (isStory ? 32 : 20));
+    ctx.textAlign = 'left';
+
+    rows.forEach(([label, val, col], idx) => {
+      const ry = ty + hdrH + idx * rowH;
+      ctx.strokeStyle = th.rule;
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(tx, ry + rowH + 0.5); ctx.lineTo(tx + tw, ry + rowH + 0.5); ctx.stroke();
+
+      ctx.fillStyle = th.muted;
+      ctx.font = `500 ${isStory ? 24 : 13.5}px ${SANS}`;
+      ctx.fillText(label, tx + (isStory ? 16 : 10), ry + rowH * 0.64);
+
+      ctx.textAlign = 'right';
+      ctx.fillStyle = col;
+      ctx.font = `700 ${isStory ? 25 : 14}px ${MONO}`;
+      ctx.fillText(val, tx + tw - (isStory ? 16 : 10), ry + rowH * 0.64);
+      ctx.textAlign = 'left';
+    });
+  };
+
+  if (!isStory) {
+    // ================= 16:9 DESK TEAR-SHEET (1200 x 675) =================
+    const bodyTop = secBot + 18;
+    const leftW = 508;
+
+    // Hero Return on Equity Readout (Zero Shadow / Zero Glow — Pure Typographic Authority)
+    ctx.fillStyle = th.muted;
+    ctx.font = `700 12.5px ${SANS}`;
+    ctx.fillText('RETURN ON EQUITY (ROE)', padX, bodyTop + 18);
+
+    ctx.fillStyle = gainCol;
+    ctx.font = `700 ${roeText.length > 8 ? 66 : 80}px ${MONO}`;
+    ctx.fillText(roeText, padX, bodyTop + 104);
+
+    if (cfg.showPnlAmount) {
+      ctx.fillStyle = th.ink;
+      ctx.font = `700 17px ${MONO}`;
+      ctx.fillText(`${pnlUsdTxt} USD`, padX, bodyTop + 138);
+      const uW = ctx.measureText(`${pnlUsdTxt} USD`).width;
+      ctx.fillStyle = th.muted;
+      ctx.font = `500 15px ${MONO}`;
+      ctx.fillText(`  /  ${pnlIdrTxt}`, padX + uW, bodyTop + 138);
+    } else {
+      ctx.fillStyle = th.subtle;
+      ctx.font = `500 13px ${SANS}`;
+      ctx.fillText(`${isOpen ? 'Open' : 'Closed'} Perpetual Futures  •  ${lev}x ${marginMode === 'CROSS' ? 'Cross' : 'Isolated'} Margin`, padX, bodyTop + 136);
+    }
+
+    // Position Summary Table
+    drawSummaryTable(padX, bodyTop + 162, leftW, 43, 30);
+
+    // Right Panel: Authentic Bloomberg GP Price Chart
+    const chartX = padX + leftW + 26;
+    drawBloombergChart(chartX, bodyTop + 4, W - chartX - padX, H - footH - bodyTop - 22);
+  } else {
+    // ================= 9:16 STORY TEAR-SHEET (1080 x 1920) =================
+    const bodyTop = secBot + 40;
+
+    ctx.fillStyle = th.muted;
+    ctx.font = `700 22px ${SANS}`;
+    ctx.fillText('RETURN ON EQUITY (ROE)', padX, bodyTop + 26);
+
+    ctx.fillStyle = gainCol;
+    ctx.font = `700 ${roeText.length > 8 ? 118 : 138}px ${MONO}`;
+    ctx.fillText(roeText, padX, bodyTop + 168);
+
+    if (cfg.showPnlAmount) {
+      ctx.fillStyle = th.ink;
+      ctx.font = `700 30px ${MONO}`;
+      ctx.fillText(`${pnlUsdTxt} USD   /   ${pnlIdrTxt}`, padX, bodyTop + 224);
+    } else {
+      ctx.fillStyle = th.subtle;
+      ctx.font = `500 22px ${SANS}`;
+      ctx.fillText(`${isOpen ? 'Open' : 'Closed'} Perpetual Futures  •  ${lev}x ${marginMode === 'CROSS' ? 'Cross' : 'Isolated'} Margin`, padX, bodyTop + 220);
+    }
+
+    // Full-Width Authentic Bloomberg GP Price Chart
+    drawBloombergChart(padX, bodyTop + 272, W - padX * 2, 570);
+
+    // Position Summary Table
+    drawSummaryTable(padX, bodyTop + 884, W - padX * 2, 84, 50);
+  }
+
+  // 3. Clean Minimal Bloomberg Bottom Bar
+  const footTop = H - footH;
+  ctx.fillStyle = th.footerBg;
+  ctx.fillRect(0, footTop, W, footH);
+  ctx.strokeStyle = th.border;
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, footTop + 0.5); ctx.lineTo(W, footTop + 0.5); ctx.stroke();
+
+  ctx.fillStyle = th.muted;
+  ctx.font = `700 ${isStory ? 20 : 12}px ${SANS}`;
+  ctx.fillText('Bloomberg Terminal', padX, footTop + (isStory ? 46 : 25));
+
   ctx.textAlign = 'right';
-  ctx.fillStyle = th.accent;
-  ctx.fillText(`USD/IDR FX: Rp ${Math.round(fxRate).toLocaleString('id-ID')}`, W - padX, footY);
+  ctx.fillStyle = th.subtle;
+  ctx.font = `500 ${isStory ? 18 : 11}px ${MONO}`;
+  ctx.fillText(`${sym} PERP  •  BINANCE FUTURES`, W - padX, footTop + (isStory ? 46 : 25));
   ctx.textAlign = 'left';
 }
 
@@ -2697,7 +2811,7 @@ async function archiveAndDownloadRoe(canvas, cfg, onMsg) {
   document.body.appendChild(a);
   a.click();
   setTimeout(() => a.remove(), 180);
-  if (onMsg) onMsg('HD PNG downloaded & archived to G <GO>.');
+  if (onMsg) onMsg('PNG downloaded and archived to G <GO>.');
 }
 
 async function copyRoeImage(canvas, onMsg) {
@@ -2706,11 +2820,11 @@ async function copyRoeImage(canvas, onMsg) {
   if (navigator.clipboard && typeof window.ClipboardItem === 'function') {
     try {
       await navigator.clipboard.write([new window.ClipboardItem({ 'image/png': blob })]);
-      if (onMsg) onMsg('ROE card copied to clipboard (ready to paste in Telegram / WhatsApp / Discord / X).');
+      if (onMsg) onMsg('ROE card copied to clipboard.');
       return true;
     } catch {}
   }
-  if (onMsg) onMsg('Clipboard image write unsupported in this browser; downloading PNG instead.');
+  if (onMsg) onMsg('Clipboard image copy unavailable; downloading PNG instead.');
   return false;
 }
 
@@ -2721,7 +2835,7 @@ async function shareRoeNative(canvas, cfg, onMsg) {
   const file = new File([blob], filename, { type: 'image/png' });
   const sym = String(cfg.symbol || 'BTCUSDT').toUpperCase();
   const roeStr = `${Number(cfg.roePct || 0) >= 0 ? '+' : ''}${Number(cfg.roePct || 0).toFixed(2)}%`;
-  const caption = `Bloomberg Terminal // ${sym} ${cfg.direction || 'LONG'} ${cfg.leverage || 20}x ROE: ${roeStr}`;
+  const caption = `Bloomberg Terminal | ${sym} ${cfg.direction || 'LONG'} ${cfg.leverage || 20}x ROE: ${roeStr}`;
 
   if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
     try {
@@ -2734,7 +2848,7 @@ async function shareRoeNative(canvas, cfg, onMsg) {
   }
   const copied = await copyRoeImage(canvas, null);
   await archiveAndDownloadRoe(canvas, cfg, null);
-  if (onMsg) onMsg(copied ? 'PNG downloaded & copied to clipboard for instant sharing.' : 'HD PNG downloaded & saved to G <GO> archive.');
+  if (onMsg) onMsg(copied ? 'PNG downloaded and copied to clipboard.' : 'PNG downloaded and archived to G <GO>.');
 }
 
 export async function openRoeShareModal(initialTrade = {}) {
@@ -2752,17 +2866,15 @@ export async function openRoeShareModal(initialTrade = {}) {
     pnlUsd: Number(initialTrade.pnlUsd || 0),
     pnlIdr: Number(initialTrade.pnlIdr || 0),
     fxRateIdr: Number(initialTrade.fxRateIdr || 18218),
-    setup: initialTrade.setup || 'QUANT_EXECUTION',
     status: initialTrade.status || 'OPEN',
-    hybridConf: Number(initialTrade.hybridConf || initialTrade.pMath || 0),
     aspect: '16:9',
-    theme: 'CLASSIC',
+    theme: 'BLACK',
     showPnlAmount: false
   };
 
-  const cv = h('canvas', { style: 'max-width:100%;max-height:56vh;width:auto;height:auto;display:block;margin:0 auto;border:1px solid #263142;background:#040609' });
-  const msgEl = h('div', { style: 'font-size:11px;color:#00d26a;min-height:16px;margin-top:6px' });
-  const ctrlBar = h('div', { class: 'tb', style: 'background:#0a0f17;border:1px solid #1f2937;margin-bottom:8px;gap:5px;flex-wrap:wrap' });
+  const cv = h('canvas', { style: 'max-width:100%;max-height:58vh;width:auto;height:auto;display:block;margin:0 auto;border:1px solid #2a2e35;background:#000' });
+  const msgEl = h('div', { style: 'font-size:11px;color:#00c853;min-height:16px;margin-top:6px' });
+  const ctrlBar = h('div', { class: 'tb', style: 'background:#0c0d10;border:1px solid #2a2e35;margin-bottom:8px;gap:5px;flex-wrap:wrap' });
 
   let candles = [];
   const redraw = () => {
@@ -2772,13 +2884,13 @@ export async function openRoeShareModal(initialTrade = {}) {
       ...[['16:9', '16:9 DESK'], ['9:16', '9:16 STORY']].map(([k, lbl]) => h('button', {
         class: cfg.aspect === k ? 'on' : '', text: lbl, onclick: () => { cfg.aspect = k; redraw(); }
       })),
-      h('span', { class: 'lbl', text: 'THEME:' }),
-      ...['CLASSIC', 'GOLD', 'MATRIX'].map(t => h('button', {
-        class: cfg.theme === t ? 'on' : '', text: t, onclick: () => { cfg.theme = t; redraw(); }
+      h('span', { class: 'lbl', text: 'STYLE:' }),
+      ...[['BLACK', 'TERMINAL BLACK'], ['LAUNCHPAD', 'DARK SLATE'], ['PAPER', 'WHITE PAPER']].map(([t, lbl]) => h('button', {
+        class: cfg.theme === t ? 'on' : '', text: lbl, onclick: () => { cfg.theme = t; redraw(); }
       })),
       h('button', {
         class: cfg.showPnlAmount ? 'on' : '',
-        text: cfg.showPnlAmount ? 'PNL: USD + IDR SHOWN' : 'PRIVACY: ROE % ONLY',
+        text: cfg.showPnlAmount ? 'P&L: USD & IDR SHOWN' : 'P&L: HIDDEN (ROE ONLY)',
         onclick: () => { cfg.showPnlAmount = !cfg.showPnlAmount; redraw(); }
       })
     );
@@ -2790,18 +2902,18 @@ export async function openRoeShareModal(initialTrade = {}) {
     style: 'position:fixed;inset:0;z-index:99995;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;padding:12px;font-family:var(--font,monospace)',
     onclick: ev => { if (ev.target === overlay) overlay.remove(); }
   },
-    h('div', { style: 'width:760px;max-width:96vw;max-height:94vh;overflow:auto;background:#070a10;border:1px solid #ff6600;padding:12px;box-shadow:0 12px 44px rgba(0,0,0,0.85)' },
-      h('div', { style: 'display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #222b38;padding-bottom:8px;margin-bottom:8px' },
-        h('span', { style: 'color:#ff6600;font-weight:700;font-size:12px;letter-spacing:0.6px', text: `BLOOMBERG TERMINAL // SHAREABLE ROE CARD [${cfg.symbol}]` }),
-        h('button', { style: 'background:#240808;color:#ff5a52;border:1px solid #ff453a88;padding:2px 8px;cursor:pointer;font-weight:700', text: 'CLOSE [ESC]', onclick: () => overlay.remove() })
+    h('div', { style: 'width:760px;max-width:96vw;max-height:94vh;overflow:auto;background:#000000;border:1px solid #ff6600;padding:12px' },
+      h('div', { style: 'display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #2a2e35;padding-bottom:8px;margin-bottom:8px' },
+        h('span', { style: 'color:#ff9900;font-weight:700;font-size:12px;letter-spacing:0.4px', text: `BLOOMBERG TERMINAL — POSITION ROE CARD [${cfg.symbol}]` }),
+        h('button', { style: 'background:#1a0a0a;color:#e53935;border:1px solid #e5393588;padding:2px 8px;cursor:pointer;font-weight:700', text: 'CLOSE', onclick: () => overlay.remove() })
       ),
       ctrlBar,
-      h('div', { style: 'background:#020407;padding:8px;border:1px solid #18202c;text-align:center' }, cv),
+      h('div', { style: 'background:#050608;padding:8px;border:1px solid #1c2026;text-align:center' }, cv),
       msgEl,
       h('div', { style: 'display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;margin-top:8px' },
-        h('button', { style: 'background:#ff6600;color:#000;border:1px solid #ff6600;padding:6px 12px;font-weight:800;cursor:pointer', text: 'SHARE TO APP (WA / IG / TG / X)', onclick: () => shareRoeNative(cv, cfg, m => { msgEl.textContent = m; }) }),
-        h('button', { style: 'background:#0b1929;color:#00e5ff;border:1px solid #00e5ff88;padding:6px 12px;font-weight:700;cursor:pointer', text: 'COPY PNG', onclick: () => copyRoeImage(cv, m => { msgEl.textContent = m; }) }),
-        h('button', { style: 'background:#061c10;color:#00d26a;border:1px solid #00d26a88;padding:6px 12px;font-weight:700;cursor:pointer', text: 'DOWNLOAD HD PNG', onclick: () => archiveAndDownloadRoe(cv, cfg, m => { msgEl.textContent = m; }) })
+        h('button', { style: 'background:#ff6600;color:#000;border:1px solid #ff6600;padding:6px 12px;font-weight:700;cursor:pointer', text: 'SHARE IMAGE', onclick: () => shareRoeNative(cv, cfg, m => { msgEl.textContent = m; }) }),
+        h('button', { style: 'background:#111419;color:#ffffff;border:1px solid #3a404a;padding:6px 12px;font-weight:600;cursor:pointer', text: 'COPY PNG', onclick: () => copyRoeImage(cv, m => { msgEl.textContent = m; }) }),
+        h('button', { style: 'background:#071b10;color:#00c853;border:1px solid #00c85388;padding:6px 12px;font-weight:700;cursor:pointer', text: 'DOWNLOAD PNG', onclick: () => archiveAndDownloadRoe(cv, cfg, m => { msgEl.textContent = m; }) })
       )
     )
   );
@@ -2835,16 +2947,14 @@ export function mountROE(body, ctx) {
     roePct: 0,
     pnlUsd: 0,
     pnlIdr: 0,
-    setup: 'QUANT_EXECUTION',
     status: 'OPEN',
-    hybridConf: 78.5,
     aspect: '16:9',
-    theme: 'CLASSIC',
+    theme: 'BLACK',
     showPnlAmount: false
   };
 
-  const previewCv = h('canvas', { style: 'width:100%;height:auto;max-height:420px;object-fit:contain;display:block;background:#030508;border:1px solid #1d2633' });
-  const statusEl = h('div', { style: 'font-size:11px;color:#00d26a;min-height:16px;margin-top:5px' });
+  const previewCv = h('canvas', { style: 'width:100%;height:auto;max-height:420px;object-fit:contain;display:block;background:#000;border:1px solid #2a2e35' });
+  const statusEl = h('div', { style: 'font-size:11px;color:#00c853;min-height:16px;margin-top:5px' });
 
   function recalcFromPrices() {
     const e = Number(state.entryPrice) || 0;
@@ -2871,9 +2981,7 @@ export function mountROE(body, ctx) {
     state.roePct = Number(tr.roePct || 0);
     state.pnlUsd = Number(tr.pnlUsd || 0);
     state.pnlIdr = Number(tr.pnlIdr || Math.round(state.pnlUsd * (feed.fxRateIdr || 18218)));
-    state.setup = tr.setup || 'QUANT_EXECUTION';
     state.status = tr.status || 'OPEN';
-    state.hybridConf = Number(tr.hybridConf || tr.pMath || 0);
     candles = await fetchRoeSparkCandles(state.symbol);
     if (!unmounted) renderBody();
   }
@@ -2885,24 +2993,24 @@ export function mountROE(body, ctx) {
   function renderToolbar() {
     tb.textContent = '';
     tb.append(
-      h('span', { class: 'lbl', text: 'ROE CARD STUDIO:' }),
-      ...[['16:9', '16:9 DESK (1200x675)'], ['9:16', '9:16 STORY (1080x1920)']].map(([k, lbl]) => h('button', {
+      h('span', { class: 'lbl', text: 'ROE CARD:' }),
+      ...[['16:9', '16:9 DESK'], ['9:16', '9:16 STORY']].map(([k, lbl]) => h('button', {
         class: state.aspect === k ? 'on' : '',
         text: lbl,
         onclick: () => { state.aspect = k; renderToolbar(); redrawCanvasOnly(); }
       })),
-      ...['CLASSIC', 'GOLD', 'MATRIX'].map(t => h('button', {
+      ...[['BLACK', 'TERMINAL BLACK'], ['LAUNCHPAD', 'DARK SLATE'], ['PAPER', 'WHITE PAPER']].map(([t, lbl]) => h('button', {
         class: state.theme === t ? 'on' : '',
-        text: t,
+        text: lbl,
         onclick: () => { state.theme = t; renderToolbar(); redrawCanvasOnly(); }
       })),
       h('button', {
         class: state.showPnlAmount ? 'on' : '',
-        text: state.showPnlAmount ? 'SHOWING USD/IDR PNL' : 'PRIVACY: ROE % ONLY',
+        text: state.showPnlAmount ? 'P&L: USD & IDR' : 'P&L: HIDDEN',
         onclick: () => { state.showPnlAmount = !state.showPnlAmount; renderToolbar(); redrawCanvasOnly(); }
       }),
       h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'SHARE ROE', onclick: () => shareRoeNative(previewCv, { ...state, fxRateIdr: feed.fxRateIdr }, m => { msgTxt = m; statusEl.textContent = m; }) }),
-      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: 'DOWNLOAD PNG', onclick: () => archiveAndDownloadRoe(previewCv, { ...state, fxRateIdr: feed.fxRateIdr }, m => { msgTxt = m; statusEl.textContent = m; }) }),
+      h('button', { style: 'color:#00c853;border-color:#00c85366', text: 'DOWNLOAD PNG', onclick: () => archiveAndDownloadRoe(previewCv, { ...state, fxRateIdr: feed.fxRateIdr }, m => { msgTxt = m; statusEl.textContent = m; }) }),
       h('button', { text: 'REFRESH', onclick: load })
     );
   }
@@ -2916,11 +3024,11 @@ export function mountROE(body, ctx) {
     // Summary Strip
     sc.append(h('div', { class: 'xgrid4', style: 'margin-bottom:8px' },
       h('div', { class: 'xcard', style: 'margin-bottom:0;padding:6px 8px' },
-        h('div', { class: 'mu', style: 'font-size:10px', text: 'LIVE OPEN POSITIONS' }),
+        h('div', { class: 'mu', style: 'font-size:10px', text: 'OPEN POSITIONS' }),
         h('div', { class: 'am sym', style: 'font-size:15px;font-weight:700', text: `${openList.length} ACTIVE` })
       ),
       h('div', { class: 'xcard', style: 'margin-bottom:0;padding:6px 8px' },
-        h('div', { class: 'mu', style: 'font-size:10px', text: 'AUDITED WIN RATE' }),
+        h('div', { class: 'mu', style: 'font-size:10px', text: 'WIN RATE' }),
         h('div', { class: (Number(st.winRatePct) >= 50 ? 'up' : 'am') + ' sym', style: 'font-size:15px;font-weight:700', text: `${Number(st.winRatePct || 0).toFixed(1)}% (${st.totalClosed || 0} TRADES)` })
       ),
       h('div', { class: 'xcard', style: 'margin-bottom:0;padding:6px 8px' },
@@ -2928,12 +3036,12 @@ export function mountROE(body, ctx) {
         h('div', { class: (Number(st.realizedPnlUsd) >= 0 ? 'up' : 'dn') + ' sym', style: 'font-size:15px;font-weight:700', text: `${Number(st.realizedPnlUsd || 0) >= 0 ? '+$' : '-$'}${Math.abs(Number(st.realizedPnlUsd || 0)).toFixed(2)} USD` })
       ),
       h('div', { class: 'xcard', style: 'margin-bottom:0;padding:6px 8px' },
-        h('div', { class: 'mu', style: 'font-size:10px', text: 'LIVE USD / IDR FX' }),
+        h('div', { class: 'mu', style: 'font-size:10px', text: 'USD / IDR FX' }),
         h('div', { class: 'lb sym', style: 'font-size:15px;font-weight:700', text: fmtIdr(feed.fxRateIdr || 18218) })
       )
     ));
 
-    // Custom Parameter Inputs
+    // Clean Position Parameters Editor
     const symInp = h('input', { value: state.symbol, style: 'width:100%;text-transform:uppercase;font-weight:700' });
     const dirSel = h('select', { style: 'width:100%' },
       h('option', { value: 'LONG', selected: state.direction === 'LONG' ? 'selected' : null, text: 'LONG' }),
@@ -2943,8 +3051,6 @@ export function mountROE(body, ctx) {
     const entInp = h('input', { type: 'number', step: 'any', value: String(state.entryPrice || ''), style: 'width:100%' });
     const mrkInp = h('input', { type: 'number', step: 'any', value: String(state.markPrice || ''), style: 'width:100%' });
     const mgnInp = h('input', { type: 'number', step: 'any', value: String(state.marginUsd || 25), style: 'width:100%' });
-    const setInp = h('input', { value: state.setup, style: 'width:100%;text-transform:uppercase' });
-    const cnfInp = h('input', { type: 'number', step: '0.1', value: String(state.hybridConf || 0), style: 'width:100%' });
 
     const syncEditor = async () => {
       const nextSym = (symInp.value || 'BTCUSDT').trim().toUpperCase().replace('-USD', 'USDT').replace(/\.P$/, '');
@@ -2955,8 +3061,6 @@ export function mountROE(body, ctx) {
       state.entryPrice = Number(entInp.value) || 0;
       state.markPrice = Number(mrkInp.value) || 0;
       state.marginUsd = Math.max(0, Number(mgnInp.value) || 0);
-      state.setup = (setInp.value || 'QUANT_EXECUTION').trim().toUpperCase();
-      state.hybridConf = Number(cnfInp.value) || 0;
       recalcFromPrices();
       if (symChanged) candles = await fetchRoeSparkCandles(state.symbol);
       redrawCanvasOnly();
@@ -2964,15 +3068,15 @@ export function mountROE(body, ctx) {
 
     const leftCol = h('div', { class: 'xcard', style: 'margin-bottom:0' },
       h('div', { class: 'xsec-hd' },
-        h('span', { text: `HIGH-RESOLUTION ROE CARD PREVIEW (${state.aspect === '9:16' ? '1080x1920 STORY' : '1200x675 DESK'})` }),
+        h('span', { text: `BLOOMBERG TERMINAL ROE CARD (${state.aspect === '9:16' ? '1080x1920' : '1200x675'})` }),
         h('span', { class: state.roePct >= 0 ? 'up' : 'dn', text: `${state.roePct >= 0 ? '+' : ''}${Number(state.roePct).toFixed(2)}% ROE` })
       ),
-      h('div', { style: 'padding:8px;background:#020408' }, previewCv),
+      h('div', { style: 'padding:8px;background:#050608' }, previewCv),
       h('div', { style: 'padding:8px;display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid var(--border)' },
-        h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700;padding:5px 10px', text: 'SHARE TO APP (WA / IG / TG / X)', onclick: () => shareRoeNative(previewCv, { ...state, fxRateIdr: feed.fxRateIdr }, m => { statusEl.textContent = m; }) }),
-        h('button', { style: 'color:#00e5ff;border-color:#00e5ff77;padding:5px 10px', text: 'COPY IMAGE TO CLIPBOARD', onclick: () => copyRoeImage(previewCv, m => { statusEl.textContent = m; }) }),
-        h('button', { style: 'color:#00d26a;border-color:#00d26a77;padding:5px 10px', text: 'DOWNLOAD HD PNG & ARCHIVE', onclick: () => archiveAndDownloadRoe(previewCv, { ...state, fxRateIdr: feed.fxRateIdr }, m => { statusEl.textContent = m; }) }),
-        h('button', { style: 'padding:5px 10px', text: 'VIEW PNG ARCHIVE (G)', onclick: () => ctx.run(`${state.symbol} G`) })
+        h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700;padding:5px 10px', text: 'SHARE IMAGE', onclick: () => shareRoeNative(previewCv, { ...state, fxRateIdr: feed.fxRateIdr }, m => { statusEl.textContent = m; }) }),
+        h('button', { style: 'color:#ffffff;border-color:#3a404a;padding:5px 10px', text: 'COPY PNG', onclick: () => copyRoeImage(previewCv, m => { statusEl.textContent = m; }) }),
+        h('button', { style: 'color:#00c853;border-color:#00c85377;padding:5px 10px', text: 'DOWNLOAD PNG', onclick: () => archiveAndDownloadRoe(previewCv, { ...state, fxRateIdr: feed.fxRateIdr }, m => { statusEl.textContent = m; }) }),
+        h('button', { style: 'padding:5px 10px', text: 'PNG ARCHIVE (G)', onclick: () => ctx.run(`${state.symbol} G`) })
       ),
       h('div', { style: 'padding:0 8px 6px' }, statusEl)
     );
@@ -2982,11 +3086,11 @@ export function mountROE(body, ctx) {
 
     // Live Open Positions Selector
     const openCard = h('div', { class: 'xcard', style: 'margin-bottom:0' },
-      h('div', { class: 'xsec-hd' }, h('span', { text: '1. LIVE BINANCE FUTURES POSITIONS (1-CLICK LOAD)' }), h('span', { class: 'am', text: `${openList.length} OPEN` }))
+      h('div', { class: 'xsec-hd' }, h('span', { text: '1. OPEN POSITIONS' }), h('span', { class: 'am', text: `${openList.length} OPEN` }))
     );
     if (openList.length) {
       const tbl = h('table', { class: 't' },
-        h('thead', {}, h('tr', {}, h('th', { text: 'CONTRACT' }), h('th', { text: 'SIDE' }), h('th', { text: 'ENTRY / MARK' }), h('th', { text: 'LIVE ROE' }), h('th', { text: 'CARD' })))
+        h('thead', {}, h('tr', {}, h('th', { text: 'CONTRACT' }), h('th', { text: 'SIDE' }), h('th', { text: 'ENTRY / MARK' }), h('th', { text: 'ROE' }), h('th', { text: 'LOAD' })))
       );
       const tbod = h('tbody');
       openList.forEach(p => {
@@ -2995,24 +3099,24 @@ export function mountROE(body, ctx) {
           h('td', { class: p.direction === 'LONG' ? 'up' : 'dn', text: `${p.direction} ${p.leverage}x` }),
           h('td', { text: `${fmtPx(p.entryPrice)} / ${fmtPx(p.markPrice)}` }),
           h('td', { class: dirCls(p.roePct) + ' sym', text: `${p.roePct >= 0 ? '+' : ''}${p.roePct.toFixed(2)}%` }),
-          h('td', {}, h('button', { class: 'on', style: 'font-size:10px', text: 'LOAD ROE', onclick: ev => { ev.stopPropagation(); applyTradeRecord(p); } }))
+          h('td', {}, h('button', { class: 'on', style: 'font-size:10px', text: 'LOAD', onclick: ev => { ev.stopPropagation(); applyTradeRecord(p); } }))
         ));
       });
       tbl.append(tbod);
       openCard.append(tbl);
     } else {
-      openCard.append(h('div', { style: 'padding:8px;font-size:11px;color:var(--muted)', text: 'No live open positions right now. Select a closed trade below or customize parameters.' }));
+      openCard.append(h('div', { style: 'padding:8px;font-size:11px;color:var(--muted)', text: 'No open positions. Select a closed trade or edit parameters below.' }));
     }
     rightCol.append(openCard);
 
     // Closed Trades Selector
     const closedCard = h('div', { class: 'xcard', style: 'margin-bottom:0' },
-      h('div', { class: 'xsec-hd' }, h('span', { text: '2. CLOSED EXECUTION HISTORY (AUDITED LEDGER)' }), h('span', { class: 'lb', text: `${closedList.length} RECORDS` }))
+      h('div', { class: 'xsec-hd' }, h('span', { text: '2. CLOSED POSITIONS' }), h('span', { class: 'lb', text: `${closedList.length} RECORDS` }))
     );
     if (closedList.length) {
       const cWrap = h('div', { style: 'max-height:170px;overflow:auto' });
       const tbl = h('table', { class: 't' },
-        h('thead', {}, h('tr', {}, h('th', { text: 'SYMBOL' }), h('th', { text: 'SIDE' }), h('th', { text: 'ENTRY / EXIT' }), h('th', { text: 'REALIZED ROE' }), h('th', { text: 'LOAD' })))
+        h('thead', {}, h('tr', {}, h('th', { text: 'SYMBOL' }), h('th', { text: 'SIDE' }), h('th', { text: 'ENTRY / EXIT' }), h('th', { text: 'ROE' }), h('th', { text: 'LOAD' })))
       );
       const tbod = h('tbody');
       closedList.slice(0, 20).forEach(t => {
@@ -3021,32 +3125,30 @@ export function mountROE(body, ctx) {
           h('td', { class: t.direction === 'LONG' ? 'up' : 'dn', text: `${t.direction} ${t.leverage}x` }),
           h('td', { text: `${fmtPx(t.entryPrice)} / ${fmtPx(t.markPrice)}` }),
           h('td', { class: dirCls(t.roePct) + ' sym', text: `${t.roePct >= 0 ? '+' : ''}${t.roePct.toFixed(2)}%` }),
-          h('td', {}, h('button', { style: 'font-size:10px', text: 'SELECT', onclick: ev => { ev.stopPropagation(); applyTradeRecord(t); } }))
+          h('td', {}, h('button', { style: 'font-size:10px', text: 'LOAD', onclick: ev => { ev.stopPropagation(); applyTradeRecord(t); } }))
         ));
       });
       tbl.append(tbod);
       cWrap.append(tbl);
       closedCard.append(cWrap);
     } else {
-      closedCard.append(h('div', { style: 'padding:8px;font-size:11px;color:var(--muted)', text: 'No closed trades recorded in ledger yet.' }));
+      closedCard.append(h('div', { style: 'padding:8px;font-size:11px;color:var(--muted)', text: 'No closed trades recorded yet.' }));
     }
     rightCol.append(closedCard);
 
-    // Custom Card Precision Editor
+    // Custom Card Parameters Editor (Clean — no Quant/Setup fields)
     const editCard = h('div', { class: 'xcard', style: 'margin-bottom:0' },
-      h('div', { class: 'xsec-hd' }, h('span', { text: '3. PRECISION CARD EDITOR / SIMULATION' }), h('span', { class: 'am', text: 'AUTO-ROE CALC' })),
+      h('div', { class: 'xsec-hd' }, h('span', { text: '3. POSITION PARAMETERS' }), h('span', { class: 'am', text: 'AUTO-ROE' })),
       h('div', { style: 'padding:8px;display:grid;grid-template-columns:repeat(2,1fr);gap:6px;font-size:10.5px' },
-        h('div', {}, h('div', { class: 'mu', text: 'CONTRACT SYMBOL' }), symInp),
-        h('div', {}, h('div', { class: 'mu', text: 'DIRECTION' }), dirSel),
+        h('div', {}, h('div', { class: 'mu', text: 'CONTRACT' }), symInp),
+        h('div', {}, h('div', { class: 'mu', text: 'SIDE' }), dirSel),
         h('div', {}, h('div', { class: 'mu', text: 'LEVERAGE (X)' }), levInp),
-        h('div', {}, h('div', { class: 'mu', text: 'MARGIN SIZE (USDT)' }), mgnInp),
+        h('div', {}, h('div', { class: 'mu', text: 'MARGIN (USDT)' }), mgnInp),
         h('div', {}, h('div', { class: 'mu', text: 'ENTRY PRICE ($)' }), entInp),
-        h('div', {}, h('div', { class: 'mu', text: 'MARK / EXIT PRICE ($)' }), mrkInp),
-        h('div', {}, h('div', { class: 'mu', text: 'STRATEGY / SETUP TAG' }), setInp),
-        h('div', {}, h('div', { class: 'mu', text: 'QUANT CONFIDENCE (%)' }), cnfInp)
+        h('div', {}, h('div', { class: 'mu', text: 'MARK / EXIT PRICE ($)' }), mrkInp)
       ),
       h('div', { style: 'padding:0 8px 8px;display:flex;justify-content:flex-end' },
-        h('button', { class: 'on', text: 'UPDATE ROE CARD PREVIEW', onclick: syncEditor })
+        h('button', { class: 'on', text: 'UPDATE CARD', onclick: syncEditor })
       )
     );
     rightCol.append(editCard);
