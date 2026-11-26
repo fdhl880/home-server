@@ -277,11 +277,17 @@ function validateBmailAlertConfigPatch(patch) {
         const e = new Error('alertConfig payload must be a JSON object'); e.statusCode = 400; throw e;
     }
     const clean = {};
-    const boolKeys = ['enableHotNews', 'enableFuturesOpen', 'enableFuturesClose', 'enableEmsxOrders'];
+    const boolKeys = ['enableHotNews', 'enableFuturesOpen', 'enableFuturesClose', 'enableEmsxOrders', 'enableMonthlyReport'];
     for (const [k, v] of Object.entries(patch)) {
         if (boolKeys.includes(k)) {
             if (typeof v !== 'boolean') { const e = new Error(`Expected boolean for ${k}`); e.statusCode = 400; throw e; }
             clean[k] = v;
+        } else if (k === 'monthlyReportDay') {
+            const n = Number(v);
+            if (!Number.isInteger(n) || n < 1 || n > 28) {
+                const e = new Error('monthlyReportDay must be an integer between 1 and 28'); e.statusCode = 400; throw e;
+            }
+            clean[k] = n;
         } else if (k === 'targetEmail' || k === 'smtpUser') {
             const s = typeof v === 'string' ? v.trim() : '';
             if (!s || s.length > 120 || !EMAIL_RE.test(s) || /[\r\n]/.test(s)) {
@@ -1270,69 +1276,87 @@ registerBgJob(refreshFearAndGreed, 30 * 60 * 1000, true);
 // ============================================================
 
 // 1. GET /api/portfolio -> Returns full portfolio with real-time calculated values
+function computePortfolioSnapshot() {
+    const port = loadPortfolio();
+    const usdRate = getUsdIdr();
+
+    let totalHoldingsValue = 0;
+    let totalInvested = 0;
+
+    const enrichedHoldings = port.holdings.map(h => {
+        const quote = quoteCache.data[h.symbol];
+        let currentPrice = h.avgPrice;
+        let change24h = 0;
+
+        if (quote && quote.price > 0) {
+            currentPrice = quote.price;
+            change24h = quote.changePct;
+        }
+
+        const priceInIdr = (h.currency === 'USD') ? currentPrice * usdRate : currentPrice;
+        const avgPriceInIdr = (h.currency === 'USD') ? h.avgPrice * usdRate : h.avgPrice;
+
+        const marketValue = h.qty * priceInIdr;
+        const investedValue = h.qty * avgPriceInIdr;
+        const unrealizedPnL = marketValue - investedValue;
+        const unrealizedPnLPct = investedValue > 0 ? (unrealizedPnL / investedValue) * 100 : 0;
+
+        totalHoldingsValue += marketValue;
+        totalInvested += investedValue;
+
+        return {
+            ...h,
+            currentPrice,
+            priceInIdr,
+            avgPriceInIdr,
+            marketValue,
+            investedValue,
+            unrealizedPnL,
+            unrealizedPnLPct,
+            change24h
+        };
+    });
+
+    const totalNetWorth = port.cash + totalHoldingsValue;
+    const totalUnrealizedPnL = totalHoldingsValue - totalInvested;
+    const totalUnrealizedPnLPct = totalInvested > 0 ? (totalUnrealizedPnL / totalInvested) * 100 : 0;
+    const overallReturn = port.initialCapital > 0 ? ((totalNetWorth - port.initialCapital) / port.initialCapital) * 100 : 0;
+
+    return {
+        initialCapital: port.initialCapital,
+        cash: port.cash,
+        totalHoldingsValue,
+        totalNetWorth,
+        totalInvested,
+        unrealizedPnL: totalUnrealizedPnL,
+        unrealizedPnLPct: totalUnrealizedPnLPct,
+        realizedPnL: port.realizedPnL,
+        overallReturn,
+        usdRate,
+        holdings: enrichedHoldings,
+        workingOrders: port.workingOrders || [],
+        trades: port.trades.slice(-50).reverse(),
+        allTradesCount: port.trades.length
+    };
+}
+
 app.get('/api/portfolio', (req, res) => {
     try {
-        const port = loadPortfolio();
-        const usdRate = getUsdIdr();
-
-        let totalHoldingsValue = 0;
-        let totalInvested = 0;
-
-        // Enrich each holding with live price & P&L
-        const enrichedHoldings = port.holdings.map(h => {
-            const quote = quoteCache.data[h.symbol];
-            let currentPrice = h.avgPrice; // default to avg buy price if not fetched yet
-            let change24h = 0;
-
-            if (quote && quote.price > 0) {
-                currentPrice = quote.price;
-                change24h = quote.changePct;
-            }
-
-            // Current price in IDR
-            const priceInIdr = (h.currency === 'USD') ? currentPrice * usdRate : currentPrice;
-            const avgPriceInIdr = (h.currency === 'USD') ? h.avgPrice * usdRate : h.avgPrice;
-
-            const marketValue = h.qty * priceInIdr;
-            const investedValue = h.qty * avgPriceInIdr;
-            const unrealizedPnL = marketValue - investedValue;
-            const unrealizedPnLPct = investedValue > 0 ? (unrealizedPnL / investedValue) * 100 : 0;
-
-            totalHoldingsValue += marketValue;
-            totalInvested += investedValue;
-
-            return {
-                ...h,
-                currentPrice,
-                priceInIdr,
-                avgPriceInIdr,
-                marketValue,
-                investedValue,
-                unrealizedPnL,
-                unrealizedPnLPct,
-                change24h
-            };
-        });
-
-        const totalNetWorth = port.cash + totalHoldingsValue;
-        const totalUnrealizedPnL = totalHoldingsValue - totalInvested;
-        const totalUnrealizedPnLPct = totalInvested > 0 ? (totalUnrealizedPnL / totalInvested) * 100 : 0;
-        const overallReturn = port.initialCapital > 0 ? ((totalNetWorth - port.initialCapital) / port.initialCapital) * 100 : 0;
-
+        const snap = computePortfolioSnapshot();
         res.json({
-            initialCapital: port.initialCapital,
-            cash: port.cash,
-            totalHoldingsValue,
-            totalNetWorth,
-            totalInvested,
-            unrealizedPnL: totalUnrealizedPnL,
-            unrealizedPnLPct: totalUnrealizedPnLPct,
-            realizedPnL: port.realizedPnL,
-            overallReturn,
-            usdRate,
-            holdings: enrichedHoldings,
-            workingOrders: port.workingOrders || [],
-            trades: port.trades.slice(-50).reverse() // newest first
+            initialCapital: snap.initialCapital,
+            cash: snap.cash,
+            totalHoldingsValue: snap.totalHoldingsValue,
+            totalNetWorth: snap.totalNetWorth,
+            totalInvested: snap.totalInvested,
+            unrealizedPnL: snap.unrealizedPnL,
+            unrealizedPnLPct: snap.unrealizedPnLPct,
+            realizedPnL: snap.realizedPnL,
+            overallReturn: snap.overallReturn,
+            usdRate: snap.usdRate,
+            holdings: snap.holdings,
+            workingOrders: snap.workingOrders,
+            trades: snap.trades
         });
     } catch (e) {
         console.error('Portfolio GET error:', e.message);
@@ -5257,6 +5281,9 @@ const DEFAULT_BMAIL = {
         enableFuturesOpen: true,
         enableFuturesClose: true,
         enableEmsxOrders: true,
+        enableMonthlyReport: true,
+        monthlyReportDay: 1,
+        lastMonthlyReportMonth: '',
         smtpHost: 'smtp.gmail.com',
         smtpPort: 465,
         smtpUser: (!testMode && process.env.SMTP_USER) || 'fadhilsyafiq90@gmail.com',
@@ -5403,28 +5430,244 @@ function sanitizeBmailStore(store) {
     return copy;
 }
 
+// Authentic Bloomberg Terminal Email HTML Renderer
+function buildDefaultBloombergAlertHtml({ eventType, symbol, to, body }) {
+    const safeEvent = escapeHtml(eventType);
+    const safeSym = escapeHtml(symbol);
+    const safeTo = escapeHtml(to);
+    const safeBody = escapeHtml(body || '');
+    const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+    return `<div style="background:#ffffff;color:#11161c;font-family:'Helvetica Neue',Arial,sans-serif;max-width:680px;margin:0 auto;border:1px solid #cfd6df">
+      <div style="background:#000000;border-top:4px solid #ff6600;padding:12px 18px;color:#ffffff">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+          <td style="font-size:16px;font-weight:700;letter-spacing:0.3px;color:#ffffff">Bloomberg <span style="color:#9aa0a6;font-weight:400;font-size:12px">| TERMINAL</span></td>
+          <td align="right" style="font-family:Consolas,'Courier New',monospace;font-size:11px;color:#ffb000;font-weight:700">${safeEvent}</td>
+        </tr></table>
+      </div>
+      <div style="background:#f3f4f6;border-bottom:1px solid #cfd6df;padding:8px 18px;font-family:Consolas,'Courier New',monospace;font-size:11px;color:#4b5563">
+        <b>SECURITY:</b> ${safeSym} &nbsp;|&nbsp; <b>ACCOUNT:</b> FADHIL M. S. LUBIS &nbsp;|&nbsp; <b>TIME:</b> ${stamp}
+      </div>
+      <div style="padding:16px 18px">
+        <pre style="margin:0;white-space:pre-wrap;font-family:Consolas,'Courier New',monospace;font-size:12px;line-height:1.6;color:#11161c;background:#f8f9fb;border:1px solid #e2e8f0;border-left:3px solid #ff6600;padding:12px 14px">${safeBody}</pre>
+      </div>
+      <div style="background:#f7f8fa;border-top:1px solid #cfd6df;padding:9px 18px;font-family:Consolas,'Courier New',monospace;font-size:10px;color:#6b7280">
+        Bloomberg Terminal &bull; Automated Account Dispatch &bull; Recipient: ${safeTo}
+      </div>
+    </div>`;
+}
+
+// Authentic Bloomberg PORT Monthly Portfolio Account Statement Builder (Rp 200M Account)
+function buildMonthlyPortfolioStatement(periodOverride = '') {
+    const snap = computePortfolioSnapshot();
+    const now = new Date();
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const periodLabel = periodOverride || `${months[now.getUTCMonth()]} ${now.getUTCFullYear()}`;
+    const monthKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+    const fmtIdr = n => (Number(n) < 0 ? '-Rp ' : 'Rp ') + Math.round(Math.abs(Number(n) || 0)).toLocaleString('id-ID');
+    const fmtUsd = n => (Number(n) < 0 ? '-$' : '$') + Math.abs(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmtPctS = n => `${Number(n) >= 0 ? '+' : ''}${(Number(n) || 0).toFixed(2)}%`;
+
+    const navIdr = snap.totalNetWorth;
+    const navUsd = snap.usdRate > 0 ? navIdr / snap.usdRate : 0;
+    const cashWt = navIdr > 0 ? (snap.cash / navIdr) * 100 : 100;
+    const invWt = Math.max(0, 100 - cashWt);
+
+    // Optional live Binance Futures account snapshot if state file exists
+    const botState = readJsonSafeSync(statePath, {}) || {};
+    const futuresWalletUsdt = Number(botState.binance_wallet_balance_usdt || 0);
+    const futuresWalletIdr = Math.round(futuresWalletUsdt * snap.usdRate);
+    const combinedWealthIdr = navIdr + futuresWalletIdr;
+
+    const holdingsText = snap.holdings.length
+        ? snap.holdings.map(h => {
+            const wt = navIdr > 0 ? ((h.marketValue || 0) / navIdr) * 100 : 0;
+            const pxStr = h.currency === 'USD' ? fmtUsd(h.currentPrice) : fmtIdr(h.currentPrice);
+            return `  ${String(h.symbol).padEnd(10)} | Qty: ${String(h.qty).padStart(8)} | Last: ${pxStr.padStart(12)} | Val: ${fmtIdr(h.marketValue).padStart(16)} (${wt.toFixed(1)}%) | P&L: ${fmtIdr(h.unrealizedPnL)} (${fmtPctS(h.unrealizedPnLPct)})`;
+        }).join('\n')
+        : '  100% Liquid Cash Position (No open equity/spot holdings).';
+
+    const recentTrades = snap.trades.slice(0, 10);
+    const tradesText = recentTrades.length
+        ? recentTrades.map(t => `  ${String(t.timestamp || '').slice(0, 10)} | ${String(t.type).padEnd(4)} ${String(t.symbol).padEnd(8)} x${t.qty} @ ${t.price} (${fmtIdr(t.totalValueIdr)}) [${t.status || 'FILLED'}]`).join('\n')
+        : '  No settled portfolio executions recorded in this period.';
+
+    const stampUtc = now.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+    const subject = `Bloomberg Portfolio Statement (PORT) — ${periodLabel} | NAV ${fmtIdr(navIdr)} (${fmtPctS(snap.overallReturn)})`;
+
+    const text = [
+        `BLOOMBERG TERMINAL — MONTHLY PORTFOLIO ACCOUNT STATEMENT (PORT <GO>)`,
+        `====================================================================`,
+        `Statement Period   : ${periodLabel}`,
+        `Account Holder     : FADHIL MUHAMMAD SYAFIQ LUBIS (UUID: 38492018)`,
+        `Generated          : ${stampUtc}`,
+        `Reference FX Rate  : USD/IDR ${fmtIdr(snap.usdRate)}`,
+        ``,
+        `1. EXECUTIVE VALUATION SUMMARY`,
+        `--------------------------------------------------------------------`,
+        `Base Capital       : ${fmtIdr(snap.initialCapital)}`,
+        `Ending NAV (IDR)   : ${fmtIdr(navIdr)} (${fmtUsd(navUsd)} USD)`,
+        `Cumulative Return  : ${fmtPctS(snap.overallReturn)}`,
+        `Cash Balance       : ${fmtIdr(snap.cash)} (${cashWt.toFixed(2)}% of NAV)`,
+        `Invested Assets    : ${fmtIdr(snap.totalHoldingsValue)} (${invWt.toFixed(2)}% of NAV)`,
+        `Unrealized P&L     : ${fmtIdr(snap.unrealizedPnL)} (${fmtPctS(snap.unrealizedPnLPct)})`,
+        `Realized P&L       : ${fmtIdr(snap.realizedPnL)}`,
+        futuresWalletUsdt > 0 ? `Binance Futures    : ${fmtUsd(futuresWalletUsdt)} USDT (${fmtIdr(futuresWalletIdr)}) | Combined: ${fmtIdr(combinedWealthIdr)}` : null,
+        ``,
+        `2. HOLDINGS & WEIGHT ATTRIBUTION (${snap.holdings.length} POSITIONS)`,
+        `--------------------------------------------------------------------`,
+        holdingsText,
+        ``,
+        `3. RECENT SETTLEMENT BLOTTER (${recentTrades.length} OF ${snap.allTradesCount} EXECUTIONS)`,
+        `--------------------------------------------------------------------`,
+        tradesText,
+        ``,
+        `Bloomberg Terminal • Portfolio & Risk Analytics (PORT <GO>)`
+    ].filter(x => x !== null).join('\n');
+
+    const retColor = snap.overallReturn >= 0 ? '#00873e' : '#c62828';
+    const uPnlColor = snap.unrealizedPnL >= 0 ? '#00873e' : '#c62828';
+    const rPnlColor = snap.realizedPnL >= 0 ? '#00873e' : '#c62828';
+
+    const holdingsRowsHtml = snap.holdings.length
+        ? snap.holdings.map(h => {
+            const wt = navIdr > 0 ? ((h.marketValue || 0) / navIdr) * 100 : 0;
+            const pxStr = h.currency === 'USD' ? fmtUsd(h.currentPrice) : fmtIdr(h.currentPrice);
+            const avgStr = h.currency === 'USD' ? fmtUsd(h.avgPrice) : fmtIdr(h.avgPrice);
+            const pCol = (h.unrealizedPnL || 0) >= 0 ? '#00873e' : '#c62828';
+            return `<tr style="border-bottom:1px solid #e5e9ef">
+              <td style="padding:7px 8px;font-weight:700;color:#d95300">${escapeHtml(h.symbol)}</td>
+              <td style="padding:7px 8px;color:#374151">${escapeHtml((h.name || h.symbol).slice(0, 22))}</td>
+              <td align="right" style="padding:7px 8px">${escapeHtml(String(h.qty))}</td>
+              <td align="right" style="padding:7px 8px;color:#4b5563">${escapeHtml(avgStr)}</td>
+              <td align="right" style="padding:7px 8px;font-weight:700">${escapeHtml(pxStr)}</td>
+              <td align="right" style="padding:7px 8px;font-weight:700">${escapeHtml(fmtIdr(h.marketValue))}</td>
+              <td align="right" style="padding:7px 8px;color:#4b5563">${wt.toFixed(1)}%</td>
+              <td align="right" style="padding:7px 8px;font-weight:700;color:${pCol}">${escapeHtml(fmtIdr(h.unrealizedPnL))} (${fmtPctS(h.unrealizedPnLPct)})</td>
+            </tr>`;
+        }).join('')
+        : `<tr><td colspan="8" style="padding:12px 8px;color:#6b7280;text-align:center">Portfolio is currently 100% Cash (${escapeHtml(fmtIdr(snap.cash))}).</td></tr>`;
+
+    const tradesRowsHtml = recentTrades.length
+        ? recentTrades.map(t => `<tr style="border-bottom:1px solid #e5e9ef">
+            <td style="padding:6px 8px;color:#4b5563">${escapeHtml(String(t.timestamp || '').slice(0, 10))}</td>
+            <td style="padding:6px 8px;font-weight:700;color:${t.type === 'BUY' ? '#00873e' : '#c62828'}">${escapeHtml(t.type)}</td>
+            <td style="padding:6px 8px;font-weight:700;color:#11161c">${escapeHtml(t.symbol)}</td>
+            <td align="right" style="padding:6px 8px">${escapeHtml(String(t.qty))}</td>
+            <td align="right" style="padding:6px 8px">${escapeHtml(String(t.price))}</td>
+            <td align="right" style="padding:6px 8px;font-weight:700">${escapeHtml(fmtIdr(t.totalValueIdr))}</td>
+          </tr>`).join('')
+        : `<tr><td colspan="6" style="padding:10px 8px;color:#6b7280;text-align:center">No settled executions in this period.</td></tr>`;
+
+    const html = `<div style="background:#ffffff;color:#11161c;font-family:'Helvetica Neue',Arial,sans-serif;max-width:740px;margin:0 auto;border:1px solid #cfd6df">
+      <div style="background:#000000;border-top:4px solid #ff6600;padding:14px 20px;color:#ffffff">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+          <td style="font-size:18px;font-weight:700;color:#ffffff">Bloomberg <span style="color:#9aa0a6;font-weight:400;font-size:12px">| PORTFOLIO &amp; RISK ANALYTICS</span></td>
+          <td align="right" style="font-family:Consolas,'Courier New',monospace;font-size:11px;color:#ffb000;font-weight:700">PORT &lt;GO&gt; MONTHLY STATEMENT</td>
+        </tr></table>
+      </div>
+      <div style="background:#f3f4f6;border-bottom:1px solid #cfd6df;padding:10px 20px;font-size:11.5px;color:#374151">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+          <td><b>ACCOUNT HOLDER:</b> FADHIL MUHAMMAD SYAFIQ LUBIS (UUID 38492018)<br><span style="color:#6b7280">Base Capital: ${escapeHtml(fmtIdr(snap.initialCapital))} &bull; Currency: IDR / USD</span></td>
+          <td align="right" style="font-family:Consolas,'Courier New',monospace"><b>PERIOD:</b> ${escapeHtml(periodLabel)}<br><span style="color:#6b7280">FX USD/IDR: ${escapeHtml(fmtIdr(snap.usdRate))}</span></td>
+        </tr></table>
+      </div>
+      <div style="padding:16px 20px">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin-bottom:16px;font-family:Consolas,'Courier New',monospace">
+          <tr>
+            <td width="25%" style="border:1px solid #d1d5db;padding:10px;background:#fafbfc">
+              <div style="font-size:10px;color:#6b7280;font-family:'Helvetica Neue',Arial,sans-serif;font-weight:700">NET ASSET VALUE</div>
+              <div style="font-size:15px;font-weight:700;color:#11161c;margin-top:3px">${escapeHtml(fmtIdr(navIdr))}</div>
+              <div style="font-size:10.5px;color:#6b7280;margin-top:2px">${escapeHtml(fmtUsd(navUsd))} USD</div>
+            </td>
+            <td width="25%" style="border:1px solid #d1d5db;padding:10px;background:#fafbfc">
+              <div style="font-size:10px;color:#6b7280;font-family:'Helvetica Neue',Arial,sans-serif;font-weight:700">TOTAL RETURN</div>
+              <div style="font-size:15px;font-weight:700;color:${retColor};margin-top:3px">${escapeHtml(fmtPctS(snap.overallReturn))}</div>
+              <div style="font-size:10.5px;color:#6b7280;margin-top:2px">vs ${escapeHtml(fmtIdr(snap.initialCapital))}</div>
+            </td>
+            <td width="25%" style="border:1px solid #d1d5db;padding:10px;background:#fafbfc">
+              <div style="font-size:10px;color:#6b7280;font-family:'Helvetica Neue',Arial,sans-serif;font-weight:700">AVAILABLE CASH</div>
+              <div style="font-size:15px;font-weight:700;color:#11161c;margin-top:3px">${escapeHtml(fmtIdr(snap.cash))}</div>
+              <div style="font-size:10.5px;color:#6b7280;margin-top:2px">${cashWt.toFixed(1)}% of NAV</div>
+            </td>
+            <td width="25%" style="border:1px solid #d1d5db;padding:10px;background:#fafbfc">
+              <div style="font-size:10px;color:#6b7280;font-family:'Helvetica Neue',Arial,sans-serif;font-weight:700">UNREALIZED / REALIZED</div>
+              <div style="font-size:13px;font-weight:700;color:${uPnlColor};margin-top:3px">${escapeHtml(fmtIdr(snap.unrealizedPnL))}</div>
+              <div style="font-size:10.5px;color:${rPnlColor};margin-top:2px">Realized: ${escapeHtml(fmtIdr(snap.realizedPnL))}</div>
+            </td>
+          </tr>
+        </table>
+        ${futuresWalletUsdt > 0 ? `<div style="border:1px solid #d1d5db;border-left:3px solid #ff6600;background:#fffaf3;padding:8px 12px;margin-bottom:16px;font-family:Consolas,'Courier New',monospace;font-size:11.5px"><b>LINKED BINANCE FUTURES WALLET:</b> ${escapeHtml(fmtUsd(futuresWalletUsdt))} USDT (${escapeHtml(fmtIdr(futuresWalletIdr))}) &nbsp;|&nbsp; <b>COMBINED EQUITY:</b> ${escapeHtml(fmtIdr(combinedWealthIdr))}</div>` : ''}
+        <div style="font-size:11px;font-weight:700;color:#11161c;letter-spacing:0.4px;border-bottom:2px solid #000;padding-bottom:4px;margin-bottom:6px">1. PORTFOLIO HOLDINGS &amp; ATTRIBUTION (${snap.holdings.length} POSITIONS)</div>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;font-family:Consolas,'Courier New',monospace;font-size:11px;margin-bottom:18px">
+          <thead>
+            <tr style="background:#f3f4f6;border-bottom:1px solid #cfd6df;color:#4b5563">
+              <th align="left" style="padding:6px 8px">TICKER</th>
+              <th align="left" style="padding:6px 8px">SECURITY</th>
+              <th align="right" style="padding:6px 8px">QTY</th>
+              <th align="right" style="padding:6px 8px">AVG COST</th>
+              <th align="right" style="padding:6px 8px">LAST PX</th>
+              <th align="right" style="padding:6px 8px">MKT VALUE</th>
+              <th align="right" style="padding:6px 8px">WT %</th>
+              <th align="right" style="padding:6px 8px">UNREAL P&amp;L</th>
+            </tr>
+          </thead>
+          <tbody>${holdingsRowsHtml}</tbody>
+        </table>
+        <div style="font-size:11px;font-weight:700;color:#11161c;letter-spacing:0.4px;border-bottom:2px solid #000;padding-bottom:4px;margin-bottom:6px">2. SETTLED EXECUTION BLOTTER (RECENT ${recentTrades.length})</div>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;font-family:Consolas,'Courier New',monospace;font-size:11px">
+          <thead>
+            <tr style="background:#f3f4f6;border-bottom:1px solid #cfd6df;color:#4b5563">
+              <th align="left" style="padding:6px 8px">DATE</th>
+              <th align="left" style="padding:6px 8px">SIDE</th>
+              <th align="left" style="padding:6px 8px">TICKER</th>
+              <th align="right" style="padding:6px 8px">QTY</th>
+              <th align="right" style="padding:6px 8px">EXEC PX</th>
+              <th align="right" style="padding:6px 8px">SETTLEMENT (IDR)</th>
+            </tr>
+          </thead>
+          <tbody>${tradesRowsHtml}</tbody>
+        </table>
+      </div>
+      <div style="background:#f7f8fa;border-top:1px solid #cfd6df;padding:10px 20px;font-family:Consolas,'Courier New',monospace;font-size:10px;color:#6b7280">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+          <td>Bloomberg Terminal &bull; Monthly Account Statement</td>
+          <td align="right">Generated ${stampUtc}</td>
+        </tr></table>
+      </div>
+    </div>`;
+
+    return {
+        monthKey,
+        periodLabel,
+        subject,
+        text,
+        html,
+        summary: {
+            initialCapital: snap.initialCapital,
+            totalNetWorth: navIdr,
+            totalNetWorthUsd: +navUsd.toFixed(2),
+            cash: snap.cash,
+            cashWeightPct: +cashWt.toFixed(2),
+            totalHoldingsValue: snap.totalHoldingsValue,
+            unrealizedPnL: snap.unrealizedPnL,
+            unrealizedPnLPct: +snap.unrealizedPnLPct.toFixed(2),
+            realizedPnL: snap.realizedPnL,
+            overallReturn: +snap.overallReturn.toFixed(2),
+            usdRate: snap.usdRate,
+            holdingsCount: snap.holdings.length,
+            tradesCount: snap.allTradesCount,
+            futuresWalletUsdt,
+            combinedWealthIdr
+        }
+    };
+}
+
 // Resend API HTTPS Email Dispatcher (RESEND_API_KEY env var ONLY — never hardcoded)
-async function sendResendEmail({ to, subject, body, eventType = 'ALERT', symbol = 'BTCUSDT' }) {
+async function sendResendEmail({ to, subject, body, html = '', eventType = 'ALERT', symbol = 'BTCUSDT' }) {
     const key = testMode ? '' : String(process.env.RESEND_API_KEY || '').trim();
     if (!key || !key.startsWith('re_')) return { ok: false, mode: 'NO_RESEND_KEY' };
     try {
-        const safeEvent = escapeHtml(eventType);
-        const safeSym = escapeHtml(symbol);
-        const safeTo = escapeHtml(to);
-        const safeBody = escapeHtml(body);
-        const htmlBody = `<div style="background:#000000;color:#ffb000;font-family:'Consolas','Courier New',monospace;padding:18px;border:2px solid #ffb000;max-width:680px">
-          <div style="background:#5c0808;color:#ffffff;padding:8px 12px;font-weight:bold;font-size:13px;border-bottom:1px solid #ffb000;display:flex;justify-content:space-between">
-            <span>BLOOMBERG PROFESSIONAL SERVICE // ${safeEvent}</span>
-            <span style="color:#ffb000"> DESK: FADHIL M. S. LUBIS</span>
-          </div>
-          <div style="padding:12px 4px;color:#4da3ff;font-size:12px;border-bottom:1px solid #222">
-            <b>SECURITY:</b> ${safeSym} &nbsp;|&nbsp; <b>TARGET:</b> ${safeTo} &nbsp;|&nbsp; <b>TIME:</b> ${new Date().toISOString()}
-          </div>
-          <pre style="white-space:pre-wrap;color:#ffb000;font-size:12.5px;line-height:1.55;background:#070707;padding:12px;border-left:3px solid #00d26a;margin:12px 0">${safeBody}</pre>
-          <div style="font-size:10.5px;color:#888;border-top:1px solid #222;padding-top:8px">
-            DISPATCHED VIA BLOOMBERG B-MAIL &amp; RESEND TLS GATEWAY • PORTFOLIO BASE: Rp 200.000.000 (IDR 200 JUTA)
-          </div>
-        </div>`;
+        const htmlBody = html || buildDefaultBloombergAlertHtml({ eventType, symbol, to, body });
         const cleanTo = sanitizeHeaderValue(to);
         const cleanSub = sanitizeHeaderValue(subject);
         const r = await fetch('https://api.resend.com/emails', {
@@ -5453,7 +5696,7 @@ async function sendResendEmail({ to, subject, body, eventType = 'ALERT', symbol 
 }
 
 // Zero-dependency TLS SMTP sender for Gmail (smtp.gmail.com:465) with multiline 250- support & HTML formatting
-function sendGmailSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, to, subject, body, eventType = 'ALERT', symbol = 'BTCUSDT' }) {
+function sendGmailSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, to, subject, body, html = '', eventType = 'ALERT', symbol = 'BTCUSDT' }) {
     return new Promise((resolve) => {
         const cleanPass = String(pass || '').replace(/\s+/g, '');
         if (testMode || !user || !cleanPass || cleanPass.length < 8) {
@@ -5484,7 +5727,6 @@ function sendGmailSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, to, su
             if (!buffer.endsWith('\r\n')) return;
             const lines = buffer.trim().split('\r\n');
             const last = lines[lines.length - 1] || '';
-            // Wait for final line of multiline SMTP response (e.g., 250-... followed by 250 ...)
             if (last.length >= 4 && last[3] === '-') return;
             const code = parseInt(last.slice(0, 3), 10);
             buffer = '';
@@ -5500,11 +5742,9 @@ function sendGmailSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, to, su
                 step = 8;
                 const boundary = `bbg_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
                 const safeBodyPlain = String(body || '').replace(/\r?\n\.\r?\n/g, '\r\n..\r\n');
-                const safeEvent = escapeHtml(eventType);
-                const safeSym = escapeHtml(symbol);
-                const safeBodyHtml = `<div style="background:#000;color:#ffb000;font-family:Consolas,monospace;padding:16px;border:2px solid #ffb000;max-width:680px"><div style="background:#5c0808;color:#fff;padding:8px 12px;font-weight:bold">BLOOMBERG PROFESSIONAL // ${safeEvent} (${safeSym})</div><pre style="white-space:pre-wrap;color:#ffb000;background:#080808;padding:12px;border-left:3px solid #00d26a">${escapeHtml(body || '')}</pre><div style="font-size:11px;color:#888">Delivered via Gmail TLS SMTP • Pyrofuel 28-Pillar Engine</div></div>`;
+                const safeBodyHtml = html || buildDefaultBloombergAlertHtml({ eventType, symbol, to: safeTo, body });
                 const msg = [
-                    `From: "Bloomberg Terminal Alert" <${safeUser}>`,
+                    `From: "Bloomberg Terminal" <${safeUser}>`,
                     `To: <${safeTo}>`,
                     `Subject: ${safeSub}`,
                     `MIME-Version: 1.0`,
@@ -5853,7 +6093,7 @@ app.post('/api/push/test', async (req, res) => {
 });
 
 // Unified External Email, Native Push & B-Mail Alert Dispatcher
-async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, symbol = 'BTCUSDT', attachmentFn = 'BTCUSDT BOT' }) {
+async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, html = '', symbol = 'BTCUSDT', attachmentFn = 'BTCUSDT BOT' }) {
     const store = loadBmail();
     const cfg = store.alertConfig || DEFAULT_BMAIL.alertConfig;
     const targetEmail = cfg.targetEmail || 'fadhilsyafiq90@gmail.com';
@@ -5862,6 +6102,7 @@ async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, 
         to: targetEmail,
         subject,
         body,
+        html,
         eventType,
         symbol
     });
@@ -5874,6 +6115,7 @@ async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, 
         to: targetEmail,
         subject,
         body,
+        html,
         eventType,
         symbol
     });
@@ -5986,26 +6228,75 @@ app.post('/api/terminal/bmail/alert-config', (req, res) => {
     }
 });
 
+app.get('/api/portfolio/monthly-statement/preview', (req, res) => {
+    try {
+        const period = typeof req.query.period === 'string' ? req.query.period.trim().slice(0, 40) : '';
+        const stmt = buildMonthlyPortfolioStatement(period);
+        res.json({ ok: true, statement: stmt });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: 'Failed generating portfolio statement' });
+    }
+});
+
+app.post('/api/portfolio/monthly-statement', async (req, res) => {
+    try {
+        const period = req.body && typeof req.body.period === 'string' ? req.body.period.trim().slice(0, 40) : '';
+        const stmt = buildMonthlyPortfolioStatement(period);
+        const out = await dispatchExternalEmailAlert({
+            eventType: 'MONTHLY_STATEMENT',
+            symbol: 'PORT',
+            attachmentFn: 'BTCUSDT PORT',
+            subject: stmt.subject,
+            body: stmt.text,
+            html: stmt.html
+        });
+        out.store.alertConfig = {
+            ...(out.store.alertConfig || DEFAULT_BMAIL.alertConfig),
+            lastMonthlyReportMonth: stmt.monthKey
+        };
+        saveBmail(out.store);
+        res.json({
+            ok: true,
+            statement: { periodLabel: stmt.periodLabel, monthKey: stmt.monthKey, subject: stmt.subject, summary: stmt.summary },
+            entry: out.entry,
+            smtp: out.smtpRes,
+            data: sanitizeBmailStore(out.store)
+        });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: 'Failed dispatching monthly portfolio statement' });
+    }
+});
+
 app.post('/api/terminal/bmail/test-alert', async (req, res) => {
     const { type = 'HOT_NEWS' } = req.body || {};
     const store = loadBmail();
     const target = (store.alertConfig && store.alertConfig.targetEmail) || 'fadhilsyafiq90@gmail.com';
     let payload;
-    if (type === 'FUTURES_OPEN') {
+    if (type === 'MONTHLY_STATEMENT') {
+        const stmt = buildMonthlyPortfolioStatement();
+        payload = {
+            eventType: 'MONTHLY_STATEMENT',
+            symbol: 'PORT',
+            attachmentFn: 'BTCUSDT PORT',
+            subject: stmt.subject,
+            body: stmt.text,
+            html: stmt.html
+        };
+    } else if (type === 'FUTURES_OPEN') {
         payload = {
             eventType: 'FUTURES_OPEN',
             symbol: 'BTCUSDT.P',
             attachmentFn: 'BTCUSDT.P BOT',
-            subject: `[BBG FUTURES OPEN] LONG BTCUSDT 20x ISOLATED @ $84,250.00 -> ${target}`,
-            body: `BLOOMBERG EMSX & PYROFUEL 28-PILLAR FUTURES EXECUTION ALERT\n\nEvent       : OPEN FUTURES POSITION\nRecipient   : ${target}\nContract    : BTCUSDT PERPETUAL (BINANCE FUTURES)\nDirection   : LONG (20x ISOLATED)\nEntry Price : $84,250.00\nTake Profit : TP1 $85,900.00 | TP2 $87,400.00\nStop Loss   : $83,150.00 (CONFIRMED)\nAccount     : FADHIL MUHAMMAD SYAFIQ LUBIS (Modal Awal Rp 200.000.000)`
+            subject: `Bloomberg Execution Notice — LONG BTCUSDT 20x ISOLATED @ $84,250.00`,
+            body: `BLOOMBERG TERMINAL — FUTURES EXECUTION NOTICE\n\nEvent       : OPEN FUTURES POSITION\nRecipient   : ${target}\nContract    : BTCUSDT PERPETUAL (BINANCE FUTURES)\nDirection   : LONG (20x ISOLATED)\nEntry Price : $84,250.00\nTake Profit : TP1 $85,900.00 | TP2 $87,400.00\nStop Loss   : $83,150.00 (CONFIRMED)\nAccount     : FADHIL MUHAMMAD SYAFIQ LUBIS`
         };
     } else if (type === 'FUTURES_CLOSE') {
         payload = {
             eventType: 'FUTURES_CLOSE',
             symbol: 'BTCUSDT.P',
             attachmentFn: 'BTCUSDT.P BOT',
-            subject: `[BBG FUTURES CLOSE] CLOSED BTCUSDT 20x (+14.80% / +Rp 2.450.000) -> ${target}`,
-            body: `BLOOMBERG EMSX & PYROFUEL 28-PILLAR FUTURES SETTLEMENT ALERT\n\nEvent        : CLOSE FUTURES POSITION (TAKE PROFIT HIT)\nRecipient    : ${target}\nContract     : BTCUSDT PERPETUAL (BINANCE FUTURES)\nExit Price   : $85,900.00\nRealized PnL : +$148.50 (+Rp 2.450.250 / +14.80% ROE)\nAccount      : FADHIL MUHAMMAD SYAFIQ LUBIS (Modal Awal Rp 200.000.000)`
+            subject: `Bloomberg Settlement Notice — CLOSED BTCUSDT 20x (+14.80% ROE)`,
+            body: `BLOOMBERG TERMINAL — FUTURES SETTLEMENT NOTICE\n\nEvent        : CLOSE FUTURES POSITION (TAKE PROFIT)\nRecipient    : ${target}\nContract     : BTCUSDT PERPETUAL (BINANCE FUTURES)\nExit Price   : $85,900.00\nRealized PnL : +$148.50 (+14.80% ROE)\nAccount      : FADHIL MUHAMMAD SYAFIQ LUBIS`
         };
     } else {
         const topHeadline = (newsCache && newsCache.items && newsCache.items[0] && newsCache.items[0].title) || 'Federal Reserve Signals Data-Dependent Rate Path Amid Global Commodity & FX Repricing';
@@ -6013,8 +6304,8 @@ app.post('/api/terminal/bmail/test-alert', async (req, res) => {
             eventType: 'HOT_NEWS',
             symbol: 'BTCUSDT',
             attachmentFn: 'TOP',
-            subject: `[BBG HOT NEWS] ${topHeadline.slice(0, 78)} -> ${target}`,
-            body: `BLOOMBERG TERMINAL BREAKING HOT NEWS ALERT\n\nRecipient : ${target}\nHeadline  : ${topHeadline}\nSource    : ${(newsCache && newsCache.items && newsCache.items[0] && newsCache.items[0].source) || 'Bloomberg Live Wire (BN)'}\nTimestamp : ${new Date().toISOString()}\n\nOpen TOP <GO> or N <GO> on your Bloomberg Terminal to read the full wire dispatch.`
+            subject: `Bloomberg Breaking Wire — ${topHeadline.slice(0, 78)}`,
+            body: `BLOOMBERG TERMINAL — BREAKING WIRE ALERT\n\nRecipient : ${target}\nHeadline  : ${topHeadline}\nSource    : ${(newsCache && newsCache.items && newsCache.items[0] && newsCache.items[0].source) || 'Bloomberg Live Wire (BN)'}\nTimestamp : ${new Date().toISOString()}\n\nOpen TOP <GO> or N <GO> in Bloomberg Terminal to read the full wire dispatch.`
         };
     }
     try {
@@ -6135,8 +6426,8 @@ function pollFuturesPositionsForEmailAlerts() {
                     eventType: 'FUTURES_OPEN',
                     symbol: p.symbol || 'BTCUSDT',
                     attachmentFn: `${p.symbol || 'BTCUSDT'} BOT`,
-                    subject: `[BBG FUTURES OPEN] ${p.direction || 'LONG'} ${p.symbol} (${p.leverage || 20}x) @ $${p.entry_price || 0} -> ${target}`,
-                    body: `PYROFUEL 28-PILLAR FUTURES OPEN ALERT\n\nRecipient   : ${target}\nPosition ID : ${p.id}\nSymbol      : ${p.symbol} (${p.binance_pair || ''})\nDirection   : ${p.direction || 'LONG'} (${p.leverage || 20}x ISOLATED)\nEntry Price : $${p.entry_price || 0}\nTake Profit : TP1 $${p.take_profit_1 || p.take_profit || 0} | TP2 $${p.take_profit_2 || 0}\nStop Loss   : $${p.stop_loss || 0}\nOpened At   : ${p.opened_at || new Date().toISOString()}`
+                    subject: `Bloomberg Execution Notice — ${p.direction || 'LONG'} ${p.symbol} (${p.leverage || 20}x) @ $${p.entry_price || 0}`,
+                    body: `BLOOMBERG TERMINAL — FUTURES EXECUTION NOTICE\n\nRecipient   : ${target}\nPosition ID : ${p.id}\nContract    : ${p.symbol} (${p.binance_pair || ''})\nDirection   : ${p.direction || 'LONG'} (${p.leverage || 20}x ISOLATED)\nEntry Price : $${p.entry_price || 0}\nTake Profit : TP1 $${p.take_profit_1 || p.take_profit || 0} | TP2 $${p.take_profit_2 || 0}\nStop Loss   : $${p.stop_loss || 0}\nOpened At   : ${p.opened_at || new Date().toISOString()}`
                 }).catch(() => {});
             } else if (prevStatus === 'OPEN' && curStatus.startsWith('CLOSED') && cfg.enableFuturesClose !== false) {
                 _knownPosStates.set(p.id, curStatus);
@@ -6144,8 +6435,8 @@ function pollFuturesPositionsForEmailAlerts() {
                     eventType: 'FUTURES_CLOSE',
                     symbol: p.symbol || 'BTCUSDT',
                     attachmentFn: `${p.symbol || 'BTCUSDT'} BOT`,
-                    subject: `[BBG FUTURES CLOSE] ${p.symbol} ${curStatus} (PnL: Rp ${Math.round(p.pnl_idr || 0).toLocaleString('id-ID')}) -> ${target}`,
-                    body: `PYROFUEL 28-PILLAR FUTURES CLOSE ALERT\n\nRecipient    : ${target}\nPosition ID  : ${p.id}\nSymbol       : ${p.symbol}\nDirection    : ${p.direction || 'LONG'}\nEntry Price  : $${p.entry_price || 0}\nExit Status  : ${curStatus}\nRealized PnL : $${p.pnl_usd || 0} (Rp ${Math.round(p.pnl_idr || 0).toLocaleString('id-ID')} / ${p.pnl_pct || 0}%)\nClosed At    : ${p.closed_at || new Date().toISOString()}`
+                    subject: `Bloomberg Settlement Notice — ${p.symbol} ${curStatus} (${p.pnl_pct >= 0 ? '+' : ''}${p.pnl_pct || 0}% ROE)`,
+                    body: `BLOOMBERG TERMINAL — FUTURES SETTLEMENT NOTICE\n\nRecipient    : ${target}\nPosition ID  : ${p.id}\nContract     : ${p.symbol}\nDirection    : ${p.direction || 'LONG'}\nEntry Price  : $${p.entry_price || 0}\nExit Status  : ${curStatus}\nRealized PnL : $${p.pnl_usd || 0} (Rp ${Math.round(p.pnl_idr || 0).toLocaleString('id-ID')} / ${p.pnl_pct || 0}%)\nClosed At    : ${p.closed_at || new Date().toISOString()}`
                 }).catch(() => {});
             } else {
                 _knownPosStates.set(p.id, curStatus);
@@ -6191,8 +6482,39 @@ function pollHotNewsForEmailAlerts() {
     } catch (e) {}
 }
 
+// 3. Automatic Monthly Bloomberg PORT Portfolio Account Statement Scheduler (1st of month, Asia/Jakarta WIB)
+async function pollMonthlyPortfolioStatement() {
+    if (testMode) return;
+    try {
+        const store = loadBmail();
+        const cfg = store.alertConfig || DEFAULT_BMAIL.alertConfig;
+        if (cfg.enableMonthlyReport === false) return;
+        const reportDay = Math.max(1, Math.min(28, Number(cfg.monthlyReportDay) || 1));
+        const jktNow = new Date(Date.now() + 7 * 3600 * 1000); // Asia/Jakarta UTC+7
+        const curMonthKey = `${jktNow.getUTCFullYear()}-${String(jktNow.getUTCMonth() + 1).padStart(2, '0')}`;
+        const curDay = jktNow.getUTCDate();
+        if (curDay < reportDay || cfg.lastMonthlyReportMonth === curMonthKey) return;
+
+        const stmt = buildMonthlyPortfolioStatement();
+        const out = await dispatchExternalEmailAlert({
+            eventType: 'MONTHLY_STATEMENT',
+            symbol: 'PORT',
+            attachmentFn: 'BTCUSDT PORT',
+            subject: stmt.subject,
+            body: stmt.text,
+            html: stmt.html
+        });
+        out.store.alertConfig = {
+            ...(out.store.alertConfig || DEFAULT_BMAIL.alertConfig),
+            lastMonthlyReportMonth: curMonthKey
+        };
+        saveBmail(out.store);
+    } catch (e) {}
+}
+
 registerBgJob(pollFuturesPositionsForEmailAlerts, 8000, false);
 registerBgJob(pollHotNewsForEmailAlerts, 60000, false);
+registerBgJob(pollMonthlyPortfolioStatement, 1800000, false);
 
 // Mount Terminal Extensions: Transparent Bot Glass-Box (FACT/XRAY), Transcripts (TRAN), BI, ETF Flows & Personal Finance (FIN)
 try {

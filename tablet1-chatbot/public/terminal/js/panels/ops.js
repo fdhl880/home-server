@@ -1,7 +1,7 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, fmtTime, dirCls, LS } from '../util.js';
 import { get, getRaw, tickOk, apiFetch } from '../api.js';
-import { attachTechnicalMasterCanvas } from './charts.js?v=20261126d';
-import { openRoeShareModal } from './intelligence.js?v=20261126d';
+import { attachTechnicalMasterCanvas } from './charts.js?v=20261126e';
+import { openRoeShareModal } from './intelligence.js?v=20261126e';
 
 let liveUsdIdrRate = 18218;
 
@@ -1510,6 +1510,60 @@ export function mountPORT(body, ctx) {
     load();
   }
 
+  async function sendMonthlyStatementEmail() {
+    try {
+      const r = await apiFetch('/api/portfolio/monthly-statement', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      }, 15000);
+      const j = await r.json();
+      if (r.ok && j.ok) {
+        alert(`Bloomberg Monthly PORT Statement dispatched (${j.statement?.periodLabel || 'Current Month'}).\nStatus: ${j.entry?.status || 'SENT'}`);
+      } else {
+        alert('Monthly statement error: ' + (j.error || ('HTTP ' + r.status)));
+      }
+    } catch (e) {
+      alert('Monthly statement error: ' + e.message);
+    }
+  }
+
+  async function openMonthlyStatementPreview() {
+    const existing = document.getElementById('bbgStmtModal');
+    if (existing) existing.remove();
+    try {
+      const r = await apiFetch('/api/portfolio/monthly-statement/preview', { cache: 'no-store' }, 12000);
+      const j = await r.json();
+      if (!r.ok || !j.ok || !j.statement) {
+        alert('Unable to load monthly statement preview.');
+        return;
+      }
+      const st = j.statement;
+      const frame = h('div', { style: 'background:#ffffff;color:#111;max-height:72vh;overflow:auto;border:1px solid #333' });
+      frame.innerHTML = st.html;
+      const ov = h('div', {
+        id: 'bbgStmtModal',
+        style: 'position:fixed;inset:0;z-index:99996;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;padding:12px',
+        onclick: ev => { if (ev.target === ov) ov.remove(); }
+      },
+        h('div', { style: 'width:780px;max-width:96vw;background:#000;border:1px solid #ff6600;padding:10px' },
+          h('div', { style: 'display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #2a2e35;padding-bottom:6px;margin-bottom:8px' },
+            h('span', { style: 'color:#ffb000;font-weight:700;font-size:12px', text: `BLOOMBERG PORT — MONTHLY ACCOUNT STATEMENT [${st.periodLabel}]` }),
+            h('div', { style: 'display:flex;gap:6px' },
+              h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'EMAIL STATEMENT NOW', onclick: () => sendMonthlyStatementEmail() }),
+              h('button', { text: 'PRINT / PDF', onclick: () => { const w = window.open('', '_blank', 'width=820,height=920'); if (w) { w.document.write(`<!doctype html><html><head><title>${st.subject}</title></head><body style="margin:20px;background:#fff">${st.html}</body></html>`); w.document.close(); w.print(); } } }),
+              h('button', { style: 'color:#ff5a52;border-color:#ff3b3088', text: 'CLOSE', onclick: () => ov.remove() })
+            )
+          ),
+          frame
+        )
+      );
+      document.body.appendChild(ov);
+    } catch (e) {
+      alert('Statement preview error: ' + e.message);
+    }
+  }
+
   async function _loadPort() {
     const pRes = await getRaw('/api/portfolio');
     if (portUnmounted) return;
@@ -1517,14 +1571,16 @@ export function mountPORT(body, ctx) {
     tb.textContent = '';
     sc.textContent = '';
 
-    const iSym = h('input', { value: ctx.symbol || 'SPCX', placeholder: 'TICKER', style: 'width:80px;text-transform:uppercase' });
+    const iSym = h('input', { value: (ctx.symbol && ctx.symbol !== 'SPCX') ? ctx.symbol : 'BTCUSDT', placeholder: 'TICKER', style: 'width:84px;text-transform:uppercase' });
     const iQty = h('input', { value: '1', placeholder: 'QTY', style: 'width:55px' });
     tb.append(
-      h('span', { class: 'lbl', text: '90) Actions  91) Attribution  |  PORT - Portfolio & Risk Analytics:' }),
+      h('span', { class: 'lbl', text: 'PORT — Portfolio & Risk Analytics:' }),
       iSym, iQty,
       h('button', { class: 'on', style: 'background:var(--up);color:#000;border-color:var(--up)', text: '+BUY DMA', onclick: () => execQuickTrade('BUY', iSym.value.trim().toUpperCase(), iQty.value) }),
       h('button', { style: 'background:var(--dn);color:#fff;border-color:var(--dn)', text: '-SELL DMA', onclick: () => execQuickTrade('SELL', iSym.value.trim().toUpperCase(), iQty.value) }),
-      h('button', { text: 'EMSX ORDER DESK <GO>', onclick: () => ctx.run('EMSX') })
+      h('button', { style: 'color:#ffb000;border-color:#ffb00088', text: 'MONTHLY STATEMENT', onclick: openMonthlyStatementPreview }),
+      h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'EMAIL REPORT', onclick: sendMonthlyStatementEmail }),
+      h('button', { text: 'EMSX <GO>', onclick: () => ctx.run('EMSX') })
     );
 
     if (!pRes.ok || !pRes.data) {
@@ -2297,6 +2353,7 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
           enableFuturesOpen: cfg.enableFuturesOpen !== false,
           enableFuturesClose: cfg.enableFuturesClose !== false,
           enableEmsxOrders: cfg.enableEmsxOrders !== false,
+          enableMonthlyReport: cfg.enableMonthlyReport !== false,
           smtpUser: cfg.smtpUser || iEmail.value.trim() || 'fadhilsyafiq90@gmail.com',
           ...patch
         };
@@ -2360,13 +2417,15 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
               h('button', { class: cfg.enableHotNews !== false ? 'on' : '', text: `${cfg.enableHotNews !== false ? '[ON]' : '[OFF]'} BREAKING NEWS WIRE`, onclick: () => saveCfg({ enableHotNews: cfg.enableHotNews === false }) }),
               h('button', { class: cfg.enableFuturesOpen !== false ? 'on' : '', text: `${cfg.enableFuturesOpen !== false ? '[ON]' : '[OFF]'} FUTURES POSITION OPEN`, onclick: () => saveCfg({ enableFuturesOpen: cfg.enableFuturesOpen === false }) }),
               h('button', { class: cfg.enableFuturesClose !== false ? 'on' : '', text: `${cfg.enableFuturesClose !== false ? '[ON]' : '[OFF]'} FUTURES POSITION CLOSE`, onclick: () => saveCfg({ enableFuturesClose: cfg.enableFuturesClose === false }) }),
-              h('button', { class: cfg.enableEmsxOrders !== false ? 'on' : '', text: `${cfg.enableEmsxOrders !== false ? '[ON]' : '[OFF]'} EMSX PORTFOLIO ORDERS`, onclick: () => saveCfg({ enableEmsxOrders: cfg.enableEmsxOrders === false }) })
+              h('button', { class: cfg.enableEmsxOrders !== false ? 'on' : '', text: `${cfg.enableEmsxOrders !== false ? '[ON]' : '[OFF]'} EMSX PORTFOLIO ORDERS`, onclick: () => saveCfg({ enableEmsxOrders: cfg.enableEmsxOrders === false }) }),
+              h('button', { class: cfg.enableMonthlyReport !== false ? 'on' : '', text: `${cfg.enableMonthlyReport !== false ? '[ON]' : '[OFF]'} MONTHLY PORT STATEMENT (DAY ${cfg.monthlyReportDay || 1})`, onclick: () => saveCfg({ enableMonthlyReport: cfg.enableMonthlyReport === false }) })
             ),
             h('div', { class: 'k', text: 'GMAIL TLS SMTP APP PASS' }),
             h('div', { class: 'v' }, iPass, h('button', { class: 'on', style: 'margin-left:6px', text: 'SAVE SMTP KEY', onclick: () => saveCfg() })),
             h('div', { class: 'k', text: 'LIVE DISPATCH VERIFICATION' }),
             h('div', { class: 'v', style: 'display:flex;gap:6px;flex-wrap:wrap' },
-              h('button', { style: 'background:#ffb000;color:#000;font-weight:bold', text: 'TEST HOT NEWS EMAIL', onclick: () => triggerTest('HOT_NEWS') }),
+              h('button', { style: 'background:#ffb000;color:#000;font-weight:bold', text: 'SEND MONTHLY PORT STATEMENT', onclick: () => triggerTest('MONTHLY_STATEMENT') }),
+              h('button', { style: 'background:#1a1e24;color:#ffb000;border-color:#ffb00088;font-weight:bold', text: 'TEST HOT NEWS EMAIL', onclick: () => triggerTest('HOT_NEWS') }),
               h('button', { style: 'background:var(--up);color:#000;font-weight:bold', text: 'TEST FUTURES OPEN EMAIL', onclick: () => triggerTest('FUTURES_OPEN') }),
               h('button', { style: 'background:#4da3ff;color:#000;font-weight:bold', text: 'TEST FUTURES CLOSE EMAIL', onclick: () => triggerTest('FUTURES_CLOSE') }),
               h('button', { style: 'background:#ff6600;color:#000;font-weight:bold', text: 'TEST MULTI-CHANNEL PUSH', onclick: triggerPushTest })
@@ -2408,9 +2467,9 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
         } else if (type === 'PORT') {
           const pRes = await getRaw('/api/portfolio');
           const p = (pRes.ok && pRes.data) || {};
-          composeState.attachmentFn = 'SPCX PORT';
-          composeState.attachmentLabel = 'PORTFOLIO_200JT_NAV.BBG';
-          composeState.body += `\n\n[BBG PORTFOLIO SNAPSHOT — FADHIL MUHAMMAD SYAFIQ LUBIS]\nBase Capital: Rp 200.000.000 | Current NAV: Rp ${Math.round(p.totalNetWorth || 200000000).toLocaleString('id-ID')}\nHoldings: ${(p.holdings || []).map(x => `${x.symbol} (${x.qty} @ ${x.currentPrice})`).join(', ')}`;
+          composeState.attachmentFn = 'BTCUSDT PORT';
+          composeState.attachmentLabel = 'PORT_STATEMENT_NAV.BBG';
+          composeState.body += `\n\n[BBG PORTFOLIO SNAPSHOT — FADHIL MUHAMMAD SYAFIQ LUBIS]\nBase Capital: Rp 200.000.000 | Current NAV: Rp ${Math.round(p.totalNetWorth || 200000000).toLocaleString('id-ID')}\nHoldings: ${(p.holdings || []).map(x => `${x.symbol} (${x.qty} @ ${x.currentPrice})`).join(', ') || '100% Cash'}`;
         } else if (type === 'YCRV') {
           composeState.attachmentFn = '^TNX YCRV';
           composeState.attachmentLabel = 'UST_YIELD_CURVE.BBG';
