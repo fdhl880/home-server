@@ -11,6 +11,7 @@ const http = require('http');
 const fs = require('fs');
 const crypto = require('crypto');
 const U = require('./terminal/api/util');
+const { buildMonthlyStatementPdf, buildDmaTradeConfirmPdf, buildEmsxBlotterPdf } = require('./terminal/api/pdf');
 
 // Global unhandled rejection / exception safety nets
 if (!process.__wp4ProcessHandlersRegistered) {
@@ -577,24 +578,8 @@ function loadPortfolio() {
     return defaultData;
 }
 
-let _lastTradeId = null;
 function savePortfolio(data) {
     writeJsonAtomicSync(PORTFOLIO_FILE, data);
-    if (Array.isArray(data.trades) && data.trades.length > 0) {
-        const latest = data.trades[data.trades.length - 1];
-        if (_lastTradeId && latest && latest.id !== _lastTradeId && typeof dispatchExternalEmailAlert === 'function') {
-            _lastTradeId = latest.id;
-            dispatchExternalEmailAlert({
-                eventType: latest.type === 'SELL' ? 'FUTURES_CLOSE' : 'FUTURES_OPEN',
-                symbol: latest.symbol || 'SPCX',
-                attachmentFn: `${latest.symbol || 'SPCX'} PORT`,
-                subject: `[BBG EMSX ${latest.type}] ${latest.qty} ${latest.symbol} @ ${latest.price} (${latest.status}) -> fadhilsyafiq90@gmail.com`,
-                body: `BLOOMBERG EMSX ORDER EXECUTION ALERT\n\nOrder ID    : ${latest.id}\nAction      : ${latest.type} (${latest.orderType || 'MARKET'})\nSymbol      : ${latest.symbol}\nQuantity    : ${latest.qty}\nPrice       : ${latest.price} (${latest.currency || 'IDR'})\nTotal Value : Rp ${Math.round(latest.totalValueIdr || 0).toLocaleString('id-ID')}\nStatus      : ${latest.status}\nCash Left   : Rp ${Math.round(data.cash || 0).toLocaleString('id-ID')}`
-            }).catch(() => {});
-        } else if (latest && !_lastTradeId) {
-            _lastTradeId = latest.id;
-        }
-    }
 }
 
 // ============================================================
@@ -1901,12 +1886,14 @@ app.post('/api/portfolio/trade', async (req, res) => {
                 };
                 port.trades.push(tradeLog);
                 savePortfolio(port);
+                dispatchDmaTradeAlert(tradeLog, marketSchedule).catch(() => {});
 
                 return res.json({
                     success: true,
                     message: `Order BUY ${normalizedOrderType} ${qty} ${symbol} BERHASIL DIEKSEKUSI (FILLED)`,
                     trade: tradeLog,
-                    schedule: marketSchedule
+                    schedule: marketSchedule,
+                    pdfUrl: `/api/portfolio/trade/${encodeURIComponent(tradeLog.id)}/pdf`
                 });
             } else {
                 if (!isMarketOpen && !shouldQueue && !forceExecute && normalizedOrderType === 'MARKET') {
@@ -1948,13 +1935,15 @@ app.post('/api/portfolio/trade', async (req, res) => {
                 port.workingOrders.push(workingOrder);
                 port.trades.push(workingOrder);
                 savePortfolio(port);
+                dispatchDmaTradeAlert(workingOrder, marketSchedule).catch(() => {});
 
                 return res.json({
                     success: true,
                     message: `Order BUY ${normalizedOrderType} ${qty} ${symbol} AKTIF DI ORDER BLOTTER [${orderStatus}]`,
                     order: workingOrder,
                     trade: workingOrder,
-                    schedule: marketSchedule
+                    schedule: marketSchedule,
+                    pdfUrl: `/api/portfolio/trade/${encodeURIComponent(workingOrder.id)}/pdf`
                 });
             }
         } else if (normType === 'SELL') {
@@ -2013,12 +2002,14 @@ app.post('/api/portfolio/trade', async (req, res) => {
                 };
                 port.trades.push(tradeLog);
                 savePortfolio(port);
+                dispatchDmaTradeAlert(tradeLog, marketSchedule).catch(() => {});
 
                 return res.json({
                     success: true,
                     message: `Berhasil MENJUAL ${qty} ${sellSymbol}. P&L: Rp ${tradePnL.toLocaleString('id-ID')}`,
                     trade: tradeLog,
-                    schedule: marketSchedule
+                    schedule: marketSchedule,
+                    pdfUrl: `/api/portfolio/trade/${encodeURIComponent(tradeLog.id)}/pdf`
                 });
             } else {
                 if (!isMarketOpen && !shouldQueue && !forceExecute && normalizedOrderType === 'MARKET') {
@@ -2061,13 +2052,15 @@ app.post('/api/portfolio/trade', async (req, res) => {
                 port.workingOrders.push(workingOrder);
                 port.trades.push(workingOrder);
                 savePortfolio(port);
+                dispatchDmaTradeAlert(workingOrder, marketSchedule).catch(() => {});
 
                 return res.json({
                     success: true,
                     message: `Order SELL ${normalizedOrderType} ${qty} ${sellSymbol} AKTIF DI ORDER BLOTTER [${orderStatus}]`,
                     order: workingOrder,
                     trade: workingOrder,
-                    schedule: marketSchedule
+                    schedule: marketSchedule,
+                    pdfUrl: `/api/portfolio/trade/${encodeURIComponent(workingOrder.id)}/pdf`
                 });
             }
         }
@@ -2149,6 +2142,7 @@ function processWorkingOrders() {
 
         const usdRate = getUsdIdr();
         let modified = false;
+        const filledEvents = [];
 
         for (let i = port.workingOrders.length - 1; i >= 0; i--) {
             const ord = port.workingOrders[i];
@@ -2230,12 +2224,16 @@ function processWorkingOrders() {
                     port.trades[tIdx].status = 'FILLED';
                     port.trades[tIdx].price = fillPrice;
                 }
+                filledEvents.push({ trade: { ...ord, price: fillPrice, totalValueIdr, brokerFee, status: 'FILLED' }, schedule });
                 modified = true;
             }
         }
 
         if (modified) {
             savePortfolio(port);
+            for (const ev of filledEvents) {
+                dispatchDmaTradeAlert(ev.trade, ev.schedule).catch(() => {});
+            }
         }
     } catch (e) {
         console.error('Error processing working orders:', e.message);
@@ -5973,28 +5971,135 @@ function buildMonthlyPortfolioStatement(periodOverride = '') {
     };
 }
 
+// Authentic Bloomberg EMSX DMA Trade Confirmation Email Builder (HTML + PDF Attachment)
+function buildDmaTradeConfirmHtml(trade, snap, schedule) {
+    const t = trade || {};
+    const side = String(t.type || 'BUY').toUpperCase();
+    const isUsd = t.currency === 'USD';
+    const pxStr = isUsd
+        ? '$' + Number(t.price || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: Number(t.price || 0) < 1 ? 4 : 2 })
+        : 'Rp ' + Math.round(Number(t.price || 0)).toLocaleString('id-ID');
+    const fmtIdr = n => (Number(n) < 0 ? '-Rp ' : 'Rp ') + Math.round(Math.abs(Number(n) || 0)).toLocaleString('id-ID');
+    const totalIdr = Number(t.totalValueIdr || 0);
+    const feeIdr = Number(t.brokerFee || 0);
+    const netIdr = side === 'BUY' ? (totalIdr + feeIdr) : (totalIdr - feeIdr);
+    const sideColor = side === 'BUY' ? '#00873e' : '#c62828';
+    const status = String(t.status || 'FILLED').toUpperCase();
+    const statusColor = status === 'FILLED' ? '#00873e' : '#d95300';
+    const exch = (schedule && schedule.exchange) || t.exchange || 'DMA';
+    const stamp = String(t.timestamp || new Date().toISOString()).replace('T', ' ').slice(0, 19) + ' UTC';
+    return `<div style="background:#ffffff;color:#11161c;font-family:'Helvetica Neue',Arial,sans-serif;max-width:680px;margin:0 auto;border:1px solid #cfd6df">
+      <div style="background:#000000;border-top:4px solid #ff6600;padding:13px 18px;color:#ffffff">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+          <td style="font-size:16px;font-weight:700;color:#ffffff">Bloomberg <span style="color:#9aa0a6;font-weight:400;font-size:12px">| EMSX EXECUTION DESK</span></td>
+          <td align="right" style="font-family:Consolas,'Courier New',monospace;font-size:11px;color:#ffb000;font-weight:700">DMA_${escapeHtml(side)} CONFIRMATION</td>
+        </tr></table>
+      </div>
+      <div style="background:#f3f4f6;border-bottom:1px solid #cfd6df;padding:9px 18px;font-family:Consolas,'Courier New',monospace;font-size:11px;color:#374151">
+        <b>ORDER ID:</b> ${escapeHtml(t.id || '-')} &nbsp;|&nbsp; <b>VENUE:</b> ${escapeHtml(exch)} &nbsp;|&nbsp; <b>TIME:</b> ${escapeHtml(stamp)}
+      </div>
+      <div style="padding:16px 18px">
+        <div style="border:1px solid ${statusColor};border-left:4px solid ${statusColor};background:#f8fafc;padding:10px 14px;margin-bottom:14px">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+            <td style="font-family:Consolas,'Courier New',monospace;font-size:15px;font-weight:700;color:${sideColor}">${escapeHtml(side)} ${escapeHtml(String(t.qty))} ${escapeHtml(t.symbol)} @ ${escapeHtml(pxStr)}</td>
+            <td align="right" style="font-family:Consolas,'Courier New',monospace;font-size:12px;font-weight:700;color:${statusColor}">${escapeHtml(status)}</td>
+          </tr></table>
+          <div style="font-size:11px;color:#4b5563;margin-top:3px">${escapeHtml(t.name || t.symbol)} &bull; ${escapeHtml(t.category || 'Multi-Asset')} &bull; ${escapeHtml(t.orderType || 'MARKET')} (${escapeHtml(t.tif || 'GTC')})</div>
+        </div>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;font-family:Consolas,'Courier New',monospace;font-size:11.5px;margin-bottom:14px">
+          <tr style="border-bottom:1px solid #e5e9ef"><td style="padding:6px 8px;color:#6b7280">Gross Principal (IDR)</td><td align="right" style="padding:6px 8px;font-weight:700">${escapeHtml(fmtIdr(totalIdr))}</td></tr>
+          <tr style="border-bottom:1px solid #e5e9ef;background:#f8fafc"><td style="padding:6px 8px;color:#6b7280">Brokerage &amp; Exchange Levy (0.15%)</td><td align="right" style="padding:6px 8px">${escapeHtml(fmtIdr(feeIdr))}</td></tr>
+          <tr style="border-bottom:1px solid #e5e9ef"><td style="padding:6px 8px;color:#6b7280">${side === 'BUY' ? 'Net Cash Debit (IDR)' : 'Net Cash Credit (IDR)'}</td><td align="right" style="padding:6px 8px;font-weight:700;color:${sideColor}">${escapeHtml(fmtIdr(netIdr))}</td></tr>
+          <tr style="border-bottom:1px solid #e5e9ef;background:#f8fafc"><td style="padding:6px 8px;color:#6b7280">Post-Trade Cash Balance</td><td align="right" style="padding:6px 8px;font-weight:700">${escapeHtml(fmtIdr(snap ? snap.cash : 0))}</td></tr>
+          <tr><td style="padding:6px 8px;color:#6b7280">Ending Portfolio NAV (PORT &lt;GO&gt;)</td><td align="right" style="padding:6px 8px;font-weight:700">${escapeHtml(fmtIdr(snap ? snap.totalNetWorth : 0))}</td></tr>
+        </table>
+        <div style="font-size:10.5px;color:#4b5563">Official PDF Trade Confirmation is attached to this email and archived in <b>EMSX &lt;GO&gt;</b> / <b>PORT &lt;GO&gt;</b>.</div>
+      </div>
+      <div style="background:#f7f8fa;border-top:1px solid #cfd6df;padding:9px 18px;font-family:Consolas,'Courier New',monospace;font-size:10px;color:#6b7280">
+        Bloomberg Terminal &bull; EMSX Direct Market Access &bull; Account: FADHIL M. S. LUBIS (UUID 38492018)
+      </div>
+    </div>`;
+}
+
+async function dispatchDmaTradeAlert(trade, schedule = null) {
+    try {
+        const store = loadBmail();
+        const cfg = store.alertConfig || DEFAULT_BMAIL.alertConfig;
+        if (cfg.enableEmsxOrders === false) return null;
+        const snap = computePortfolioSnapshot();
+        const side = String(trade.type || 'BUY').toUpperCase();
+        const eventType = side === 'SELL' ? 'DMA_SELL' : 'DMA_BUY';
+        const isUsd = trade.currency === 'USD';
+        const pxLabel = isUsd
+            ? '$' + Number(trade.price || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: Number(trade.price || 0) < 1 ? 4 : 2 })
+            : 'Rp ' + Math.round(Number(trade.price || 0)).toLocaleString('id-ID');
+        const exch = (schedule && schedule.exchange) || trade.exchange || 'DMA';
+        const pdf = buildDmaTradeConfirmPdf(trade, snap, schedule);
+        const html = buildDmaTradeConfirmHtml(trade, snap, schedule);
+        const body = [
+            `BLOOMBERG EMSX — DMA TRADE CONFIRMATION (${eventType})`,
+            ``,
+            `Order ID      : ${trade.id}`,
+            `Action        : ${side} (${trade.orderType || 'MARKET'} / ${trade.tif || 'GTC'})`,
+            `Instrument    : ${trade.symbol} (${trade.name || trade.symbol})`,
+            `Asset Class   : ${trade.category || 'Multi-Asset'}`,
+            `Exchange      : ${exch}`,
+            `Quantity      : ${trade.qty}`,
+            `Exec Price    : ${pxLabel} (${trade.currency || 'IDR'})`,
+            `Gross Value   : Rp ${Math.round(trade.totalValueIdr || 0).toLocaleString('id-ID')}`,
+            `Brokerage Fee : Rp ${Math.round(trade.brokerFee || 0).toLocaleString('id-ID')} (0.15%)`,
+            `Status        : ${trade.status || 'FILLED'}`,
+            `Cash Balance  : Rp ${Math.round(snap.cash || 0).toLocaleString('id-ID')}`,
+            `Ending NAV    : Rp ${Math.round(snap.totalNetWorth || 0).toLocaleString('id-ID')}`,
+            `Attachment    : ${pdf.filename}`
+        ].join('\n');
+
+        return await dispatchExternalEmailAlert({
+            eventType,
+            symbol: trade.symbol || 'BTCUSDT',
+            attachmentFn: `${trade.symbol || 'BTCUSDT'} EMSX`,
+            subject: `Bloomberg EMSX Confirmation — ${side} ${trade.qty} ${trade.symbol} @ ${pxLabel} [${trade.status || 'FILLED'}]`,
+            body,
+            html,
+            attachments: [{ filename: pdf.filename, content: pdf.buffer, contentType: 'application/pdf' }]
+        });
+    } catch (e) {
+        console.error('[DMA_ALERT_ERR]', e.message);
+        return null;
+    }
+}
+
 // Resend API HTTPS Email Dispatcher (RESEND_API_KEY env var ONLY — never hardcoded)
-async function sendResendEmail({ to, subject, body, html = '', eventType = 'ALERT', symbol = 'BTCUSDT' }) {
+async function sendResendEmail({ to, subject, body, html = '', eventType = 'ALERT', symbol = 'BTCUSDT', attachments = [] }) {
     const key = testMode ? '' : String(process.env.RESEND_API_KEY || '').trim();
     if (!key || !key.startsWith('re_')) return { ok: false, mode: 'NO_RESEND_KEY' };
     try {
         const htmlBody = html || buildDefaultBloombergAlertHtml({ eventType, symbol, to, body });
         const cleanTo = sanitizeHeaderValue(to);
         const cleanSub = sanitizeHeaderValue(subject);
+        const payload = {
+            from: 'Bloomberg Terminal <onboarding@resend.dev>',
+            to: [cleanTo],
+            subject: cleanSub,
+            text: String(body || ''),
+            html: htmlBody
+        };
+        if (Array.isArray(attachments) && attachments.length > 0) {
+            payload.attachments = attachments
+                .filter(a => a && a.filename && Buffer.isBuffer(a.content))
+                .map(a => ({
+                    filename: sanitizeHeaderValue(a.filename),
+                    content: a.content.toString('base64')
+                }));
+        }
         const r = await fetch('https://api.resend.com/emails', {
             method: 'POST',
-            signal: AbortSignal.timeout(9000),
+            signal: AbortSignal.timeout(12000),
             headers: {
                 'Authorization': `Bearer ${key}`,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-                from: 'Bloomberg Terminal <onboarding@resend.dev>',
-                to: [cleanTo],
-                subject: cleanSub,
-                text: String(body || ''),
-                html: htmlBody
-            })
+            body: JSON.stringify(payload)
         });
         const j = await r.json().catch(() => ({}));
         if (r.ok && j && j.id) {
@@ -6006,8 +6111,13 @@ async function sendResendEmail({ to, subject, body, html = '', eventType = 'ALER
     }
 }
 
-// Zero-dependency TLS SMTP sender for Gmail (smtp.gmail.com:465) with multiline 250- support & HTML formatting
-function sendGmailSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, to, subject, body, html = '', eventType = 'ALERT', symbol = 'BTCUSDT' }) {
+function wrapBase64Mime(buf) {
+    const b64 = Buffer.from(buf).toString('base64');
+    return b64.replace(/.{1,76}/g, '$&\r\n').trimEnd();
+}
+
+// Zero-dependency TLS SMTP sender for Gmail (smtp.gmail.com:465) with multiline 250-, HTML & PDF MIME attachments
+function sendGmailSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, to, subject, body, html = '', eventType = 'ALERT', symbol = 'BTCUSDT', attachments = [] }) {
     return new Promise((resolve) => {
         const cleanPass = String(pass || '').replace(/\s+/g, '');
         if (testMode || !user || !cleanPass || cleanPass.length < 8) {
@@ -6030,7 +6140,7 @@ function sendGmailSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, to, su
             try { sock.end(); } catch {}
             resolve(resObj);
         };
-        const timer = setTimeout(() => { try { sock.destroy(); } catch {} finish({ ok: false, mode: 'SMTP_TIMEOUT' }); }, 11000);
+        const timer = setTimeout(() => { try { sock.destroy(); } catch {} finish({ ok: false, mode: 'SMTP_TIMEOUT' }); }, 15000);
         const sendLine = (line) => sock.write(line + '\r\n');
 
         sock.on('data', (chunk) => {
@@ -6051,28 +6161,68 @@ function sendGmailSmtp({ host = 'smtp.gmail.com', port = 465, user, pass, to, su
             else if (step === 6 && (code === 250 || code === 251)) { step = 7; sendLine('DATA'); }
             else if (step === 7 && code === 354) {
                 step = 8;
-                const boundary = `bbg_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
+                const altBoundary = `bbg_alt_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
                 const safeBodyPlain = String(body || '').replace(/\r?\n\.\r?\n/g, '\r\n..\r\n');
-                const safeBodyHtml = html || buildDefaultBloombergAlertHtml({ eventType, symbol, to: safeTo, body });
-                const msg = [
-                    `From: "Bloomberg Terminal" <${safeUser}>`,
-                    `To: <${safeTo}>`,
-                    `Subject: ${safeSub}`,
-                    `MIME-Version: 1.0`,
-                    `Content-Type: multipart/alternative; boundary="${boundary}"`,
-                    ``,
-                    `--${boundary}`,
-                    `Content-Type: text/plain; charset=UTF-8`,
-                    ``,
-                    safeBodyPlain,
-                    `--${boundary}`,
-                    `Content-Type: text/html; charset=UTF-8`,
-                    ``,
-                    safeBodyHtml.replace(/\r?\n\.\r?\n/g, '\r\n..\r\n'),
-                    `--${boundary}--`,
-                    `.`
-                ].join('\r\n');
-                sendLine(msg);
+                const safeBodyHtml = (html || buildDefaultBloombergAlertHtml({ eventType, symbol, to: safeTo, body })).replace(/\r?\n\.\r?\n/g, '\r\n..\r\n');
+                const validAtts = Array.isArray(attachments) ? attachments.filter(a => a && a.filename && Buffer.isBuffer(a.content)) : [];
+
+                let msgLines;
+                if (validAtts.length > 0) {
+                    const mixBoundary = `bbg_mix_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
+                    msgLines = [
+                        `From: "Bloomberg Terminal" <${safeUser}>`,
+                        `To: <${safeTo}>`,
+                        `Subject: ${safeSub}`,
+                        `MIME-Version: 1.0`,
+                        `Content-Type: multipart/mixed; boundary="${mixBoundary}"`,
+                        ``,
+                        `--${mixBoundary}`,
+                        `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
+                        ``,
+                        `--${altBoundary}`,
+                        `Content-Type: text/plain; charset=UTF-8`,
+                        ``,
+                        safeBodyPlain,
+                        `--${altBoundary}`,
+                        `Content-Type: text/html; charset=UTF-8`,
+                        ``,
+                        safeBodyHtml,
+                        `--${altBoundary}--`
+                    ];
+                    for (const att of validAtts) {
+                        const cleanName = sanitizeHeaderValue(att.filename).replace(/"/g, '');
+                        const ctype = sanitizeHeaderValue(att.contentType || 'application/pdf');
+                        msgLines.push(
+                            `--${mixBoundary}`,
+                            `Content-Type: ${ctype}; name="${cleanName}"`,
+                            `Content-Disposition: attachment; filename="${cleanName}"`,
+                            `Content-Transfer-Encoding: base64`,
+                            ``,
+                            wrapBase64Mime(att.content)
+                        );
+                    }
+                    msgLines.push(`--${mixBoundary}--`, `.`);
+                } else {
+                    msgLines = [
+                        `From: "Bloomberg Terminal" <${safeUser}>`,
+                        `To: <${safeTo}>`,
+                        `Subject: ${safeSub}`,
+                        `MIME-Version: 1.0`,
+                        `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
+                        ``,
+                        `--${altBoundary}`,
+                        `Content-Type: text/plain; charset=UTF-8`,
+                        ``,
+                        safeBodyPlain,
+                        `--${altBoundary}`,
+                        `Content-Type: text/html; charset=UTF-8`,
+                        ``,
+                        safeBodyHtml,
+                        `--${altBoundary}--`,
+                        `.`
+                    ];
+                }
+                sendLine(msgLines.join('\r\n'));
             } else if (step === 8 && code === 250) {
                 step = 9;
                 sendLine('QUIT');
@@ -6404,10 +6554,11 @@ app.post('/api/push/test', async (req, res) => {
 });
 
 // Unified External Email, Native Push & B-Mail Alert Dispatcher
-async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, html = '', symbol = 'BTCUSDT', attachmentFn = 'BTCUSDT BOT' }) {
+async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, html = '', symbol = 'BTCUSDT', attachmentFn = 'BTCUSDT BOT', attachments = [] }) {
     const store = loadBmail();
     const cfg = store.alertConfig || DEFAULT_BMAIL.alertConfig;
     const targetEmail = cfg.targetEmail || 'fadhilsyafiq90@gmail.com';
+    const attNames = Array.isArray(attachments) ? attachments.filter(a => a && a.filename).map(a => a.filename) : [];
 
     const resendRes = await sendResendEmail({
         to: targetEmail,
@@ -6415,7 +6566,8 @@ async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, 
         body,
         html,
         eventType,
-        symbol
+        symbol,
+        attachments
     });
 
     const smtpRes = resendRes.ok ? { ok: false, mode: 'SKIPPED_RESEND_OK' } : await sendGmailSmtp({
@@ -6428,7 +6580,8 @@ async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, 
         body,
         html,
         eventType,
-        symbol
+        symbol,
+        attachments
     });
     const pushRes = await dispatchNativePushAlert({
         title: `[${eventType}] ${symbol}`,
@@ -6455,6 +6608,7 @@ async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, 
         resendId: resendRes.id || null,
         symbol,
         attachmentFn,
+        attachments: attNames,
         body
     };
     store.alertLog = [entry, ...(store.alertLog || [])].slice(0, 60);
@@ -6470,8 +6624,8 @@ async function dispatchExternalEmailAlert({ eventType = 'ALERT', subject, body, 
         priority: 'URGENT',
         unread: true,
         attachmentFn,
-        attachmentLabel: `${eventType}_${symbol}.BBG`,
-        body: `EXTERNAL EMAIL DISPATCH TARGET: ${targetEmail}\nSTATUS: ${statusLabel}\n\n${body}`
+        attachmentLabel: attNames[0] || `${eventType}_${symbol}.BBG`,
+        body: `EXTERNAL EMAIL DISPATCH TARGET: ${targetEmail}\nSTATUS: ${statusLabel}${attNames.length ? `\nPDF ATTACHMENT: ${attNames.join(', ')}` : ''}\n\n${body}`
     });
     store.inbox = store.inbox.slice(0, 50);
     saveBmail(store);
@@ -6543,23 +6697,73 @@ app.get('/api/portfolio/monthly-statement/preview', (req, res) => {
     try {
         const period = typeof req.query.period === 'string' ? req.query.period.trim().slice(0, 40) : '';
         const stmt = buildMonthlyPortfolioStatement(period);
-        res.json({ ok: true, statement: stmt });
+        res.json({ ok: true, statement: stmt, pdfUrl: `/api/portfolio/monthly-statement/pdf${period ? `?period=${encodeURIComponent(period)}` : ''}` });
     } catch (e) {
         res.status(500).json({ ok: false, error: 'Failed generating portfolio statement' });
+    }
+});
+
+app.get('/api/portfolio/monthly-statement/pdf', (req, res) => {
+    try {
+        const period = typeof req.query.period === 'string' ? req.query.period.trim().slice(0, 40) : '';
+        const snap = computePortfolioSnapshot();
+        const stmt = buildMonthlyPortfolioStatement(period);
+        const pdf = buildMonthlyStatementPdf(stmt, snap);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${pdf.filename}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        res.send(pdf.buffer);
+    } catch (e) {
+        res.status(500).json({ ok: false, error: 'Failed generating monthly statement PDF' });
+    }
+});
+
+app.get('/api/portfolio/trade/:orderId/pdf', (req, res) => {
+    try {
+        const rawId = String(req.params.orderId || '').trim();
+        if (!rawId || rawId.length > 64) return res.status(400).json({ ok: false, error: 'Invalid orderId' });
+        const port = loadPortfolio();
+        const snap = computePortfolioSnapshot();
+        const trade = (port.trades || []).find(t => t && t.id === rawId) || (port.workingOrders || []).find(o => o && o.id === rawId);
+        if (!trade) return res.status(404).json({ ok: false, error: 'Order ticket not found' });
+        const schedule = getMarketSchedule(trade.symbol, trade.category);
+        const pdf = buildDmaTradeConfirmPdf(trade, snap, schedule);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${pdf.filename}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        res.send(pdf.buffer);
+    } catch (e) {
+        res.status(500).json({ ok: false, error: 'Failed generating DMA confirmation PDF' });
+    }
+});
+
+app.get('/api/portfolio/emsx/pdf', (req, res) => {
+    try {
+        const snap = computePortfolioSnapshot();
+        const pdf = buildEmsxBlotterPdf(snap);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${pdf.filename}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        res.send(pdf.buffer);
+    } catch (e) {
+        res.status(500).json({ ok: false, error: 'Failed generating EMSX blotter PDF' });
     }
 });
 
 app.post('/api/portfolio/monthly-statement', async (req, res) => {
     try {
         const period = req.body && typeof req.body.period === 'string' ? req.body.period.trim().slice(0, 40) : '';
+        const snap = computePortfolioSnapshot();
         const stmt = buildMonthlyPortfolioStatement(period);
+        const pdf = buildMonthlyStatementPdf(stmt, snap);
         const out = await dispatchExternalEmailAlert({
             eventType: 'MONTHLY_STATEMENT',
             symbol: 'PORT',
             attachmentFn: 'BTCUSDT PORT',
             subject: stmt.subject,
-            body: stmt.text,
-            html: stmt.html
+            body: stmt.text + `\n\nAttached PDF Statement: ${pdf.filename}`,
+            html: stmt.html,
+            attachments: [{ filename: pdf.filename, content: pdf.buffer, contentType: 'application/pdf' }]
         });
         out.store.alertConfig = {
             ...(out.store.alertConfig || DEFAULT_BMAIL.alertConfig),
@@ -6568,7 +6772,7 @@ app.post('/api/portfolio/monthly-statement', async (req, res) => {
         saveBmail(out.store);
         res.json({
             ok: true,
-            statement: { periodLabel: stmt.periodLabel, monthKey: stmt.monthKey, subject: stmt.subject, summary: stmt.summary },
+            statement: { periodLabel: stmt.periodLabel, monthKey: stmt.monthKey, subject: stmt.subject, summary: stmt.summary, pdfFilename: pdf.filename },
             entry: out.entry,
             smtp: out.smtpRes,
             data: sanitizeBmailStore(out.store)
@@ -6584,14 +6788,49 @@ app.post('/api/terminal/bmail/test-alert', async (req, res) => {
     const target = (store.alertConfig && store.alertConfig.targetEmail) || 'fadhilsyafiq90@gmail.com';
     let payload;
     if (type === 'MONTHLY_STATEMENT') {
+        const snap = computePortfolioSnapshot();
         const stmt = buildMonthlyPortfolioStatement();
+        const pdf = buildMonthlyStatementPdf(stmt, snap);
         payload = {
             eventType: 'MONTHLY_STATEMENT',
             symbol: 'PORT',
             attachmentFn: 'BTCUSDT PORT',
             subject: stmt.subject,
-            body: stmt.text,
-            html: stmt.html
+            body: stmt.text + `\n\nAttached PDF Statement: ${pdf.filename}`,
+            html: stmt.html,
+            attachments: [{ filename: pdf.filename, content: pdf.buffer, contentType: 'application/pdf' }]
+        };
+    } else if (type === 'DMA_BUY') {
+        const snap = computePortfolioSnapshot();
+        const sampleTrade = {
+            id: `ORD-TEST-${Date.now().toString().slice(-6)}`,
+            timestamp: new Date().toISOString(),
+            type: 'BUY',
+            orderType: 'MARKET',
+            tif: 'GTC',
+            symbol: 'BTCUSDT',
+            name: 'Bitcoin',
+            category: 'Crypto',
+            qty: 0.05,
+            price: Number(lookupCachedAssetQuote('BTCUSDT')?.quote?.price || 84250),
+            currency: 'USD',
+            priceInIdr: Math.round(Number(lookupCachedAssetQuote('BTCUSDT')?.quote?.price || 84250) * getUsdIdr()),
+            totalValueIdr: Math.round(0.05 * Number(lookupCachedAssetQuote('BTCUSDT')?.quote?.price || 84250) * getUsdIdr()),
+            brokerFee: Math.round(0.05 * Number(lookupCachedAssetQuote('BTCUSDT')?.quote?.price || 84250) * getUsdIdr() * 0.0015),
+            status: 'FILLED',
+            exchange: 'CRYPTO (24/7)',
+            marketStatus: 'OPEN',
+            note: 'Test DMA Spot Confirmation'
+        };
+        const pdf = buildDmaTradeConfirmPdf(sampleTrade, snap, { exchange: 'CRYPTO (24/7)', status: 'OPEN' });
+        payload = {
+            eventType: 'DMA_BUY',
+            symbol: 'BTCUSDT',
+            attachmentFn: 'BTCUSDT EMSX',
+            subject: `Bloomberg EMSX Confirmation — BUY ${sampleTrade.qty} BTCUSDT @ $${sampleTrade.price.toFixed(2)} [FILLED]`,
+            body: `BLOOMBERG EMSX — DMA TRADE CONFIRMATION (DMA_BUY)\n\nOrder ID    : ${sampleTrade.id}\nRecipient   : ${target}\nInstrument  : BTCUSDT (Bitcoin)\nQuantity    : ${sampleTrade.qty}\nExec Price  : $${sampleTrade.price.toFixed(2)} USD\nTotal Value : Rp ${sampleTrade.totalValueIdr.toLocaleString('id-ID')}\nStatus      : FILLED\nAttachment  : ${pdf.filename}`,
+            html: buildDmaTradeConfirmHtml(sampleTrade, snap, { exchange: 'CRYPTO (24/7)', status: 'OPEN' }),
+            attachments: [{ filename: pdf.filename, content: pdf.buffer, contentType: 'application/pdf' }]
         };
     } else if (type === 'FUTURES_OPEN') {
         payload = {
@@ -6806,14 +7045,17 @@ async function pollMonthlyPortfolioStatement() {
         const curDay = jktNow.getUTCDate();
         if (curDay < reportDay || cfg.lastMonthlyReportMonth === curMonthKey) return;
 
+        const snap = computePortfolioSnapshot();
         const stmt = buildMonthlyPortfolioStatement();
+        const pdf = buildMonthlyStatementPdf(stmt, snap);
         const out = await dispatchExternalEmailAlert({
             eventType: 'MONTHLY_STATEMENT',
             symbol: 'PORT',
             attachmentFn: 'BTCUSDT PORT',
             subject: stmt.subject,
-            body: stmt.text,
-            html: stmt.html
+            body: stmt.text + `\n\nAttached PDF Statement: ${pdf.filename}`,
+            html: stmt.html,
+            attachments: [{ filename: pdf.filename, content: pdf.buffer, contentType: 'application/pdf' }]
         });
         out.store.alertConfig = {
             ...(out.store.alertConfig || DEFAULT_BMAIL.alertConfig),

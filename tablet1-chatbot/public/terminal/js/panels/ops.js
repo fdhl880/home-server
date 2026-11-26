@@ -1,9 +1,37 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, fmtTime, dirCls, LS } from '../util.js';
 import { get, getRaw, tickOk, apiFetch } from '../api.js';
-import { attachTechnicalMasterCanvas } from './charts.js?v=20261126g';
-import { openRoeShareModal } from './intelligence.js?v=20261126g';
+import { attachTechnicalMasterCanvas } from './charts.js?v=20261126h';
+import { openRoeShareModal } from './intelligence.js?v=20261126h';
 
 let liveUsdIdrRate = 18218;
+
+async function downloadAuthorizedPdf(url, fallbackFilename = 'Bloomberg_Document.pdf') {
+  try {
+    const r = await apiFetch(url, { cache: 'no-store' }, 20000);
+    if (!r.ok) {
+      let errMsg = 'HTTP ' + r.status;
+      try { const j = await r.json(); if (j && j.error) errMsg = j.error; } catch {}
+      alert('PDF Export Error: ' + errMsg);
+      return false;
+    }
+    const cd = r.headers.get('content-disposition') || '';
+    const m = cd.match(/filename="([^"]+)"/i);
+    const filename = (m && m[1]) || fallbackFilename;
+    const blob = await r.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(objUrl), 4000);
+    return true;
+  } catch (e) {
+    alert('PDF Export Error: ' + e.message);
+    return false;
+  }
+}
 
 export function mountBOT(body, ctx) {
   body.classList.add('fill');
@@ -1491,7 +1519,7 @@ export function mountPORT(body, ctx) {
     return '1';
   }
 
-  function showNotice(text, tone = 'am') {
+  function showNotice(text, tone = 'am', pdfUrl = null, pdfLabel = 'CONFIRM PDF') {
     const cols = {
       up: { fg: '#00d26a', bg: '#051a0f', bd: '#00d26a66' },
       am: { fg: '#ffb000', bg: '#1a1205', bd: '#ffb00066' },
@@ -1501,14 +1529,21 @@ export function mountPORT(body, ctx) {
     noticeBar.style.display = 'flex';
     noticeBar.style.justifyContent = 'space-between';
     noticeBar.style.alignItems = 'center';
+    noticeBar.style.gap = '6px';
     noticeBar.style.color = c.fg;
     noticeBar.style.background = c.bg;
     noticeBar.style.borderBottom = `1px solid ${c.bd}`;
     noticeBar.textContent = '';
-    noticeBar.append(
-      h('span', { text }),
-      h('button', { style: 'font-size:10px;padding:0 5px', text: 'X', onclick: () => { noticeBar.style.display = 'none'; } })
-    );
+    const rightActs = h('div', { style: 'display:flex;gap:4px;align-items:center;flex:none' });
+    if (pdfUrl) {
+      rightActs.append(h('button', {
+        style: 'font-size:10px;padding:1px 6px;background:#ff6600;color:#000;border-color:#ff6600;font-weight:700',
+        text: pdfLabel,
+        onclick: () => downloadAuthorizedPdf(pdfUrl, 'Bloomberg_EMSX_Confirm.pdf')
+      }));
+    }
+    rightActs.append(h('button', { style: 'font-size:10px;padding:0 5px', text: 'X', onclick: () => { noticeBar.style.display = 'none'; } }));
+    noticeBar.append(h('span', { text }), rightActs);
   }
 
   async function resolveQuoteForTrade(symbol) {
@@ -1582,7 +1617,8 @@ export function mountPORT(body, ctx) {
       if (r.ok && j.success) {
         const st = j.trade?.status || 'FILLED';
         const pxStr = j.trade?.currency === 'USD' ? ('$' + fmtPx(j.trade.price)) : fmtIdr(j.trade?.price);
-        showNotice(`${st} // ${type} ${qNum} ${j.trade?.symbol || sym} @ ${pxStr} (${fmtIdr(j.trade?.totalValueIdr || 0)}) [${j.schedule?.exchange || 'DMA'}]`, st === 'FILLED' ? 'up' : 'am');
+        const confirmPdfUrl = j.pdfUrl || (j.trade?.id ? `/api/portfolio/trade/${encodeURIComponent(j.trade.id)}/pdf` : null);
+        showNotice(`${st} // ${type} ${qNum} ${j.trade?.symbol || sym} @ ${pxStr} (${fmtIdr(j.trade?.totalValueIdr || 0)}) [${j.schedule?.exchange || 'DMA'}]`, st === 'FILLED' ? 'up' : 'am', confirmPdfUrl, 'CONFIRM PDF');
       } else {
         showNotice(`DMA REJECT // ${j.error || ('HTTP ' + r.status)}`, 'dn');
       }
@@ -1628,7 +1664,8 @@ export function mountPORT(body, ctx) {
     h('button', { style: 'color:#00d26a;border-color:#00d26a88;font-weight:700', text: '+DEPOSIT WIRE', onclick: () => openTreasuryWireModal('DEPOSIT', latestPortSnap) }),
     h('button', { style: 'color:#ffb000;border-color:#ffb00088;font-weight:700', text: '-WITHDRAW', onclick: () => openTreasuryWireModal('WITHDRAW', latestPortSnap) }),
     h('button', { style: 'color:#5aa9ff;border-color:#5aa9ff88', text: 'MONTHLY STATEMENT', onclick: openMonthlyStatementPreview }),
-    h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'EMAIL REPORT', onclick: sendMonthlyStatementEmail }),
+    h('button', { style: 'color:#ffb000;border-color:#ffb00088;font-weight:700', text: 'EXPORT PDF', onclick: () => downloadAuthorizedPdf('/api/portfolio/monthly-statement/pdf', 'Bloomberg_PORT_Statement.pdf') }),
+    h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'EMAIL REPORT (PDF)', onclick: sendMonthlyStatementEmail }),
     h('button', { text: 'EMSX <GO>', onclick: () => ctx.run('EMSX') })
   );
 
@@ -1672,8 +1709,9 @@ export function mountPORT(body, ctx) {
           h('div', { style: 'display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #2a2e35;padding-bottom:6px;margin-bottom:8px' },
             h('span', { style: 'color:#ffb000;font-weight:700;font-size:12px', text: `BLOOMBERG PORT — MONTHLY ACCOUNT STATEMENT [${st.periodLabel}]` }),
             h('div', { style: 'display:flex;gap:6px' },
-              h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'EMAIL STATEMENT NOW', onclick: () => sendMonthlyStatementEmail() }),
-              h('button', { text: 'PRINT / PDF', onclick: () => { const w = window.open('', '_blank', 'width=820,height=920'); if (w) { w.document.write(`<!doctype html><html><head><title>${st.subject}</title></head><body style="margin:20px;background:#fff">${st.html}</body></html>`); w.document.close(); w.print(); } } }),
+              h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'EMAIL STATEMENT (PDF)', onclick: () => sendMonthlyStatementEmail() }),
+              h('button', { style: 'background:#ffb000;color:#000;border-color:#ffb000;font-weight:700', text: 'DOWNLOAD PDF', onclick: () => downloadAuthorizedPdf('/api/portfolio/monthly-statement/pdf', `Bloomberg_PORT_Statement_${st.monthKey || 'current'}.pdf`) }),
+              h('button', { text: 'PRINT', onclick: () => { const w = window.open('', '_blank', 'width=820,height=920'); if (w) { w.document.write(`<!doctype html><html><head><title>${st.subject}</title></head><body style="margin:20px;background:#fff">${st.html}</body></html>`); w.document.close(); w.print(); } } }),
               h('button', { style: 'color:#ff5a52;border-color:#ff3b3088', text: 'CLOSE', onclick: () => ov.remove() })
             )
           ),
@@ -1969,9 +2007,12 @@ export function mountPORT(body, ctx) {
     // Trade Blotter Snapshot
     if (trades.length) {
       sc.append(
-        h('div', { class: 'tb', style: 'background:#070707;margin-top:6px' }, h('span', { class: 'lbl', text: 'AUDITED DMA TRADE SETTLEMENT BLOTTER (RECENT EXECUTIONS)' })),
+        h('div', { class: 'tb', style: 'background:#070707;margin-top:6px;justify-content:space-between' },
+          h('span', { class: 'lbl', text: 'AUDITED DMA TRADE SETTLEMENT BLOTTER (RECENT EXECUTIONS)' }),
+          h('button', { style: 'color:#ffb000;border-color:#ffb00088;font-size:10px;padding:1px 6px', text: 'BLOTTER PDF', onclick: () => downloadAuthorizedPdf('/api/portfolio/emsx/pdf', 'Bloomberg_EMSX_Blotter.pdf') })
+        ),
         h('table', { class: 't' },
-          h('thead', null, h('tr', null, ['Ticket ID', 'Time', 'Side', 'Type', 'Ticker', 'Qty', 'Exec Px', 'Total (IDR)', 'Fee (IDR)', 'Status'].map(x => h('th', { text: x })))),
+          h('thead', null, h('tr', null, ['Ticket ID', 'Time', 'Side', 'Type', 'Ticker', 'Qty', 'Exec Px', 'Total (IDR)', 'Fee (IDR)', 'Status', 'Confirm'].map(x => h('th', { text: x })))),
           h('tbody', null, trades.slice(0, 12).map(t => h('tr', { class: 'row', onclick: () => t.symbol && ctx.setSymbol(t.symbol) },
             h('td', { class: 'l mu', text: String(t.id || '').slice(-10) }),
             h('td', { class: 'l mu', text: fmtTime(t.timestamp) }),
@@ -1982,7 +2023,8 @@ export function mountPORT(body, ctx) {
             h('td', { class: 'am', text: t.currency === 'USD' ? '$' + fmtPx(t.price) : fmtIdr(t.price) }),
             h('td', { text: fmtIdr(t.totalValueIdr) }),
             h('td', { class: 'mu', text: fmtIdr(t.brokerFee || 0) }),
-            h('td', { class: t.status === 'FILLED' ? 'up sym' : 'am', text: t.status || 'FILLED' })
+            h('td', { class: t.status === 'FILLED' ? 'up sym' : 'am', text: t.status || 'FILLED' }),
+            h('td', null, h('button', { style: 'color:#ffb000;border-color:#ffb00066;font-size:10px;padding:1px 5px', text: 'PDF', onclick: ev => { ev.stopPropagation(); downloadAuthorizedPdf(`/api/portfolio/trade/${encodeURIComponent(t.id)}/pdf`, `Bloomberg_EMSX_${t.symbol}_${String(t.id).slice(-8)}.pdf`); } }))
           )))
         )
       );
@@ -2029,6 +2071,7 @@ export function mountEMSX(body, ctx) {
   body.classList.add('fill');
   const tb = h('div', { class: 'tb' },
     h('span', { class: 'lbl', text: '90) Actions  91) Routes  92) Blotter  |  EMSX - Execution Management System // FADHIL MUHAMMAD SYAFIQ LUBIS' }),
+    h('button', { style: 'color:#ffb000;border-color:#ffb00088;font-weight:700', text: 'BLOTTER PDF', onclick: () => downloadAuthorizedPdf('/api/portfolio/emsx/pdf', 'Bloomberg_EMSX_Blotter.pdf') }),
     h('button', { text: 'VIEW PORT <GO>', onclick: () => ctx.run('PORT') })
   );
   const sc = h('div', { class: 'pb', style: 'padding:6px' });
@@ -2109,9 +2152,18 @@ export function mountEMSX(body, ctx) {
         am: 'color:#ffb000;background:#1a1205;border:1px solid #ffb00066',
         dn: 'color:#ff5a52;background:#1f0707;border:1px solid #ff3b3088'
       };
-      sc.append(h('div', { style: `display:flex;justify-content:space-between;align-items:center;padding:5px 8px;margin-bottom:8px;font-size:11px;font-weight:700;${bCols[lastBanner.tone] || bCols.am}` },
+      const bannerRight = h('div', { style: 'display:flex;gap:4px;align-items:center;flex:none' });
+      if (lastBanner.pdfUrl) {
+        bannerRight.append(h('button', {
+          style: 'font-size:10px;padding:1px 6px;background:#ff6600;color:#000;border-color:#ff6600;font-weight:700',
+          text: 'CONFIRM PDF',
+          onclick: () => downloadAuthorizedPdf(lastBanner.pdfUrl, 'Bloomberg_EMSX_Confirm.pdf')
+        }));
+      }
+      bannerRight.append(h('button', { style: 'font-size:10px;padding:0 5px', text: 'X', onclick: () => { lastBanner = null; render(); } }));
+      sc.append(h('div', { style: `display:flex;justify-content:space-between;align-items:center;gap:6px;padding:5px 8px;margin-bottom:8px;font-size:11px;font-weight:700;${bCols[lastBanner.tone] || bCols.am}` },
         h('span', { text: lastBanner.text }),
-        h('button', { style: 'font-size:10px;padding:0 5px', text: 'X', onclick: () => { lastBanner = null; render(); } })
+        bannerRight
       ));
     }
 
@@ -2173,9 +2225,11 @@ export function mountEMSX(body, ctx) {
         if (r.ok && j.success) {
           const st = j.trade?.status || 'FILLED';
           const pxFmt = j.trade?.currency === 'USD' ? ('$' + fmtPx(j.trade.price)) : fmtIdr(j.trade?.price);
+          const confirmPdfUrl = j.pdfUrl || (j.trade?.id ? `/api/portfolio/trade/${encodeURIComponent(j.trade.id)}/pdf` : null);
           lastBanner = {
             tone: st === 'FILLED' ? 'up' : 'am',
-            text: `${st} // ${side} ${qty} ${j.trade?.symbol || sym} @ ${pxFmt} (${fmtIdr(j.trade?.totalValueIdr || 0)}) [${j.schedule?.exchange || 'EMSX'}]`
+            text: `${st} // ${side} ${qty} ${j.trade?.symbol || sym} @ ${pxFmt} (${fmtIdr(j.trade?.totalValueIdr || 0)}) [${j.schedule?.exchange || 'EMSX'}]`,
+            pdfUrl: confirmPdfUrl
           };
         } else {
           lastBanner = { tone: 'dn', text: `EMSX REJECT // ${j.error || ('HTTP ' + r.status)}` };
@@ -2258,9 +2312,12 @@ export function mountEMSX(body, ctx) {
 
     if (Array.isArray(port.trades) && port.trades.length) {
       sc.append(
-        h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'EMSX AUDITED EXECUTION BLOTTER' })),
+        h('div', { class: 'tb', style: 'background:#070707;justify-content:space-between' },
+          h('span', { class: 'lbl', text: 'EMSX AUDITED EXECUTION BLOTTER' }),
+          h('button', { style: 'color:#ffb000;border-color:#ffb00088;font-size:10px;padding:1px 6px', text: 'DOWNLOAD BLOTTER PDF', onclick: () => downloadAuthorizedPdf('/api/portfolio/emsx/pdf', 'Bloomberg_EMSX_Blotter.pdf') })
+        ),
         h('table', { class: 't' },
-          h('thead', null, h('tr', null, ['Order ID', 'Time', 'Side', 'Type', 'Symbol', 'Qty', 'Price', 'Total IDR', 'Status'].map(x => h('th', { text: x })))),
+          h('thead', null, h('tr', null, ['Order ID', 'Time', 'Side', 'Type', 'Symbol', 'Qty', 'Price', 'Total IDR', 'Status', 'Confirm'].map(x => h('th', { text: x })))),
           h('tbody', null, port.trades.slice(0, 10).map(t => h('tr', { class: 'row' },
             h('td', { class: 'l mu', text: String(t.id || '').slice(-10) }),
             h('td', { class: 'l mu', text: fmtTime(t.timestamp) }),
@@ -2270,7 +2327,8 @@ export function mountEMSX(body, ctx) {
             h('td', { text: fmtNum(t.qty, t.qty < 1 ? 4 : 0) }),
             h('td', { class: 'am', text: t.currency === 'USD' ? '$' + fmtPx(t.price) : fmtIdr(t.price) }),
             h('td', { text: fmtIdr(t.totalValueIdr) }),
-            h('td', { class: t.status === 'FILLED' ? 'up sym' : 'am', text: t.status || 'FILLED' })
+            h('td', { class: t.status === 'FILLED' ? 'up sym' : 'am', text: t.status || 'FILLED' }),
+            h('td', null, h('button', { style: 'color:#ffb000;border-color:#ffb00066;font-size:10px;padding:1px 5px', text: 'PDF', onclick: () => downloadAuthorizedPdf(`/api/portfolio/trade/${encodeURIComponent(t.id)}/pdf`, `Bloomberg_EMSX_${t.symbol}_${String(t.id).slice(-8)}.pdf`) }))
           )))
         )
       );
@@ -2865,7 +2923,8 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
             h('div', { class: 'v' }, iPass, h('button', { class: 'on', style: 'margin-left:6px', text: 'SAVE SMTP KEY', onclick: () => saveCfg() })),
             h('div', { class: 'k', text: 'LIVE DISPATCH VERIFICATION' }),
             h('div', { class: 'v', style: 'display:flex;gap:6px;flex-wrap:wrap' },
-              h('button', { style: 'background:#ffb000;color:#000;font-weight:bold', text: 'SEND MONTHLY PORT STATEMENT', onclick: () => triggerTest('MONTHLY_STATEMENT') }),
+              h('button', { style: 'background:#ffb000;color:#000;font-weight:bold', text: 'SEND MONTHLY PORT STATEMENT (PDF)', onclick: () => triggerTest('MONTHLY_STATEMENT') }),
+              h('button', { style: 'background:#00d26a;color:#000;font-weight:bold', text: 'TEST DMA CONFIRM (PDF)', onclick: () => triggerTest('DMA_BUY') }),
               h('button', { style: 'background:#1a1e24;color:#ffb000;border-color:#ffb00088;font-weight:bold', text: 'TEST HOT NEWS EMAIL', onclick: () => triggerTest('HOT_NEWS') }),
               h('button', { style: 'background:var(--up);color:#000;font-weight:bold', text: 'TEST FUTURES OPEN EMAIL', onclick: () => triggerTest('FUTURES_OPEN') }),
               h('button', { style: 'background:#4da3ff;color:#000;font-weight:bold', text: 'TEST FUTURES CLOSE EMAIL', onclick: () => triggerTest('FUTURES_CLOSE') }),
@@ -2877,7 +2936,7 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
             h('thead', null, h('tr', null, ['Time', 'Trigger Event', 'Recipient', 'Subject', 'Status', 'Direct Gmail'].map(x => h('th', { text: x })))),
             h('tbody', null, (store.alertLog || []).map(a => h('tr', { class: 'row' },
               h('td', { class: 'l lb', text: fmtTime(a.ts) }),
-              h('td', { class: 'l sym ' + (a.eventType === 'FUTURES_OPEN' ? 'up' : a.eventType === 'FUTURES_CLOSE' ? 'lb' : 'am'), text: a.eventType }),
+              h('td', { class: 'l sym ' + (a.eventType === 'FUTURES_OPEN' || a.eventType === 'DMA_BUY' ? 'up' : (a.eventType === 'FUTURES_CLOSE' || a.eventType === 'DMA_SELL' ? 'lb' : 'am')), text: a.eventType }),
               h('td', { class: 'l up sym', text: a.to }),
               h('td', { class: 'l', style: 'color:#fff', text: a.subject }),
               h('td', { class: 'l mu', text: a.status }),
