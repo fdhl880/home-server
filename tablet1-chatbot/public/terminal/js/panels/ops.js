@@ -1,7 +1,7 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, fmtTime, dirCls, LS } from '../util.js';
 import { get, getRaw, tickOk, apiFetch } from '../api.js';
-import { attachTechnicalMasterCanvas } from './charts.js?v=20261126c';
-import { openRoeShareModal } from './intelligence.js?v=20261126c';
+import { attachTechnicalMasterCanvas } from './charts.js?v=20261126d';
+import { openRoeShareModal } from './intelligence.js?v=20261126d';
 
 let liveUsdIdrRate = 18218;
 
@@ -322,9 +322,9 @@ export function mountBOT(body, ctx) {
       if (r.ok && j.ok) {
         const c = j.counts || {};
         alert(
-          `API Key ${(j.provider || provider).toUpperCase()} tersimpan!\n` +
+          `API Key ${(j.provider || provider).toUpperCase()} saved to active pool.\n` +
           `Groq=${c.groq ?? '-'} | Gemini=${c.gemini ?? '-'} | OpenRouter=${c.openrouter ?? '-'} | Cerebras=${c.cerebras ?? '-'}\n` +
-          `Total Active Buckets: ${j.gateway?.total_active_buckets || '-'} (Est Cap: ${((j.gateway?.daily_token_capacity || 0) / 1e6).toFixed(1)}M tok/hari)`
+          `Active Buckets: ${j.gateway?.total_active_buckets || '-'} (Est Cap: ${((j.gateway?.daily_token_capacity || 0) / 1e6).toFixed(1)}M tok/day)`
         );
         load();
       } else {
@@ -917,7 +917,7 @@ export function mountBOT(body, ctx) {
       h('div', { class: 'k', text: 'MULTI-KEY AI GATEWAY POOL' }),
       h('div', { class: 'v am sym', text: `${bucketsCount} ACTIVE MODEL BUCKETS (${fmtNum(gw.estimated_daily_token_capacity || 0, 0)} TOKENS/DAY) • HYBRID QUANT + AI` }),
       h('div', { class: 'k', text: 'AUTONOMOUS ENGINE STATUS' }),
-      h('div', { class: 'v ' + (isAutoRunning ? 'up sym' : 'dn sym'), text: `${isAutoRunning ? 'ACTIVE 24/7 SNIPER' : 'PAUSED (SL GUARD ON)'} • ${st.max_leverage || 20}x ${st.margin_type || 'ISOLATED'} • ${openPos.length} OPEN ${openPos.length === 1 ? 'POSITION' : 'POSITIONS'}` }),
+      h('div', { class: 'v ' + (isAutoRunning ? 'up sym' : 'dn sym'), text: `${isAutoRunning ? 'ACTIVE 24/7 ENGINE' : 'PAUSED (SL GUARD ON)'} • ${st.max_leverage || 20}x ${st.margin_type || 'ISOLATED'} • ${openPos.length} OPEN ${openPos.length === 1 ? 'POSITION' : 'POSITIONS'}` }),
       h('div', { class: 'k', text: 'TERMINAL NEWS SENTINEL FEED' }),
       h('div', { class: 'v lb sym', text: `BIAS: ${newsData.overall_bias || scanResult?.terminal_news_macro?.overall_bias || 'NEUTRAL'} (${newsData.overall_score ?? scanResult?.terminal_news_macro?.overall_score ?? '0.00'}) • ${auto.total_scans_done ?? st.total_scans_done ?? 0} SCANS COMPLETED` }),
       h('div', { class: 'k', text: 'LIVE BINANCE FUTURES WALLET' }),
@@ -926,7 +926,7 @@ export function mountBOT(body, ctx) {
       (() => {
         const remSec = Number(brk.remaining_sec || (brk.breaker_until_ts ? Math.max(0, Number(brk.breaker_until_ts) - Date.now() / 1000) : 0));
         const unlockWib = brk.breaker_until_ts ? new Date(Number(brk.breaker_until_ts) * 1000).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' }) + ' WIB' : '';
-        const remTxt = remSec > 0 ? ` (~${Math.floor(remSec / 3600)}j ${Math.floor((remSec % 3600) / 60)}m lagi / buka ${unlockWib})` : '';
+        const remTxt = remSec > 0 ? ` (~${Math.floor(remSec / 3600)}h ${Math.floor((remSec % 3600) / 60)}m | unlocks ${unlockWib})` : '';
         const brkTag = brk.breaker_active ? `TRIPPED${remTxt}` : 'ARMED';
         const rowChildren = [
           h('span', { text: `${brkTag} • LOSSES: ${brk.consecutive_losses || 0}/${brk.breaker_consecutive_losses_limit || 2} • TRADES: ${brk.daily_trades_count || 0}/${brk.max_daily_trades || 10} • ADWIN DRIFTS: ${adw.drift_count || 0} • ML=${Math.round((ews.ml ?? 0.4) * 100)}%/kNN=${Math.round((ews.knn ?? 0.25) * 100)}%/LLM=${Math.round((ews.llm ?? 0.35) * 100)}%` })
@@ -936,7 +936,7 @@ export function mountBOT(body, ctx) {
             style: 'margin-left:8px;padding:0 6px;font-size:10px;color:#ffb000;border-color:#ffb00088;background:#241800;font-weight:bold',
             text: 'RESET BREAKER',
             onclick: async () => {
-              if (!window.confirm('Reset Risk Breaker 12 jam lebih cepat? Pastikan kamu sudah evaluasi alasan 2 loss sebelumnya terlebih dahulu.')) return;
+              if (!window.confirm('Reset Risk Breaker early? Confirm prior drawdown review before resuming autonomous execution.')) return;
               const rr = await apiFetch('/api/crypto-futures/risk-breaker/resume', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1224,7 +1224,7 @@ export function mountBOT(body, ctx) {
             ),
             h('div', { style: 'margin-bottom:4px' },
               h('b', { style: 'color:#00e5ff', text: '► LAYER 2 & 3 (AI SENTIMENT & EXECUTION THESIS): ' }),
-              h('span', { class: 'lb', text: `${engL2Text} | Setup: ${l5.setup_name || l3.setup_type || 'Sniper Orderflow Breakout'} | Time Horizon: ${tp2EtaClean}` })
+              h('span', { class: 'lb', text: `${engL2Text} | Setup: ${l5.setup_name || l3.setup_type || 'Institutional Orderflow Breakout'} | Time Horizon: ${tp2EtaClean}` })
             ),
             h('div', null,
               h('b', { class: 'up', text: '► LAYER 4 (DEVIL\'S ADVOCATE & GATE 12 ANTI-TRAP): ' }),
@@ -2465,7 +2465,7 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
             h('div', { class: 'k', text: 'ATTACH TERMINAL DATA' }),
             h('div', { class: 'v', style: 'display:flex;gap:4px;flex-wrap:wrap' },
               h('button', { text: `+ATTACH QUOTE (${ctx.symbol})`, onclick: () => injectAttachment('QUOTE') }),
-              h('button', { text: '+ATTACH PORTFOLIO 200JT', onclick: () => injectAttachment('PORT') }),
+              h('button', { text: '+ATTACH PORTFOLIO', onclick: () => injectAttachment('PORT') }),
               h('button', { text: '+ATTACH YCRV CURVE', onclick: () => injectAttachment('YCRV') }),
               h('span', { class: 'up sym', style: 'margin-left:6px', text: `[ATT] ${composeState.attachmentLabel}` })
             )

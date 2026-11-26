@@ -120,6 +120,11 @@ form.f input,form.f select{padding:1px 4px}
 
 .psub{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#5c0808;color:#fff;padding:1px 6px;font-size:10px;border-bottom:1px solid #3a0000;flex:none;user-select:none;flex-wrap:wrap}
 .psub .pr{color:#ffb000;font-weight:700}
+.psub .psub-menu{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.psub button.pm{background:transparent;border:0;color:#fff;padding:0 3px;font-size:10px;font-weight:700;cursor:pointer}
+.psub button.pm:hover{background:#ffb000;color:#000}
+.psub-act{display:none;gap:4px;align-items:center;padding:2px 6px;background:#1a0505;border-bottom:1px solid #4a1212;flex-wrap:wrap;font-size:10px}
+.psub-act.open{display:flex}
 .slot.maxed{position:fixed!important;inset:0!important;z-index:60!important;height:auto!important;width:100%!important}
 .split2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 #mobnav{display:none;gap:3px;padding:3px 6px;background:#080808;border-bottom:1px solid var(--border);overflow-x:auto;scrollbar-width:none;flex:none}

@@ -308,8 +308,8 @@ function buildFactorRadarAndPillars(scanData, activePos, gearState, vaultState, 
     { id: 'P18', group: 'AI', name: '3-Brain Brain #2: Episodic k-NN', val: `${ns3.brain2_episodic_knn_prob_pct ?? '-'}%`, ok: true },
     { id: 'P19', group: 'AI', name: '3-Brain Brain #3: LLM Meta-Judge', val: `${ns3.brain3_llm_prob_pct ?? pAi.toFixed(1)}%`, ok: pAi >= 65 },
     { id: 'P20', group: 'FPT', name: 'Kalman First-Passage P(TP1 < SL)', val: `${fptP1.toFixed(1)}% | ETA TP1: ${tpPred.eta_tp1_label || '-'}`, ok: fptP1 >= minFpt },
-    { id: 'P21', group: 'EXEC', name: 'Sniper Two-Stage TP1/TP2 Structure', val: `BE +${sniperCfg.stage0_be_trigger_r || 0.65}R | TP1 +${sniperCfg.tp1_lock_trigger_r || 0.9}R (50%) | TP2 +${sniperCfg.tp2_runner_target_r || 2.0}R`, ok: true },
-    { id: 'P22', group: 'RISK', name: 'Auto Gear-Shift Engine', val: gearState && gearState.active_profile ? `Gigi ${gearState.current_gear} (${gearState.active_profile.code}, ${gearState.active_profile.leverage}x)` : 'Gigi 1 (20x ALL-IN)', ok: true },
+    { id: 'P21', group: 'EXEC', name: 'Two-Stage TP1/TP2 Profit Structure', val: `BE +${sniperCfg.stage0_be_trigger_r || 0.65}R | TP1 +${sniperCfg.tp1_lock_trigger_r || 0.9}R (50%) | TP2 +${sniperCfg.tp2_runner_target_r || 2.0}R`, ok: true },
+    { id: 'P22', group: 'RISK', name: 'Auto Gear-Shift Engine', val: gearState && gearState.active_profile ? `Tier ${gearState.current_gear} (${gearState.active_profile.code}, ${gearState.active_profile.leverage}x)` : 'Tier 1 (20x ISOLATED)', ok: true },
     { id: 'P23', group: 'RISK', name: 'Profit Ratchet Vault Protection', val: vaultState ? `Locked $${Number(vaultState.locked_profit_vault_usdt || 0).toFixed(2)} | HWM $${Number(vaultState.high_water_mark_usdt || 0).toFixed(2)}` : 'Active (35% lock / +15% HWM)', ok: true },
     { id: 'P24', group: 'RISK', name: 'Liquidation & SL Bounds Rail', val: `SL ${slDistPct}% inside [${(cfg && cfg.min_sl_pct) || 0.9}%..${(cfg && cfg.max_sl_pct) || 2.25}%]`, ok: slDistPct <= 2.25 }
   ];
@@ -390,7 +390,7 @@ function mountTerminalExtensions(app, deps) {
     const analysis = buildFactorRadarAndPillars(scanData, activePos, gearState, vaultState, cfg);
     res.json({
       ok: true,
-      source: 'pyrofuel-glassbox',
+      source: 'bloomberg-xray',
       ts: Date.now(),
       mode: 'LIVE',
       data: {
@@ -631,7 +631,7 @@ function mountTerminalExtensions(app, deps) {
     const bearPoints = [];
     if (chgPct >= 0.5) bullPoints.push(`Positive 24h momentum (${chgPct >= 0 ? '+' : ''}${chgPct.toFixed(2)}%) supporting upward continuation.`);
     else if (chgPct <= -0.5) bearPoints.push(`Negative 24h momentum (${chgPct.toFixed(2)}%) signaling overhead supply pressure.`);
-    if (mp.p_math_pct >= 62) bullPoints.push(`Pyrofuel 532-Factor P_Math score strong at ${mp.p_math_pct}% favoring ${mp.preferred_direction || 'trend'}.`);
+    if (mp.p_math_pct >= 62) bullPoints.push(`Composite 532-Factor P_Math score strong at ${mp.p_math_pct}% favoring ${mp.preferred_direction || 'trend'}.`);
     if (Number(mp.obi_weighted_20 || 0) > 0.12) bullPoints.push(`Orderbook L2 bid depth imbalance positive (OBI-20 = +${Number(mp.obi_weighted_20).toFixed(2)}).`);
     if (Number(mp.obi_weighted_20 || 0) < -0.12) bearPoints.push(`Orderbook L2 ask wall pressure detected (OBI-20 = ${Number(mp.obi_weighted_20).toFixed(2)}).`);
     if (Array.isArray(l2.confluences) && l2.confluences.length) {
@@ -1361,7 +1361,7 @@ function mountTerminalExtensions(app, deps) {
         roePct: +Number(roePct).toFixed(2),
         pnlUsd: +Number(pnlUsd).toFixed(4),
         pnlIdr: Math.round(pnlUsd * liveFx),
-        setup: raw.setup_name || raw.strategy_id || 'QUANT_SNIPER',
+        setup: raw.setup_name || raw.strategy_id || 'EXECUTION_DESK',
         closedAt: raw.closed_at || raw.exit_time || raw.timestamp || ''
       });
     };

@@ -278,7 +278,7 @@ export function mountLIQ(body, ctx) {
   body.classList.add('fill');
   const tb = h('div', { class: 'tb' },
     h('span', { class: 'lbl', text: `LIQ LEVERAGE LIQUIDATION RISK MAP & LIVE OPEN INTEREST [${ctx.symbol}]` }),
-    h('button', { text: 'BOT SNIPER <GO>', onclick: () => ctx.run('BOT') }),
+    h('button', { text: 'EXECUTION <GO>', onclick: () => ctx.run('BOT') }),
     h('button', { text: 'FUND BASIS <GO>', onclick: () => ctx.run('FUND') })
   );
   const sc = h('div', { class: 'pb' });
@@ -365,7 +365,7 @@ export function mountLIQ(body, ctx) {
             h('td', { class: 'am sym', text: `$${t.poolM.toFixed(1)}M` }),
             h('td', { style: 'width:190px' },
               h('div', { style: 'width:175px;height:10px;background:#111;border:1px solid #2a2a2a' },
-                h('div', { style: `width:${Math.min(100, Math.round(t.intensity * 100))}%;height:100%;background:linear-gradient(90deg,${col}66,${col})` })
+                h('div', { style: `width:${Math.min(100, Math.round(t.intensity * 100))}%;height:100%;background:${col}` })
               )
             )
           );

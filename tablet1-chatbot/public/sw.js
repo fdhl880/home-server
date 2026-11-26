@@ -1,5 +1,5 @@
-/* Bloomberg Terminal Native PWA Service Worker v20261126c */
-const CACHE_NAME = 'bloomberg-terminal-shell-v20261126c';
+/* Bloomberg Terminal Native PWA Service Worker v20261126d */
+const CACHE_NAME = 'bloomberg-terminal-shell-v20261126d';
 const APP_SHELL = [
   '/',
   '/widget',
@@ -7,7 +7,7 @@ const APP_SHELL = [
   '/icons/icon-192.png',
   '/icons/icon-512.png',
   '/icons/favicon-64.png',
-  '/terminal/css/terminal.css?v=20261126c',
+  '/terminal/css/terminal.css?v=20261126d',
   '/terminal/vendor/lightweight-charts.standalone.production.js'
 ];
 

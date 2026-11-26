@@ -2,13 +2,13 @@ import { $, h, fmtPx, fmtPct, fmtTime, dirCls, LS } from './util.js';
 import { get, net, startHub, apiFetch, setDashToken, setAuthRequiredHandler } from './api.js';
 import { dev } from './dev-adapter.js';
 
-import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261126c';
-import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261126c';
-import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261126c';
-import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261126c';
-import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261126c';
-import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261126c';
-import { mountFACT, mountTRAN, mountSTUDIO, mountBI, mountETF, mountFIN, mountWDGT, mountROE, mountTECH, mountBRDT } from './panels/intelligence.js?v=20261126c';
+import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261126d';
+import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261126d';
+import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261126d';
+import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261126d';
+import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261126d';
+import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261126d';
+import { mountFACT, mountTRAN, mountSTUDIO, mountBI, mountETF, mountFIN, mountWDGT, mountROE, mountTECH, mountBRDT } from './panels/intelligence.js?v=20261126d';
 
 import { panels as newsPanels } from '../panels/news/index.js';
 import { panels as macroPanels } from '../panels/macro/index.js';
@@ -417,13 +417,65 @@ function mountSlot(idx) {
     }
   });
 
+  const body = h('div', { class: 'pb', onclick: () => setActiveSlot(idx) });
+  const actBar = h('div', { class: 'psub-act' },
+    h('span', { class: 'am sym', text: `${state.symbol}:` }),
+    ...['GP', 'TECH', 'ROE', 'DES', 'FACT', 'BRDT', 'BOT'].map(code => h('button', {
+      style: 'font-size:10px;padding:0 5px',
+      text: code,
+      onclick: ev => { ev.stopPropagation(); actBar.classList.remove('open'); setActiveSlot(idx); executeCommand(`${state.symbol} ${code}`); }
+    })),
+    h('button', {
+      style: 'font-size:10px;padding:0 5px;color:var(--amber)',
+      text: 'MAXIMIZE',
+      onclick: ev => { ev.stopPropagation(); actBar.classList.remove('open'); slot.classList.toggle('maxed'); window.dispatchEvent(new Event('resize')); }
+    })
+  );
+
+  const exportPanelData = () => {
+    const tbl = body.querySelector('table');
+    if (tbl) {
+      const csvRows = [...tbl.querySelectorAll('tr')].map(tr =>
+        [...tr.querySelectorAll('th,td')].map(td => `"${String(td.textContent || '').replace(/"/g, '""').trim()}"`).join(',')
+      );
+      if (csvRows.length) {
+        const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Bloomberg_${state.symbol.replace(/[^A-Z0-9_-]/gi, '_')}_${fnDef.code}.csv`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 250);
+        $('#msg').textContent = `EXPORTED CSV: ${state.symbol} ${fnDef.code}`;
+        return;
+      }
+    }
+    const cv = body.querySelector('canvas');
+    if (cv && cv.width > 0 && cv.height > 0) {
+      try {
+        const a = document.createElement('a');
+        a.href = cv.toDataURL('image/png');
+        a.download = `Bloomberg_${state.symbol.replace(/[^A-Z0-9_-]/gi, '_')}_${fnDef.code}.png`;
+        a.click();
+        $('#msg').textContent = `EXPORTED PNG: ${state.symbol} ${fnDef.code}`;
+        return;
+      } catch {}
+    }
+    window.print();
+  };
+
   const subHdr = h('div', { class: 'psub' },
-    h('span', { text: `90) Actions  91) Edit  92) Export  99) Help   |   ${state.symbol} <${fnDef.cat}> ${fnDef.code}` }),
+    h('span', { class: 'psub-menu' },
+      h('button', { class: 'pm', text: '90) Actions', title: 'Quick Bloomberg Function Actions', onclick: ev => { ev.stopPropagation(); actBar.classList.toggle('open'); } }),
+      h('button', { class: 'pm', text: '91) Edit', title: 'Focus & Edit Security Ticker', onclick: ev => { ev.stopPropagation(); secInput.focus(); secInput.select(); } }),
+      h('button', { class: 'pm', text: '92) Export', title: 'Export Table CSV / Chart PNG', onclick: ev => { ev.stopPropagation(); exportPanelData(); } }),
+      h('button', { class: 'pm', text: '99) Help', title: 'Open Terminal Manual (HELP <GO>)', onclick: ev => { ev.stopPropagation(); setActiveSlot(idx); executeCommand('HELP'); } }),
+      h('span', { style: 'opacity:.85;margin-left:4px', text: `|   ${state.symbol} <${fnDef.cat}> ${fnDef.code}` })
+    ),
     h('span', { class: 'pr', text: `BLOOMBERG PROFESSIONAL • PAGE 1/1` })
   );
 
-  const body = h('div', { class: 'pb', onclick: () => setActiveSlot(idx) });
-  const panelEl = h('div', { class: 'panel' }, hdr, subHdr, body);
+  const panelEl = h('div', { class: 'panel' }, hdr, subHdr, actBar, body);
   slot.append(panelEl);
 
   const cbs = [];
@@ -655,15 +707,29 @@ for (const [fk, lbl, cmd, isYellow] of FKEYS) {
   }, h('b', { text: fk + ' ' }), lbl));
 }
 
-// Global keyboard shortcuts
+// Global Bloomberg Hardware Keyboard Shortcuts (F1-F11 Yellow Keys, Ctrl+K, ESC Modals)
+const HW_FKEY_MAP = {
+  F1: 'HELP',
+  F2: '^TNX YCRV',
+  F3: '^TNX CRPR',
+  F4: 'CL=F BMAP',
+  F8: 'AAPL DES',
+  F10: 'USDIDR=X FXC',
+  F11: 'BTCUSDT CRYP'
+};
 window.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault();
     cmdInput.focus();
     cmdInput.select();
-  } else if (e.key === 'F1') {
+  } else if (e.key === 'Escape') {
+    for (const id of ['bbgRoeModal', 'pushCenterModal', 'installGuideModal']) {
+      const m = document.getElementById(id);
+      if (m) m.remove();
+    }
+  } else if (HW_FKEY_MAP[e.key] && !e.ctrlKey && !e.altKey && !e.metaKey) {
     e.preventDefault();
-    executeCommand('HELP');
+    executeCommand(HW_FKEY_MAP[e.key]);
   }
 });
 

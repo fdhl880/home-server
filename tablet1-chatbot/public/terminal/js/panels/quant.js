@@ -1929,7 +1929,7 @@ export function mountBTCA(body, ctx) {
     const brkActive = Boolean(brk.breaker_active);
     const remSec = Number(brk.remaining_sec || (brk.breaker_until_ts ? Math.max(0, Number(brk.breaker_until_ts) - Date.now() / 1000) : 0));
     const unlockWib = brk.breaker_until_ts ? new Date(Number(brk.breaker_until_ts) * 1000).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' }) + ' WIB' : '';
-    const brkCdTxt = brkActive && remSec > 0 ? ` • UNLOCKS ${unlockWib} (~${Math.floor(remSec / 3600)}j ${Math.floor((remSec % 3600) / 60)}m)` : '';
+    const brkCdTxt = brkActive && remSec > 0 ? ` • UNLOCKS ${unlockWib} (~${Math.floor(remSec / 3600)}h ${Math.floor((remSec % 3600) / 60)}m)` : '';
 
     sc.append(
       h('div', { class: 'kv', style: 'background:#060606;border-bottom:1px solid var(--border);padding:6px 8px' },
