@@ -1,7 +1,7 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, fmtTime, dirCls, LS } from '../util.js';
 import { get, getRaw, tickOk, apiFetch } from '../api.js';
-import { attachTechnicalMasterCanvas } from './charts.js?v=20261126b';
-import { openRoeShareModal } from './intelligence.js?v=20261126b';
+import { attachTechnicalMasterCanvas } from './charts.js?v=20261126c';
+import { openRoeShareModal } from './intelligence.js?v=20261126c';
 
 let liveUsdIdrRate = 18218;
 
@@ -340,23 +340,23 @@ export function mountBOT(body, ctx) {
     const inp = h('input', { value: scanSym, style: 'width:92px;text-transform:uppercase;font-weight:bold', placeholder: 'BTC-USD' });
     const autoBtnText = autoTogglePending
       ? (isAutoRunning ? 'PAUSING...' : 'RESUMING...')
-      : (isAutoRunning ? '⏸️ PAUSE AUTO-BOT (LIVE)' : '▶️ RESUME AUTO-BOT (PAUSED)');
+      : (isAutoRunning ? 'PAUSE ENGINE [LIVE]' : 'RESUME ENGINE [PAUSED]');
     const autoBtnStyle = isAutoRunning
       ? 'color:#ff5a52;border-color:#ff3b3088;background:#1a0606;font-weight:bold'
       : 'color:#00d26a;border-color:#00d26a88;background:#041a0d;font-weight:bold';
     const focusBackBtn = (currentOpenPositions.length > 0 && manualPreviewMode)
       ? h('button', {
           style: 'color:#ffb000;border-color:#ffb000aa;background:#241800;font-weight:bold',
-          text: `↩️ FOCUS OPEN POS (${toBinanceSym(currentOpenPositions[0].binance_pair || currentOpenPositions[0].symbol)})`,
+          text: `FOCUS OPEN POS (${toBinanceSym(currentOpenPositions[0].binance_pair || currentOpenPositions[0].symbol)})`,
           onclick: () => focusOpenPosition(currentOpenPositions[0])
         })
       : null;
     const lockedTag = (!manualPreviewMode && focusedPositionObj)
-      ? h('span', { class: 'am sym', style: 'font-size:10px;padding:1px 6px;border:1px solid #ffb00066;background:#1a1100', text: `🔒 FOCUS: ${toBinanceSym(focusedPositionObj.binance_pair || focusedPositionObj.symbol)}` })
+      ? h('span', { class: 'am sym', style: 'font-size:10px;padding:1px 6px;border:1px solid #ffb00066;background:#1a1100', text: `LOCKED: ${toBinanceSym(focusedPositionObj.binance_pair || focusedPositionObj.symbol)}` })
       : null;
     const extraBtns = [lockedTag, focusBackBtn].filter(Boolean);
     tb.append(
-      h('span', { class: 'lbl', text: 'BOT PYROFUEL 99% SNIPER (MATH + AI + NEWS):' }),
+      h('span', { class: 'lbl', text: 'EXECUTION DESK — AUTONOMOUS FUTURES:' }),
       ...extraBtns,
       inp,
       h('button', { class: 'on', text: scanning ? 'SCANNING 5-LAYER...' : 'DEEP SCAN <GO>', onclick: () => runScan(inp.value.trim().toUpperCase()) }),
@@ -605,7 +605,7 @@ export function mountBOT(body, ctx) {
         const rem1 = Math.max(0, tp1TotalSec - elapsed);
         const rem2 = Math.max(0, tp2TotalSec - elapsed);
         const fmtSec = s => `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m ${String(s % 60).padStart(2, '0')}s`;
-        botEtaClockEl.textContent = `⏱️ LIVE COUNTDOWN  ►  TP1 LOCK (+0.55R): ${fmtSec(rem1)}   |   FULL TP2 RUNNER: ${fmtSec(rem2)}`;
+        botEtaClockEl.textContent = `COUNTDOWN  |  TP1 LOCK (+0.55R): ${fmtSec(rem1)}  |  TP2 RUNNER: ${fmtSec(rem2)}`;
       }
     }, 1000);
   }
@@ -840,7 +840,7 @@ export function mountBOT(body, ctx) {
       !scanResult ? getRaw(`/api/crypto-futures/scan-cached?symbol=${encodeURIComponent(scanSym)}`) : Promise.resolve(null)
     ]);
     if (unmounted) return;
-    ctx.status({ source: 'pyrofuel-sniper-v4', ts: Date.now(), mode: (stRes.ok || pRes.ok || cRes.ok) ? 'LIVE' : 'N/A' });
+    ctx.status({ source: 'execution-desk-v4', ts: Date.now(), mode: (stRes.ok || pRes.ok || cRes.ok) ? 'LIVE' : 'N/A' });
     sc.textContent = '';
 
     const st = (stRes.ok && stRes.data) || {};
@@ -934,7 +934,7 @@ export function mountBOT(body, ctx) {
         if (brk.breaker_active) {
           rowChildren.push(h('button', {
             style: 'margin-left:8px;padding:0 6px;font-size:10px;color:#ffb000;border-color:#ffb00088;background:#241800;font-weight:bold',
-            text: '🔓 RESET BREAKER',
+            text: 'RESET BREAKER',
             onclick: async () => {
               if (!window.confirm('Reset Risk Breaker 12 jam lebih cepat? Pastikan kamu sudah evaluasi alasan 2 loss sebelumnya terlebih dahulu.')) return;
               const rr = await apiFetch('/api/crypto-futures/risk-breaker/resume', {
@@ -978,20 +978,20 @@ export function mountBOT(body, ctx) {
       botEtaClockEl = h('span', {
         style: `color:${vm.isLivePosition ? (vm.pnlPct >= 0 ? '#00d26a' : '#ff5a52') : '#00e5ff'};font-weight:900;font-size:11.5px`,
         text: vm.isLivePosition
-          ? `● LIVE P&L: ${vm.pnlPct >= 0 ? '+' : ''}${fmtNum(vm.pnlPct, 2)}% (${vm.pnlUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(vm.pnlUsd), 2)} / ${vm.pnlIdr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(vm.pnlIdr))}) • R: ${vm.rMult >= 0 ? '+' : ''}${fmtNum(vm.rMult, 2)}R`
-          : `⏱️ ETA TP1 LOCK (+0.55R): ${tp1EtaClean} (${tp.eta_tp1_hours || 0.58}h)  |  FULL TP2 RUNNER: ${tp2EtaClean} (${tp.eta_hours_realistic || 2.2}h)`
+          ? `LIVE P&L: ${vm.pnlPct >= 0 ? '+' : ''}${fmtNum(vm.pnlPct, 2)}% (${vm.pnlUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(vm.pnlUsd), 2)} / ${vm.pnlIdr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(vm.pnlIdr))}) • R: ${vm.rMult >= 0 ? '+' : ''}${fmtNum(vm.rMult, 2)}R`
+          : `ETA TP1 (+0.55R): ${tp1EtaClean} (${tp.eta_tp1_hours || 0.58}h)  |  TP2 RUNNER: ${tp2EtaClean} (${tp.eta_hours_realistic || 2.2}h)`
       });
 
       const bannerBg = vm.isLivePosition
-        ? (vm.pnlPct >= 0 ? 'linear-gradient(90deg,#061c10,#07121e,#141000)' : 'linear-gradient(90deg,#200808,#120918,#141000)')
-        : 'linear-gradient(90deg,#091912,#07121e,#141000)';
+        ? (vm.pnlPct >= 0 ? '#05140c' : '#180707')
+        : '#08121a';
       const bannerBorder = vm.isLivePosition ? (vm.pnlPct >= 0 ? '#00d26a88' : '#ff3b30aa') : '#00d26a88';
 
       const bannerLeftItems = [
         h('span', {
           class: 'am sym',
           style: 'font-size:12px',
-          text: vm.isLivePosition ? `🔴 LIVE POSITION LOCK: [${vm.sym}]` : `🎯 [${vm.displaySym}] ${l5.status || 'APPROVED'}`
+          text: vm.isLivePosition ? `[LIVE POSITION] ${vm.sym}` : `[SIGNAL] ${vm.displaySym} ${l5.status || 'APPROVED'}`
         }),
         h('span', { class: (dir === 'LONG' ? 'up' : 'dn') + ' sym', style: 'font-size:12px;padding:1px 6px;border:1px solid currentColor', text: `${dir} ${levNow}x` }),
         vm.isLivePosition
@@ -1018,12 +1018,11 @@ export function mountBOT(body, ctx) {
               pnlUsd: vm.pnlUsd,
               pnlIdr: vm.pnlIdr,
               fxRateIdr: liveUsdIdrRate,
-              status: 'OPEN',
-              setup: scanCtx.layer2_setup?.setup_name || 'QUANT_EXECUTION'
+              status: 'OPEN'
             })
           }),
-          h('button', { style: 'color:#00e5ff;border-color:#00e5ff77;background:#04151c;font-weight:bold;padding:1px 6px', text: '🛡️ SYNC/EDIT SL', onclick: () => syncPositionSlAction(vm.posObj) }),
-          h('button', { style: 'color:#ff5a52;border-color:#ff3b30aa;background:#260606;font-weight:bold;padding:1px 6px', text: '🛑 CLOSE MARKET', onclick: () => closePositionAction(vm.posObj) })
+          h('button', { style: 'color:#00e5ff;border-color:#00e5ff77;background:#04151c;font-weight:bold;padding:1px 6px', text: 'SYNC / EDIT SL', onclick: () => syncPositionSlAction(vm.posObj) }),
+          h('button', { style: 'color:#ff5a52;border-color:#ff3b30aa;background:#260606;font-weight:bold;padding:1px 6px', text: 'CLOSE MARKET', onclick: () => closePositionAction(vm.posObj) })
         );
       }
 
@@ -1038,11 +1037,11 @@ export function mountBOT(body, ctx) {
       if (vm.isLivePosition && vm.aiEval) {
         sc.append(h('div', {
           style: 'padding:3px 8px;background:#070a0f;border-bottom:1px solid #1b2430;font-size:10.5px;color:#8be9fd'
-        }, `🛡️ AI SENTINEL LIVE EVALUATION: ${vm.aiEval}`));
+        }, `SENTINEL EVALUATION: ${vm.aiEval}`));
       } else if (!vm.isLivePosition && String(l5.status || '').toUpperCase() !== 'APPROVED' && (l5.final_reason || scanResult?.error)) {
         sc.append(h('div', {
           style: 'padding:3px 8px;background:#190707;border-bottom:1px solid #ff3b3044;font-size:10.5px;color:#ff9b95'
-        }, `⛔ ALASAN DITOLAK: ${l5.final_reason || scanResult?.error}`));
+        }, `GATE REJECTION: ${l5.final_reason || scanResult?.error}`));
       }
 
       // Split 2-Column Visual Workstation: Left = Live Technical Master Candlestick Chart; Right = Trajectory & L2 Depth
@@ -1092,12 +1091,12 @@ export function mountBOT(body, ctx) {
 
       const roiProjectionStrip = h('div', { style: 'background:#06090e;border-bottom:1px solid var(--border);padding:6px' },
         h('div', { class: 'tb', style: 'background:#0c131d;margin-bottom:5px;justify-content:space-between;border:1px solid #1c2d42' },
-          h('span', { class: 'am sym', text: `💰 ${vm.isLivePosition ? 'LIVE POSITION' : 'PROJECTED'} ROI (%) & P&L (IDR / USD) [${vm.sym} • ${dir} ${levNow}x ISOLATED]` }),
+          h('span', { class: 'am sym', text: `${vm.isLivePosition ? 'LIVE POSITION' : 'PROJECTED'} ROI (%) & P&L (IDR / USD) [${vm.sym} • ${dir} ${levNow}x ISOLATED]` }),
           h('span', {
             class: (vm.isLivePosition ? (vm.pnlPct >= 0 ? 'up' : 'dn') : 'up') + ' sym',
             text: vm.isLivePosition
               ? `CURRENT FLOATING: ${vm.pnlPct >= 0 ? '+' : ''}${fmtNum(vm.pnlPct, 2)}% (${vm.pnlUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(vm.pnlUsd), 2)})`
-              : `MATHEMATICAL EXPECTED VALUE (EV): ${evRoi >= 0 ? '+' : ''}${evRoi}% ROI (${evIdr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(evIdr))} / ${evUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(evUsd), 2)})`
+              : `EXPECTED VALUE (EV): ${evRoi >= 0 ? '+' : ''}${evRoi}% ROI (${evIdr >= 0 ? '+' : '-'}${fmtIdr(Math.abs(evIdr))} / ${evUsd >= 0 ? '+$' : '-$'}${fmtNum(Math.abs(evUsd), 2)})`
           })
         ),
         h('div', { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:11px' },
@@ -1110,24 +1109,24 @@ export function mountBOT(body, ctx) {
           ),
           // Box 2: If TP1 Lock Hit (+0.55R)
           h('div', { style: 'background:#041218;border:1px solid #00e5ff44;padding:6px;border-left:3px solid #00e5ff' },
-            h('div', { style: 'color:#00e5ff;font-size:10px;font-weight:bold', text: `2) 🎯 IF TP1 LOCK HIT (+0.55R • ${tp1EtaClean})` }),
-            h('div', { style: 'color:#00e5ff;font-size:13px;font-weight:900;margin:2px 0', text: `+${mTp1.roi_pct}% ROI  ►  +$${fmtNum(mTp1.pnl_usd, 2)} (+${fmtIdr(mTp1.pnl_idr)})` }),
+            h('div', { style: 'color:#00e5ff;font-size:10px;font-weight:bold', text: `2) TP1 LOCK TARGET (+0.55R • ${tp1EtaClean})` }),
+            h('div', { style: 'color:#00e5ff;font-size:13px;font-weight:900;margin:2px 0', text: `+${mTp1.roi_pct}% ROI  |  +$${fmtNum(mTp1.pnl_usd, 2)} (+${fmtIdr(mTp1.pnl_idr)})` }),
             h('div', { class: 'lb', style: 'font-size:10px', text: `TP1 Target: ${fmtPx(tp1Now)} (+${Math.abs(mTp1.move_pct)}% move) • Prob: ${tp.p_hit_tp1_before_sl_pct || 86.4}%` }),
-            h('div', { class: 'up', style: 'font-size:10px', text: `🔒 Auto-Locks SL to ${fmtPx(lockSlPxNow)} (+${mLockSl.roi_pct}% / +$${fmtNum(mLockSl.pnl_usd, 2)})` })
+            h('div', { class: 'up', style: 'font-size:10px', text: `Auto-Locks SL to ${fmtPx(lockSlPxNow)} (+${mLockSl.roi_pct}% / +$${fmtNum(mLockSl.pnl_usd, 2)})` })
           ),
           // Box 3: If Full TP2 Runner Hit
           h('div', { style: 'background:#04160c;border:1px solid #00d26a55;padding:6px;border-left:3px solid #00d26a' },
-            h('div', { class: 'up sym', style: 'font-size:10px', text: `3) 🚀 IF FULL TP2 RUNNER HIT (${tp2EtaClean})` }),
-            h('div', { class: 'up sym', style: 'font-size:13px;font-weight:900;margin:2px 0', text: `+${mTp2.roi_pct}% ROI  ►  +$${fmtNum(mTp2.pnl_usd, 2)} (+${fmtIdr(mTp2.pnl_idr)})` }),
+            h('div', { class: 'up sym', style: 'font-size:10px', text: `3) FULL TP2 RUNNER TARGET (${tp2EtaClean})` }),
+            h('div', { class: 'up sym', style: 'font-size:13px;font-weight:900;margin:2px 0', text: `+${mTp2.roi_pct}% ROI  |  +$${fmtNum(mTp2.pnl_usd, 2)} (+${fmtIdr(mTp2.pnl_idr)})` }),
             h('div', { class: 'lb', style: 'font-size:10px', text: `TP2 Target: ${fmtPx(tp2Now)} (+${Math.abs(mTp2.move_pct)}% move) • Prob: ${tp.p_hit_tp2_before_sl_pct || 74.2}%` }),
-            h('div', { class: 'am', style: 'font-size:10px', text: `✨ Projected Ending Wallet: $${fmtNum(marginUsdNow + mTp2.pnl_usd, 2)} (${fmtIdr(marginIdrNow + mTp2.pnl_idr)})` })
+            h('div', { class: 'am', style: 'font-size:10px', text: `Projected Ending Wallet: $${fmtNum(marginUsdNow + mTp2.pnl_usd, 2)} (${fmtIdr(marginIdrNow + mTp2.pnl_idr)})` })
           ),
           // Box 4: If Stop Loss Hit (Initial Risk)
           h('div', { style: 'background:#160505;border:1px solid #ff3b3055;padding:6px;border-left:3px solid #ff3b30' },
-            h('div', { class: 'dn sym', style: 'font-size:10px', text: '4) 🛡️ IF STOP LOSS HIT (MAX RISK GUARD)' }),
-            h('div', { class: 'dn sym', style: 'font-size:13px;font-weight:900;margin:2px 0', text: `${mSl.roi_pct}% ROI  ►  -$${fmtNum(Math.abs(mSl.pnl_usd), 2)} (-${fmtIdr(Math.abs(mSl.pnl_idr))})` }),
+            h('div', { class: 'dn sym', style: 'font-size:10px', text: '4) STOP LOSS RISK BOUND (MAX RISK)' }),
+            h('div', { class: 'dn sym', style: 'font-size:13px;font-weight:900;margin:2px 0', text: `${mSl.roi_pct}% ROI  |  -$${fmtNum(Math.abs(mSl.pnl_usd), 2)} (-${fmtIdr(Math.abs(mSl.pnl_idr))})` }),
             h('div', { class: 'lb', style: 'font-size:10px', text: `SL Level: ${fmtPx(slNow)} (${mSl.move_pct}% move) • State: ${vm.slState}` }),
-            h('div', { class: 'up', style: 'font-size:10px', text: `⚡ Stage-0 Scratch Guard (+0.30R): Locks +0.08R once +6% ROE reached` })
+            h('div', { class: 'up', style: 'font-size:10px', text: `Stage-0 Scratch Guard (+0.30R): Locks +0.08R once +6% ROE reached` })
           )
         )
       );
@@ -1214,7 +1213,7 @@ export function mountBOT(body, ctx) {
 
       const aiNarrativeBox = h('div', { style: 'padding:6px;background:#050505;border-bottom:1px solid var(--border)' },
         h('div', { class: 'tb', style: 'background:#120e00;border-bottom:1px solid #ffb00055;margin-bottom:4px;justify-content:space-between' },
-          h('span', { class: 'am sym', text: `🧠 FULL 5-LAYER MULTI-AGENT AI & TERMINAL NEWS ANALYSIS [${scanResult.symbol || scanSym}]` }),
+          h('span', { class: 'am sym', text: `5-LAYER EXECUTION & NEWS SENTINEL ANALYSIS [${scanResult.symbol || scanSym}]` }),
           h('span', { class: 'lbl', text: `GATE 12 ANTI-TRAP AUDIT: ${l4.verdict || l4.risk_verdict || 'PASSED (LOW RISK)'}` })
         ),
         h('div', { style: 'display:grid;grid-template-columns:1.35fr 1fr;gap:6px;font-size:11px;line-height:1.45' },
@@ -1233,7 +1232,7 @@ export function mountBOT(body, ctx) {
             )
           ),
           h('div', { style: 'background:#080808;border:1px solid #1e1e1e;padding:6px' },
-            h('div', { style: 'color:#ffb000;font-weight:bold;margin-bottom:3px;font-size:10.5px', text: '📰 LIVE BLOOMBERG TERMINAL NEWS SENTINEL (AUTO-READ BY AI):' }),
+            h('div', { style: 'color:#ffb000;font-weight:bold;margin-bottom:3px;font-size:10.5px', text: 'BLOOMBERG TERMINAL NEWS SENTINEL:' }),
             ...(newsItems.length ? newsItems.map(n => h('div', { style: 'font-size:10px;border-bottom:1px dashed #1a1a1a;padding:2px 0;color:#ccc' },
               h('span', { class: (n.sentiment === 'BULLISH' || (n.score || 0) > 0) ? 'up sym' : (n.sentiment === 'BEARISH' || (n.score || 0) < 0) ? 'dn sym' : 'am sym', text: `[${n.sentiment || 'MACRO'}] ` }),
               h('span', { text: (n.title || n.headline || '').slice(0, 88) })
@@ -1397,7 +1396,7 @@ export function mountBOT(body, ctx) {
             const mTp2Sig = calcTargetRoiPnl(sEntry, sTp2, sDir, 20, sigMarginIdr, realWalletUsdt);
             const mSlSig = calcTargetRoiPnl(sEntry, sSl, sDir, 20, sigMarginIdr, realWalletUsdt);
             const gateReasonTxt = s.status === 'APPROVED'
-              ? '✅ APPROVED'
+              ? 'APPROVED'
               : `${s.failed_gate ? '[' + s.failed_gate + '] ' : ''}${String(s.reject_reason || s.status || 'REJECTED').slice(0, 68)}`;
             return h('tr', {
               class: 'row',
@@ -2242,7 +2241,7 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
             h('div', { class: 'k', text: 'TO' }), h('div', { class: 'v lb', text: m.to }),
             h('div', { class: 'k', text: 'DATE / TIME' }), h('div', { class: 'v', text: fmtTime(m.ts, true) }),
             h('div', { class: 'k', text: 'SUBJECT' }), h('div', { class: 'v sym', style: 'color:#fff', text: (m.priority === 'URGENT' ? '[! URGENT] ' : '') + m.subject }),
-            ...(m.attachmentLabel ? [h('div', { class: 'k', text: 'BBG ATTACHMENT' }), h('div', { class: 'v up sym', style: 'cursor:pointer', onclick: () => m.attachmentFn && ctx.run(m.attachmentFn), text: `📎 ${m.attachmentLabel} (Click to launch ${m.attachmentFn} <GO>)` })] : [])
+            ...(m.attachmentLabel ? [h('div', { class: 'k', text: 'BBG ATTACHMENT' }), h('div', { class: 'v up sym', style: 'cursor:pointer', onclick: () => m.attachmentFn && ctx.run(m.attachmentFn), text: `[ATT] ${m.attachmentLabel} (Click to launch ${m.attachmentFn} <GO>)` })] : [])
           ),
           h('div', { style: 'white-space:pre-wrap;color:var(--amber);line-height:1.5;padding:8px;background:#030303;border-left:3px solid var(--amber)', text: m.body })
         )
@@ -2276,7 +2275,7 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
             h('td', { class: 'l lb', text: fmtTime(m.ts) }),
             h('td', { class: 'l am sym', text: tab === 'INBOX' ? (m.fromName || m.from) : m.to }),
             h('td', { class: 'l', style: m.unread ? 'color:#fff' : 'color:var(--amber)', text: m.subject }),
-            h('td', { class: 'l up', text: m.attachmentLabel ? '📎 ' + m.attachmentLabel : '-' }),
+            h('td', { class: 'l up', text: m.attachmentLabel ? '[ATT] ' + m.attachmentLabel : '-' }),
             h('td', null, h('button', { text: 'READ', onclick: ev => { ev.stopPropagation(); activeMsg = m; render(); } }))
           )))
         ) : h('div', { class: 'empty', text: 'No messages in this folder.' })
@@ -2307,8 +2306,8 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
         const j = await r.json();
         if (j.ok && j.data) store = j.data;
         alertStatusBanner = r.ok
-          ? `✓ SAVED AUTO-EMAIL RULES FOR ${(store.alertConfig && store.alertConfig.targetEmail) || 'fadhilsyafiq90@gmail.com'}`
-          : `✗ FAILED TO SAVE RULES: ${j.error || ('HTTP ' + r.status)}`;
+          ? `[OK] SAVED AUTO-EMAIL RULES FOR ${(store.alertConfig && store.alertConfig.targetEmail) || 'fadhilsyafiq90@gmail.com'}`
+          : `[ERR] FAILED TO SAVE RULES: ${j.error || ('HTTP ' + r.status)}`;
         render();
       };
 
@@ -2318,7 +2317,7 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
         const r = await apiFetch('/api/terminal/bmail/test-alert', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type }) }, 15000);
         const j = await r.json();
         if (j.ok && j.data) store = j.data;
-        alertStatusBanner = `✓ ${type} DISPATCHED TO ${(j.entry && j.entry.to) || 'fadhilsyafiq90@gmail.com'} [${(j.entry && j.entry.status) || 'OK'}]`;
+        alertStatusBanner = `[OK] ${type} DISPATCHED TO ${(j.entry && j.entry.to) || 'fadhilsyafiq90@gmail.com'} [${(j.entry && j.entry.status) || 'OK'}]`;
         render();
       };
 
@@ -2468,7 +2467,7 @@ export function mountMSG(body, ctx, { initialTab = 'INBOX' } = {}) {
               h('button', { text: `+ATTACH QUOTE (${ctx.symbol})`, onclick: () => injectAttachment('QUOTE') }),
               h('button', { text: '+ATTACH PORTFOLIO 200JT', onclick: () => injectAttachment('PORT') }),
               h('button', { text: '+ATTACH YCRV CURVE', onclick: () => injectAttachment('YCRV') }),
-              h('span', { class: 'up sym', style: 'margin-left:6px', text: `📎 ${composeState.attachmentLabel}` })
+              h('span', { class: 'up sym', style: 'margin-left:6px', text: `[ATT] ${composeState.attachmentLabel}` })
             )
           ),
           txtBody,

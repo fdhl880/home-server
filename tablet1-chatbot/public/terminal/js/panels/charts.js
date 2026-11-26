@@ -1,4 +1,4 @@
-import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtDate, fmtTime, dirCls } from '../util.js';
+import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtDate, fmtTime, dirCls, LS } from '../util.js';
 import { get, getRaw } from '../api.js';
 
 function calcSMA(candles, period, field = 'c') {
@@ -451,7 +451,7 @@ export function computeTechnicalMasterSignals(mapped, visibleFromIdx = 0, visibl
 /**
  * Attaches an HTML5 `<canvas>` overlay strictly aligned to LightweightCharts' timeScale & priceScale.
  */
-export function attachTechnicalMasterCanvas({ wrap, chart, getSeries, getMapped, getLayers, getTradePlan }) {
+export function attachTechnicalMasterCanvas({ wrap, chart, getSeries, getMapped, getLayers, getTradePlan, getMeasure, getUserHLines }) {
   wrap.querySelectorAll('.tm-overlay-canvas').forEach(e => e.remove());
   const cvs = document.createElement('canvas');
   cvs.className = 'tm-overlay-canvas';
@@ -828,6 +828,81 @@ export function attachTechnicalMasterCanvas({ wrap, chart, getSeries, getMapped,
       }
     }
 
+    // G. Persistent User Horizontal S/R Lines (Bloomberg GP Drawing)
+    const userLines = getUserHLines ? getUserHLines() : [];
+    if (Array.isArray(userLines) && userLines.length) {
+      userLines.forEach((px, idx) => {
+        const yy = yOfPx(px);
+        if (yy == null) return;
+        ctx2d.save();
+        ctx2d.strokeStyle = 'rgba(255, 176, 0, 0.85)';
+        ctx2d.lineWidth = 1.2;
+        ctx2d.setLineDash([7, 4]);
+        ctx2d.beginPath(); ctx2d.moveTo(0, yy); ctx2d.lineTo(plotW, yy); ctx2d.stroke();
+        ctx2d.restore();
+        drawPill(`S/R ${idx + 1}: ${fmtPx(px)}`, 6, yy - 3, 'rgba(20,14,0,0.9)', '#ffb000', '#ffb00088', true);
+      });
+    }
+
+    // H. Interactive 2-Point Ruler / Price-Delta Measurement Box (Bloomberg GP Measure)
+    const meas = getMeasure ? getMeasure() : null;
+    if (meas && meas.a && meas.b) {
+      const xA = xOfIdx(meas.a.idx);
+      const xB = xOfIdx(meas.b.idx);
+      const yA = yOfPx(meas.a.price);
+      const yB = yOfPx(meas.b.price);
+      if (xA != null && xB != null && yA != null && yB != null) {
+        const up = meas.b.price >= meas.a.price;
+        const mCol = up ? '#00d26a' : '#ff453a';
+        const rx = Math.min(xA, xB), ry = Math.min(yA, yB);
+        const rw = Math.max(2, Math.abs(xB - xA)), rh = Math.max(2, Math.abs(yB - yA));
+
+        ctx2d.save();
+        ctx2d.fillStyle = up ? 'rgba(0, 210, 106, 0.12)' : 'rgba(255, 69, 58, 0.12)';
+        ctx2d.fillRect(rx, ry, rw, rh);
+        ctx2d.strokeStyle = mCol;
+        ctx2d.lineWidth = 1.2;
+        ctx2d.setLineDash([4, 3]);
+        ctx2d.strokeRect(rx, ry, rw, rh);
+        ctx2d.beginPath(); ctx2d.moveTo(xA, yA); ctx2d.lineTo(xB, yB); ctx2d.stroke();
+        ctx2d.restore();
+
+        // Anchor dots
+        for (const [px, py] of [[xA, yA], [xB, yB]]) {
+          ctx2d.beginPath(); ctx2d.arc(px, py, 3.5, 0, Math.PI * 2);
+          ctx2d.fillStyle = mCol; ctx2d.fill();
+        }
+
+        const delta = meas.b.price - meas.a.price;
+        const pct = meas.a.price > 0 ? (delta / meas.a.price) * 100 : 0;
+        const bars = Math.abs(Math.round(meas.b.idx - meas.a.idx));
+        const secDiff = Math.abs((meas.b.time || 0) - (meas.a.time || 0));
+        const durTxt = secDiff >= 86400
+          ? `${(secDiff / 86400).toFixed(1)}d`
+          : secDiff >= 3600
+          ? `${Math.floor(secDiff / 3600)}h ${Math.floor((secDiff % 3600) / 60)}m`
+          : `${Math.max(1, Math.round(secDiff / 60))}m`;
+
+        const line1 = `${delta >= 0 ? '+' : ''}${fmtPx(delta)} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)`;
+        const line2 = `${bars} BARS (${durTxt})  |  20x ROE: ${(pct * 20) >= 0 ? '+' : ''}${(pct * 20).toFixed(1)}%`;
+        ctx2d.font = 'bold 10px JetBrains Mono, monospace';
+        const cardW = Math.max(ctx2d.measureText(line1).width, ctx2d.measureText(line2).width) + 16;
+        const cardH = 34;
+        const cx = Math.max(6, Math.min(plotW - cardW - 6, (xA + xB) / 2 - cardW / 2));
+        const cy = Math.max(8, Math.min(plotH - cardH - 8, ry > cardH + 14 ? ry - cardH - 6 : ry + rh + 6));
+        ctx2d.fillStyle = 'rgba(0, 0, 0, 0.92)';
+        ctx2d.fillRect(cx, cy, cardW, cardH);
+        ctx2d.strokeStyle = mCol;
+        ctx2d.lineWidth = 1.2;
+        ctx2d.strokeRect(cx, cy, cardW, cardH);
+        ctx2d.fillStyle = mCol;
+        ctx2d.fillText(line1, cx + 8, cy + 13);
+        ctx2d.fillStyle = '#cfd6df';
+        ctx2d.font = '9.5px JetBrains Mono, monospace';
+        ctx2d.fillText(line2, cx + 8, cy + 27);
+      }
+    }
+
     ctx2d.restore();
   };
 
@@ -852,7 +927,35 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
   let showSMA = true, showEMA = true, showBB = false, showVWAP = true, showVol = true, oscMode = 'RSI'; // 'RSI' | 'MACD' | 'NONE'
   let showStruct = true, showTrend = true, showFvg = true, showFib = false, showVpvr = true;
   let showIchimoku = false, showSupertrend = false, showPdhl = false;
+  let isLogScale = false;
+  let drawTool = 'NONE'; // 'NONE' | 'MEASURE' | 'HLINE'
+  let measurePts = null; // { a: { idx, time, price }, b: { idx, time, price }, locked: boolean }
+  let userPriceLineRefs = [];
   let unsubs = [];
+
+  const HLINE_KEY = 'bbg_gp_hlines_v1';
+  function getUserHLines() {
+    const all = LS.get(HLINE_KEY, {});
+    const arr = all && Array.isArray(all[ctx.symbol]) ? all[ctx.symbol] : [];
+    return arr.filter(x => Number.isFinite(Number(x)) && Number(x) > 0).map(Number);
+  }
+  function saveUserHLines(list) {
+    const all = LS.get(HLINE_KEY, {}) || {};
+    all[ctx.symbol] = list.slice(-12);
+    LS.set(HLINE_KEY, all);
+  }
+  function syncUserHLineSeries() {
+    if (!mainSeries || typeof mainSeries.createPriceLine !== 'function') return;
+    userPriceLineRefs.forEach(ref => { try { mainSeries.removePriceLine(ref); } catch {} });
+    userPriceLineRefs = [];
+    for (const px of getUserHLines()) {
+      try {
+        userPriceLineRefs.push(mainSeries.createPriceLine({
+          price: px, color: '#ffb000', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: ''
+        }));
+      } catch {}
+    }
+  }
   let secTimer = null;
   let lastTickTs = Date.now();
   let tickCount = 0;
@@ -896,6 +999,65 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
     for (const [t, lbl] of [['candle', 'CANDLE'], ['heikin', 'HEIKIN'], ['bar', 'BAR'], ['line', 'LINE'], ['area', 'AREA']]) {
       tb.append(h('button', { class: t === style ? 'on' : '', text: lbl, onclick: () => { style = t; buildToolbar(); renderChart(lastCandles); } }));
     }
+    const savedLines = getUserHLines();
+    tb.append(
+      h('button', {
+        class: isLogScale ? 'on' : '',
+        text: isLogScale ? 'LOG' : 'LIN',
+        title: 'Toggle Logarithmic / Linear Price Scale',
+        onclick: () => {
+          isLogScale = !isLogScale;
+          const LWC = window.LightweightCharts;
+          if (chart && LWC && LWC.PriceScaleMode) {
+            try {
+              chart.priceScale('right').applyOptions({
+                mode: isLogScale ? LWC.PriceScaleMode.Logarithmic : LWC.PriceScaleMode.Normal
+              });
+            } catch {}
+          }
+          buildToolbar();
+          tmOverlay?.scheduleDraw();
+        }
+      }),
+      h('button', {
+        class: drawTool === 'MEASURE' ? 'on' : '',
+        text: drawTool === 'MEASURE' ? 'MEASURE [ON]' : 'MEASURE',
+        title: '2-Point Price Delta & % Ruler (Click Point A then Point B on Chart)',
+        onclick: () => {
+          if (drawTool === 'MEASURE') {
+            drawTool = 'NONE';
+            measurePts = null;
+          } else {
+            drawTool = 'MEASURE';
+            measurePts = null;
+          }
+          wrap.style.cursor = drawTool === 'NONE' ? '' : 'crosshair';
+          buildToolbar();
+          tmOverlay?.scheduleDraw();
+        }
+      }),
+      h('button', {
+        class: drawTool === 'HLINE' ? 'on' : '',
+        text: drawTool === 'HLINE' ? '+HLINE [CLICK]' : '+HLINE',
+        title: 'Drop Persistent Horizontal Support/Resistance Line at Clicked Price',
+        onclick: () => {
+          drawTool = drawTool === 'HLINE' ? 'NONE' : 'HLINE';
+          wrap.style.cursor = drawTool === 'NONE' ? '' : 'crosshair';
+          buildToolbar();
+        }
+      }),
+      ...(savedLines.length ? [h('button', {
+        style: 'color:#ff5a52;border-color:#ff3b3066',
+        text: `CLR S/R (${savedLines.length})`,
+        title: 'Clear Saved Horizontal S/R Lines for This Security',
+        onclick: () => {
+          saveUserHLines([]);
+          syncUserHLineSeries();
+          buildToolbar();
+          tmOverlay?.scheduleDraw();
+        }
+      })] : [])
+    );
     tb.append(h('span', { class: 'lbl', text: 'OVERLAYS:' }));
     const stBtn = (lbl, on, toggle, repaintOnly = false) => h('button', {
       class: on ? 'on' : '',
@@ -1085,7 +1247,7 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
           g.fillText(`STUDIES: ${studies || 'PRICE ACTION'}`, 10, fy + 17);
           const posInfo = activeTradePlan && activeTradePlan.entry > 0
             ? `ACTIVE ${activeTradePlan.dir} ${activeTradePlan.lev}x @ ${fmtPx(activeTradePlan.entry)} (ROE ${activeTradePlan.pnlPct >= 0 ? '+' : ''}${Number(activeTradePlan.pnlPct).toFixed(2)}%)`
-            : 'BLOOMBERG TERMINAL // QUANTITATIVE CHARTING DESK';
+            : 'Bloomberg Terminal  •  GP Price Graph';
           g.fillStyle = '#ffb000';
           g.fillText(posInfo, Math.max(10, W - g.measureText(posInfo).width - 12), fy + 17);
 
@@ -1243,6 +1405,7 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
       crosshair: { mode: LWC.CrosshairMode.Normal },
       rightPriceScale: {
         borderColor: '#333333',
+        mode: (isLogScale && LWC.PriceScaleMode) ? LWC.PriceScaleMode.Logarithmic : (LWC.PriceScaleMode ? LWC.PriceScaleMode.Normal : 0),
         scaleMargins: { top: 0.06, bottom: showVol ? 0.28 : 0.06 }
       },
       timeScale: { borderColor: '#333333', timeVisible: true, secondsVisible: iv === '1s' || iv === '1m' },
@@ -1379,7 +1542,7 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
       const remSec = ivSec <= 1 ? 1 : Math.max(0, ivSec - (nowS % ivSec));
       const remFmt = ivSec <= 1 ? '1S REALTIME' : `${String(Math.floor(remSec / 60)).padStart(2, '0')}:${String(remSec % 60).padStart(2, '0')}s`;
       const feedLbl = effectiveFeedNote ? `${iv.toUpperCase()} (${effectiveFeedNote})` : iv.toUpperCase();
-      leg.innerHTML = `<b style="color:#fff">${ctx.symbol}</b> [${feedLbl}]  O:<b style="color:#ffb000">${fmtPx(o)}</b>  H:<b style="color:#00d26a">${fmtPx(hi)}</b>  L:<b style="color:#ff3b30">${fmtPx(lo)}</b>  C:<b style="color:#ffb000">${fmtPx(cl)}</b> (<span class="${dirCls(chgPct)}">${fmtPct(chgPct)}</span>)  VOL:<b style="color:#00e5ff">${fmtVol(v)}</b>  <span style="color:#00d26a">⏱ ${remFmt}</span>`;
+      leg.innerHTML = `<b style="color:#fff">${ctx.symbol}</b> [${feedLbl}]  O:<b style="color:#ffb000">${fmtPx(o)}</b>  H:<b style="color:#00d26a">${fmtPx(hi)}</b>  L:<b style="color:#ff3b30">${fmtPx(lo)}</b>  C:<b style="color:#ffb000">${fmtPx(cl)}</b> (<span class="${dirCls(chgPct)}">${fmtPct(chgPct)}</span>)  VOL:<b style="color:#00e5ff">${fmtVol(v)}</b>  <span style="color:#00d26a">NEXT: ${remFmt}</span>`;
 
       const biasCol = tmSummary.bias === 'BULLISH' ? '#00d26a' : tmSummary.bias === 'BEARISH' ? '#ff3b30' : '#ffb000';
       const stripItems = [];
@@ -1412,11 +1575,53 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
     updateLegend(latestBar, latestBar.vol);
 
     chart.subscribeCrosshairMove(param => {
+      if (drawTool === 'MEASURE' && measurePts && !measurePts.locked && param && param.point && mainSeries) {
+        const px = mainSeries.coordinateToPrice(param.point.y);
+        const lIdx = typeof chart.timeScale().coordinateToLogical === 'function' ? chart.timeScale().coordinateToLogical(param.point.x) : null;
+        if (px != null && Number.isFinite(px) && lIdx != null && Number.isFinite(lIdx)) {
+          const cIdx = Math.max(0, Math.min(mappedBars.length - 1, Math.round(lIdx)));
+          measurePts.b = { idx: lIdx, time: mappedBars[cIdx]?.time || 0, price: px };
+          tmOverlay?.scheduleDraw();
+        }
+      }
       if (!param || !param.time) return updateLegend(activeBar || latestBar, (activeBar || latestBar).vol);
       const b = param.seriesData.get(mainSeries);
       const vBar = volSeries ? param.seriesData.get(volSeries) : null;
       if (b) updateLegend(b, vBar ? vBar.value : volByTime.get(param.time));
     });
+
+    if (typeof chart.subscribeClick === 'function') {
+      chart.subscribeClick(param => {
+        if (!param || !param.point || !mainSeries) return;
+        const px = mainSeries.coordinateToPrice(param.point.y);
+        if (px == null || !Number.isFinite(px) || px <= 0) return;
+        if (drawTool === 'HLINE') {
+          const next = [...getUserHLines(), +px.toPrecision(7)];
+          saveUserHLines(next);
+          drawTool = 'NONE';
+          wrap.style.cursor = '';
+          syncUserHLineSeries();
+          buildToolbar();
+          tmOverlay?.scheduleDraw();
+        } else if (drawTool === 'MEASURE') {
+          const lIdx = typeof chart.timeScale().coordinateToLogical === 'function'
+            ? chart.timeScale().coordinateToLogical(param.point.x)
+            : mappedBars.length - 1;
+          const idxVal = Number.isFinite(lIdx) ? lIdx : mappedBars.length - 1;
+          const cIdx = Math.max(0, Math.min(mappedBars.length - 1, Math.round(idxVal)));
+          const pt = { idx: idxVal, time: mappedBars[cIdx]?.time || 0, price: px };
+          if (!measurePts || measurePts.locked) {
+            measurePts = { a: pt, b: pt, locked: false };
+          } else {
+            measurePts.b = pt;
+            measurePts.locked = true;
+          }
+          tmOverlay?.scheduleDraw();
+        }
+      });
+    }
+
+    syncUserHLineSeries();
     if (activeTradePlan && activeTradePlan.entry > 0 && typeof mainSeries.createPriceLine === 'function') {
       mainSeries.createPriceLine({ price: activeTradePlan.entry, color: '#ffb000', lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: '' });
       if (activeTradePlan.sl > 0) mainSeries.createPriceLine({ price: activeTradePlan.sl, color: '#ff3b30', lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: '' });
@@ -1431,7 +1636,9 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
       getSeries: () => mainSeries,
       getMapped: () => mappedBars,
       getLayers: () => ({ struct: showStruct, trend: showTrend, fvg: showFvg, fib: showFib, vpvr: showVpvr, ichimoku: showIchimoku, supertrend: showSupertrend, pdhl: showPdhl }),
-      getTradePlan: () => activeTradePlan
+      getTradePlan: () => activeTradePlan,
+      getMeasure: () => measurePts,
+      getUserHLines
     });
     renderOscillator(candles);
   }

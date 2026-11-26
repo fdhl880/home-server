@@ -440,7 +440,7 @@ export function mountOVME(body, ctx, { mode = 'OVME' } = {}) {
           h('td', { text: g ? g.callDelta.toFixed(2) : '-' }),
           h('td', { class: 'mu', text: g ? g.callTheta.toFixed(3) : '-' }),
           h('td', { class: 'lb', text: skewIv.toFixed(1) + '%' }),
-          h('td', { class: 'am sym', style: 'text-align:center;background:#111', text: fmtPx(st) + (atm ? ' ★ATM' : '') }),
+          h('td', { class: 'am sym', style: 'text-align:center;background:#111', text: fmtPx(st) + (atm ? ' [ATM]' : '') }),
           h('td', { class: 'mu', text: (mny >= 0 ? '+' : '') + mny.toFixed(1) + '%' }),
           h('td', { class: 'dn sym', text: g ? fmtPx(g.putPx) : '-' }),
           h('td', { text: g ? g.putDelta.toFixed(2) : '-' }),
@@ -1913,7 +1913,7 @@ export function mountBTCA(body, ctx) {
       getJson('/api/crypto-futures/ai-gateway')
     ]);
     sc.textContent = '';
-    ctx.status({ source: 'pyrofuel-tca-sql', ts: Date.now(), mode: (tcaR.ok || qhR.ok) ? 'LIVE' : 'N/A' });
+    ctx.status({ source: 'execution-tca-sql', ts: Date.now(), mode: (tcaR.ok || qhR.ok) ? 'LIVE' : 'N/A' });
 
     const tca = (tcaR.data && tcaR.data.tca) || {};
     const qh = qhR.data || {};

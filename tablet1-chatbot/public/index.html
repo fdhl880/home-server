@@ -13,7 +13,7 @@
 <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
 <title>Bloomberg Terminal</title>
-<link rel="stylesheet" href="/terminal/css/terminal.css?v=20261126b">
+<link rel="stylesheet" href="/terminal/css/terminal.css?v=20261126c">
 <script>
 window.__bbgDeferredInstall = null;
 window.__bbgSwPromise = null;
@@ -41,9 +41,9 @@ if ('serviceWorker' in navigator) {
     </div>
     <div id="fkeys"></div>
     <div id="appactions" style="display:flex;gap:3px;flex:none;align-items:center">
-      <button id="btnWidget" title="Open Bloomberg Live Widget Studio & Floating Mini-Terminal (WDGT <GO>)" style="border-color:#4da3ff;color:#4da3ff;font-weight:700;font-size:10.5px">WIDGET</button>
-      <button id="btnPush" title="Configure & Test Multi-Channel Push Notifications (Browser, Termux Android, Mobile ntfy)" style="border-color:#ffb000;color:#ffb000;font-weight:700;font-size:10.5px">PUSH ALERTS</button>
-      <button id="btnInstallApp" title="Install Bloomberg Terminal as Native Standalone Application" style="background:#ff6600;color:#000;border-color:#ff6600;font-weight:700;font-size:10.5px">INSTALL APP</button>
+      <button id="btnWidget" title="Open Bloomberg Live Widget Studio & Floating Mini-Terminal (WDGT <GO>)">WIDGET</button>
+      <button id="btnPush" title="Configure & Test Multi-Channel Push Notifications (Browser, Termux Android, Mobile ntfy)">ALERTS</button>
+      <button id="btnInstallApp" title="Install Bloomberg Terminal as Native Standalone Application">INSTALL</button>
     </div>
     <div id="winmodes" style="display:flex;gap:2px;flex:none">
       <button data-mode="4" class="on" title="4-Window Quad Bloomberg Terminal">4-WIN</button>
@@ -51,6 +51,7 @@ if ('serviceWorker' in navigator) {
       <button data-mode="1" title="1-Window Full Screen">1-WIN</button>
     </div>
   </header>
+  <div id="mktstrip" aria-label="Global Live Market Ticker Strip"></div>
   <nav id="mobnav" aria-label="Mobile Panel Switcher"></nav>
   <main id="grid" class="mode-4">
     <div class="slot" data-i="0"></div><div class="slot" data-i="1"></div>
@@ -82,6 +83,6 @@ if ('serviceWorker' in navigator) {
   </div>
 </div>
 <script src="/terminal/vendor/lightweight-charts.standalone.production.js"></script>
-<script type="module" src="/terminal/js/main.js?v=20261126b"></script></script>
+<script type="module" src="/terminal/js/main.js?v=20261126c"></script></script>
 </body>
 </html>

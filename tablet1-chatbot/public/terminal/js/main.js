@@ -1,14 +1,14 @@
-import { $, h, fmtTime, LS } from './util.js';
+import { $, h, fmtPx, fmtPct, fmtTime, dirCls, LS } from './util.js';
 import { get, net, startHub, apiFetch, setDashToken, setAuthRequiredHandler } from './api.js';
 import { dev } from './dev-adapter.js';
 
-import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261126b';
-import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261126b';
-import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261126b';
-import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261126b';
-import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261126b';
-import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261126b';
-import { mountFACT, mountTRAN, mountSTUDIO, mountBI, mountETF, mountFIN, mountWDGT, mountROE, mountTECH, mountBRDT } from './panels/intelligence.js?v=20261126b';
+import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261126c';
+import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261126c';
+import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261126c';
+import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261126c';
+import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261126c';
+import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261126c';
+import { mountFACT, mountTRAN, mountSTUDIO, mountBI, mountETF, mountFIN, mountWDGT, mountROE, mountTECH, mountBRDT } from './panels/intelligence.js?v=20261126c';
 
 import { panels as newsPanels } from '../panels/news/index.js';
 import { panels as macroPanels } from '../panels/macro/index.js';
@@ -241,7 +241,7 @@ const WORKSPACES = {
     { symbol: 'BTCUSDT', fn: 'CORR' },
     { symbol: 'BTCUSDT', fn: 'HVT' }
   ],
-  'PYROFUEL AI BOT': [
+  'AUTONOMOUS FUTURES DESK': [
     { symbol: 'ETHUSDT.P', fn: 'BOT' },
     { symbol: 'ETHUSDT', fn: 'GIP' },
     { symbol: 'ETHUSDT', fn: 'TRADES' },
@@ -626,29 +626,30 @@ $('#go').addEventListener('click', () => {
   executeCommand(val);
 });
 
-// Yellow Market Sector & Function F-Keys Bar
+// Authentic Bloomberg Yellow Market Sector Keys + Function F-Keys Bar
 const FKEYS = [
-  ['F1', 'HELP', 'HELP'],
-  ['F2', 'GOVT', '^TNX YCRV'],
-  ['F3', 'RECESSION', '^TNX ECFC'],
-  ['F4', 'BMAP', 'CL=F BMAP'],
-  ['F5', 'NEWS', 'TOP'],
-  ['F6', 'B-MAIL', 'MSG'],
-  ['F7', 'GMAIL ALRT', 'GMAIL'],
-  ['F8', 'EQUITY', 'AAPL DES'],
-  ['F9', 'SPLC', 'NVDA SPLC'],
-  ['F10', 'EXECUTION', 'BTCUSDT.P BOT'],
-  ['F11', 'X-RAY', 'BTCUSDT FACT'],
-  ['F12', 'TRANSCRIPTS', 'BTCUSDT TRAN'],
-  ['STUDIO', 'CHARTS', 'BTCUSDT G'],
-  ['BI', 'RESEARCH', 'BTCUSDT BI'],
-  ['ETF', 'FLOWS', 'BTCUSDT ETF'],
-  ['FIN', 'CAPITAL', 'BTCUSDT FIN'],
-  ['WDGT', 'WIDGET', 'BTCUSDT WDGT']
+  ['F2', 'GOVT', '^TNX YCRV', true],
+  ['F3', 'CORP', '^TNX CRPR', true],
+  ['F4', 'CMDTY', 'CL=F BMAP', true],
+  ['F8', 'EQUITY', 'AAPL DES', true],
+  ['F10', 'CURNCY', 'USDIDR=X FXC', true],
+  ['F11', 'CRYP', 'BTCUSDT CRYP', true],
+  ['F1', 'HELP', 'HELP', false],
+  ['TOP', 'NEWS', 'TOP', false],
+  ['BOT', 'EXEC', 'BTCUSDT.P BOT', false],
+  ['ROE', 'PNL', 'BTCUSDT ROE', false],
+  ['TECH', 'MTF', 'BTCUSDT TECH', false],
+  ['BRDT', 'BREADTH', 'BTCUSDT BRDT', false],
+  ['FACT', 'X-RAY', 'BTCUSDT FACT', false],
+  ['G', 'STUDIO', 'BTCUSDT G', false],
+  ['BI', 'RESEARCH', 'BTCUSDT BI', false],
+  ['FIN', 'CAPITAL', 'BTCUSDT FIN', false],
+  ['MSG', 'B-MAIL', 'MSG', false]
 ];
 const fkBar = $('#fkeys');
-for (const [fk, lbl, cmd] of FKEYS) {
+for (const [fk, lbl, cmd, isYellow] of FKEYS) {
   fkBar.append(h('button', {
+    class: isYellow ? 'ykey' : 'fkey',
     title: `${fk}: ${cmd}`,
     onclick: () => executeCommand(cmd)
   }, h('b', { text: fk + ' ' }), lbl));
@@ -776,6 +777,87 @@ function updateClocks(force = false) {
 }
 updateClocks(true);
 setInterval(() => updateClocks(false), 1000);
+
+// Global Live Market Ticker Strip (#mktstrip) — Persistent Launchpad Benchmark Tape
+(function initGlobalMarketStrip() {
+  const strip = $('#mktstrip');
+  if (!strip) return;
+  const BENCHMARKS = [
+    { sym: 'BTCUSDT', lbl: 'BTC', ws: true },
+    { sym: 'ETHUSDT', lbl: 'ETH', ws: true },
+    { sym: 'SOLUSDT', lbl: 'SOL', ws: true },
+    { sym: '^GSPC', lbl: 'SPX', ws: false },
+    { sym: '^IXIC', lbl: 'NDX', ws: false },
+    { sym: 'GC=F', lbl: 'GOLD', ws: false },
+    { sym: 'CL=F', lbl: 'WTI', ws: false },
+    { sym: '^TNX', lbl: 'US10Y', ws: false },
+    { sym: 'USDIDR=X', lbl: 'USD/IDR', ws: false }
+  ];
+
+  const cells = new Map();
+  strip.textContent = '';
+  for (const b of BENCHMARKS) {
+    const pxEl = h('span', { class: 'ms-px', text: '—' });
+    const chgEl = h('span', { class: 'ms-chg mu', text: '' });
+    const item = h('div', {
+      class: 'ms-item',
+      title: `Open ${b.sym} GP <GO>`,
+      onclick: () => executeCommand(`${b.sym} GP`)
+    },
+      h('span', { class: 'ms-sym', text: b.lbl }),
+      pxEl,
+      chgEl
+    );
+    strip.append(item);
+    cells.set(b.sym, { item, pxEl, chgEl, lastPx: 0 });
+  }
+
+  const paintCell = (sym, price, chgPct) => {
+    const c = cells.get(sym);
+    const p = Number(price);
+    if (!c || !Number.isFinite(p) || p <= 0) return;
+    if (c.lastPx > 0 && p !== c.lastPx) {
+      const fl = p > c.lastPx ? 'fl-up' : 'fl-dn';
+      c.item.classList.remove('fl-up', 'fl-dn');
+      c.item.classList.add(fl);
+      setTimeout(() => c.item.classList.remove(fl), 360);
+    }
+    c.lastPx = p;
+    c.pxEl.textContent = sym === 'USDIDR=X' ? Math.round(p).toLocaleString('id-ID') : fmtPx(p);
+    if (Number.isFinite(Number(chgPct))) {
+      const pct = Number(chgPct);
+      c.chgEl.className = 'ms-chg ' + dirCls(pct);
+      c.chgEl.textContent = fmtPct(pct);
+    }
+  };
+
+  let stripBusy = false;
+  const pollStrip = async (force = false) => {
+    if (!force && typeof document !== 'undefined' && document.hidden) return;
+    if (stripBusy) return;
+    stripBusy = true;
+    try {
+      const env = await get('quote', { symbols: BENCHMARKS.map(b => b.sym).join(',') }, 8000);
+      if (env && env.ok && Array.isArray(env.data)) {
+        for (const q of env.data) {
+          if (q && q.symbol && q.price) paintCell(q.symbol, q.price, q.chgPct);
+        }
+      }
+    } finally {
+      stripBusy = false;
+    }
+  };
+
+  for (const b of BENCHMARKS) {
+    if (b.ws) {
+      hub.sub(`ticker:${b.sym}`, tk => {
+        if (tk && tk.price) paintCell(b.sym, tk.price, tk.chgPct);
+      });
+    }
+  }
+  pollStrip(true);
+  setInterval(() => pollStrip(false), 30000);
+})();
 
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
@@ -1090,17 +1172,8 @@ if (btnInstall) {
 const btnPush = $('#btnPush');
 function syncPushBtn(enabled) {
   if (!btnPush) return;
-  if (enabled) {
-    btnPush.textContent = 'PUSH: ON';
-    btnPush.style.borderColor = '#00d26a';
-    btnPush.style.color = '#00d26a';
-    btnPush.style.background = '#041a0d';
-  } else {
-    btnPush.textContent = 'PUSH ALERTS';
-    btnPush.style.borderColor = '#ffb000';
-    btnPush.style.color = '#ffb000';
-    btnPush.style.background = '';
-  }
+  btnPush.classList.toggle('bbg-push-on', Boolean(enabled));
+  btnPush.textContent = enabled ? 'ALERTS: ON' : 'ALERTS';
 }
 if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
   syncPushBtn(true);

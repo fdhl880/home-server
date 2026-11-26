@@ -110,7 +110,7 @@ export function mountTRADES(body, ctx) {
       const whale = usd >= 25000 ? 'background:rgba(255,176,0,0.14);font-weight:bold' : '';
       tbody.append(h('tr', { class: 'row', style: whale },
         h('td', { class: 'l mu', text: fmtTime(t.ts) }),
-        h('td', { class: cl + ' sym', text: t.side + (usd >= 25000 ? ' ★' : '') }),
+        h('td', { class: cl + ' sym', text: t.side + (usd >= 25000 ? ' [BLOCK]' : '') }),
         h('td', { class: cl, text: fmtPx(t.price) }),
         h('td', { text: fmtNum(t.qty, 4) }),
         h('td', { class: 'am', text: '$' + fmtVol(usd) })
@@ -243,7 +243,7 @@ export function mountVAP(body, ctx) {
         h('div', { class: 'k', text: 'VALUE AREA LOW (VAL 70%)' }), h('div', { class: 'v dn sym', text: `${fmtPx(valBin.lo)} (Lower Institutional Support Boundary)` }),
         h('div', { class: 'k', text: 'SPOT VS VALUE AREA REGIME' }), h('div', { class: 'v lb sym', text: `${fmtPx(curPx)} • ${curPx > vahBin.hi ? 'ABOVE VAH (BULLISH BREAKOUT)' : curPx < valBin.lo ? 'BELOW VAL (BEARISH IMBALANCE)' : 'INSIDE 70% VALUE AREA (ROTATIONAL BALANCE)'}` })
       ),
-      h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'HORIZONTAL VOLUME-AT-PRICE HISTOGRAM (GREEN = BUY DELTA / RED = SELL DELTA / ★ = POC)' })),
+      h('div', { class: 'tb', style: 'background:#070707' }, h('span', { class: 'lbl', text: 'HORIZONTAL VOLUME-AT-PRICE HISTOGRAM (GREEN = BUY DELTA / RED = SELL DELTA / POC = POINT OF CONTROL)' })),
       h('table', { class: 't' },
         h('thead', null, h('tr', null, ['Price Zone', 'Zone Role', 'Buy Vol', 'Sell Vol', 'Net Delta', '% Total', 'Volume Profile Histogram (Buy vs Sell)'].map(x => h('th', { text: x })))),
         h('tbody', null, [...bins].reverse().map(b => {
@@ -252,7 +252,7 @@ export function mountVAP(body, ctx) {
           const buyW = (b.buyVol / maxBinVol) * 100;
           const sellW = (b.sellVol / maxBinVol) * 100;
           const delta = b.buyVol - b.sellVol;
-          const role = isPoc ? '★ POC NODE' : b.idx === vahBin.idx ? '▲ VAH (70%)' : b.idx === valBin.idx ? '▼ VAL (70%)' : inVa ? 'VALUE AREA' : 'LOW VOL NODE';
+          const role = isPoc ? 'POC NODE' : b.idx === vahBin.idx ? 'VAH (70%)' : b.idx === valBin.idx ? 'VAL (70%)' : inVa ? 'VALUE AREA' : 'LOW VOL NODE';
           return h('tr', { class: 'row', style: isPoc ? 'background:rgba(255,176,0,0.16)' : inVa ? 'background:rgba(0,229,255,0.04)' : '' },
             h('td', { class: 'l sym ' + (isPoc ? 'am' : 'lb'), text: `${fmtPx(b.lo)} – ${fmtPx(b.hi)}` }),
             h('td', { class: isPoc ? 'am sym' : inVa ? 'lb sym' : 'mu', text: role }),
@@ -347,7 +347,7 @@ export function mountLIQ(body, ctx) {
           const dist = (t.mult - 1) * 100;
           if (t.side === 'CURRENT EQUILIBRIUM') {
             return h('tr', { style: 'background:#1d1500;font-weight:bold' },
-              h('td', { class: 'l sym am', text: '★ LIVE MARK' }),
+              h('td', { class: 'l sym am', text: 'LIVE MARK' }),
               h('td', { class: 'am sym', text: 'EXCHANGE MARK PRICE' }),
               h('td', { class: 'am sym', text: fmtPx(spot) }),
               h('td', { class: 'am', text: '0.00%' }),
@@ -444,7 +444,7 @@ export function mountOMST(body, ctx) {
       h('table', { class: 't' },
         h('thead', null, h('tr', null, ['Strike Price', 'Moneyness %', 'Unit B-S Gamma (Γ)', '$Gamma / 1% Move (100ct)', 'Convexity Concentration'].map(x => h('th', { text: x })))),
         h('tbody', null, gexStrikes.map(r => h('tr', { class: 'row', style: r.st === center ? 'background:#1c1500' : '' },
-          h('td', { class: 'l sym am', text: fmtPx(r.st) + (r.st === center ? ' ★ATM' : '') }),
+          h('td', { class: 'l sym am', text: fmtPx(r.st) + (r.st === center ? ' [ATM]' : '') }),
           h('td', { class: dirCls(r.moneyness), text: (r.moneyness >= 0 ? '+' : '') + r.moneyness.toFixed(2) + '%' }),
           h('td', { class: 'lb sym', text: r.gamma.toFixed(6) }),
           h('td', { class: 'up sym', text: '$' + fmtNum(r.unitDollarGamma1Pct * 100, 2) }),
