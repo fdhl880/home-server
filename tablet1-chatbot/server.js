@@ -556,6 +556,7 @@ function loadPortfolio() {
                 if (!Array.isArray(data.holdings)) data.holdings = [];
                 if (!Array.isArray(data.workingOrders)) data.workingOrders = [];
                 if (!Array.isArray(data.trades)) data.trades = [];
+                if (!Array.isArray(data.capitalFlows)) data.capitalFlows = [];
                 if (data.realizedPnL === undefined) data.realizedPnL = 0;
                 return data;
             }
@@ -569,7 +570,8 @@ function loadPortfolio() {
         realizedPnL: 0,
         holdings: [],
         workingOrders: [],
-        trades: []
+        trades: [],
+        capitalFlows: []
     };
     try { savePortfolio(defaultData); } catch (e) {}
     return defaultData;
@@ -1322,6 +1324,10 @@ function computePortfolioSnapshot() {
     const totalUnrealizedPnLPct = totalInvested > 0 ? (totalUnrealizedPnL / totalInvested) * 100 : 0;
     const overallReturn = port.initialCapital > 0 ? ((totalNetWorth - port.initialCapital) / port.initialCapital) * 100 : 0;
 
+    const flows = Array.isArray(port.capitalFlows) ? port.capitalFlows : [];
+    const totalDepositedIdr = flows.filter(f => f && f.type === 'DEPOSIT').reduce((s, f) => s + (Number(f.amountIdr) || 0), 0);
+    const totalWithdrawnIdr = flows.filter(f => f && f.type === 'WITHDRAW').reduce((s, f) => s + (Number(f.amountIdr) || 0), 0);
+
     return {
         initialCapital: port.initialCapital,
         cash: port.cash,
@@ -1336,6 +1342,10 @@ function computePortfolioSnapshot() {
         holdings: enrichedHoldings,
         workingOrders: port.workingOrders || [],
         trades: port.trades.slice(-50).reverse(),
+        capitalFlows: flows.slice(-50).reverse(),
+        totalDepositedIdr,
+        totalWithdrawnIdr,
+        netDepositsIdr: totalDepositedIdr - totalWithdrawnIdr,
         allTradesCount: port.trades.length
     };
 }
@@ -1356,7 +1366,11 @@ app.get('/api/portfolio', (req, res) => {
             usdRate: snap.usdRate,
             holdings: snap.holdings,
             workingOrders: snap.workingOrders,
-            trades: snap.trades
+            trades: snap.trades,
+            capitalFlows: snap.capitalFlows,
+            totalDepositedIdr: snap.totalDepositedIdr,
+            totalWithdrawnIdr: snap.totalWithdrawnIdr,
+            netDepositsIdr: snap.netDepositsIdr
         });
     } catch (e) {
         console.error('Portfolio GET error:', e.message);
@@ -2034,15 +2048,104 @@ const handlePortfolioReset = (req, res) => {
             cash: INITIAL_CAPITAL,
             realizedPnL: 0,
             holdings: [],
-            trades: []
+            workingOrders: [],
+            trades: [],
+            capitalFlows: []
         };
         savePortfolio(fresh);
-        res.json({ success: true, message: 'Portofolio berhasil di-reset ke modal awal tunai Rp 200.000.000.' });
+        res.json({ success: true, message: 'Portfolio reset to initial liquid capital Rp 200.000.000.' });
     } catch (e) {
         res.status(500).json({ error: 'Failed to save portfolio reset' });
     }
 };
 app.post('/api/portfolio/reset', handlePortfolioReset);
+
+// 3a. POST /api/portfolio/cash-flow -> Bloomberg Treasury Wire Funding (Paper DEPOSIT / WITHDRAW)
+app.post('/api/portfolio/cash-flow', (req, res) => {
+    try {
+        const b = req.body || {};
+        const type = String(b.type || 'DEPOSIT').trim().toUpperCase();
+        if (type !== 'DEPOSIT' && type !== 'WITHDRAW') {
+            return res.status(400).json({ ok: false, error: 'type must be DEPOSIT or WITHDRAW' });
+        }
+        const currency = String(b.currency || 'IDR').trim().toUpperCase();
+        if (currency !== 'IDR' && currency !== 'USD') {
+            return res.status(400).json({ ok: false, error: 'currency must be IDR or USD' });
+        }
+        const rawAmt = Number(b.amount);
+        if (!Number.isFinite(rawAmt) || rawAmt <= 0) {
+            return res.status(400).json({ ok: false, error: 'amount must be a positive number' });
+        }
+
+        const usdRate = getUsdIdr();
+        const amountIdr = currency === 'USD' ? Math.round(rawAmt * usdRate) : Math.round(rawAmt);
+        if (amountIdr < 1000 || amountIdr > 100000000000) {
+            return res.status(400).json({ ok: false, error: 'Wire amount must be between Rp 1.000 and Rp 100.000.000.000' });
+        }
+
+        const port = loadPortfolio();
+        if (type === 'WITHDRAW' && port.cash < amountIdr) {
+            return res.status(400).json({
+                ok: false,
+                error: `Insufficient cash balance. Requested Rp ${amountIdr.toLocaleString('id-ID')}, available Rp ${Math.round(port.cash).toLocaleString('id-ID')}.`
+            });
+        }
+
+        const counterparty = String(b.counterparty || (currency === 'USD' ? 'JPMORGAN CHASE PRIME CUSTODY (FEDWIRE)' : 'BCA INSTITUTIONAL WIRE (RTGS)')).trim().slice(0, 80);
+        const note = String(b.note || (type === 'DEPOSIT' ? 'Capital Allocation Wire' : 'Treasury Cash Distribution')).trim().slice(0, 140);
+
+        if (type === 'DEPOSIT') {
+            port.cash += amountIdr;
+            port.initialCapital = (Number(port.initialCapital) || INITIAL_CAPITAL) + amountIdr;
+        } else {
+            port.cash -= amountIdr;
+            port.initialCapital = Math.max(0, (Number(port.initialCapital) || INITIAL_CAPITAL) - amountIdr);
+        }
+
+        const flow = {
+            id: 'WIRE-' + Date.now().toString(36).toUpperCase(),
+            reference: 'SWFT-' + crypto.randomBytes(3).toString('hex').toUpperCase(),
+            timestamp: new Date().toISOString(),
+            type,
+            currency,
+            amountOriginal: currency === 'USD' ? +rawAmt.toFixed(2) : Math.round(rawAmt),
+            fxRate: Math.round(usdRate),
+            amountIdr,
+            counterparty,
+            note,
+            cashAfterIdr: Math.round(port.cash),
+            netContributedAfterIdr: Math.round(port.initialCapital),
+            status: 'SETTLED (T+0)'
+        };
+        if (!Array.isArray(port.capitalFlows)) port.capitalFlows = [];
+        port.capitalFlows.push(flow);
+        if (port.capitalFlows.length > 200) port.capitalFlows = port.capitalFlows.slice(-200);
+        savePortfolio(port);
+
+        // Log institutional treasury confirmation in B-Mail / alert log when enabled
+        try {
+            const store = loadBmail();
+            if (store && store.alertConfig && store.alertConfig.enableEmsxOrders !== false && typeof dispatchExternalEmailAlert === 'function') {
+                const amtLabel = currency === 'USD'
+                    ? `$${rawAmt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD (Rp ${amountIdr.toLocaleString('id-ID')})`
+                    : `Rp ${amountIdr.toLocaleString('id-ID')}`;
+                dispatchExternalEmailAlert({
+                    eventType: type === 'DEPOSIT' ? 'TREASURY_DEPOSIT' : 'TREASURY_WITHDRAW',
+                    symbol: 'PORT',
+                    attachmentFn: 'BTCUSDT PORT',
+                    subject: `Bloomberg Treasury Wire Settled — ${type} ${amtLabel}`,
+                    body: `BLOOMBERG TERMINAL — PRIME BROKERAGE WIRE CONFIRMATION\n\nWire ID         : ${flow.id}\nSWIFT Reference : ${flow.reference}\nDirection       : ${type}\nCounterparty    : ${counterparty}\nAmount          : ${amtLabel}\nReference FX    : USD/IDR Rp ${Math.round(usdRate).toLocaleString('id-ID')}\nSettlement      : ${flow.status}\nCash After Wire : Rp ${Math.round(port.cash).toLocaleString('id-ID')}\nNet Capital Base: Rp ${Math.round(port.initialCapital).toLocaleString('id-ID')}\nMemo            : ${note}`
+                }).catch(() => {});
+            }
+        } catch {}
+
+        const snap = computePortfolioSnapshot();
+        res.json({ ok: true, success: true, flow, portfolio: snap });
+    } catch (e) {
+        console.error('Portfolio cash-flow error:', e.message);
+        res.status(500).json({ ok: false, error: 'Failed processing treasury wire' });
+    }
+});
 
 // 3b. POST /api/dma-buy & /api/test-buy -> Quick DMA buy for any tracked asset (POST-only)
 const handleDmaBuy = (req, res) => {
@@ -5511,6 +5614,7 @@ function buildMonthlyPortfolioStatement(periodOverride = '') {
         `Invested Assets    : ${fmtIdr(snap.totalHoldingsValue)} (${invWt.toFixed(2)}% of NAV)`,
         `Unrealized P&L     : ${fmtIdr(snap.unrealizedPnL)} (${fmtPctS(snap.unrealizedPnLPct)})`,
         `Realized P&L       : ${fmtIdr(snap.realizedPnL)}`,
+        `Treasury Flows     : Deposits ${fmtIdr(snap.totalDepositedIdr || 0)} | Withdrawals ${fmtIdr(snap.totalWithdrawnIdr || 0)} | Net ${fmtIdr(snap.netDepositsIdr || 0)}`,
         futuresWalletUsdt > 0 ? `Binance Futures    : ${fmtUsd(futuresWalletUsdt)} USDT (${fmtIdr(futuresWalletIdr)}) | Combined: ${fmtIdr(combinedWealthIdr)}` : null,
         ``,
         `2. HOLDINGS & WEIGHT ATTRIBUTION (${snap.holdings.length} POSITIONS)`,

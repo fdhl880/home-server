@@ -1,7 +1,7 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, fmtTime, dirCls, LS } from '../util.js';
 import { get, getRaw, tickOk, apiFetch } from '../api.js';
-import { attachTechnicalMasterCanvas } from './charts.js?v=20261126e';
-import { openRoeShareModal } from './intelligence.js?v=20261126e';
+import { attachTechnicalMasterCanvas } from './charts.js?v=20261126f';
+import { openRoeShareModal } from './intelligence.js?v=20261126f';
 
 let liveUsdIdrRate = 18218;
 
@@ -1564,6 +1564,173 @@ export function mountPORT(body, ctx) {
     }
   }
 
+  function openTreasuryWireModal(initialType = 'DEPOSIT', portSnap = {}) {
+    const existing = document.getElementById('bbgWireModal');
+    if (existing) existing.remove();
+
+    let wireType = initialType === 'WITHDRAW' ? 'WITHDRAW' : 'DEPOSIT';
+    let wireCcy = 'IDR';
+    const fx = Number(portSnap.usdRate) > 10000 ? Number(portSnap.usdRate) : liveUsdIdrRate;
+    const curCash = Number(portSnap.cash || 0);
+    const curCap = Number(portSnap.initialCapital || 200000000);
+
+    const amtInp = h('input', { type: 'number', step: 'any', value: '50000000', style: 'width:100%;font-size:14px;padding:5px 7px' });
+    const cpSel = h('select', { style: 'width:100%;padding:5px 6px' },
+      ...[
+        'BCA INSTITUTIONAL WIRE (RTGS)',
+        'BANK MANDIRI TREASURY (BI-FAST)',
+        'JPMORGAN CHASE PRIME CUSTODY (FEDWIRE)',
+        'GOLDMAN SACHS PRIME BROKERAGE (SWIFT)',
+        'CITIBANK SINGAPORE TREASURY'
+      ].map(x => h('option', { value: x, text: x }))
+    );
+    const noteInp = h('input', { value: wireType === 'DEPOSIT' ? 'Capital Allocation Wire' : 'Treasury Cash Distribution', style: 'width:100%;padding:4px 7px' });
+    const modeRow = h('div', { style: 'display:flex;gap:5px;margin-bottom:8px;flex-wrap:wrap' });
+    const presetRow = h('div', { style: 'display:flex;gap:4px;flex-wrap:wrap;margin-top:5px' });
+    const previewBox = h('div', { style: 'background:#07090d;border:1px solid #262c36;padding:8px;margin:8px 0;font-size:11px' });
+    const errEl = h('div', { style: 'font-size:11px;min-height:16px;color:#ff5a52;margin-bottom:6px' });
+    const execBtn = h('button', {
+      style: 'background:#00d26a;color:#000;border-color:#00d26a;font-weight:700;padding:6px 14px;cursor:pointer',
+      text: 'EXECUTE WIRE SETTLEMENT <GO>'
+    });
+
+    const refreshPreview = () => {
+      const raw = Number(amtInp.value) || 0;
+      const idrEq = wireCcy === 'USD' ? Math.round(raw * fx) : Math.round(raw);
+      const usdEq = fx > 0 ? idrEq / fx : 0;
+      const postCash = wireType === 'DEPOSIT' ? (curCash + idrEq) : (curCash - idrEq);
+      const postCap = wireType === 'DEPOSIT' ? (curCap + idrEq) : Math.max(0, curCap - idrEq);
+
+      modeRow.textContent = '';
+      modeRow.append(
+        h('button', {
+          class: wireType === 'DEPOSIT' ? 'on' : '',
+          style: wireType === 'DEPOSIT' ? 'background:#00d26a;color:#000;border-color:#00d26a;font-weight:700' : '',
+          text: 'DEPOSIT (INBOUND WIRE)',
+          onclick: () => { wireType = 'DEPOSIT'; noteInp.value = 'Capital Allocation Wire'; refreshPreview(); }
+        }),
+        h('button', {
+          class: wireType === 'WITHDRAW' ? 'on' : '',
+          style: wireType === 'WITHDRAW' ? 'background:#ff3b30;color:#fff;border-color:#ff3b30;font-weight:700' : '',
+          text: 'WITHDRAW (OUTBOUND WIRE)',
+          onclick: () => { wireType = 'WITHDRAW'; noteInp.value = 'Treasury Cash Distribution'; refreshPreview(); }
+        }),
+        h('span', { style: 'flex:1' }),
+        h('button', {
+          class: wireCcy === 'IDR' ? 'on' : '',
+          text: 'IDR',
+          onclick: () => { wireCcy = 'IDR'; amtInp.value = '50000000'; cpSel.value = 'BCA INSTITUTIONAL WIRE (RTGS)'; refreshPreview(); }
+        }),
+        h('button', {
+          class: wireCcy === 'USD' ? 'on' : '',
+          text: 'USD',
+          onclick: () => { wireCcy = 'USD'; amtInp.value = '5000'; cpSel.value = 'JPMORGAN CHASE PRIME CUSTODY (FEDWIRE)'; refreshPreview(); }
+        })
+      );
+
+      presetRow.textContent = '';
+      const presets = wireCcy === 'IDR'
+        ? [[10000000, '+Rp 10 JT'], [25000000, '+Rp 25 JT'], [50000000, '+Rp 50 JT'], [100000000, '+Rp 100 JT'], [200000000, '+Rp 200 JT'], [500000000, '+Rp 500 JT']]
+        : [[1000, '$1,000'], [5000, '$5,000'], [10000, '$10,000'], [25000, '$25,000'], [50000, '$50,000']];
+      presets.forEach(([v, lbl]) => {
+        presetRow.append(h('button', {
+          style: 'font-size:10px;padding:1px 6px',
+          text: lbl,
+          onclick: () => { amtInp.value = String(v); refreshPreview(); }
+        }));
+      });
+
+      execBtn.style.background = wireType === 'DEPOSIT' ? '#00d26a' : '#ff3b30';
+      execBtn.style.borderColor = wireType === 'DEPOSIT' ? '#00d26a' : '#ff3b30';
+      execBtn.style.color = wireType === 'DEPOSIT' ? '#000' : '#fff';
+      execBtn.textContent = wireType === 'DEPOSIT' ? 'SETTLE DEPOSIT WIRE <GO>' : 'SETTLE WITHDRAWAL WIRE <GO>';
+
+      previewBox.textContent = '';
+      previewBox.append(
+        h('div', { class: 'kv', style: 'padding:0;gap:2px 12px' },
+          h('div', { class: 'k', text: 'SETTLEMENT AMOUNT' }),
+          h('div', { class: 'v sym ' + (wireType === 'DEPOSIT' ? 'up' : 'dn'), text: `${wireType === 'DEPOSIT' ? '+' : '-'}${fmtIdr(idrEq)} ($${fmtNum(usdEq, 2)} USD @ Rp ${fmtNum(fx, 0)})` }),
+          h('div', { class: 'k', text: 'CASH BALANCE IMPACT' }),
+          h('div', { class: 'v', text: `${fmtIdr(curCash)}  ->  ${fmtIdr(postCash)}` }),
+          h('div', { class: 'k', text: 'NET CONTRIBUTED CAPITAL' }),
+          h('div', { class: 'v am', text: `${fmtIdr(curCap)}  ->  ${fmtIdr(postCap)} (Time-Weighted Basis)` }),
+          h('div', { class: 'k', text: 'SETTLEMENT CYCLE' }),
+          h('div', { class: 'v lb', text: 'INSTANT PAPER TREASURY CLEARANCE (T+0)' })
+        )
+      );
+      errEl.textContent = (wireType === 'WITHDRAW' && idrEq > curCash) ? `Insufficient liquid cash (available: ${fmtIdr(curCash)}).` : '';
+    };
+
+    amtInp.addEventListener('input', refreshPreview);
+
+    execBtn.onclick = async () => {
+      const raw = Number(amtInp.value);
+      if (!Number.isFinite(raw) || raw <= 0) { errEl.textContent = 'Enter a valid wire amount.'; return; }
+      execBtn.disabled = true;
+      errEl.style.color = '#ffb000';
+      errEl.textContent = 'Clearing treasury wire...';
+      try {
+        const r = await apiFetch('/api/portfolio/cash-flow', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: wireType,
+            amount: raw,
+            currency: wireCcy,
+            counterparty: cpSel.value,
+            note: noteInp.value.trim()
+          })
+        }, 12000);
+        const j = await r.json();
+        if (r.ok && j.ok) {
+          overlay.remove();
+          load();
+        } else {
+          errEl.style.color = '#ff5a52';
+          errEl.textContent = j.error || ('HTTP ' + r.status);
+          execBtn.disabled = false;
+        }
+      } catch (e) {
+        errEl.style.color = '#ff5a52';
+        errEl.textContent = e.message;
+        execBtn.disabled = false;
+      }
+    };
+
+    const overlay = h('div', {
+      id: 'bbgWireModal',
+      style: 'position:fixed;inset:0;z-index:99996;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;padding:12px',
+      onclick: ev => { if (ev.target === overlay) overlay.remove(); }
+    },
+      h('div', { style: 'width:540px;max-width:95vw;background:#000;border:1px solid #ffb000;padding:12px' },
+        h('div', { style: 'display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #2a2e35;padding-bottom:7px;margin-bottom:9px' },
+          h('span', { style: 'color:#ffb000;font-weight:700;font-size:12px', text: 'BLOOMBERG PORT — PRIME BROKERAGE TREASURY WIRE' }),
+          h('button', { style: 'color:#ff5a52;border-color:#ff3b3088', text: 'CLOSE', onclick: () => overlay.remove() })
+        ),
+        modeRow,
+        h('div', { style: 'margin-bottom:8px' },
+          h('div', { class: 'lb', style: 'font-size:10.5px;margin-bottom:3px', text: 'WIRE AMOUNT' }),
+          amtInp,
+          presetRow
+        ),
+        h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px' },
+          h('div', {}, h('div', { class: 'lb', style: 'font-size:10.5px;margin-bottom:3px', text: 'CLEARING COUNTERPARTY' }), cpSel),
+          h('div', {}, h('div', { class: 'lb', style: 'font-size:10.5px;margin-bottom:3px', text: 'WIRE MEMO / PURPOSE' }), noteInp)
+        ),
+        previewBox,
+        errEl,
+        h('div', { style: 'display:flex;justify-content:flex-end;gap:6px' },
+          h('button', { text: 'CANCEL', onclick: () => overlay.remove() }),
+          execBtn
+        )
+      )
+    );
+
+    document.body.appendChild(overlay);
+    refreshPreview();
+    setTimeout(() => { amtInp.focus(); amtInp.select(); }, 20);
+  }
+
   async function _loadPort() {
     const pRes = await getRaw('/api/portfolio');
     if (portUnmounted) return;
@@ -1571,6 +1738,7 @@ export function mountPORT(body, ctx) {
     tb.textContent = '';
     sc.textContent = '';
 
+    const portObj = (pRes.ok && pRes.data) || {};
     const iSym = h('input', { value: (ctx.symbol && ctx.symbol !== 'SPCX') ? ctx.symbol : 'BTCUSDT', placeholder: 'TICKER', style: 'width:84px;text-transform:uppercase' });
     const iQty = h('input', { value: '1', placeholder: 'QTY', style: 'width:55px' });
     tb.append(
@@ -1578,7 +1746,9 @@ export function mountPORT(body, ctx) {
       iSym, iQty,
       h('button', { class: 'on', style: 'background:var(--up);color:#000;border-color:var(--up)', text: '+BUY DMA', onclick: () => execQuickTrade('BUY', iSym.value.trim().toUpperCase(), iQty.value) }),
       h('button', { style: 'background:var(--dn);color:#fff;border-color:var(--dn)', text: '-SELL DMA', onclick: () => execQuickTrade('SELL', iSym.value.trim().toUpperCase(), iQty.value) }),
-      h('button', { style: 'color:#ffb000;border-color:#ffb00088', text: 'MONTHLY STATEMENT', onclick: openMonthlyStatementPreview }),
+      h('button', { style: 'color:#00d26a;border-color:#00d26a88;font-weight:700', text: '+DEPOSIT WIRE', onclick: () => openTreasuryWireModal('DEPOSIT', portObj) }),
+      h('button', { style: 'color:#ffb000;border-color:#ffb00088;font-weight:700', text: '-WITHDRAW', onclick: () => openTreasuryWireModal('WITHDRAW', portObj) }),
+      h('button', { style: 'color:#5aa9ff;border-color:#5aa9ff88', text: 'MONTHLY STATEMENT', onclick: openMonthlyStatementPreview }),
       h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'EMAIL REPORT', onclick: sendMonthlyStatementEmail }),
       h('button', { text: 'EMSX <GO>', onclick: () => ctx.run('EMSX') })
     );
@@ -1686,6 +1856,30 @@ export function mountPORT(body, ctx) {
         )
       );
     }
+
+    // Treasury Cash & Capital Flows Ledger
+    const capFlows = Array.isArray(port.capitalFlows) ? port.capitalFlows : [];
+    sc.append(
+      h('div', { class: 'tb', style: 'background:#070707;margin-top:6px;justify-content:space-between' },
+        h('span', { class: 'lbl', text: `PRIME BROKERAGE TREASURY WIRES & CAPITAL FLOWS (${capFlows.length} SETTLED)` }),
+        h('span', { class: 'am sym', style: 'font-size:10.5px', text: `DEPOSITS: ${fmtIdr(port.totalDepositedIdr || 0)}  |  WITHDRAWALS: ${fmtIdr(port.totalWithdrawnIdr || 0)}  |  NET FLOW: ${fmtIdr(port.netDepositsIdr || 0)}` })
+      ),
+      capFlows.length ? h('table', { class: 't' },
+        h('thead', null, h('tr', null, ['SWIFT Ref', 'Time', 'Direction', 'Counterparty', 'Orig Amount', 'FX', 'Settled (IDR)', 'Post-Wire Cash', 'Memo', 'Status'].map(x => h('th', { text: x })))),
+        h('tbody', null, capFlows.slice(0, 15).map(f => h('tr', { class: 'row' },
+          h('td', { class: 'l am sym', text: f.reference || f.id }),
+          h('td', { class: 'l mu', text: fmtTime(f.timestamp) }),
+          h('td', { class: (f.type === 'DEPOSIT' ? 'up' : 'dn') + ' sym', text: f.type }),
+          h('td', { class: 'l', text: f.counterparty || '-' }),
+          h('td', { text: f.currency === 'USD' ? '$' + fmtNum(f.amountOriginal, 2) : fmtIdr(f.amountOriginal) }),
+          h('td', { class: 'mu', text: f.currency === 'USD' ? fmtNum(f.fxRate, 0) : 'IDR' }),
+          h('td', { class: (f.type === 'DEPOSIT' ? 'up' : 'dn') + ' sym', text: `${f.type === 'DEPOSIT' ? '+' : '-'}${fmtIdr(f.amountIdr)}` }),
+          h('td', { class: 'lb', text: fmtIdr(f.cashAfterIdr) }),
+          h('td', { class: 'l mu', text: f.note || '-' }),
+          h('td', { class: 'up sym', text: f.status || 'SETTLED (T+0)' })
+        )))
+      ) : h('div', { class: 'empty', text: 'No paper treasury wires recorded yet. Click +DEPOSIT WIRE or -WITHDRAW above to simulate institutional capital funding.' })
+    );
   }
   async function load() {
     if (portUnmounted || portLoading) return;
