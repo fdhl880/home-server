@@ -1,6 +1,7 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, fmtTime, dirCls, LS } from '../util.js';
 import { get, getRaw, tickOk, apiFetch } from '../api.js';
-import { attachTechnicalMasterCanvas } from './charts.js?v=20261124b';
+import { attachTechnicalMasterCanvas } from './charts.js?v=20261126a';
+import { openRoeShareModal } from './intelligence.js?v=20261126a';
 
 let liveUsdIdrRate = 18218;
 
@@ -367,6 +368,8 @@ export function mountBOT(body, ctx) {
       })),
       h('button', { style: 'color:#00e5ff;border-color:#00e5ff55', text: '+ADD API KEY', onclick: promptAddApiKey }),
       h('button', { style: 'color:#ffb000;border-color:#ffb00066', text: 'X-RAY', onclick: () => ctx.run(`${toBinanceSym(scanSym)} FACT`) }),
+      h('button', { style: 'color:#ff6600;border-color:#ff660088;font-weight:bold', text: 'ROE STUDIO', onclick: () => ctx.run(`${toBinanceSym(scanSym)} ROE`) }),
+      h('button', { style: 'color:#00e5ff;border-color:#00e5ff66', text: 'MTF TECH', onclick: () => ctx.run(`${toBinanceSym(scanSym)} TECH`) }),
       h('button', { style: 'color:#4da3ff;border-color:#4da3ff66', text: 'TRANSCRIPTS', onclick: () => ctx.run(`${toBinanceSym(scanSym)} TRAN`) }),
       h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: 'CAPITAL', onclick: () => ctx.run('BTCUSDT FIN') }),
       h('button', { style: autoBtnStyle, text: autoBtnText, onclick: toggleAuto }),
@@ -1002,6 +1005,23 @@ export function mountBOT(body, ctx) {
       ];
       if (vm.isLivePosition) {
         bannerLeftItems.push(
+          h('button', {
+            style: 'color:#000;border-color:#ff6600;background:#ff6600;font-weight:bold;padding:1px 7px',
+            text: 'SHARE ROE',
+            onclick: () => openRoeShareModal({
+              symbol: vm.sym,
+              direction: dir,
+              leverage: levNow,
+              entryPrice: entryNow,
+              markPrice: vm.curPx,
+              roePct: vm.pnlPct,
+              pnlUsd: vm.pnlUsd,
+              pnlIdr: vm.pnlIdr,
+              fxRateIdr: liveUsdIdrRate,
+              status: 'OPEN',
+              setup: scanCtx.layer2_setup?.setup_name || 'QUANT_EXECUTION'
+            })
+          }),
           h('button', { style: 'color:#00e5ff;border-color:#00e5ff77;background:#04151c;font-weight:bold;padding:1px 6px', text: '🛡️ SYNC/EDIT SL', onclick: () => syncPositionSlAction(vm.posObj) }),
           h('button', { style: 'color:#ff5a52;border-color:#ff3b30aa;background:#260606;font-weight:bold;padding:1px 6px', text: '🛑 CLOSE MARKET', onclick: () => closePositionAction(vm.posObj) })
         );
@@ -1293,7 +1313,27 @@ export function mountBOT(body, ctx) {
               h('td', { style: 'white-space:nowrap' },
                 h('span', { class: (p.sl_state === 'CONFIRMED' ? 'up' : 'am'), text: `${p.sl_state || p.status || 'OPEN'}${surv !== '-' ? ' • ' + surv + '%' : ''} ` }),
                 h('button', {
-                  style: 'margin-left:4px;padding:1px 5px;font-size:9.5px;color:#00e5ff;border-color:#00e5ff66',
+                  style: 'margin-left:4px;padding:1px 5px;font-size:9.5px;color:#000;background:#ff6600;border-color:#ff6600;font-weight:bold',
+                  text: 'ROE',
+                  onclick: (ev) => {
+                    ev.stopPropagation();
+                    openRoeShareModal({
+                      symbol: sym,
+                      direction: side,
+                      leverage: lev,
+                      entryPrice: entryPx,
+                      markPrice: markPx,
+                      roePct: liveRoiPct,
+                      pnlUsd: livePnlUsd,
+                      pnlIdr: Math.round(livePnlUsd * liveUsdIdrRate),
+                      fxRateIdr: liveUsdIdrRate,
+                      status: 'OPEN',
+                      setup: p.setup_name || 'QUANT_EXECUTION'
+                    });
+                  }
+                }),
+                h('button', {
+                  style: 'margin-left:3px;padding:1px 5px;font-size:9.5px;color:#00e5ff;border-color:#00e5ff66',
                   text: 'SL',
                   onclick: (ev) => { ev.stopPropagation(); syncPositionSlAction(p); }
                 }),

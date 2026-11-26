@@ -876,15 +876,32 @@ export function mountTRAN(body, ctx) {
 // =====================================================================
 // 3. G / SNAP / PATT — MULTI-CHART STUDIO & SNAPSHOT ARCHIVE
 // =====================================================================
+function calcMiniRsi14(closes) {
+  if (!Array.isArray(closes) || closes.length < 15) return 50;
+  let avgG = 0, avgL = 0;
+  for (let i = 1; i <= 14; i++) {
+    const d = closes[i] - closes[i - 1];
+    if (d > 0) avgG += d; else avgL -= d;
+  }
+  avgG /= 14; avgL /= 14;
+  for (let i = 15; i < closes.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    avgG = (avgG * 13 + (d > 0 ? d : 0)) / 14;
+    avgL = (avgL * 13 + (d < 0 ? -d : 0)) / 14;
+  }
+  if (avgL <= 1e-12) return 100;
+  return 100 - 100 / (1 + avgG / avgL);
+}
+
 function drawMiniCandles(canvas, candles, sym, iv) {
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const w = canvas.clientWidth || 340;
-  const hPx = 175;
+  const dpr = 2; // Force 2x Retina supersampling for razor-sharp display & PNG export
+  const w = canvas.clientWidth || 380;
+  const hPx = 230;
   canvas.width = Math.round(w * dpr);
   canvas.height = Math.round(hPx * dpr);
   const ctx2d = canvas.getContext('2d');
   ctx2d.scale(dpr, dpr);
-  ctx2d.fillStyle = '#040608';
+  ctx2d.fillStyle = '#040609';
   ctx2d.fillRect(0, 0, w, hPx);
 
   if (!Array.isArray(candles) || candles.length < 5) {
@@ -894,45 +911,140 @@ function drawMiniCandles(canvas, candles, sym, iv) {
     return { bias: 'N/A', chgPct: 0, lastPx: 0 };
   }
 
-  const list = candles.slice(-60);
-  const padL = 8, padR = 56, padT = 22, padB = 22;
+  const allCloses = candles.map(c => Number(c.c ?? c.close ?? 0)).filter(v => v > 0);
+  const rsiVal = calcMiniRsi14(allCloses);
+
+  const list = candles.slice(-64);
+  const padL = 8, padR = 64, padT = 26, padB = 24;
   const plotW = w - padL - padR;
   const plotH = hPx - padT - padB;
   let lo = Infinity, hi = -Infinity, maxV = 0;
-  list.forEach(c => {
-    lo = Math.min(lo, Number(c.l ?? c.low ?? c.c));
-    hi = Math.max(hi, Number(c.h ?? c.high ?? c.c));
+  let hiIdx = 0, loIdx = 0;
+
+  // Precompute EMA20, EMA50, and Bollinger(20, 2) across full candle array so tail slice is warm
+  let e20 = Number(candles[0].c ?? candles[0].close ?? 0);
+  let e50 = e20;
+  const k20 = 2 / 21, k50 = 2 / 51;
+  const fullMeta = candles.map((c, idx) => {
+    const cl = Number(c.c ?? c.close ?? 0);
+    e20 = idx === 0 ? cl : cl * k20 + e20 * (1 - k20);
+    e50 = idx === 0 ? cl : cl * k50 + e50 * (1 - k50);
+    let bbUp = null, bbLo = null;
+    if (idx >= 19) {
+      let sum = 0;
+      for (let j = idx - 19; j <= idx; j++) sum += Number(candles[j].c ?? candles[j].close ?? 0);
+      const mean = sum / 20;
+      let sq = 0;
+      for (let j = idx - 19; j <= idx; j++) {
+        const d = Number(candles[j].c ?? candles[j].close ?? 0) - mean;
+        sq += d * d;
+      }
+      const sd = Math.sqrt(sq / 20);
+      bbUp = mean + 2 * sd;
+      bbLo = mean - 2 * sd;
+    }
+    return { e20, e50, bbUp, bbLo };
+  });
+  const metaSlice = fullMeta.slice(-list.length);
+
+  list.forEach((c, i) => {
+    const cLo = Number(c.l ?? c.low ?? c.c);
+    const cHi = Number(c.h ?? c.high ?? c.c);
+    if (cLo < lo) { lo = cLo; loIdx = i; }
+    if (cHi > hi) { hi = cHi; hiIdx = i; }
+    if (metaSlice[i].bbLo != null) lo = Math.min(lo, metaSlice[i].bbLo);
+    if (metaSlice[i].bbUp != null) hi = Math.max(hi, metaSlice[i].bbUp);
     maxV = Math.max(maxV, Number(c.v ?? c.volume ?? 0));
   });
+
+  const rawLo = Number(list[loIdx].l ?? list[loIdx].low ?? lo);
+  const rawHi = Number(list[hiIdx].h ?? list[hiIdx].high ?? hi);
   const span = Math.max(1e-8, hi - lo);
-  lo -= span * 0.06;
-  hi += span * 0.06;
+  lo -= span * 0.07;
+  hi += span * 0.08;
   const yOf = p => padT + ((hi - p) / (hi - lo)) * plotH;
   const step = plotW / list.length;
 
-  ctx2d.strokeStyle = '#141923';
+  // Grid & Right Price Scale
+  ctx2d.strokeStyle = '#121822';
   ctx2d.lineWidth = 1;
-  for (let i = 0; i <= 3; i++) {
-    const gy = padT + (i / 3) * plotH;
+  for (let i = 0; i <= 4; i++) {
+    const gy = padT + (i / 4) * plotH;
     ctx2d.beginPath(); ctx2d.moveTo(padL, gy); ctx2d.lineTo(w - padR, gy); ctx2d.stroke();
-    const gp = hi - (i / 3) * (hi - lo);
+    const gp = hi - (i / 4) * (hi - lo);
     ctx2d.fillStyle = '#6c798c';
     ctx2d.font = '9px monospace';
     ctx2d.fillText(fmtPx(gp), w - padR + 4, gy + 3);
   }
 
-  let ema = Number(list[0].c ?? list[0].close);
-  const k = 2 / 21;
-  const emaPts = [];
+  // Horizontal Volume-at-Price Profile (14 Bins) + POC Line
+  const BINS = 14;
+  const binVol = new Array(BINS).fill(0);
+  list.forEach(c => {
+    const typ = (Number(c.h ?? c.high ?? c.c) + Number(c.l ?? c.low ?? c.c) + Number(c.c ?? c.close)) / 3;
+    const v = Math.max(0, Number(c.v ?? c.volume ?? 0));
+    const bIdx = Math.max(0, Math.min(BINS - 1, Math.floor(((typ - lo) / (hi - lo)) * BINS)));
+    binVol[bIdx] += v;
+  });
+  const maxBinV = Math.max(...binVol, 0);
+  let pocIdx = 0;
+  if (maxBinV > 0) {
+    const binH = plotH / BINS;
+    binVol.forEach((bv, bIdx) => {
+      if (bv > binVol[pocIdx]) pocIdx = bIdx;
+      const bw = (bv / maxBinV) * (plotW * 0.24);
+      const by = padT + plotH - (bIdx + 1) * binH;
+      ctx2d.fillStyle = bIdx === pocIdx ? 'rgba(255, 176, 0, 0.24)' : 'rgba(77, 163, 255, 0.12)';
+      ctx2d.fillRect(w - padR - bw, by + 0.5, bw, Math.max(1.5, binH - 1));
+    });
+    const pocPx = lo + ((pocIdx + 0.5) / BINS) * (hi - lo);
+    const pocY = yOf(pocPx);
+    ctx2d.save();
+    ctx2d.strokeStyle = 'rgba(255, 176, 0, 0.55)';
+    ctx2d.setLineDash([3, 3]);
+    ctx2d.lineWidth = 1;
+    ctx2d.beginPath(); ctx2d.moveTo(padL, pocY); ctx2d.lineTo(w - padR, pocY); ctx2d.stroke();
+    ctx2d.restore();
+  }
 
+  // Bollinger(20, 2) Shaded Envelope
+  const bbPts = [];
+  list.forEach((_, i) => {
+    if (metaSlice[i].bbUp != null && metaSlice[i].bbLo != null) {
+      bbPts.push({ x: padL + i * step + step / 2, u: yOf(metaSlice[i].bbUp), l: yOf(metaSlice[i].bbLo) });
+    }
+  });
+  if (bbPts.length >= 2) {
+    ctx2d.beginPath();
+    bbPts.forEach((p, idx) => { if (idx === 0) ctx2d.moveTo(p.x, p.u); else ctx2d.lineTo(p.x, p.u); });
+    for (let idx = bbPts.length - 1; idx >= 0; idx--) ctx2d.lineTo(bbPts[idx].x, bbPts[idx].l);
+    ctx2d.closePath();
+    ctx2d.fillStyle = 'rgba(77, 163, 255, 0.07)';
+    ctx2d.fill();
+
+    ctx2d.save();
+    ctx2d.strokeStyle = 'rgba(77, 163, 255, 0.36)';
+    ctx2d.lineWidth = 0.9;
+    ctx2d.setLineDash([2, 2]);
+    ctx2d.beginPath();
+    bbPts.forEach((p, idx) => { if (idx === 0) ctx2d.moveTo(p.x, p.u); else ctx2d.lineTo(p.x, p.u); });
+    ctx2d.stroke();
+    ctx2d.beginPath();
+    bbPts.forEach((p, idx) => { if (idx === 0) ctx2d.moveTo(p.x, p.l); else ctx2d.lineTo(p.x, p.l); });
+    ctx2d.stroke();
+    ctx2d.restore();
+  }
+
+  // Candlesticks + Bottom Volume Histogram + EMA20/EMA50 Coordinates
+  const ema20Pts = [], ema50Pts = [];
   list.forEach((c, i) => {
     const o = Number(c.o ?? c.open), hV = Number(c.h ?? c.high), lV = Number(c.l ?? c.low), cl = Number(c.c ?? c.close), v = Number(c.v ?? c.volume ?? 0);
-    ema = cl * k + ema * (1 - k);
     const x = padL + i * step + step / 2;
-    emaPts.push([x, yOf(ema)]);
+    ema20Pts.push([x, yOf(metaSlice[i].e20)]);
+    ema50Pts.push([x, yOf(metaSlice[i].e50)]);
 
     if (maxV > 0) {
-      const vh = (v / maxV) * 24;
+      const vh = (v / maxV) * 26;
       ctx2d.fillStyle = cl >= o ? 'rgba(0,210,106,0.22)' : 'rgba(255,59,48,0.22)';
       ctx2d.fillRect(x - step * 0.35, hPx - padB - vh, Math.max(1.5, step * 0.7), vh);
     }
@@ -940,37 +1052,81 @@ function drawMiniCandles(canvas, candles, sym, iv) {
     const up = cl >= o;
     ctx2d.strokeStyle = up ? '#00d26a' : '#ff453a';
     ctx2d.fillStyle = up ? '#00d26a' : '#ff453a';
+    ctx2d.lineWidth = 1.1;
     ctx2d.beginPath();
     ctx2d.moveTo(x, yOf(hV));
     ctx2d.lineTo(x, yOf(lV));
     ctx2d.stroke();
 
     const top = Math.min(yOf(o), yOf(cl));
-    const bh = Math.max(1.2, Math.abs(yOf(cl) - yOf(o)));
-    ctx2d.fillRect(x - Math.max(1, step * 0.32), top, Math.max(2, step * 0.64), bh);
+    const bh = Math.max(1.3, Math.abs(yOf(cl) - yOf(o)));
+    ctx2d.fillRect(x - Math.max(1, step * 0.33), top, Math.max(2, step * 0.66), bh);
   });
 
-  ctx2d.strokeStyle = '#ffb000';
-  ctx2d.lineWidth = 1.4;
+  // EMA50 (#00e5ff) & EMA20 (#ffb000)
+  ctx2d.strokeStyle = '#00e5ff';
+  ctx2d.lineWidth = 1.15;
   ctx2d.beginPath();
-  emaPts.forEach(([x, y], i) => { if (i === 0) ctx2d.moveTo(x, y); else ctx2d.lineTo(x, y); });
+  ema50Pts.forEach(([x, y], i) => { if (i === 0) ctx2d.moveTo(x, y); else ctx2d.lineTo(x, y); });
   ctx2d.stroke();
+
+  ctx2d.strokeStyle = '#ffb000';
+  ctx2d.lineWidth = 1.45;
+  ctx2d.beginPath();
+  ema20Pts.forEach(([x, y], i) => { if (i === 0) ctx2d.moveTo(x, y); else ctx2d.lineTo(x, y); });
+  ctx2d.stroke();
+
+  // Swing High & Swing Low Price Callouts
+  const xHi = Math.min(w - padR - 58, Math.max(padL + 2, padL + hiIdx * step - 8));
+  const xLo = Math.min(w - padR - 58, Math.max(padL + 2, padL + loIdx * step - 8));
+  ctx2d.font = 'bold 8.5px monospace';
+  ctx2d.fillStyle = '#00d26a';
+  ctx2d.fillText(`HI ${fmtPx(rawHi)}`, xHi, Math.max(padT + 8, yOf(rawHi) - 4));
+  ctx2d.fillStyle = '#ff5a52';
+  ctx2d.fillText(`LO ${fmtPx(rawLo)}`, xLo, Math.min(hPx - padB - 3, yOf(rawLo) + 10));
 
   const first = Number(list[0].c ?? list[0].close);
   const last = Number(list[list.length - 1].c ?? list[list.length - 1].close);
+  const lastE20 = metaSlice[metaSlice.length - 1].e20;
+  const lastE50 = metaSlice[metaSlice.length - 1].e50;
   const chgPct = first > 0 ? ((last - first) / first) * 100 : 0;
-  const bias = last > ema * 1.001 ? 'BULLISH > EMA20' : last < ema * 0.999 ? 'BEARISH < EMA20' : 'CONSOLIDATION';
+  const bias = (last > lastE20 && lastE20 >= lastE50)
+    ? 'BULL TREND (PX > EMA20 > EMA50)'
+    : (last < lastE20 && lastE20 <= lastE50)
+    ? 'BEAR TREND (PX < EMA20 < EMA50)'
+    : 'MEAN REVERSION / CONSOLIDATION';
 
+  // Live Last Price Pill on Right Scale
+  const lastY = Math.max(padT + 6, Math.min(hPx - padB - 6, yOf(last)));
+  ctx2d.fillStyle = chgPct >= 0 ? '#00d26a' : '#ff453a';
+  ctx2d.fillRect(w - padR + 1, lastY - 6, padR - 2, 12);
+  ctx2d.fillStyle = '#000000';
+  ctx2d.font = 'bold 8.5px monospace';
+  ctx2d.fillText(fmtPx(last), w - padR + 4, lastY + 3);
+
+  // Top & Bottom Institutional HUD Bars
+  ctx2d.fillStyle = '#0a0e14';
+  ctx2d.fillRect(0, 0, w, 20);
   ctx2d.fillStyle = '#ff6600';
-  ctx2d.font = 'bold 11px monospace';
-  ctx2d.fillText(`${sym} [${iv.toUpperCase()}]  $${fmtPx(last)}  (${fmtPct(chgPct)})`, 8, 14);
-  ctx2d.fillStyle = bias.startsWith('BULL') ? '#00d26a' : bias.startsWith('BEAR') ? '#ff5a52' : '#9aa7b8';
+  ctx2d.font = 'bold 10.5px monospace';
+  ctx2d.fillText(`${sym} [${iv.toUpperCase()}]  $${fmtPx(last)} (${fmtPct(chgPct)})`, 8, 13.5);
+  ctx2d.fillStyle = rsiVal >= 65 ? '#00d26a' : rsiVal <= 35 ? '#ff5a52' : '#ffb000';
   ctx2d.font = 'bold 9.5px monospace';
-  ctx2d.fillText(bias, 8, hPx - 7);
-  ctx2d.fillStyle = '#5c687a';
-  ctx2d.fillText('BLOOMBERG TERMINAL', w - 126, hPx - 7);
+  ctx2d.textAlign = 'right';
+  ctx2d.fillText(`RSI14: ${rsiVal.toFixed(1)} | EMA20/50 + BB + VPVR`, w - 8, 13.5);
+  ctx2d.textAlign = 'left';
 
-  return { bias, chgPct, lastPx: last };
+  ctx2d.fillStyle = '#070a0f';
+  ctx2d.fillRect(0, hPx - 18, w, 18);
+  ctx2d.fillStyle = bias.startsWith('BULL') ? '#00d26a' : bias.startsWith('BEAR') ? '#ff5a52' : '#9aa7b8';
+  ctx2d.font = 'bold 9px monospace';
+  ctx2d.fillText(bias, 8, hPx - 6);
+  ctx2d.fillStyle = '#6c798c';
+  ctx2d.textAlign = 'right';
+  ctx2d.fillText('BLOOMBERG TERMINAL // HD', w - 8, hPx - 6);
+  ctx2d.textAlign = 'left';
+
+  return { bias, chgPct, lastPx: last, rsi: rsiVal };
 }
 
 export function mountSTUDIO(body, ctx) {
@@ -1067,16 +1223,17 @@ export function mountSTUDIO(body, ctx) {
           h('span', { style: 'color:var(--amber)', text: `${sym} (${iv.toUpperCase()})` }),
           h('div', { style: 'display:flex;gap:4px' },
             h('button', { style: 'font-size:10px', text: 'SNAP PNG', onclick: () => snapCanvas(sym, canvasMap.get(sym), true) }),
+            h('button', { style: 'font-size:10px', text: 'TECH', onclick: () => ctx.run(`${sym} TECH`) }),
             h('button', { style: 'font-size:10px', text: 'GP', onclick: () => ctx.run(`${sym} GP`) }),
             h('button', { style: 'font-size:10px', text: 'X-RAY', onclick: () => ctx.run(`${sym} FACT`) })
           )
         );
-        const cv = h('canvas', { style: 'width:100%;height:175px;display:block;background:#040608' });
+        const cv = h('canvas', { style: 'width:100%;height:230px;display:block;background:#040609' });
         card.append(hd, cv);
         grid.append(card);
         canvasMap.set(sym, cv);
 
-        const env = await get('kline', { symbol: sym, interval: iv, limit: 80 }, 4000);
+        const env = await get('kline', { symbol: sym, interval: iv, limit: 110 }, 4000);
         if (unmounted) return;
         ctx.status(env);
         const arr = env.ok && Array.isArray(env.data) ? env.data : (env.data && env.data.candles) || [];
@@ -2081,4 +2238,1304 @@ export function mountWDGT(body, ctx) {
 
   renderToolbar();
   renderBody();
+}
+
+// =====================================================================
+// 8. ROE / PNL — INSTITUTIONAL SHAREABLE ROE CARD STUDIO & MODAL
+// =====================================================================
+const _roeKlineCache = new Map();
+
+async function fetchRoeSparkCandles(sym) {
+  const clean = String(sym || 'BTCUSDT').toUpperCase().replace('-USD', 'USDT').replace(/\.P$/, '');
+  const hit = _roeKlineCache.get(clean);
+  if (hit && Date.now() - hit.ts < 30000) return hit.candles;
+  try {
+    const env = await get('kline', { symbol: clean, interval: '15m', limit: 48 }, 8000);
+    const arr = env && env.ok
+      ? (Array.isArray(env.data) ? env.data : (env.data && Array.isArray(env.data.candles) ? env.data.candles : []))
+      : [];
+    if (arr.length >= 5) {
+      _roeKlineCache.set(clean, { ts: Date.now(), candles: arr });
+      return arr;
+    }
+  } catch {}
+  return [];
+}
+
+function renderRoeCardCanvas(canvas, cfg = {}, candles = []) {
+  const isStory = cfg.aspect === '9:16';
+  const W = isStory ? 1080 : 1200;
+  const H = isStory ? 1920 : 675;
+  canvas.width = W;
+  canvas.height = H;
+
+  const ctx = canvas.getContext('2d');
+  const sym = String(cfg.symbol || 'BTCUSDT').toUpperCase().replace('-USD', 'USDT').replace(/\.P$/, '');
+  const dir = String(cfg.direction || 'LONG').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
+  const lev = Math.max(1, Number(cfg.leverage) || 20);
+  const marginMode = String(cfg.marginMode || 'ISOLATED').toUpperCase();
+  const entry = Math.max(0, Number(cfg.entryPrice) || 0);
+  const mark = Math.max(0, Number(cfg.markPrice) || entry);
+  const sign = dir === 'SHORT' ? -1 : 1;
+  const unleveredPct = entry > 0 && mark > 0 ? sign * ((mark - entry) / entry) * 100 : 0;
+  const roePct = Number.isFinite(Number(cfg.roePct))
+    ? Number(cfg.roePct)
+    : +(unleveredPct * lev).toFixed(2);
+  const isGain = roePct >= 0;
+  const fxRate = Number(cfg.fxRateIdr) > 10000 ? Number(cfg.fxRateIdr) : 18218;
+  const pnlUsd = Number(cfg.pnlUsd) || 0;
+  const pnlIdr = Number(cfg.pnlIdr) || Math.round(pnlUsd * fxRate);
+  const setup = String(cfg.setup || 'QUANT_EXECUTION').toUpperCase();
+  const statusTag = String(cfg.status || 'OPEN').toUpperCase().startsWith('OPEN') ? 'LIVE OPEN POSITION' : 'REALIZED EXECUTION';
+  const confScore = Number(cfg.hybridConf || cfg.pMath || 0);
+
+  const themes = {
+    CLASSIC: {
+      bg0: '#030508', bg1: '#080d16', accent: '#ff6600', accentText: '#000000',
+      border: '#253042', subText: '#8e9cb2', cardBg: '#090e17', grid: 'rgba(255,255,255,0.032)'
+    },
+    GOLD: {
+      bg0: '#070603', bg1: '#120e05', accent: '#ffb000', accentText: '#000000',
+      border: '#59410d', subText: '#cbb682', cardBg: '#0e0b05', grid: 'rgba(255,176,0,0.04)'
+    },
+    MATRIX: {
+      bg0: '#02080d', bg1: '#051521', accent: '#00e5ff', accentText: '#000000',
+      border: '#114a5c', subText: '#7ec8d9', cardBg: '#06121c', grid: 'rgba(0,229,255,0.04)'
+    }
+  };
+  const th = themes[cfg.theme] || themes.CLASSIC;
+  const gainCol = isGain ? '#00d26a' : '#ff453a';
+
+  // Background gradient
+  const bgGrad = ctx.createLinearGradient(0, 0, W, H);
+  bgGrad.addColorStop(0, th.bg0);
+  bgGrad.addColorStop(1, th.bg1);
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Ambient radial glow behind ROE readout
+  const radGlow = ctx.createRadialGradient(
+    isStory ? W * 0.5 : W * 0.34,
+    isStory ? H * 0.30 : H * 0.44,
+    20,
+    isStory ? W * 0.5 : W * 0.34,
+    isStory ? H * 0.30 : H * 0.44,
+    isStory ? 520 : 390
+  );
+  radGlow.addColorStop(0, isGain ? 'rgba(0, 210, 106, 0.16)' : 'rgba(255, 69, 58, 0.16)');
+  radGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = radGlow;
+  ctx.fillRect(0, 0, W, H);
+
+  // Precision institutional grid
+  ctx.strokeStyle = th.grid;
+  ctx.lineWidth = 1;
+  const gStep = isStory ? 60 : 48;
+  for (let gx = gStep; gx < W; gx += gStep) {
+    ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
+  }
+  for (let gy = gStep; gy < H; gy += gStep) {
+    ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+  }
+
+  // Outer institutional frame
+  ctx.strokeStyle = th.border;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(16, 16, W - 32, H - 32);
+  ctx.strokeStyle = th.accent;
+  ctx.lineWidth = 2;
+  // Corner brackets
+  const cb = 28;
+  [
+    [16, 16 + cb, 16, 16, 16 + cb, 16],
+    [W - 16 - cb, 16, W - 16, 16, W - 16, 16 + cb],
+    [16, H - 16 - cb, 16, H - 16, 16 + cb, H - 16],
+    [W - 16 - cb, H - 16, W - 16, H - 16, W - 16, H - 16 - cb]
+  ].forEach(([x1, y1, x2, y2, x3, y3]) => {
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.lineTo(x3, y3); ctx.stroke();
+  });
+
+  const padX = isStory ? 64 : 52;
+  const topY = isStory ? 68 : 44;
+
+  // Top Header: [B] Monogram + BLOOMBERG TERMINAL
+  ctx.fillStyle = th.accent;
+  ctx.fillRect(padX, topY, isStory ? 48 : 38, isStory ? 48 : 38);
+  ctx.fillStyle = th.accentText;
+  ctx.font = `900 ${isStory ? 30 : 24}px Consolas, "JetBrains Mono", monospace`;
+  ctx.fillText('B', padX + (isStory ? 14 : 11), topY + (isStory ? 35 : 28));
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `bold ${isStory ? 28 : 21}px Consolas, "JetBrains Mono", monospace`;
+  ctx.fillText('BLOOMBERG TERMINAL', padX + (isStory ? 64 : 50), topY + (isStory ? 24 : 18));
+  ctx.fillStyle = th.accent;
+  ctx.font = `bold ${isStory ? 16 : 12.5}px Consolas, "JetBrains Mono", monospace`;
+  ctx.fillText('QUANTITATIVE FUTURES EXECUTION DESK // VERIFIED ROE RECORD', padX + (isStory ? 64 : 50), topY + (isStory ? 46 : 35));
+
+  const utcStr = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+  const refHash = 'REF #BBG-' + Math.abs(
+    `${sym}${dir}${entry}${mark}`.split('').reduce((a, ch) => ((a << 5) - a + ch.charCodeAt(0)) | 0, 0)
+  ).toString(16).toUpperCase().padStart(6, '0').slice(0, 6);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = th.subText;
+  ctx.font = `bold ${isStory ? 16 : 12.5}px Consolas, "JetBrains Mono", monospace`;
+  ctx.fillText(utcStr, W - padX, topY + (isStory ? 22 : 17));
+  ctx.fillStyle = th.accent;
+  ctx.fillText(refHash, W - padX, topY + (isStory ? 45 : 35));
+  ctx.textAlign = 'left';
+
+  // Divider line
+  const divY = topY + (isStory ? 68 : 52);
+  ctx.strokeStyle = th.border;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(padX, divY); ctx.lineTo(W - padX, divY); ctx.stroke();
+
+  // Helper to draw embedded sparkline chart inside a rect
+  const drawEmbeddedChart = (cx, cy, cw, ch) => {
+    ctx.fillStyle = th.cardBg;
+    ctx.fillRect(cx, cy, cw, ch);
+    ctx.strokeStyle = th.border;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(cx, cy, cw, ch);
+
+    ctx.fillStyle = th.subText;
+    ctx.font = `bold ${isStory ? 16 : 12}px Consolas, "JetBrains Mono", monospace`;
+    ctx.fillText(`${sym} PRICE TRAJECTORY (15M FEED • ENTRY TO MARK)`, cx + 16, cy + (isStory ? 28 : 22));
+
+    let series = Array.isArray(candles) ? candles.slice(-36).map(c => ({
+      o: Number(c.o ?? c.open ?? c.c ?? c.close),
+      h: Number(c.h ?? c.high ?? c.c ?? c.close),
+      l: Number(c.l ?? c.low ?? c.c ?? c.close),
+      c: Number(c.c ?? c.close ?? 0)
+    })).filter(c => c.c > 0) : [];
+
+    // Ensure chart reflects live mark & entry if klines unavailable
+    if (series.length < 4 && entry > 0) {
+      series = [];
+      const steps = 28;
+      for (let i = 0; i < steps; i++) {
+        const t = i / (steps - 1);
+        const wave = Math.sin(i * 0.65) * Math.abs(mark - entry || entry * 0.004) * 0.18 * (1 - t * 0.5);
+        const cl = entry + (mark - entry) * Math.pow(t, 0.88) + wave;
+        const op = i === 0 ? entry : series[i - 1].c;
+        const sp = Math.max(Math.abs(cl - op) * 0.6, entry * 0.0012);
+        series.push({ o: op, c: cl, h: Math.max(op, cl) + sp, l: Math.min(op, cl) - sp });
+      }
+    } else if (series.length >= 4 && mark > 0) {
+      series[series.length - 1] = {
+        ...series[series.length - 1],
+        c: mark,
+        h: Math.max(series[series.length - 1].h, mark),
+        l: Math.min(series[series.length - 1].l, mark)
+      };
+    }
+
+    if (series.length < 2) return;
+    const pL = cx + 16, pR = cx + cw - (isStory ? 116 : 96), pT = cy + (isStory ? 46 : 36), pB = cy + ch - 18;
+    const pW = pR - pL, pH = pB - pT;
+    let lo = Infinity, hi = -Infinity;
+    series.forEach(b => { lo = Math.min(lo, b.l); hi = Math.max(hi, b.h); });
+    if (entry > 0) { lo = Math.min(lo, entry); hi = Math.max(hi, entry); }
+    if (mark > 0) { lo = Math.min(lo, mark); hi = Math.max(hi, mark); }
+    const span = Math.max(1e-8, hi - lo);
+    lo -= span * 0.12;
+    hi += span * 0.12;
+    const yOf = px => pT + ((hi - px) / (hi - lo)) * pH;
+
+    // Shaded zone between Entry and Mark
+    if (entry > 0 && mark > 0) {
+      const yE = yOf(entry), yM = yOf(mark);
+      ctx.fillStyle = isGain ? 'rgba(0, 210, 106, 0.09)' : 'rgba(255, 69, 58, 0.09)';
+      ctx.fillRect(pL, Math.min(yE, yM), pW, Math.max(2, Math.abs(yM - yE)));
+    }
+
+    // Mini candles
+    const step = pW / series.length;
+    series.forEach((b, idx) => {
+      const x = pL + idx * step + step * 0.5;
+      const up = b.c >= b.o;
+      ctx.strokeStyle = up ? '#00d26a' : '#ff453a';
+      ctx.fillStyle = up ? '#00d26a' : '#ff453a';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(x, yOf(b.h)); ctx.lineTo(x, yOf(b.l)); ctx.stroke();
+      const bt = Math.min(yOf(b.o), yOf(b.c));
+      const bh = Math.max(2, Math.abs(yOf(b.c) - yOf(b.o)));
+      ctx.fillRect(x - Math.max(1.5, step * 0.3), bt, Math.max(3, step * 0.6), bh);
+    });
+
+    // Entry dashed line
+    if (entry > 0) {
+      const yE = yOf(entry);
+      ctx.save();
+      ctx.strokeStyle = '#ffb000';
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.moveTo(pL, yE); ctx.lineTo(pR, yE); ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = '#ffb000';
+      ctx.font = `bold ${isStory ? 14 : 11}px Consolas, monospace`;
+      ctx.fillText('ENT ' + fmtPx(entry), pR + 6, yE + 4);
+    }
+
+    // Mark dashed line & live beacon
+    if (mark > 0) {
+      const yM = yOf(mark);
+      ctx.save();
+      ctx.strokeStyle = gainCol;
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(pL, yM); ctx.lineTo(pR, yM); ctx.stroke();
+      ctx.restore();
+
+      const lastX = pL + (series.length - 0.5) * step;
+      ctx.beginPath();
+      ctx.arc(lastX, yM, isStory ? 6 : 5, 0, Math.PI * 2);
+      ctx.fillStyle = gainCol;
+      ctx.fill();
+
+      ctx.fillStyle = gainCol;
+      ctx.font = `bold ${isStory ? 14 : 11}px Consolas, monospace`;
+      ctx.fillText('MRK ' + fmtPx(mark), pR + 6, yM + (entry > 0 && Math.abs(yM - yOf(entry)) < 14 ? -6 : 4));
+    }
+  };
+
+  const roeSign = roePct >= 0 ? '+' : '';
+  const roeText = `${roeSign}${roePct.toFixed(2)}%`;
+  const pnlText = cfg.showPnlAmount
+    ? `${pnlUsd >= 0 ? '+$' : '-$'}${Math.abs(pnlUsd).toFixed(2)} USDT   |   ${pnlIdr >= 0 ? '+Rp ' : '-Rp '}${Math.abs(pnlIdr).toLocaleString('id-ID')} IDR`
+    : 'NOMINAL SIZE PROTECTED  •  VERIFIED PERCENTAGE RETURN ON MARGIN';
+
+  const metrics = [
+    ['ENTRY PRICE', entry > 0 ? '$' + fmtPx(entry) : 'N/A', '#ffb000'],
+    [statusTag.startsWith('LIVE') ? 'LIVE MARK PRICE' : 'EXIT PRICE', mark > 0 ? '$' + fmtPx(mark) : 'N/A', '#ffffff'],
+    ['UNLEVERED MOVE', `${unleveredPct >= 0 ? '+' : ''}${unleveredPct.toFixed(2)}% (${lev}x)`, gainCol],
+    ['QUANT TELEMETRY', confScore > 0 ? `CONF ${confScore.toFixed(1)}% • ${setup.slice(0, 12)}` : setup.slice(0, 18), th.accent]
+  ];
+
+  if (!isStory) {
+    // ================= 16:9 DESK CARD LAYOUT (1200 x 675) =================
+    const bodyTop = divY + 26;
+    // Left Half: Contract Badge, Giant ROE %, PnL Sub-banner
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '900 36px Consolas, "JetBrains Mono", monospace';
+    ctx.fillText(`${sym} PERP`, padX, bodyTop + 32);
+
+    // Direction + Leverage Pill
+    const badgeTxt = `${dir} ${lev}X ${marginMode}`;
+    ctx.font = 'bold 15px Consolas, "JetBrains Mono", monospace';
+    const bw = ctx.measureText(badgeTxt).width + 24;
+    ctx.fillStyle = dir === 'LONG' ? 'rgba(0,210,106,0.18)' : 'rgba(255,69,58,0.18)';
+    ctx.strokeStyle = dir === 'LONG' ? '#00d26a' : '#ff453a';
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(padX, bodyTop + 48, bw, 28);
+    ctx.strokeRect(padX, bodyTop + 48, bw, 28);
+    ctx.fillStyle = dir === 'LONG' ? '#00d26a' : '#ff453a';
+    ctx.fillText(badgeTxt, padX + 12, bodyTop + 67);
+
+    // Status Pill
+    ctx.font = 'bold 13px Consolas, "JetBrains Mono", monospace';
+    const sw = ctx.measureText(statusTag).width + 20;
+    ctx.fillStyle = 'rgba(255,176,0,0.12)';
+    ctx.strokeStyle = th.accent;
+    ctx.fillRect(padX + bw + 10, bodyTop + 48, sw, 28);
+    ctx.strokeRect(padX + bw + 10, bodyTop + 48, sw, 28);
+    ctx.fillStyle = th.accent;
+    ctx.fillText(statusTag, padX + bw + 20, bodyTop + 67);
+
+    // ROE Label & Giant Readout
+    ctx.fillStyle = th.subText;
+    ctx.font = 'bold 14px Consolas, "JetBrains Mono", monospace';
+    ctx.fillText('RETURN ON EQUITY (ROE %)', padX, bodyTop + 114);
+
+    ctx.save();
+    ctx.shadowColor = isGain ? 'rgba(0,210,106,0.35)' : 'rgba(255,69,58,0.35)';
+    ctx.shadowBlur = 22;
+    ctx.fillStyle = gainCol;
+    ctx.font = `900 ${roeText.length > 8 ? 76 : 88}px Consolas, "JetBrains Mono", monospace`;
+    ctx.fillText(roeText, padX, bodyTop + 198);
+    ctx.restore();
+
+    // Nominal PnL or Privacy Strip
+    ctx.fillStyle = cfg.showPnlAmount ? '#e6edf3' : th.subText;
+    ctx.font = 'bold 15px Consolas, "JetBrains Mono", monospace';
+    ctx.fillText(pnlText, padX, bodyTop + 236);
+
+    // Right Half: Embedded Sparkline Chart
+    drawEmbeddedChart(610, bodyTop + 4, W - 610 - padX, 258);
+
+    // Bottom 4-Column Telemetry Grid
+    const gridY = 428;
+    const boxW = (W - padX * 2 - 36) / 4;
+    metrics.forEach(([k, val, col], idx) => {
+      const bx = padX + idx * (boxW + 12);
+      ctx.fillStyle = th.cardBg;
+      ctx.strokeStyle = th.border;
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(bx, gridY, boxW, 128);
+      ctx.strokeRect(bx, gridY, boxW, 128);
+      ctx.fillStyle = th.accent;
+      ctx.fillRect(bx, gridY, 4, 128);
+
+      ctx.fillStyle = th.subText;
+      ctx.font = 'bold 13px Consolas, "JetBrains Mono", monospace';
+      ctx.fillText(k, bx + 16, gridY + 34);
+      ctx.fillStyle = col;
+      ctx.font = '900 22px Consolas, "JetBrains Mono", monospace';
+      ctx.fillText(val, bx + 16, gridY + 84);
+    });
+  } else {
+    // ================= 9:16 STORY / STATUS LAYOUT (1080 x 1920) =================
+    const sTop = divY + 54;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '900 62px Consolas, "JetBrains Mono", monospace';
+    ctx.fillText(`${sym} PERPETUAL`, padX, sTop + 52);
+
+    const badgeTxt = `${dir} ${lev}X ${marginMode}`;
+    ctx.font = 'bold 26px Consolas, "JetBrains Mono", monospace';
+    const bw = ctx.measureText(badgeTxt).width + 38;
+    ctx.fillStyle = dir === 'LONG' ? 'rgba(0,210,106,0.18)' : 'rgba(255,69,58,0.18)';
+    ctx.strokeStyle = dir === 'LONG' ? '#00d26a' : '#ff453a';
+    ctx.lineWidth = 2;
+    ctx.fillRect(padX, sTop + 82, bw, 48);
+    ctx.strokeRect(padX, sTop + 82, bw, 48);
+    ctx.fillStyle = dir === 'LONG' ? '#00d26a' : '#ff453a';
+    ctx.fillText(badgeTxt, padX + 19, sTop + 115);
+
+    ctx.font = 'bold 24px Consolas, "JetBrains Mono", monospace';
+    const sw = ctx.measureText(statusTag).width + 34;
+    ctx.fillStyle = 'rgba(255,176,0,0.12)';
+    ctx.strokeStyle = th.accent;
+    ctx.fillRect(padX + bw + 16, sTop + 82, sw, 48);
+    ctx.strokeRect(padX + bw + 16, sTop + 82, sw, 48);
+    ctx.fillStyle = th.accent;
+    ctx.fillText(statusTag, padX + bw + 33, sTop + 115);
+
+    ctx.fillStyle = th.subText;
+    ctx.font = 'bold 26px Consolas, "JetBrains Mono", monospace';
+    ctx.fillText('RETURN ON EQUITY (ROE %)', padX, sTop + 216);
+
+    ctx.save();
+    ctx.shadowColor = isGain ? 'rgba(0,210,106,0.4)' : 'rgba(255,69,58,0.4)';
+    ctx.shadowBlur = 32;
+    ctx.fillStyle = gainCol;
+    ctx.font = `900 ${roeText.length > 8 ? 128 : 148}px Consolas, "JetBrains Mono", monospace`;
+    ctx.fillText(roeText, padX, sTop + 362);
+    ctx.restore();
+
+    ctx.fillStyle = cfg.showPnlAmount ? '#ffffff' : th.subText;
+    ctx.font = 'bold 24px Consolas, "JetBrains Mono", monospace';
+    ctx.fillText(pnlText, padX, sTop + 422);
+
+    // Embedded Chart (Full Width)
+    drawEmbeddedChart(padX, sTop + 474, W - padX * 2, 540);
+
+    // 2x2 Telemetry Grid
+    const gTop = sTop + 1060;
+    const cellW = (W - padX * 2 - 28) / 2;
+    const cellH = 190;
+    metrics.forEach(([k, val, col], idx) => {
+      const colIdx = idx % 2;
+      const rowIdx = Math.floor(idx / 2);
+      const bx = padX + colIdx * (cellW + 28);
+      const by = gTop + rowIdx * (cellH + 26);
+      ctx.fillStyle = th.cardBg;
+      ctx.strokeStyle = th.border;
+      ctx.lineWidth = 2;
+      ctx.fillRect(bx, by, cellW, cellH);
+      ctx.strokeRect(bx, by, cellW, cellH);
+      ctx.fillStyle = th.accent;
+      ctx.fillRect(bx, by, 6, cellH);
+
+      ctx.fillStyle = th.subText;
+      ctx.font = 'bold 22px Consolas, "JetBrains Mono", monospace';
+      ctx.fillText(k, bx + 26, by + 56);
+      ctx.fillStyle = col;
+      ctx.font = '900 36px Consolas, "JetBrains Mono", monospace';
+      ctx.fillText(val, bx + 26, by + 132);
+    });
+  }
+
+  // Footer Watermark Strip
+  const footY = H - (isStory ? 64 : 38);
+  ctx.strokeStyle = th.border;
+  ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(padX, footY - (isStory ? 34 : 22)); ctx.lineTo(W - padX, footY - (isStory ? 34 : 22)); ctx.stroke();
+
+  ctx.fillStyle = th.subText;
+  ctx.font = `bold ${isStory ? 18 : 12.5}px Consolas, "JetBrains Mono", monospace`;
+  ctx.fillText('BLOOMBERG TERMINAL // 5-LAYER QUANT + AI EXECUTION ENGINE • ISOLATED RISK GUARD', padX, footY);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = th.accent;
+  ctx.fillText(`USD/IDR FX: Rp ${Math.round(fxRate).toLocaleString('id-ID')}`, W - padX, footY);
+  ctx.textAlign = 'left';
+}
+
+function canvasToPngBlob(canvas) {
+  return new Promise(resolve => canvas.toBlob(b => resolve(b), 'image/png'));
+}
+
+function makeRoeFilename(cfg) {
+  const sym = String(cfg.symbol || 'BTCUSDT').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const tag = cfg.aspect === '9:16' ? 'STORY' : 'DESK';
+  const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  return `Bloomberg_Terminal_ROE_${sym}_${tag}_${ts}.png`;
+}
+
+async function archiveAndDownloadRoe(canvas, cfg, onMsg) {
+  const dataUrl = canvas.toDataURL('image/png');
+  const sym = String(cfg.symbol || 'BTCUSDT').toUpperCase();
+  saveSnapshotToGallery({
+    id: 'ROE-' + Date.now() + '-' + sym,
+    symbol: sym,
+    interval: `ROE ${cfg.roePct >= 0 ? '+' : ''}${Number(cfg.roePct || 0).toFixed(1)}%`,
+    ts: Date.now(),
+    dataUrl
+  });
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = makeRoeFilename(cfg);
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => a.remove(), 180);
+  if (onMsg) onMsg('HD PNG downloaded & archived to G <GO>.');
+}
+
+async function copyRoeImage(canvas, onMsg) {
+  const blob = await canvasToPngBlob(canvas);
+  if (!blob) return false;
+  if (navigator.clipboard && typeof window.ClipboardItem === 'function') {
+    try {
+      await navigator.clipboard.write([new window.ClipboardItem({ 'image/png': blob })]);
+      if (onMsg) onMsg('ROE card copied to clipboard (ready to paste in Telegram / WhatsApp / Discord / X).');
+      return true;
+    } catch {}
+  }
+  if (onMsg) onMsg('Clipboard image write unsupported in this browser; downloading PNG instead.');
+  return false;
+}
+
+async function shareRoeNative(canvas, cfg, onMsg) {
+  const blob = await canvasToPngBlob(canvas);
+  if (!blob) return;
+  const filename = makeRoeFilename(cfg);
+  const file = new File([blob], filename, { type: 'image/png' });
+  const sym = String(cfg.symbol || 'BTCUSDT').toUpperCase();
+  const roeStr = `${Number(cfg.roePct || 0) >= 0 ? '+' : ''}${Number(cfg.roePct || 0).toFixed(2)}%`;
+  const caption = `Bloomberg Terminal // ${sym} ${cfg.direction || 'LONG'} ${cfg.leverage || 20}x ROE: ${roeStr}`;
+
+  if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+    try {
+      await navigator.share({ files: [file], title: 'Bloomberg Terminal ROE', text: caption });
+      if (onMsg) onMsg('Shared via system share sheet.');
+      return;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;
+    }
+  }
+  const copied = await copyRoeImage(canvas, null);
+  await archiveAndDownloadRoe(canvas, cfg, null);
+  if (onMsg) onMsg(copied ? 'PNG downloaded & copied to clipboard for instant sharing.' : 'HD PNG downloaded & saved to G <GO> archive.');
+}
+
+export async function openRoeShareModal(initialTrade = {}) {
+  const existing = document.getElementById('bbgRoeModal');
+  if (existing) existing.remove();
+
+  const cfg = {
+    symbol: String(initialTrade.symbol || 'BTCUSDT').toUpperCase().replace('-USD', 'USDT').replace(/\.P$/, ''),
+    direction: String(initialTrade.direction || 'LONG').toUpperCase(),
+    leverage: Number(initialTrade.leverage || 20),
+    marginMode: String(initialTrade.marginMode || 'ISOLATED').toUpperCase(),
+    entryPrice: Number(initialTrade.entryPrice || 0),
+    markPrice: Number(initialTrade.markPrice || initialTrade.entryPrice || 0),
+    roePct: Number(initialTrade.roePct || 0),
+    pnlUsd: Number(initialTrade.pnlUsd || 0),
+    pnlIdr: Number(initialTrade.pnlIdr || 0),
+    fxRateIdr: Number(initialTrade.fxRateIdr || 18218),
+    setup: initialTrade.setup || 'QUANT_EXECUTION',
+    status: initialTrade.status || 'OPEN',
+    hybridConf: Number(initialTrade.hybridConf || initialTrade.pMath || 0),
+    aspect: '16:9',
+    theme: 'CLASSIC',
+    showPnlAmount: false
+  };
+
+  const cv = h('canvas', { style: 'max-width:100%;max-height:56vh;width:auto;height:auto;display:block;margin:0 auto;border:1px solid #263142;background:#040609' });
+  const msgEl = h('div', { style: 'font-size:11px;color:#00d26a;min-height:16px;margin-top:6px' });
+  const ctrlBar = h('div', { class: 'tb', style: 'background:#0a0f17;border:1px solid #1f2937;margin-bottom:8px;gap:5px;flex-wrap:wrap' });
+
+  let candles = [];
+  const redraw = () => {
+    ctrlBar.textContent = '';
+    ctrlBar.append(
+      h('span', { class: 'lbl', text: 'FORMAT:' }),
+      ...[['16:9', '16:9 DESK'], ['9:16', '9:16 STORY']].map(([k, lbl]) => h('button', {
+        class: cfg.aspect === k ? 'on' : '', text: lbl, onclick: () => { cfg.aspect = k; redraw(); }
+      })),
+      h('span', { class: 'lbl', text: 'THEME:' }),
+      ...['CLASSIC', 'GOLD', 'MATRIX'].map(t => h('button', {
+        class: cfg.theme === t ? 'on' : '', text: t, onclick: () => { cfg.theme = t; redraw(); }
+      })),
+      h('button', {
+        class: cfg.showPnlAmount ? 'on' : '',
+        text: cfg.showPnlAmount ? 'PNL: USD + IDR SHOWN' : 'PRIVACY: ROE % ONLY',
+        onclick: () => { cfg.showPnlAmount = !cfg.showPnlAmount; redraw(); }
+      })
+    );
+    renderRoeCardCanvas(cv, cfg, candles);
+  };
+
+  const overlay = h('div', {
+    id: 'bbgRoeModal',
+    style: 'position:fixed;inset:0;z-index:99995;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;padding:12px;font-family:var(--font,monospace)',
+    onclick: ev => { if (ev.target === overlay) overlay.remove(); }
+  },
+    h('div', { style: 'width:760px;max-width:96vw;max-height:94vh;overflow:auto;background:#070a10;border:1px solid #ff6600;padding:12px;box-shadow:0 12px 44px rgba(0,0,0,0.85)' },
+      h('div', { style: 'display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #222b38;padding-bottom:8px;margin-bottom:8px' },
+        h('span', { style: 'color:#ff6600;font-weight:700;font-size:12px;letter-spacing:0.6px', text: `BLOOMBERG TERMINAL // SHAREABLE ROE CARD [${cfg.symbol}]` }),
+        h('button', { style: 'background:#240808;color:#ff5a52;border:1px solid #ff453a88;padding:2px 8px;cursor:pointer;font-weight:700', text: 'CLOSE [ESC]', onclick: () => overlay.remove() })
+      ),
+      ctrlBar,
+      h('div', { style: 'background:#020407;padding:8px;border:1px solid #18202c;text-align:center' }, cv),
+      msgEl,
+      h('div', { style: 'display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;margin-top:8px' },
+        h('button', { style: 'background:#ff6600;color:#000;border:1px solid #ff6600;padding:6px 12px;font-weight:800;cursor:pointer', text: 'SHARE TO APP (WA / IG / TG / X)', onclick: () => shareRoeNative(cv, cfg, m => { msgEl.textContent = m; }) }),
+        h('button', { style: 'background:#0b1929;color:#00e5ff;border:1px solid #00e5ff88;padding:6px 12px;font-weight:700;cursor:pointer', text: 'COPY PNG', onclick: () => copyRoeImage(cv, m => { msgEl.textContent = m; }) }),
+        h('button', { style: 'background:#061c10;color:#00d26a;border:1px solid #00d26a88;padding:6px 12px;font-weight:700;cursor:pointer', text: 'DOWNLOAD HD PNG', onclick: () => archiveAndDownloadRoe(cv, cfg, m => { msgEl.textContent = m; }) })
+      )
+    )
+  );
+
+  document.body.appendChild(overlay);
+  redraw();
+  candles = await fetchRoeSparkCandles(cfg.symbol);
+  if (overlay.isConnected) redraw();
+}
+
+export function mountROE(body, ctx) {
+  body.classList.add('fill');
+  const tb = h('div', { class: 'tb' });
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  let unmounted = false;
+  let feed = { fxRateIdr: 18218, openPositions: [], closedTrades: [], stats: {} };
+  let candles = [];
+  let msgTxt = '';
+
+  const cleanInitSym = String(ctx.symbol || 'BTCUSDT').toUpperCase().replace('-USD', 'USDT').replace(/\.P$/, '');
+  const state = {
+    symbol: /USDT$/.test(cleanInitSym) ? cleanInitSym : 'BTCUSDT',
+    direction: 'LONG',
+    leverage: 20,
+    marginMode: 'ISOLATED',
+    entryPrice: 0,
+    markPrice: 0,
+    marginUsd: 25,
+    roePct: 0,
+    pnlUsd: 0,
+    pnlIdr: 0,
+    setup: 'QUANT_EXECUTION',
+    status: 'OPEN',
+    hybridConf: 78.5,
+    aspect: '16:9',
+    theme: 'CLASSIC',
+    showPnlAmount: false
+  };
+
+  const previewCv = h('canvas', { style: 'width:100%;height:auto;max-height:420px;object-fit:contain;display:block;background:#030508;border:1px solid #1d2633' });
+  const statusEl = h('div', { style: 'font-size:11px;color:#00d26a;min-height:16px;margin-top:5px' });
+
+  function recalcFromPrices() {
+    const e = Number(state.entryPrice) || 0;
+    const m = Number(state.markPrice) || 0;
+    const lev = Math.max(1, Number(state.leverage) || 20);
+    const mUsd = Math.max(0, Number(state.marginUsd) || 0);
+    if (e > 0 && m > 0) {
+      const sgn = state.direction === 'SHORT' ? -1 : 1;
+      state.roePct = +(sgn * ((m - e) / e) * lev * 100).toFixed(2);
+      state.pnlUsd = +(mUsd * (state.roePct / 100)).toFixed(2);
+      state.pnlIdr = Math.round(state.pnlUsd * (feed.fxRateIdr || 18218));
+    }
+  }
+
+  async function applyTradeRecord(tr) {
+    if (!tr) return;
+    state.symbol = String(tr.symbol || 'BTCUSDT').toUpperCase();
+    state.direction = String(tr.direction || 'LONG').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
+    state.leverage = Number(tr.leverage || 20);
+    state.marginMode = String(tr.marginMode || 'ISOLATED').toUpperCase();
+    state.entryPrice = Number(tr.entryPrice || 0);
+    state.markPrice = Number(tr.markPrice || tr.entryPrice || 0);
+    state.marginUsd = Number(tr.marginUsd || state.marginUsd || 25);
+    state.roePct = Number(tr.roePct || 0);
+    state.pnlUsd = Number(tr.pnlUsd || 0);
+    state.pnlIdr = Number(tr.pnlIdr || Math.round(state.pnlUsd * (feed.fxRateIdr || 18218)));
+    state.setup = tr.setup || 'QUANT_EXECUTION';
+    state.status = tr.status || 'OPEN';
+    state.hybridConf = Number(tr.hybridConf || tr.pMath || 0);
+    candles = await fetchRoeSparkCandles(state.symbol);
+    if (!unmounted) renderBody();
+  }
+
+  function redrawCanvasOnly() {
+    renderRoeCardCanvas(previewCv, { ...state, fxRateIdr: feed.fxRateIdr || 18218 }, candles);
+  }
+
+  function renderToolbar() {
+    tb.textContent = '';
+    tb.append(
+      h('span', { class: 'lbl', text: 'ROE CARD STUDIO:' }),
+      ...[['16:9', '16:9 DESK (1200x675)'], ['9:16', '9:16 STORY (1080x1920)']].map(([k, lbl]) => h('button', {
+        class: state.aspect === k ? 'on' : '',
+        text: lbl,
+        onclick: () => { state.aspect = k; renderToolbar(); redrawCanvasOnly(); }
+      })),
+      ...['CLASSIC', 'GOLD', 'MATRIX'].map(t => h('button', {
+        class: state.theme === t ? 'on' : '',
+        text: t,
+        onclick: () => { state.theme = t; renderToolbar(); redrawCanvasOnly(); }
+      })),
+      h('button', {
+        class: state.showPnlAmount ? 'on' : '',
+        text: state.showPnlAmount ? 'SHOWING USD/IDR PNL' : 'PRIVACY: ROE % ONLY',
+        onclick: () => { state.showPnlAmount = !state.showPnlAmount; renderToolbar(); redrawCanvasOnly(); }
+      }),
+      h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'SHARE ROE', onclick: () => shareRoeNative(previewCv, { ...state, fxRateIdr: feed.fxRateIdr }, m => { msgTxt = m; statusEl.textContent = m; }) }),
+      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: 'DOWNLOAD PNG', onclick: () => archiveAndDownloadRoe(previewCv, { ...state, fxRateIdr: feed.fxRateIdr }, m => { msgTxt = m; statusEl.textContent = m; }) }),
+      h('button', { text: 'REFRESH', onclick: load })
+    );
+  }
+
+  function renderBody() {
+    sc.textContent = '';
+    const st = feed.stats || {};
+    const openList = Array.isArray(feed.openPositions) ? feed.openPositions : [];
+    const closedList = Array.isArray(feed.closedTrades) ? feed.closedTrades : [];
+
+    // Summary Strip
+    sc.append(h('div', { class: 'xgrid4', style: 'margin-bottom:8px' },
+      h('div', { class: 'xcard', style: 'margin-bottom:0;padding:6px 8px' },
+        h('div', { class: 'mu', style: 'font-size:10px', text: 'LIVE OPEN POSITIONS' }),
+        h('div', { class: 'am sym', style: 'font-size:15px;font-weight:700', text: `${openList.length} ACTIVE` })
+      ),
+      h('div', { class: 'xcard', style: 'margin-bottom:0;padding:6px 8px' },
+        h('div', { class: 'mu', style: 'font-size:10px', text: 'AUDITED WIN RATE' }),
+        h('div', { class: (Number(st.winRatePct) >= 50 ? 'up' : 'am') + ' sym', style: 'font-size:15px;font-weight:700', text: `${Number(st.winRatePct || 0).toFixed(1)}% (${st.totalClosed || 0} TRADES)` })
+      ),
+      h('div', { class: 'xcard', style: 'margin-bottom:0;padding:6px 8px' },
+        h('div', { class: 'mu', style: 'font-size:10px', text: 'REALIZED NET P&L' }),
+        h('div', { class: (Number(st.realizedPnlUsd) >= 0 ? 'up' : 'dn') + ' sym', style: 'font-size:15px;font-weight:700', text: `${Number(st.realizedPnlUsd || 0) >= 0 ? '+$' : '-$'}${Math.abs(Number(st.realizedPnlUsd || 0)).toFixed(2)} USD` })
+      ),
+      h('div', { class: 'xcard', style: 'margin-bottom:0;padding:6px 8px' },
+        h('div', { class: 'mu', style: 'font-size:10px', text: 'LIVE USD / IDR FX' }),
+        h('div', { class: 'lb sym', style: 'font-size:15px;font-weight:700', text: fmtIdr(feed.fxRateIdr || 18218) })
+      )
+    ));
+
+    // Custom Parameter Inputs
+    const symInp = h('input', { value: state.symbol, style: 'width:100%;text-transform:uppercase;font-weight:700' });
+    const dirSel = h('select', { style: 'width:100%' },
+      h('option', { value: 'LONG', selected: state.direction === 'LONG' ? 'selected' : null, text: 'LONG' }),
+      h('option', { value: 'SHORT', selected: state.direction === 'SHORT' ? 'selected' : null, text: 'SHORT' })
+    );
+    const levInp = h('input', { type: 'number', value: String(state.leverage), style: 'width:100%' });
+    const entInp = h('input', { type: 'number', step: 'any', value: String(state.entryPrice || ''), style: 'width:100%' });
+    const mrkInp = h('input', { type: 'number', step: 'any', value: String(state.markPrice || ''), style: 'width:100%' });
+    const mgnInp = h('input', { type: 'number', step: 'any', value: String(state.marginUsd || 25), style: 'width:100%' });
+    const setInp = h('input', { value: state.setup, style: 'width:100%;text-transform:uppercase' });
+    const cnfInp = h('input', { type: 'number', step: '0.1', value: String(state.hybridConf || 0), style: 'width:100%' });
+
+    const syncEditor = async () => {
+      const nextSym = (symInp.value || 'BTCUSDT').trim().toUpperCase().replace('-USD', 'USDT').replace(/\.P$/, '');
+      const symChanged = nextSym !== state.symbol;
+      state.symbol = nextSym;
+      state.direction = dirSel.value;
+      state.leverage = Math.max(1, Number(levInp.value) || 20);
+      state.entryPrice = Number(entInp.value) || 0;
+      state.markPrice = Number(mrkInp.value) || 0;
+      state.marginUsd = Math.max(0, Number(mgnInp.value) || 0);
+      state.setup = (setInp.value || 'QUANT_EXECUTION').trim().toUpperCase();
+      state.hybridConf = Number(cnfInp.value) || 0;
+      recalcFromPrices();
+      if (symChanged) candles = await fetchRoeSparkCandles(state.symbol);
+      redrawCanvasOnly();
+    };
+
+    const leftCol = h('div', { class: 'xcard', style: 'margin-bottom:0' },
+      h('div', { class: 'xsec-hd' },
+        h('span', { text: `HIGH-RESOLUTION ROE CARD PREVIEW (${state.aspect === '9:16' ? '1080x1920 STORY' : '1200x675 DESK'})` }),
+        h('span', { class: state.roePct >= 0 ? 'up' : 'dn', text: `${state.roePct >= 0 ? '+' : ''}${Number(state.roePct).toFixed(2)}% ROE` })
+      ),
+      h('div', { style: 'padding:8px;background:#020408' }, previewCv),
+      h('div', { style: 'padding:8px;display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid var(--border)' },
+        h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700;padding:5px 10px', text: 'SHARE TO APP (WA / IG / TG / X)', onclick: () => shareRoeNative(previewCv, { ...state, fxRateIdr: feed.fxRateIdr }, m => { statusEl.textContent = m; }) }),
+        h('button', { style: 'color:#00e5ff;border-color:#00e5ff77;padding:5px 10px', text: 'COPY IMAGE TO CLIPBOARD', onclick: () => copyRoeImage(previewCv, m => { statusEl.textContent = m; }) }),
+        h('button', { style: 'color:#00d26a;border-color:#00d26a77;padding:5px 10px', text: 'DOWNLOAD HD PNG & ARCHIVE', onclick: () => archiveAndDownloadRoe(previewCv, { ...state, fxRateIdr: feed.fxRateIdr }, m => { statusEl.textContent = m; }) }),
+        h('button', { style: 'padding:5px 10px', text: 'VIEW PNG ARCHIVE (G)', onclick: () => ctx.run(`${state.symbol} G`) })
+      ),
+      h('div', { style: 'padding:0 8px 6px' }, statusEl)
+    );
+    statusEl.textContent = msgTxt;
+
+    const rightCol = h('div', { style: 'display:flex;flex-direction:column;gap:8px' });
+
+    // Live Open Positions Selector
+    const openCard = h('div', { class: 'xcard', style: 'margin-bottom:0' },
+      h('div', { class: 'xsec-hd' }, h('span', { text: '1. LIVE BINANCE FUTURES POSITIONS (1-CLICK LOAD)' }), h('span', { class: 'am', text: `${openList.length} OPEN` }))
+    );
+    if (openList.length) {
+      const tbl = h('table', { class: 't' },
+        h('thead', {}, h('tr', {}, h('th', { text: 'CONTRACT' }), h('th', { text: 'SIDE' }), h('th', { text: 'ENTRY / MARK' }), h('th', { text: 'LIVE ROE' }), h('th', { text: 'CARD' })))
+      );
+      const tbod = h('tbody');
+      openList.forEach(p => {
+        tbod.append(h('tr', { class: 'row', onclick: () => applyTradeRecord(p) },
+          h('td', { class: 'am sym', text: p.symbol }),
+          h('td', { class: p.direction === 'LONG' ? 'up' : 'dn', text: `${p.direction} ${p.leverage}x` }),
+          h('td', { text: `${fmtPx(p.entryPrice)} / ${fmtPx(p.markPrice)}` }),
+          h('td', { class: dirCls(p.roePct) + ' sym', text: `${p.roePct >= 0 ? '+' : ''}${p.roePct.toFixed(2)}%` }),
+          h('td', {}, h('button', { class: 'on', style: 'font-size:10px', text: 'LOAD ROE', onclick: ev => { ev.stopPropagation(); applyTradeRecord(p); } }))
+        ));
+      });
+      tbl.append(tbod);
+      openCard.append(tbl);
+    } else {
+      openCard.append(h('div', { style: 'padding:8px;font-size:11px;color:var(--muted)', text: 'No live open positions right now. Select a closed trade below or customize parameters.' }));
+    }
+    rightCol.append(openCard);
+
+    // Closed Trades Selector
+    const closedCard = h('div', { class: 'xcard', style: 'margin-bottom:0' },
+      h('div', { class: 'xsec-hd' }, h('span', { text: '2. CLOSED EXECUTION HISTORY (AUDITED LEDGER)' }), h('span', { class: 'lb', text: `${closedList.length} RECORDS` }))
+    );
+    if (closedList.length) {
+      const cWrap = h('div', { style: 'max-height:170px;overflow:auto' });
+      const tbl = h('table', { class: 't' },
+        h('thead', {}, h('tr', {}, h('th', { text: 'SYMBOL' }), h('th', { text: 'SIDE' }), h('th', { text: 'ENTRY / EXIT' }), h('th', { text: 'REALIZED ROE' }), h('th', { text: 'LOAD' })))
+      );
+      const tbod = h('tbody');
+      closedList.slice(0, 20).forEach(t => {
+        tbod.append(h('tr', { class: 'row', onclick: () => applyTradeRecord(t) },
+          h('td', { class: 'am sym', text: t.symbol }),
+          h('td', { class: t.direction === 'LONG' ? 'up' : 'dn', text: `${t.direction} ${t.leverage}x` }),
+          h('td', { text: `${fmtPx(t.entryPrice)} / ${fmtPx(t.markPrice)}` }),
+          h('td', { class: dirCls(t.roePct) + ' sym', text: `${t.roePct >= 0 ? '+' : ''}${t.roePct.toFixed(2)}%` }),
+          h('td', {}, h('button', { style: 'font-size:10px', text: 'SELECT', onclick: ev => { ev.stopPropagation(); applyTradeRecord(t); } }))
+        ));
+      });
+      tbl.append(tbod);
+      cWrap.append(tbl);
+      closedCard.append(cWrap);
+    } else {
+      closedCard.append(h('div', { style: 'padding:8px;font-size:11px;color:var(--muted)', text: 'No closed trades recorded in ledger yet.' }));
+    }
+    rightCol.append(closedCard);
+
+    // Custom Card Precision Editor
+    const editCard = h('div', { class: 'xcard', style: 'margin-bottom:0' },
+      h('div', { class: 'xsec-hd' }, h('span', { text: '3. PRECISION CARD EDITOR / SIMULATION' }), h('span', { class: 'am', text: 'AUTO-ROE CALC' })),
+      h('div', { style: 'padding:8px;display:grid;grid-template-columns:repeat(2,1fr);gap:6px;font-size:10.5px' },
+        h('div', {}, h('div', { class: 'mu', text: 'CONTRACT SYMBOL' }), symInp),
+        h('div', {}, h('div', { class: 'mu', text: 'DIRECTION' }), dirSel),
+        h('div', {}, h('div', { class: 'mu', text: 'LEVERAGE (X)' }), levInp),
+        h('div', {}, h('div', { class: 'mu', text: 'MARGIN SIZE (USDT)' }), mgnInp),
+        h('div', {}, h('div', { class: 'mu', text: 'ENTRY PRICE ($)' }), entInp),
+        h('div', {}, h('div', { class: 'mu', text: 'MARK / EXIT PRICE ($)' }), mrkInp),
+        h('div', {}, h('div', { class: 'mu', text: 'STRATEGY / SETUP TAG' }), setInp),
+        h('div', {}, h('div', { class: 'mu', text: 'QUANT CONFIDENCE (%)' }), cnfInp)
+      ),
+      h('div', { style: 'padding:0 8px 8px;display:flex;justify-content:flex-end' },
+        h('button', { class: 'on', text: 'UPDATE ROE CARD PREVIEW', onclick: syncEditor })
+      )
+    );
+    rightCol.append(editCard);
+
+    sc.append(h('div', { class: 'xgrid2' }, leftCol, rightCol));
+    redrawCanvasOnly();
+  }
+
+  async function load() {
+    renderToolbar();
+    try {
+      const r = await apiFetch('/api/terminal/roe-feed', { skipAuthModal: false }, 10000);
+      if (r.ok) {
+        const j = await r.json();
+        if (j && j.ok && j.data) feed = j.data;
+      }
+    } catch {}
+    if (unmounted) return;
+
+    if (feed.openPositions && feed.openPositions.length) {
+      const match = feed.openPositions.find(p => p.symbol === state.symbol) || feed.openPositions[0];
+      await applyTradeRecord(match);
+    } else if (feed.closedTrades && feed.closedTrades.length && state.entryPrice <= 0) {
+      await applyTradeRecord(feed.closedTrades[0]);
+    } else {
+      candles = await fetchRoeSparkCandles(state.symbol);
+      if (candles.length >= 2 && state.entryPrice <= 0) {
+        const firstPx = Number(candles[Math.max(0, candles.length - 18)].c ?? candles[0].close ?? 0);
+        const lastPx = Number(candles[candles.length - 1].c ?? candles[candles.length - 1].close ?? 0);
+        if (firstPx > 0 && lastPx > 0) {
+          state.direction = lastPx >= firstPx ? 'LONG' : 'SHORT';
+          state.entryPrice = firstPx;
+          state.markPrice = lastPx;
+          state.status = 'SIMULATED';
+          recalcFromPrices();
+        }
+      }
+      if (!unmounted) renderBody();
+    }
+    ctx.status({ ok: true, source: 'execution-roe-desk', ts: Date.now(), mode: 'LIVE' });
+  }
+
+  load();
+  ctx.cleanup(() => { unmounted = true; });
+}
+
+// =====================================================================
+// 9. TECH / MTF — MULTI-TIMEFRAME TECHNICAL CONSENSUS MATRIX & PIVOTS
+// =====================================================================
+function analyzeTfCandles(raw) {
+  const list = Array.isArray(raw) ? raw.map(c => ({
+    o: Number(c.o ?? c.open ?? 0),
+    h: Number(c.h ?? c.high ?? 0),
+    l: Number(c.l ?? c.low ?? 0),
+    c: Number(c.c ?? c.close ?? 0),
+    v: Number(c.v ?? c.volume ?? 0)
+  })).filter(c => c.c > 0) : [];
+
+  if (list.length < 25) return null;
+  const closes = list.map(c => c.c);
+  const last = closes[closes.length - 1];
+
+  // 1. RSI(14)
+  const rsi = calcMiniRsi14(closes);
+  const rsiSig = rsi <= 30 ? ['OVERSOLD BUY', 1] : rsi >= 70 ? ['OVERBOUGHT SELL', -1] : rsi >= 54 ? ['BULLISH', 1] : rsi <= 46 ? ['BEARISH', -1] : ['NEUTRAL', 0];
+
+  // 2. EMA 20 / 50
+  const emaOf = (p) => {
+    const k = 2 / (p + 1);
+    let e = closes[0];
+    for (let i = 1; i < closes.length; i++) e = closes[i] * k + e * (1 - k);
+    return e;
+  };
+  const ema20 = emaOf(20), ema50 = emaOf(50);
+  const emaSig = (last > ema20 && ema20 > ema50) ? ['GOLDEN BULL', 1]
+    : (last < ema20 && ema20 < ema50) ? ['DEATH BEAR', -1]
+    : (last > ema20 ? ['ABOVE EMA20', 0.5] : ['BELOW EMA20', -0.5]);
+
+  // 3. MACD (12, 26, 9)
+  const k12 = 2 / 13, k26 = 2 / 27, k9 = 2 / 10;
+  let e12 = closes[0], e26 = closes[0], macdLine = 0, sigLine = 0;
+  for (let i = 1; i < closes.length; i++) {
+    e12 = closes[i] * k12 + e12 * (1 - k12);
+    e26 = closes[i] * k26 + e26 * (1 - k26);
+    macdLine = e12 - e26;
+    sigLine = i === 1 ? macdLine : macdLine * k9 + sigLine * (1 - k9);
+  }
+  const hist = macdLine - sigLine;
+  const macdSig = (hist > 0 && macdLine > 0) ? ['BULL +HIST', 1]
+    : (hist > 0) ? ['BULL RECOV', 0.5]
+    : (hist < 0 && macdLine < 0) ? ['BEAR -HIST', -1]
+    : ['BEAR FADE', -0.5];
+
+  // 4. SuperTrend (10, 3.0)
+  const period = 10, mult = 3.0;
+  let atr = list[0].h - list[0].l;
+  let upBand = 0, dnBand = 0, stDir = 1, stVal = last;
+  for (let i = 1; i < list.length; i++) {
+    const tr = Math.max(list[i].h - list[i].l, Math.abs(list[i].h - list[i - 1].c), Math.abs(list[i].l - list[i - 1].c));
+    atr = (atr * (period - 1) + tr) / period;
+    const hl2 = (list[i].h + list[i].l) / 2;
+    const bUp = hl2 + mult * atr;
+    const bLo = hl2 - mult * atr;
+    upBand = (i === 1 || bUp < upBand || list[i - 1].c > upBand) ? bUp : upBand;
+    dnBand = (i === 1 || bLo > dnBand || list[i - 1].c < dnBand) ? bLo : dnBand;
+    if (stDir === 1 && list[i].c < dnBand) stDir = -1;
+    else if (stDir === -1 && list[i].c > upBand) stDir = 1;
+    stVal = stDir === 1 ? dnBand : upBand;
+  }
+  const stSig = stDir === 1 ? [`BUY > ${fmtPx(stVal)}`, 1] : [`SELL < ${fmtPx(stVal)}`, -1];
+
+  // 5. Bollinger (20, 2) %B & Bandwidth
+  const tail20 = closes.slice(-20);
+  const mean20 = tail20.reduce((s, v) => s + v, 0) / 20;
+  const sd20 = Math.sqrt(tail20.reduce((s, v) => s + (v - mean20) ** 2, 0) / 20);
+  const bbUp = mean20 + 2 * sd20, bbLo = mean20 - 2 * sd20;
+  const pctB = bbUp > bbLo ? ((last - bbLo) / (bbUp - bbLo)) * 100 : 50;
+  const bwPct = mean20 > 0 ? ((bbUp - bbLo) / mean20) * 100 : 0;
+  const sqz = bwPct < 2.2 ? ' [SQZ]' : '';
+  const bbSig = pctB >= 85 ? [`UPPER BREAK${sqz}`, 1]
+    : pctB >= 55 ? [`BULL ZONE (${pctB.toFixed(0)}%)${sqz}`, 0.5]
+    : pctB <= 15 ? [`LOWER STRETCH${sqz}`, -1]
+    : pctB <= 45 ? [`BEAR ZONE (${pctB.toFixed(0)}%)${sqz}`, -0.5]
+    : [`MID BAND${sqz}`, 0];
+
+  // 6. 20-Bar Market Structure (BOS)
+  const prior = list.slice(-21, -1);
+  const hi20 = Math.max(...prior.map(x => x.h));
+  const lo20 = Math.min(...prior.map(x => x.l));
+  const mid20 = (hi20 + lo20) / 2;
+  const bosSig = last > hi20 ? ['BOS HIGH BREAK', 1]
+    : last < lo20 ? ['BOS LOW BREAK', -1]
+    : last >= mid20 ? ['UPPER STRUCT', 0.5]
+    : ['LOWER STRUCT', -0.5];
+
+  const rawScore = ((rsiSig[1] + emaSig[1] + macdSig[1] + stSig[1] + bbSig[1] + bosSig[1]) / 6) * 100;
+  const rating = rawScore >= 55 ? 'STRONG BUY' : rawScore >= 20 ? 'BUY' : rawScore <= -55 ? 'STRONG SELL' : rawScore <= -20 ? 'SELL' : 'NEUTRAL';
+
+  return {
+    last,
+    rsi, rsiSig,
+    ema20, ema50, emaSig,
+    hist, macdSig,
+    stVal, stSig,
+    pctB, bwPct, bbSig,
+    hi20, lo20, bosSig,
+    score: +rawScore.toFixed(1),
+    rating,
+    prevBar: list[list.length - 2] || list[list.length - 1]
+  };
+}
+
+function buildTechGaugeSvg(score, label, subtitle) {
+  const clamped = Math.max(-100, Math.min(100, Number(score) || 0));
+  const norm = (clamped + 100) / 200; // 0..1
+  const ang = Math.PI + norm * Math.PI; // PI..2PI
+  const cx = 170, cy = 122, r = 86;
+  const nx = cx + (r - 12) * Math.cos(ang);
+  const ny = cy + (r - 12) * Math.sin(ang);
+  const col = clamped >= 55 ? '#00d26a' : clamped >= 20 ? '#4cd964' : clamped <= -55 ? '#ff453a' : clamped <= -20 ? '#ff7b72' : '#ffb000';
+
+  const arcSeg = (a0, a1, stroke) => {
+    const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+    const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+    return `<path d="M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${r} ${r} 0 0 1 ${x1.toFixed(1)} ${y1.toFixed(1)}" fill="none" stroke="${stroke}" stroke-width="14"/>`;
+  };
+
+  return `<svg viewBox="0 0 340 165" style="width:100%;height:auto;display:block;background:#05080d">
+    ${arcSeg(Math.PI, Math.PI * 1.2, '#ff453a')}
+    ${arcSeg(Math.PI * 1.21, Math.PI * 1.4, '#ff8c42')}
+    ${arcSeg(Math.PI * 1.41, Math.PI * 1.59, '#ffb000')}
+    ${arcSeg(Math.PI * 1.60, Math.PI * 1.79, '#32d74b')}
+    ${arcSeg(Math.PI * 1.80, Math.PI * 2.0, '#00d26a')}
+    <line x1="${cx}" y1="${cy}" x2="${nx.toFixed(1)}" y2="${ny.toFixed(1)}" stroke="#ffffff" stroke-width="2.6"/>
+    <circle cx="${cx}" cy="${cy}" r="5" fill="${col}" stroke="#fff" stroke-width="1.5"/>
+    <text x="24" y="132" fill="#ff5a52" font-size="9" font-family="monospace" font-weight="bold">STRONG SELL</text>
+    <text x="316" y="132" fill="#00d26a" font-size="9" font-family="monospace" font-weight="bold" text-anchor="end">STRONG BUY</text>
+    <text x="${cx}" y="94" fill="${col}" font-size="16" font-family="monospace" font-weight="900" text-anchor="middle">${esc(label)}</text>
+    <text x="${cx}" y="146" fill="#e6edf3" font-size="11" font-family="monospace" font-weight="bold" text-anchor="middle">COMPOSITE SCORE: ${clamped >= 0 ? '+' : ''}${clamped.toFixed(1)} / 100</text>
+    <text x="${cx}" y="160" fill="#7d8b9e" font-size="9" font-family="monospace" text-anchor="middle">${esc(subtitle || '')}</text>
+  </svg>`;
+}
+
+export function mountTECH(body, ctx) {
+  body.classList.add('fill');
+  const tb = h('div', { class: 'tb' });
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  let sym = ctx.symbol || 'BTCUSDT';
+  let unmounted = false;
+  const TFS = [
+    { iv: '5m', label: '5 MIN (SCALP)', weight: 0.12 },
+    { iv: '15m', label: '15 MIN (INTRADAY)', weight: 0.18 },
+    { iv: '1h', label: '1 HOUR (SWING)', weight: 0.25 },
+    { iv: '4h', label: '4 HOUR (REGIME)', weight: 0.25 },
+    { iv: '1d', label: '1 DAY (MACRO)', weight: 0.20 }
+  ];
+
+  function renderToolbar() {
+    tb.textContent = '';
+    const inp = h('input', { value: sym, style: 'width:105px;text-transform:uppercase;font-weight:700' });
+    tb.append(
+      h('span', { class: 'lbl', text: 'MULTI-TF TECHNICAL MATRIX:' }),
+      inp,
+      h('button', { class: 'on', text: 'SCAN MTF', onclick: () => { sym = inp.value.trim().toUpperCase() || sym; ctx.setSymbol(sym); load(); } }),
+      ...['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'NVDA', 'GC=F'].map(s => h('button', {
+        class: sym === s ? 'on' : '', text: s, onclick: () => { sym = s; ctx.setSymbol(s); renderToolbar(); load(); }
+      })),
+      h('button', { style: 'color:#ffb000;border-color:#ffb00066', text: 'OPEN GP CHART', onclick: () => ctx.run(`${sym} GP`) }),
+      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: 'SHARE ROE', onclick: () => ctx.run(`${sym} ROE`) })
+    );
+  }
+
+  async function load() {
+    renderToolbar();
+    sc.textContent = '';
+    sc.append(h('div', { class: 'na', text: `Computing 5-Timeframe x 6-Indicator Technical Matrix for ${sym}...` }));
+
+    const cleanSym = sym.replace(/\.P$/, '');
+    const results = await Promise.all(TFS.map(async t => {
+      const env = await get('kline', { symbol: cleanSym, interval: t.iv, limit: 100 }, 4000);
+      const arr = env && env.ok ? (Array.isArray(env.data) ? env.data : (env.data && env.data.candles) || []) : [];
+      return { ...t, env, analysis: analyzeTfCandles(arr) };
+    }));
+    if (unmounted) return;
+    sc.textContent = '';
+
+    const valid = results.filter(r => r.analysis);
+    if (!valid.length) {
+      sc.append(h('div', { class: 'na', text: `Insufficient OHLCV history to compute Multi-Timeframe Matrix for ${sym}.` }));
+      ctx.status({ ok: false, source: 'mtf-tech', ts: Date.now(), mode: 'N/A' });
+      return;
+    }
+
+    const totalW = valid.reduce((s, r) => s + r.weight, 0) || 1;
+    const weightedScore = valid.reduce((s, r) => s + r.analysis.score * r.weight, 0) / totalW;
+    const masterRating = weightedScore >= 50 ? 'STRONG BUY' : weightedScore >= 18 ? 'BUY' : weightedScore <= -50 ? 'STRONG SELL' : weightedScore <= -18 ? 'SELL' : 'NEUTRAL';
+    const buyTfs = valid.filter(r => r.analysis.score >= 18).length;
+    const sellTfs = valid.filter(r => r.analysis.score <= -18).length;
+    const lastPx = valid[0].analysis.last;
+
+    // Classic & Fibonacci Pivots from 1D prior candle (or highest TF available)
+    const dailyRec = results.find(r => r.iv === '1d' && r.analysis) || valid[valid.length - 1];
+    const pb = dailyRec.analysis.prevBar;
+    const P = (pb.h + pb.l + pb.c) / 3;
+    const rng = Math.max(1e-8, pb.h - pb.l);
+    const pivots = {
+      classic: { r3: pb.h + 2 * (P - pb.l), r2: P + rng, r1: 2 * P - pb.l, p: P, s1: 2 * P - pb.h, s2: P - rng, s3: pb.l - 2 * (pb.h - P) },
+      fib: { r3: P + 1.0 * rng, r2: P + 0.618 * rng, r1: P + 0.382 * rng, p: P, s1: P - 0.382 * rng, s2: P - 0.618 * rng, s3: P - 1.0 * rng }
+    };
+
+    // Top Row: Semicircular Gauge + Daily Pivot Ladder
+    const pivotTbl = h('table', { class: 't' },
+      h('thead', {}, h('tr', {}, h('th', { text: 'LEVEL' }), h('th', { text: 'CLASSIC FLOOR' }), h('th', { text: 'FIBONACCI' }), h('th', { text: 'DIST VS SPOT' })))
+    );
+    const pBody = h('tbody');
+    [['R3', 'r3', 'dn'], ['R2', 'r2', 'dn'], ['R1', 'r1', 'am'], ['PIVOT (P)', 'p', 'lb'], ['S1', 's1', 'am'], ['S2', 's2', 'up'], ['S3', 's3', 'up']].forEach(([lbl, k, cls]) => {
+      const cp = pivots.classic[k];
+      const fp = pivots.fib[k];
+      const distPct = lastPx > 0 ? ((cp - lastPx) / lastPx) * 100 : 0;
+      pBody.append(h('tr', {},
+        h('td', { class: cls + ' sym', text: lbl }),
+        h('td', { text: fmtPx(cp) }),
+        h('td', { text: fmtPx(fp) }),
+        h('td', { class: dirCls(distPct), text: fmtPct(distPct) })
+      ));
+    });
+    pivotTbl.append(pBody);
+
+    sc.append(h('div', { class: 'xgrid2', style: 'margin-bottom:8px' },
+      h('div', { class: 'xcard', style: 'margin-bottom:0' },
+        h('div', { class: 'xsec-hd' },
+          h('span', { text: `MULTI-TIMEFRAME CONSENSUS [${sym}]` }),
+          h('span', { class: 'am sym', text: `SPOT $${fmtPx(lastPx)}` })
+        ),
+        makeSvgBox(buildTechGaugeSvg(weightedScore, masterRating, `${buyTfs} BULLISH TFs  •  ${valid.length - buyTfs - sellTfs} NEUTRAL  •  ${sellTfs} BEARISH TFs`))
+      ),
+      h('div', { class: 'xcard', style: 'margin-bottom:0' },
+        h('div', { class: 'xsec-hd' },
+          h('span', { text: 'INSTITUTIONAL PIVOT LEVELS (PRIOR DAILY BAR)' }),
+          h('span', { class: lastPx >= P ? 'up' : 'dn', text: lastPx >= P ? 'ABOVE DAILY PIVOT' : 'BELOW DAILY PIVOT' })
+        ),
+        pivotTbl
+      )
+    ));
+
+    // Full 5x6 Multi-Timeframe Signal Heatmap Table
+    const cellCls = v => v > 0 ? 'background:rgba(0,210,106,0.13);color:#00d26a;font-weight:700' : v < 0 ? 'background:rgba(255,69,58,0.13);color:#ff5a52;font-weight:700' : 'color:#9aa7b8';
+    const mTbl = h('table', { class: 't' },
+      h('thead', {}, h('tr', {},
+        h('th', { text: 'TIMEFRAME' }),
+        h('th', { text: 'RSI (14)' }),
+        h('th', { text: 'EMA 20 / 50' }),
+        h('th', { text: 'MACD (12,26,9)' }),
+        h('th', { text: 'SUPERTREND (10,3)' }),
+        h('th', { text: 'BOLLINGER (20,2)' }),
+        h('th', { text: '20-BAR STRUCTURE' }),
+        h('th', { text: 'TF VERDICT' })
+      ))
+    );
+    const mBody = h('tbody');
+    results.forEach(r => {
+      const a = r.analysis;
+      if (!a) {
+        mBody.append(h('tr', {}, h('td', { class: 'am', text: r.label }), h('td', { colspan: '7', class: 'mu', text: 'N/A' })));
+        return;
+      }
+      const rCls = a.score >= 20 ? 'up' : a.score <= -20 ? 'dn' : 'am';
+      mBody.append(h('tr', {},
+        h('td', { class: 'am sym', text: r.label }),
+        h('td', { style: cellCls(a.rsiSig[1]), text: `${a.rsi.toFixed(1)} • ${a.rsiSig[0]}` }),
+        h('td', { style: cellCls(a.emaSig[1]), text: a.emaSig[0] }),
+        h('td', { style: cellCls(a.macdSig[1]), text: a.macdSig[0] }),
+        h('td', { style: cellCls(a.stSig[1]), text: a.stSig[0] }),
+        h('td', { style: cellCls(a.bbSig[1]), text: a.bbSig[0] }),
+        h('td', { style: cellCls(a.bosSig[1]), text: a.bosSig[0] }),
+        h('td', { class: rCls + ' sym', text: `${a.rating} (${a.score >= 0 ? '+' : ''}${a.score})` })
+      ));
+    });
+    mTbl.append(mBody);
+
+    sc.append(h('div', { class: 'xcard' },
+      h('div', { class: 'xsec-hd' },
+        h('span', { text: '5-TIMEFRAME X 6-STUDY SIGNAL CONFLUENCE MATRIX' }),
+        h('span', { class: 'lb', text: 'WEIGHTED: 1H (25%) + 4H (25%) + 1D (20%) + 15M (18%) + 5M (12%)' })
+      ),
+      mTbl
+    ));
+    ctx.status({ ok: true, source: 'mtf-technical-engine', ts: Date.now(), mode: 'LIVE' });
+  }
+
+  load();
+  ctx.cleanup(() => { unmounted = true; });
+}
+
+// =====================================================================
+// 10. BRDT / DOMI — MARKET BREADTH, VOLUME DOMINANCE & MACRO REGIME
+// =====================================================================
+export function mountBRDT(body, ctx) {
+  body.classList.add('fill');
+  const tb = h('div', { class: 'tb' });
+  const sc = h('div', { class: 'pb' });
+  body.append(tb, sc);
+
+  let unmounted = false;
+
+  function renderToolbar() {
+    tb.textContent = '';
+    tb.append(
+      h('span', { class: 'lbl', text: 'MARKET INTERNALS, BREADTH & DOMINANCE:' }),
+      h('button', { class: 'on', text: 'REFRESH INTERNALS', onclick: load }),
+      h('button', { text: 'HEATMAP (IMAP)', onclick: () => ctx.run('BTCUSDT IMAP') }),
+      h('button', { text: 'SECTOR RRG', onclick: () => ctx.run('BTCUSDT RRG') }),
+      h('button', { text: 'ETF FLOWS', onclick: () => ctx.run('BTCUSDT ETF') }),
+      h('button', { text: 'MTF TECH', onclick: () => ctx.run(`${ctx.symbol} TECH`) })
+    );
+  }
+
+  async function load() {
+    renderToolbar();
+    const env = await get('breadth', {}, 5000);
+    if (unmounted) return;
+    ctx.status(env);
+    sc.textContent = '';
+
+    if (!env.ok || !env.data) {
+      sc.append(h('div', { class: 'na', text: 'Market breadth feed temporarily unavailable.' }));
+      return;
+    }
+
+    const d = env.data;
+    const br = d.breadth || {};
+    const dom = Array.isArray(d.dominance) ? d.dominance : [];
+    const macro = Array.isArray(d.macroPulse) ? d.macroPulse : [];
+    const members = Array.isArray(d.constituents) ? d.constituents : [];
+    const riskScore = (Number(d.riskAppetite || 50) - 50) * 2; // Map 0..100 -> -100..+100 for gauge
+
+    const totalU = Math.max(1, Number(br.universeCount || 16));
+    const advW = ((br.advancers || 0) / totalU) * 100;
+    const uncW = ((br.unchanged || 0) / totalU) * 100;
+    const decW = ((br.decliners || 0) / totalU) * 100;
+
+    // Top Row: Risk Appetite Gauge + Breadth & Dominance Stacked Bars
+    const internalsBox = h('div', { class: 'xcard', style: 'margin-bottom:0;padding:8px' },
+      h('div', { class: 'xsec-hd', style: 'margin:-8px -8px 8px -8px' },
+        h('span', { text: 'ADVANCERS / DECLINERS & VOLUME DOMINANCE' }),
+        h('span', { class: 'am sym', text: `A/D RATIO: ${br.advDeclRatio ?? 1.0}` })
+      ),
+      h('div', { style: 'font-size:11px;display:flex;justify-content:space-between;margin-bottom:4px' },
+        h('span', { class: 'up sym', text: `ADVANCERS: ${br.advancers || 0} (${br.breadthPct || 0}%)` }),
+        h('span', { class: 'mu', text: `UNCHANGED: ${br.unchanged || 0}` }),
+        h('span', { class: 'dn sym', text: `DECLINERS: ${br.decliners || 0}` })
+      ),
+      h('div', { style: 'display:flex;height:16px;width:100%;background:#11161f;border:1px solid #232d3d;margin-bottom:10px;overflow:hidden' },
+        h('div', { style: `width:${advW}%;background:#00d26a` }),
+        h('div', { style: `width:${uncW}%;background:#5c687a` }),
+        h('div', { style: `width:${decW}%;background:#ff453a` })
+      ),
+      h('div', { style: 'font-size:10.5px;color:#9aa7b8;margin-bottom:10px;display:flex;justify-content:space-between' },
+        h('span', { text: `STRONG BREAKOUTS (>+2.5%): ${br.strongUp || 0}` }),
+        h('span', { text: `ABOVE INTRADAY MID: ${br.upperRangePct || 0}%` }),
+        h('span', { text: `DEEP SELLOFFS (<-2.5%): ${br.strongDn || 0}` })
+      ),
+      h('div', { class: 'mu', style: 'font-size:10px;margin-bottom:4px;font-weight:700', text: 'INSTITUTIONAL DOLLAR-VOLUME DOMINANCE SHARE:' }),
+      h('div', { style: 'display:flex;height:18px;width:100%;border:1px solid #232d3d;margin-bottom:8px;overflow:hidden' },
+        ...dom.map(seg => h('div', { style: `width:${seg.pct}%;background:${seg.color}`, title: `${seg.label}: ${seg.pct}%` }))
+      ),
+      h('div', { style: 'display:grid;grid-template-columns:repeat(2,1fr);gap:4px;font-size:10.5px' },
+        ...dom.map(seg => h('div', { style: 'display:flex;justify-content:space-between;background:#06090f;padding:3px 6px;border-left:3px solid ' + seg.color },
+          h('span', { text: seg.label }),
+          h('b', { style: `color:${seg.color}`, text: `${seg.pct}% (${fmtUsdShort(seg.dollarVol).replace(/^\+/, '')})` })
+        ))
+      )
+    );
+
+    sc.append(h('div', { class: 'xgrid2', style: 'margin-bottom:8px' },
+      h('div', { class: 'xcard', style: 'margin-bottom:0' },
+        h('div', { class: 'xsec-hd' },
+          h('span', { text: 'CROSS-ASSET RISK-ON / RISK-OFF REGIME' }),
+          h('span', { class: d.riskAppetite >= 55 ? 'up' : d.riskAppetite <= 45 ? 'dn' : 'am', text: `INDEX ${d.riskAppetite}/100` })
+        ),
+        makeSvgBox(buildTechGaugeSvg(riskScore, d.regimeLabel || 'BALANCED REGIME', 'COMPOSITE OF CRYPTO BREADTH + S&P 500 + GOLD + US10Y'))
+      ),
+      internalsBox
+    ));
+
+    // Cross-Asset Macro Pulse Strip
+    if (macro.length) {
+      sc.append(
+        h('div', { class: 'xcard', style: 'margin-bottom:8px' },
+          h('div', { class: 'xsec-hd' }, h('span', { text: 'CROSS-ASSET MACRO BENCHMARK PULSE' }), h('span', { class: 'lb', text: 'EQUITIES • GOLD • OIL • TREASURIES • FX' })),
+          h('div', { style: 'display:grid;grid-template-columns:repeat(6,1fr);gap:6px;padding:6px' },
+            ...macro.map(m => h('div', {
+              style: 'background:#06090f;border:1px solid #1b2432;padding:6px;cursor:pointer',
+              onclick: () => ctx.run(`${m.symbol} GP`)
+            },
+              h('div', { class: 'mu', style: 'font-size:9.5px', text: m.role }),
+              h('div', { class: 'am sym', style: 'font-size:11px;font-weight:700', text: m.name }),
+              h('div', { style: 'font-size:12.5px;font-weight:700;color:#fff;margin-top:2px', text: fmtPx(m.price) }),
+              h('div', { class: dirCls(m.chgPct) + ' sym', style: 'font-size:11px', text: fmtPct(m.chgPct) })
+            ))
+          )
+        )
+      );
+    }
+
+    // 16-Asset Breadth Constituents Table
+    const mTbl = h('table', { class: 't' },
+      h('thead', {}, h('tr', {},
+        h('th', { text: 'RANK' }),
+        h('th', { text: 'CONTRACT' }),
+        h('th', { text: 'LAST PRICE' }),
+        h('th', { text: '24H CHANGE' }),
+        h('th', { text: '24H DOLLAR VOL' }),
+        h('th', { text: 'INTRADAY RANGE POS' }),
+        h('th', { text: 'DRILLDOWN' })
+      ))
+    );
+    const mBody = h('tbody');
+    members.forEach((c, idx) => {
+      mBody.append(h('tr', { class: 'row', onclick: () => ctx.run(`${c.symbol} GP`) },
+        h('td', { class: 'mu', text: String(idx + 1) }),
+        h('td', { class: 'am sym', text: c.symbol }),
+        h('td', { text: '$' + fmtPx(c.price) }),
+        h('td', { class: dirCls(c.chgPct) + ' sym', text: fmtPct(c.chgPct) }),
+        h('td', { class: 'lb', text: fmtUsdShort(c.dollarVol).replace(/^\+/, '') }),
+        h('td', {},
+          h('div', { style: 'display:flex;align-items:center;gap:6px' },
+            h('div', { style: 'width:70px;height:7px;background:#141b26;border:1px solid #273244' },
+              h('div', { style: `width:${Math.max(2, Math.min(100, c.rangePos))}%;height:100%;background:${c.rangePos >= 55 ? '#00d26a' : '#ff5a52'}` })
+            ),
+            h('span', { style: 'font-size:10px', text: `${c.rangePos}%` })
+          )
+        ),
+        h('td', {},
+          h('button', { style: 'font-size:9.5px;margin-right:3px', text: 'GP', onclick: ev => { ev.stopPropagation(); ctx.run(`${c.symbol} GP`); } }),
+          h('button', { style: 'font-size:9.5px', text: 'TECH', onclick: ev => { ev.stopPropagation(); ctx.run(`${c.symbol} TECH`); } })
+        )
+      ));
+    });
+    mTbl.append(mBody);
+
+    sc.append(h('div', { class: 'xcard' },
+      h('div', { class: 'xsec-hd' }, h('span', { text: 'INSTITUTIONAL CRYPTO UNIVERSE BREADTH LEADERBOARD' }), h('span', { class: 'am', text: `${members.length} LIQUID MAJORS` })),
+      mTbl
+    ));
+  }
+
+  load();
+  ctx.cleanup(() => { unmounted = true; });
 }

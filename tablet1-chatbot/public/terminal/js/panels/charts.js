@@ -100,6 +100,89 @@ function dedupeByTime(arr) {
   return [...m.values()].sort((a, b) => a.time - b.time);
 }
 
+function calcHeikinAshi(mapped) {
+  const out = [];
+  for (let i = 0; i < mapped.length; i++) {
+    const b = mapped[i];
+    const haClose = (b.open + b.high + b.low + b.close) / 4;
+    const haOpen = i === 0 ? (b.open + b.close) / 2 : (out[i - 1].open + out[i - 1].close) / 2;
+    const haHigh = Math.max(b.high, haOpen, haClose);
+    const haLow = Math.min(b.low, haOpen, haClose);
+    out.push({ ...b, open: haOpen, high: haHigh, low: haLow, close: haClose, value: haClose });
+  }
+  return out;
+}
+
+function calcIchimoku(mapped) {
+  const n = mapped ? mapped.length : 0;
+  if (n < 26) return [];
+  const midHL = (end, len) => {
+    const s = Math.max(0, end - len + 1);
+    let hi = -Infinity, lo = Infinity;
+    for (let i = s; i <= end; i++) {
+      if (mapped[i].high > hi) hi = mapped[i].high;
+      if (mapped[i].low < lo) lo = mapped[i].low;
+    }
+    return (hi + lo) / 2;
+  };
+  const raw = [];
+  for (let i = 0; i < n; i++) {
+    const tenkan = i >= 8 ? midHL(i, 9) : null;
+    const kijun = i >= 25 ? midHL(i, 26) : null;
+    const spanB = i >= 51 ? midHL(i, 52) : (i >= 25 ? midHL(i, i + 1) : null);
+    const spanA = (tenkan != null && kijun != null) ? (tenkan + kijun) / 2 : null;
+    raw.push({ idx: i, tenkan, kijun, spanA, spanB });
+  }
+  return raw;
+}
+
+function calcSuperTrend(mapped, period = 10, mult = 3.0) {
+  const n = mapped ? mapped.length : 0;
+  if (n < period + 2) return [];
+  const tr = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    const prevC = i > 0 ? mapped[i - 1].close : mapped[i].open;
+    tr[i] = Math.max(
+      mapped[i].high - mapped[i].low,
+      Math.abs(mapped[i].high - prevC),
+      Math.abs(mapped[i].low - prevC)
+    );
+  }
+  const atr = new Array(n).fill(0);
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    sum += tr[i];
+    if (i === period - 1) atr[i] = sum / period;
+    else if (i >= period) atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period;
+  }
+  const out = [];
+  let finalUp = 0, finalLo = 0, dir = 1;
+  for (let i = period - 1; i < n; i++) {
+    const hl2 = (mapped[i].high + mapped[i].low) / 2;
+    const basicUp = hl2 + mult * atr[i];
+    const basicLo = hl2 - mult * atr[i];
+    if (i === period - 1) {
+      finalUp = basicUp;
+      finalLo = basicLo;
+      dir = mapped[i].close >= hl2 ? 1 : -1;
+    } else {
+      const prevC = mapped[i - 1].close;
+      finalUp = (basicUp < finalUp || prevC > finalUp) ? basicUp : finalUp;
+      finalLo = (basicLo > finalLo || prevC < finalLo) ? basicLo : finalLo;
+      if (dir === -1 && mapped[i].close > finalUp) dir = 1;
+      else if (dir === 1 && mapped[i].close < finalLo) dir = -1;
+    }
+    const prevDir = out.length ? out[out.length - 1].dir : dir;
+    out.push({
+      idx: i,
+      dir,
+      line: dir === 1 ? finalLo : finalUp,
+      flipped: out.length > 0 && dir !== prevDir
+    });
+  }
+  return out;
+}
+
 /**
  * Computes institutional Technical Master overlays strictly from real OHLCV bars:
  * - Fractal Market Structure (HH/HL/LH/LL) + BOS/CHoCH breaks
@@ -618,6 +701,92 @@ export function attachTechnicalMasterCanvas({ wrap, chart, getSeries, getMapped,
       }
     }
 
+    // F0. Ichimoku Kinko Hyo Cloud, SuperTrend(10,3), and Session PDH/PDL Liquidity Lines
+    if (layers.ichimoku && mapped.length >= 26) {
+      const ichi = calcIchimoku(mapped);
+      const cloudPtsA = [], cloudPtsB = [];
+      for (const pt of ichi) {
+        if (pt.spanA == null || pt.spanB == null) continue;
+        const x = xOfIdx(pt.idx), ya = yOfPx(pt.spanA), yb = yOfPx(pt.spanB);
+        if (x == null || ya == null || yb == null) continue;
+        cloudPtsA.push([x, ya, pt.spanA >= pt.spanB]);
+        cloudPtsB.unshift([x, yb]);
+      }
+      if (cloudPtsA.length >= 2) {
+        const lastBull = cloudPtsA[cloudPtsA.length - 1][2];
+        ctx2d.save();
+        ctx2d.fillStyle = lastBull ? 'rgba(0, 210, 106, 0.11)' : 'rgba(255, 59, 48, 0.11)';
+        ctx2d.beginPath();
+        cloudPtsA.forEach(([x, y], i) => { if (i === 0) ctx2d.moveTo(x, y); else ctx2d.lineTo(x, y); });
+        cloudPtsB.forEach(([x, y]) => ctx2d.lineTo(x, y));
+        ctx2d.closePath();
+        ctx2d.fill();
+        ctx2d.restore();
+      }
+      const drawIchiLine = (field, color, width = 1.2) => {
+        ctx2d.save();
+        ctx2d.strokeStyle = color;
+        ctx2d.lineWidth = width;
+        ctx2d.beginPath();
+        let started = false;
+        for (const pt of ichi) {
+          if (pt[field] == null) continue;
+          const x = xOfIdx(pt.idx), y = yOfPx(pt[field]);
+          if (x == null || y == null) continue;
+          if (!started) { ctx2d.moveTo(x, y); started = true; } else ctx2d.lineTo(x, y);
+        }
+        ctx2d.stroke();
+        ctx2d.restore();
+      };
+      drawIchiLine('tenkan', '#00e5ff', 1.2);
+      drawIchiLine('kijun', '#ff6600', 1.3);
+      drawIchiLine('spanA', 'rgba(0,210,106,0.55)', 1.0);
+      drawIchiLine('spanB', 'rgba(255,90,82,0.55)', 1.0);
+    }
+
+    if (layers.supertrend && mapped.length >= 14) {
+      const stArr = calcSuperTrend(mapped, 10, 3.0);
+      for (let i = 1; i < stArr.length; i++) {
+        const p0 = stArr[i - 1], p1 = stArr[i];
+        if (p0.dir !== p1.dir) continue;
+        const x0 = xOfIdx(p0.idx), y0 = yOfPx(p0.line);
+        const x1 = xOfIdx(p1.idx), y1 = yOfPx(p1.line);
+        if (x0 == null || y0 == null || x1 == null || y1 == null) continue;
+        ctx2d.save();
+        ctx2d.strokeStyle = p1.dir === 1 ? '#00ff88' : '#ff453a';
+        ctx2d.lineWidth = 1.8;
+        ctx2d.beginPath(); ctx2d.moveTo(x0, y0); ctx2d.lineTo(x1, y1); ctx2d.stroke();
+        ctx2d.restore();
+      }
+      for (const p of stArr) {
+        if (!p.flipped) continue;
+        const x = xOfIdx(p.idx), y = yOfPx(p.line);
+        if (x == null || y == null || x < 10 || x > plotW - 30) continue;
+        const bull = p.dir === 1;
+        drawPill(bull ? 'ST BUY' : 'ST SELL', x - 16, bull ? y + 13 : y - 4, bull ? 'rgba(0,38,18,0.94)' : 'rgba(42,6,6,0.94)', bull ? '#00ff88' : '#ff5a52', bull ? '#00ff8888' : '#ff453a88');
+      }
+    }
+
+    if (layers.pdhl && mapped.length >= 30) {
+      const slice = mapped.slice(-48, -12);
+      if (slice.length >= 10) {
+        const pdh = Math.max(...slice.map(b => b.high));
+        const pdl = Math.min(...slice.map(b => b.low));
+        const xStart = Math.max(0, xOfIdx(mapped.length - 36) ?? plotW * 0.35);
+        for (const [px, lbl, col] of [[pdh, 'PDH LIQ', '#ffb000'], [pdl, 'PDL LIQ', '#4da3ff']]) {
+          const yy = yOfPx(px);
+          if (yy == null) continue;
+          ctx2d.save();
+          ctx2d.strokeStyle = col;
+          ctx2d.lineWidth = 1.1;
+          ctx2d.setLineDash([6, 4]);
+          ctx2d.beginPath(); ctx2d.moveTo(xStart, yy); ctx2d.lineTo(plotW, yy); ctx2d.stroke();
+          ctx2d.restore();
+          drawPill(`${lbl} ${fmtPx(px)}`, xStart + 6, yy - 2, 'rgba(8,10,14,0.88)', col, col + '66');
+        }
+      }
+    }
+
     // F. Trade Plan Risk / Reward Boxes (used for LIVE Open Positions in GP/GIP & BOT <GO>)
     if (plan && plan.entry > 0) {
       const boxStart = Math.max(plotW * 0.58, (xOfIdx(mapped.length - 12) ?? plotW * 0.65));
@@ -682,6 +851,7 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
   let style = 'candle';
   let showSMA = true, showEMA = true, showBB = false, showVWAP = true, showVol = true, oscMode = 'RSI'; // 'RSI' | 'MACD' | 'NONE'
   let showStruct = true, showTrend = true, showFvg = true, showFib = false, showVpvr = true;
+  let showIchimoku = false, showSupertrend = false, showPdhl = false;
   let unsubs = [];
   let secTimer = null;
   let lastTickTs = Date.now();
@@ -723,8 +893,8 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
       tb.append(h('button', { class: i === iv ? 'on' : '', text: i.toUpperCase(), onclick: () => { iv = i; buildToolbar(); load(); } }));
     }
     tb.append(h('span', { class: 'lbl', text: 'CHART:' }));
-    for (const t of ['candle', 'line', 'area']) {
-      tb.append(h('button', { class: t === style ? 'on' : '', text: t.toUpperCase(), onclick: () => { style = t; buildToolbar(); renderChart(lastCandles); } }));
+    for (const [t, lbl] of [['candle', 'CANDLE'], ['heikin', 'HEIKIN'], ['bar', 'BAR'], ['line', 'LINE'], ['area', 'AREA']]) {
+      tb.append(h('button', { class: t === style ? 'on' : '', text: lbl, onclick: () => { style = t; buildToolbar(); renderChart(lastCandles); } }));
     }
     tb.append(h('span', { class: 'lbl', text: 'OVERLAYS:' }));
     const stBtn = (lbl, on, toggle, repaintOnly = false) => h('button', {
@@ -750,7 +920,10 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
       stBtn('TREND/CH', showTrend, () => { showTrend = !showTrend; }, true),
       stBtn('FVG/OB', showFvg, () => { showFvg = !showFvg; }, true),
       stBtn('FIB 0.618', showFib, () => { showFib = !showFib; }, true),
-      stBtn('VPVR(POC)', showVpvr, () => { showVpvr = !showVpvr; }, true)
+      stBtn('VPVR(POC)', showVpvr, () => { showVpvr = !showVpvr; }, true),
+      stBtn('ICHIMOKU', showIchimoku, () => { showIchimoku = !showIchimoku; }, true),
+      stBtn('STREND', showSupertrend, () => { showSupertrend = !showSupertrend; }, true),
+      stBtn('PDH/PDL', showPdhl, () => { showPdhl = !showPdhl; }, true)
     );
     tb.append(h('span', { class: 'lbl', text: 'LOWER:' }));
     for (const m of ['RSI', 'MACD', 'NONE']) {
@@ -766,39 +939,61 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
       }));
     }
 
-    // Snapshot PNG Exporter + Save to Multi-Chart Visual Gallery (G <GO> / SNAP <GO>)
+    // 2x Retina HiDPI Institutional Tear-Sheet PNG Exporter + Save to Archive (G <GO>)
     const snapBtn = h('button', {
       style: 'border-color:#00e5ff;color:#00e5ff;font-weight:700',
-      text: 'SNAP PNG',
-      title: 'Download Chart + Technical Overlays as PNG Image & Save to Archive (G <GO>)',
+      text: 'SNAP PNG (HD)',
+      title: 'Export 2x Retina Institutional Chart Tear-Sheet (with Overlays + RSI/MACD + Stats) as PNG',
       onclick: () => {
         try {
+          const SCALE = 2;
           const rect = wrap.getBoundingClientRect();
-          const W = Math.max(640, Math.round(rect.width || 900));
-          const H = Math.max(320, Math.round(rect.height || 420));
-          const hdrH = 34;
+          const W = Math.max(760, Math.round(rect.width || 960));
+          const H = Math.max(340, Math.round(rect.height || 440));
+          const hdrH = 48;
+          const oscH = oscMode !== 'NONE' && lastCandles.length >= 20 ? 74 : 0;
+          const ftrH = 28;
+          const totalH = hdrH + H + oscH + ftrH;
+
           const out = document.createElement('canvas');
-          out.width = W;
-          out.height = H + hdrH;
+          out.width = W * SCALE;
+          out.height = totalH * SCALE;
           const g = out.getContext('2d');
-          g.fillStyle = '#000000';
-          g.fillRect(0, 0, out.width, out.height);
-          // Bloomberg Watermark Header
-          g.fillStyle = '#12151c';
+          g.scale(SCALE, SCALE);
+
+          g.fillStyle = '#040608';
+          g.fillRect(0, 0, W, totalH);
+
+          // 1. Institutional Bloomberg Header Bar
+          g.fillStyle = '#0c1017';
           g.fillRect(0, 0, W, hdrH);
           g.fillStyle = '#ff6600';
           g.fillRect(0, hdrH - 2, W, 2);
           g.fillStyle = '#ff6600';
-          g.font = 'bold 13px Consolas, monospace';
-          const lastC = lastCandles.length ? lastCandles[lastCandles.length - 1] : null;
-          const pxTxt = lastC ? `C:${fmtPx(lastC.c)} H:${fmtPx(lastC.h)} L:${fmtPx(lastC.l)}` : '';
-          g.fillText(`BLOOMBERG TERMINAL   ${ctx.symbol} [${iv.toUpperCase()}]   ${pxTxt}`, 10, 21);
-          g.fillStyle = '#ffffff';
-          g.font = '11px Consolas, monospace';
-          const tsStr = new Date().toLocaleString('en-GB');
-          g.fillText(tsStr, Math.max(10, W - g.measureText(tsStr).width - 10), 21);
+          g.fillRect(10, 9, 20, 20);
+          g.fillStyle = '#000';
+          g.font = 'bold 14px Consolas, monospace';
+          g.fillText('B', 15, 24);
 
-          // Composite all chart canvases + technical master overlay canvas
+          const lastC = lastCandles.length ? lastCandles[lastCandles.length - 1] : null;
+          const firstC = lastCandles.length ? lastCandles[0] : null;
+          const chgPct = (firstC && lastC && firstC.c > 0) ? ((lastC.c - firstC.c) / firstC.c) * 100 : 0;
+          const tmSig = mappedBars.length >= 6 ? computeTechnicalMasterSignals(mappedBars) : { bias: 'NEUTRAL', vpvr: null };
+
+          g.fillStyle = '#ffffff';
+          g.font = 'bold 13px Consolas, monospace';
+          g.fillText(`BLOOMBERG TERMINAL // ${ctx.symbol} [${iv.toUpperCase()} • ${style.toUpperCase()}]`, 38, 19);
+
+          g.font = '11px Consolas, monospace';
+          g.fillStyle = '#ffb000';
+          const pxTxt = lastC ? `O:${fmtPx(lastC.o)}  H:${fmtPx(lastC.h)}  L:${fmtPx(lastC.l)}  C:${fmtPx(lastC.c)} (${fmtPct(chgPct)})` : '';
+          g.fillText(`${pxTxt}   |   STRUCT: ${tmSig.bias}${tmSig.vpvr ? '   |   POC: ' + fmtPx(tmSig.vpvr.pocPrice) : ''}`, 38, 37);
+
+          g.fillStyle = '#9aa7b8';
+          const tsStr = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+          g.fillText(tsStr, Math.max(10, W - g.measureText(tsStr).width - 12), 19);
+
+          // 2. Composite all chart canvases + Technical Master HiDPI overlay
           const canvases = wrap.querySelectorAll('canvas');
           canvases.forEach(cv => {
             try {
@@ -811,6 +1006,89 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
             } catch {}
           });
 
+          // 3. Render RSI(14) or MACD(12,26,9) Lower Pane directly at 2x resolution
+          if (oscH > 0) {
+            const oy = hdrH + H;
+            g.fillStyle = '#06080c';
+            g.fillRect(0, oy, W, oscH);
+            g.strokeStyle = '#222834';
+            g.lineWidth = 1;
+            g.beginPath(); g.moveTo(0, oy); g.lineTo(W, oy); g.stroke();
+
+            if (oscMode === 'RSI') {
+              const pts = calcRSI(lastCandles, 14);
+              if (pts.length >= 2) {
+                const yOfR = v => oy + oscH - 8 - (Math.max(0, Math.min(100, v)) / 100) * (oscH - 18);
+                g.strokeStyle = 'rgba(255,90,82,0.35)'; g.setLineDash([3, 3]);
+                g.beginPath(); g.moveTo(0, yOfR(70)); g.lineTo(W, yOfR(70)); g.stroke();
+                g.strokeStyle = 'rgba(0,210,106,0.35)';
+                g.beginPath(); g.moveTo(0, yOfR(30)); g.lineTo(W, yOfR(30)); g.stroke();
+                g.setLineDash([]);
+                const lastR = pts[pts.length - 1].value;
+                g.strokeStyle = lastR >= 70 ? '#ff453a' : lastR <= 30 ? '#00d26a' : '#ffb000';
+                g.lineWidth = 1.6;
+                g.beginPath();
+                pts.forEach((p, i) => {
+                  const x = 8 + (i / (pts.length - 1)) * (W - 64);
+                  const y = yOfR(p.value);
+                  if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+                });
+                g.stroke();
+                g.fillStyle = '#ffb000';
+                g.font = 'bold 10.5px Consolas, monospace';
+                g.fillText(`RSI(14): ${lastR.toFixed(2)}`, 10, oy + 13);
+              }
+            } else if (oscMode === 'MACD') {
+              const mPts = calcMACD(lastCandles, 12, 26, 9);
+              if (mPts.length >= 2) {
+                const maxA = Math.max(...mPts.flatMap(x => [Math.abs(x.macd), Math.abs(x.signal), Math.abs(x.hist)]), 1e-5);
+                const midY = oy + oscH / 2 + 4;
+                const yOfM = v => midY - (v / maxA) * (oscH * 0.36);
+                const bw = Math.max(1.5, (W - 72) / mPts.length);
+                mPts.forEach((p, i) => {
+                  const x = 8 + (i / (mPts.length - 1)) * (W - 72);
+                  const y = yOfM(p.hist);
+                  g.fillStyle = p.hist >= 0 ? 'rgba(0,210,106,0.55)' : 'rgba(255,59,48,0.55)';
+                  g.fillRect(x - bw / 2, Math.min(midY, y), bw, Math.max(1, Math.abs(midY - y)));
+                });
+                const drawMLine = (key, col) => {
+                  g.strokeStyle = col; g.lineWidth = 1.4; g.beginPath();
+                  mPts.forEach((p, i) => {
+                    const x = 8 + (i / (mPts.length - 1)) * (W - 72);
+                    if (i === 0) g.moveTo(x, yOfM(p[key])); else g.lineTo(x, yOfM(p[key]));
+                  });
+                  g.stroke();
+                };
+                drawMLine('macd', '#ffb000');
+                drawMLine('signal', '#4da3ff');
+                const lm = mPts[mPts.length - 1];
+                g.fillStyle = '#ffb000';
+                g.font = 'bold 10.5px Consolas, monospace';
+                g.fillText(`MACD(12,26,9): ${lm.macd.toFixed(3)}  SIG: ${lm.signal.toFixed(3)}  HIST: ${lm.hist >= 0 ? '+' : ''}${lm.hist.toFixed(3)}`, 10, oy + 13);
+              }
+            }
+          }
+
+          // 4. Institutional Tear-Sheet Footer
+          const fy = hdrH + H + oscH;
+          g.fillStyle = '#0a0d13';
+          g.fillRect(0, fy, W, ftrH);
+          g.strokeStyle = '#1f2633';
+          g.beginPath(); g.moveTo(0, fy); g.lineTo(W, fy); g.stroke();
+          g.fillStyle = '#7c8799';
+          g.font = '10px Consolas, monospace';
+          const studies = [
+            showSMA ? 'SMA20' : '', showEMA ? 'EMA50' : '', showBB ? 'BB(20,2)' : '', showVWAP ? 'VWAP' : '',
+            showStruct ? 'BOS/CHoCH' : '', showFvg ? 'FVG/OB' : '', showVpvr ? 'VPVR' : '',
+            showIchimoku ? 'ICHIMOKU' : '', showSupertrend ? 'SUPERTREND' : '', showPdhl ? 'PDH/PDL' : ''
+          ].filter(Boolean).join(' • ');
+          g.fillText(`STUDIES: ${studies || 'PRICE ACTION'}`, 10, fy + 17);
+          const posInfo = activeTradePlan && activeTradePlan.entry > 0
+            ? `ACTIVE ${activeTradePlan.dir} ${activeTradePlan.lev}x @ ${fmtPx(activeTradePlan.entry)} (ROE ${activeTradePlan.pnlPct >= 0 ? '+' : ''}${Number(activeTradePlan.pnlPct).toFixed(2)}%)`
+            : 'BLOOMBERG TERMINAL // QUANTITATIVE CHARTING DESK';
+          g.fillStyle = '#ffb000';
+          g.fillText(posInfo, Math.max(10, W - g.measureText(posInfo).width - 12), fy + 17);
+
           const dataUrl = out.toDataURL('image/png');
           try {
             const key = 'bbg_chart_snapshots_v1';
@@ -822,7 +1100,7 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
               interval: iv.toUpperCase(),
               ts: Date.now(),
               price: lastC ? lastC.c : 0,
-              note: activeTradePlan ? `OPEN ${activeTradePlan.dir} ${activeTradePlan.lev}x` : 'TECHNICAL OVERLAY SNAPSHOT',
+              note: activeTradePlan ? `OPEN ${activeTradePlan.dir} ${activeTradePlan.lev}x` : '2X RETINA TEAR-SHEET',
               dataUrl,
               img: dataUrl
             });
@@ -831,10 +1109,10 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
 
           const a = document.createElement('a');
           a.href = dataUrl;
-          a.download = `Bloomberg_Terminal_${ctx.symbol.replace(/[^A-Z0-9_-]/gi, '_')}_${iv.toUpperCase()}_${Date.now()}.png`;
+          a.download = `Bloomberg_Terminal_${ctx.symbol.replace(/[^A-Z0-9_-]/gi, '_')}_${iv.toUpperCase()}_HD_${Date.now()}.png`;
           a.click();
-          snapBtn.textContent = 'SAVED PNG';
-          setTimeout(() => { snapBtn.textContent = 'SNAP PNG'; }, 1800);
+          snapBtn.textContent = 'SAVED HD PNG';
+          setTimeout(() => { snapBtn.textContent = 'SNAP PNG (HD)'; }, 1800);
         } catch (err) {
           alert('Snapshot error: ' + err.message);
         }
@@ -842,6 +1120,8 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
     });
     tb.append(
       snapBtn,
+      h('button', { style: 'border-color:#00d26a;color:#00d26a;font-weight:700', text: 'SHARE ROE', title: 'Open Institutional ROE Card Studio (ROE <GO>)', onclick: () => ctx.run(`${ctx.symbol} ROE`) }),
+      h('button', { style: 'border-color:#ff6600;color:#ff6600', text: 'MTF SCAN', title: 'Multi-Timeframe Technical Matrix (TECH <GO>)', onclick: () => ctx.run(`${ctx.symbol} TECH`) }),
       h('button', { style: 'border-color:#ffb000;color:#ffb000', text: 'X-RAY', title: 'Inspect Transparent Execution Factors (FACT <GO>)', onclick: () => ctx.run(`${ctx.symbol} FACT`) }),
       h('button', { style: 'border-color:#4da3ff;color:#4da3ff', text: 'ARCHIVE', title: 'Open Multi-Chart Studio & PNG Archive (G <GO>)', onclick: () => ctx.run(`${ctx.symbol} G`) })
     );
@@ -975,12 +1255,23 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
     const volByTime = new Map(mapped.map(x => [x.time, x.vol]));
     activeBar = mapped.length ? { ...mapped[mapped.length - 1] } : null;
 
-    if (style === 'candle') {
+    const seriesData = style === 'heikin' ? calcHeikinAshi(mapped) : mapped;
+
+    if (style === 'candle' || style === 'heikin') {
       mainSeries = chart.addCandlestickSeries({
-        upColor: '#00d26a', downColor: '#ff3b30',
-        borderUpColor: '#00d26a', borderDownColor: '#ff3b30',
-        wickUpColor: '#00d26a', wickDownColor: '#ff3b30',
+        upColor: style === 'heikin' ? '#00ff88' : '#00d26a',
+        downColor: '#ff3b30',
+        borderUpColor: style === 'heikin' ? '#00ff88' : '#00d26a',
+        borderDownColor: '#ff3b30',
+        wickUpColor: style === 'heikin' ? '#00ff88' : '#00d26a',
+        wickDownColor: '#ff3b30',
         priceLineVisible: true, lastValueVisible: true
+      });
+      mainSeries.setData(seriesData);
+    } else if (style === 'bar' && typeof chart.addBarSeries === 'function') {
+      mainSeries = chart.addBarSeries({
+        upColor: '#00d26a', downColor: '#ff3b30',
+        thinBars: false, priceLineVisible: true, lastValueVisible: true
       });
       mainSeries.setData(mapped);
     } else if (style === 'area') {
@@ -1139,7 +1430,7 @@ export function mountGP(body, ctx, { intraday = false } = {}) {
       chart,
       getSeries: () => mainSeries,
       getMapped: () => mappedBars,
-      getLayers: () => ({ struct: showStruct, trend: showTrend, fvg: showFvg, fib: showFib, vpvr: showVpvr }),
+      getLayers: () => ({ struct: showStruct, trend: showTrend, fvg: showFvg, fib: showFib, vpvr: showVpvr, ichimoku: showIchimoku, supertrend: showSupertrend, pdhl: showPdhl }),
       getTradePlan: () => activeTradePlan
     });
     renderOscillator(candles);

@@ -1266,6 +1266,226 @@ function mountTerminalExtensions(app, deps) {
       updatedAt: new Date().toISOString().slice(11, 19) + ' UTC'
     });
   });
+
+  // ------------------------------------------------------------------
+  // 7. EXECUTION ROE STUDIO FEED (/api/terminal/roe-feed — Authenticated)
+  // ------------------------------------------------------------------
+  app.get('/api/terminal/roe-feed', async (req, res) => {
+    const liveFx = await resolveLiveFxIdr();
+    const rawPositions = safeReadJson(positionsPath, []) || [];
+    const ledger = safeReadJson(path.join(resultsDir, 'performance_ledger.json'), {}) || {};
+    const aiMem = safeReadJson(path.join(resultsDir, 'ai_trade_memory.json'), {}) || {};
+
+    const posArr = Array.isArray(rawPositions) ? rawPositions : [];
+    const openRaw = posArr.filter(p => p && p.status === 'OPEN');
+
+    const openPositions = await Promise.all(openRaw.map(async p => {
+      const sym = String(p.binance_pair || p.symbol || 'BTCUSDT').toUpperCase().replace('-USD', 'USDT').replace(/\.P$/, '');
+      const q = await agg.quote(sym, 'futures').catch(() => ({}));
+      const entry = Number(p.entry_price || p.entryPrice || 0);
+      const mark = Number(q.price || p.current_price || entry || 0);
+      const lev = Number(p.leverage || 20);
+      const dir = String(p.direction || p.side || 'LONG').toUpperCase();
+      const sign = dir === 'SHORT' ? -1 : 1;
+      const mUsd = Number(p.position_size_usd || 0);
+      const roePct = (entry > 0 && mark > 0)
+        ? +(sign * ((mark - entry) / entry) * lev * 100).toFixed(2)
+        : Number(p.pnl_pct || 0);
+      const pnlUsd = p.pnl_usd != null && !q.price
+        ? Number(p.pnl_usd)
+        : +(mUsd * (roePct / 100)).toFixed(3);
+      const pnlIdr = Math.round(pnlUsd * liveFx);
+
+      const prefix = normBotFilePrefix(sym);
+      const scan = safeReadJson(path.join(resultsDir, `${prefix}_latest.json`), null);
+      const mp = (scan && scan.math_proof) || {};
+      const l5 = (scan && scan.layer5_final_call) || {};
+
+      return {
+        id: p.id || `OPEN-${sym}`,
+        status: 'OPEN',
+        symbol: sym,
+        direction: dir,
+        leverage: lev,
+        marginMode: String(p.margin_type || 'ISOLATED').toUpperCase(),
+        entryPrice: entry,
+        markPrice: mark,
+        stopLoss: Number(p.stop_loss || 0),
+        tp1: Number(p.take_profit_1 || p.take_profit || 0),
+        tp2: Number(p.take_profit_2 || p.take_profit || 0),
+        marginUsd: mUsd,
+        roePct,
+        pnlUsd,
+        pnlIdr,
+        setup: p.setup_name || (scan && scan.layer2_setup && scan.layer2_setup.setup_name) || 'QUANT_EXECUTION',
+        pMath: Number(mp.p_math_pct || l5.math_score_pct || 0),
+        hybridConf: Number(l5.confidence_score || p.confidence_score || 0),
+        openedAt: p.opened_at || p.timestamp || new Date().toISOString()
+      };
+    }));
+
+    // Merge closed trades from active_positions.json, performance_ledger.json, and ai_trade_memory.json
+    const seenIds = new Set();
+    const closedTrades = [];
+    const pushClosed = (raw) => {
+      if (!raw || typeof raw !== 'object') return;
+      const sym = String(raw.binance_pair || raw.symbol || '').toUpperCase().replace('-USD', 'USDT').replace(/\.P$/, '');
+      if (!sym) return;
+      const key = String(raw.id || raw.trade_id || `${sym}-${raw.closed_at || raw.exit_time || raw.timestamp || ''}-${raw.entry_price || ''}`);
+      if (seenIds.has(key)) return;
+      seenIds.add(key);
+
+      const dir = String(raw.direction || raw.side || 'LONG').toUpperCase();
+      const lev = Number(raw.leverage || 20);
+      const entry = Number(raw.entry_price || raw.entryPrice || 0);
+      const exit = Number(raw.exit_price || raw.close_price || raw.current_price || entry || 0);
+      const mUsd = Number(raw.position_size_usd || raw.margin_usd || 0);
+      const pnlUsd = Number(raw.net_pnl_usd ?? raw.pnl_usd ?? raw.realized_pnl_usd ?? 0);
+      const sign = dir === 'SHORT' ? -1 : 1;
+      let roePct = Number(raw.roe_pct ?? raw.pnl_pct ?? NaN);
+      if (!Number.isFinite(roePct)) {
+        if (mUsd > 0 && pnlUsd !== 0) roePct = +((pnlUsd / mUsd) * 100).toFixed(2);
+        else if (entry > 0 && exit > 0 && exit !== entry) roePct = +(sign * ((exit - entry) / entry) * lev * 100).toFixed(2);
+        else roePct = 0;
+      }
+      closedTrades.push({
+        id: key,
+        status: String(raw.status || raw.exit_reason || 'CLOSED').toUpperCase(),
+        symbol: sym,
+        direction: dir,
+        leverage: lev,
+        marginMode: String(raw.margin_type || 'ISOLATED').toUpperCase(),
+        entryPrice: entry,
+        markPrice: exit,
+        marginUsd: mUsd,
+        roePct: +Number(roePct).toFixed(2),
+        pnlUsd: +Number(pnlUsd).toFixed(4),
+        pnlIdr: Math.round(pnlUsd * liveFx),
+        setup: raw.setup_name || raw.strategy_id || 'QUANT_SNIPER',
+        closedAt: raw.closed_at || raw.exit_time || raw.timestamp || ''
+      });
+    };
+
+    posArr.filter(p => p && p.status && String(p.status).startsWith('CLOSED')).reverse().forEach(pushClosed);
+    if (Array.isArray(ledger.trades)) [...ledger.trades].reverse().forEach(pushClosed);
+    if (Array.isArray(ledger.closed_positions)) [...ledger.closed_positions].reverse().forEach(pushClosed);
+    if (Array.isArray(aiMem.closed_trades)) [...aiMem.closed_trades].reverse().forEach(pushClosed);
+
+    const wins = closedTrades.filter(t => t.pnlUsd > 0 || t.roePct > 0).length;
+    const winRatePct = closedTrades.length ? +((wins / closedTrades.length) * 100).toFixed(1) : Number(ledger.win_rate_pct || 0);
+
+    res.json({
+      ok: true,
+      source: 'execution-roe-desk',
+      ts: Date.now(),
+      mode: 'LIVE',
+      data: {
+        fxRateIdr: Math.round(liveFx),
+        openPositions,
+        closedTrades: closedTrades.slice(0, 40),
+        stats: {
+          totalClosed: closedTrades.length || Number(ledger.closed_trades || 0),
+          winRatePct,
+          realizedPnlUsd: Number(ledger.realized_pnl_usd ?? closedTrades.reduce((s, x) => s + x.pnlUsd, 0)),
+          profitFactor: Number(ledger.profit_factor || 0)
+        }
+      }
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // 8. MARKET BREADTH, DOMINANCE & CROSS-ASSET REGIME (/api/terminal/breadth)
+  // ------------------------------------------------------------------
+  app.get('/api/terminal/breadth', async (req, res) => {
+    const cryptoBasket = [
+      'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT',
+      'LINKUSDT', 'SUIUSDT', 'TONUSDT', 'DOTUSDT', 'NEARUSDT', 'LTCUSDT', 'ARBUSDT', 'INJUSDT'
+    ];
+    const macroBasket = [
+      { symbol: '^GSPC', name: 'S&P 500 Index', role: 'EQUITY RISK' },
+      { symbol: '^IXIC', name: 'Nasdaq Composite', role: 'TECH BETA' },
+      { symbol: 'GC=F', name: 'Gold Futures', role: 'SAFE HAVEN' },
+      { symbol: 'CL=F', name: 'WTI Crude Oil', role: 'INFLATION / ENERGY' },
+      { symbol: '^TNX', name: 'US 10Y Treasury Yield', role: 'RATES ANCHOR' },
+      { symbol: 'USDIDR=X', name: 'USD / IDR Spot', role: 'EM FX' }
+    ];
+
+    const [cryptoQuotes, macroQuotes] = await Promise.all([
+      Promise.all(cryptoBasket.map(async s => {
+        const q = await agg.quote(s).catch(() => ({}));
+        const px = Number(q.price || 0);
+        const chgPct = Number(q.chgPct || 0);
+        const vol = Number(q.vol || 0);
+        const high = Number(q.high || px);
+        const low = Number(q.low || px);
+        const rangePos = high > low ? ((px - low) / (high - low)) * 100 : 50;
+        return { symbol: s, price: px, chgPct, dollarVol: px * vol, rangePos: +rangePos.toFixed(1) };
+      })),
+      Promise.all(macroBasket.map(async m => {
+        const q = await agg.quote(m.symbol).catch(() => ({}));
+        return { ...m, price: Number(q.price || 0), chgPct: Number(q.chgPct || 0) };
+      }))
+    ]);
+
+    const validC = cryptoQuotes.filter(c => c.price > 0);
+    const advancers = validC.filter(c => c.chgPct > 0.05).length;
+    const decliners = validC.filter(c => c.chgPct < -0.05).length;
+    const unchanged = Math.max(0, validC.length - advancers - decliners);
+    const strongUp = validC.filter(c => c.chgPct >= 2.5).length;
+    const strongDn = validC.filter(c => c.chgPct <= -2.5).length;
+    const upperRangeCount = validC.filter(c => c.rangePos >= 55).length;
+    const breadthPct = validC.length ? +((advancers / validC.length) * 100).toFixed(1) : 50;
+
+    const totalVol = Math.max(1, validC.reduce((s, c) => s + c.dollarVol, 0));
+    const btcVol = (validC.find(c => c.symbol === 'BTCUSDT') || {}).dollarVol || 0;
+    const ethVol = (validC.find(c => c.symbol === 'ETHUSDT') || {}).dollarVol || 0;
+    const solBnbVol = ((validC.find(c => c.symbol === 'SOLUSDT') || {}).dollarVol || 0) + ((validC.find(c => c.symbol === 'BNBUSDT') || {}).dollarVol || 0);
+    const altVol = Math.max(0, totalVol - btcVol - ethVol - solBnbVol);
+
+    const dominance = [
+      { label: 'BTC Volume Share', pct: +((btcVol / totalVol) * 100).toFixed(1), dollarVol: btcVol, color: '#ff6600' },
+      { label: 'ETH Volume Share', pct: +((ethVol / totalVol) * 100).toFixed(1), dollarVol: ethVol, color: '#4da3ff' },
+      { label: 'SOL + BNB Majors', pct: +((solBnbVol / totalVol) * 100).toFixed(1), dollarVol: solBnbVol, color: '#ffb000' },
+      { label: 'Altcoin Rotation Pool', pct: +((altVol / totalVol) * 100).toFixed(1), dollarVol: altVol, color: '#00d26a' }
+    ];
+
+    const spxChg = (macroQuotes.find(m => m.symbol === '^GSPC') || {}).chgPct || 0;
+    const btcChg = (validC.find(c => c.symbol === 'BTCUSDT') || {}).chgPct || 0;
+    const goldChg = (macroQuotes.find(m => m.symbol === 'GC=F') || {}).chgPct || 0;
+    const tnxChg = (macroQuotes.find(m => m.symbol === '^TNX') || {}).chgPct || 0;
+
+    const riskAppetite = Math.max(5, Math.min(95, Math.round(50 + breadthPct * 0.35 - 17.5 + btcChg * 3.2 + spxChg * 5.0 - goldChg * 2.0 - tnxChg * 1.8)));
+    const regimeLabel = riskAppetite >= 65
+      ? 'RISK-ON BROAD EXPANSION'
+      : riskAppetite <= 35
+      ? 'RISK-OFF DEFENSIVE / FLIGHT TO QUALITY'
+      : (goldChg > 0.6 && btcChg < 0 ? 'SAFE-HAVEN ROTATION' : 'SELECTIVE / BALANCED REGIME');
+
+    res.json({
+      ok: true,
+      source: 'binance+yahoo-breadth',
+      ts: Date.now(),
+      mode: 'LIVE',
+      data: {
+        breadth: {
+          universeCount: validC.length,
+          advancers,
+          decliners,
+          unchanged,
+          strongUp,
+          strongDn,
+          breadthPct,
+          upperRangePct: validC.length ? +((upperRangeCount / validC.length) * 100).toFixed(1) : 50,
+          advDeclRatio: decliners > 0 ? +(advancers / decliners).toFixed(2) : advancers
+        },
+        dominance,
+        riskAppetite,
+        regimeLabel,
+        macroPulse: macroQuotes,
+        constituents: validC.sort((a, b) => b.chgPct - a.chgPct)
+      }
+    });
+  });
 }
 
 module.exports = { mountTerminalExtensions, buildWarrenBuffettPlan };

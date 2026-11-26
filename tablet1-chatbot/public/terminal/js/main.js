@@ -2,13 +2,13 @@ import { $, h, fmtTime, LS } from './util.js';
 import { get, net, startHub, apiFetch, setDashToken, setAuthRequiredHandler } from './api.js';
 import { dev } from './dev-adapter.js';
 
-import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261124b';
-import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261124b';
-import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261124b';
-import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261124b';
-import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261124b';
-import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261124b';
-import { mountFACT, mountTRAN, mountSTUDIO, mountBI, mountETF, mountFIN, mountWDGT } from './panels/intelligence.js?v=20261124b';
+import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261126a';
+import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261126a';
+import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261126a';
+import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261126a';
+import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261126a';
+import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261126a';
+import { mountFACT, mountTRAN, mountSTUDIO, mountBI, mountETF, mountFIN, mountWDGT, mountROE, mountTECH, mountBRDT } from './panels/intelligence.js?v=20261126a';
 
 import { panels as newsPanels } from '../panels/news/index.js';
 import { panels as macroPanels } from '../panels/macro/index.js';
@@ -157,9 +157,15 @@ export const CATALOG = [
   { code: 'PILLAR', cat: 'ANALYTICS', title: '24/28-Pillar Telemetry Matrix', desc: 'Live Microstructure, Regime, Derivatives, Options & Risk Pillar Matrix', mount: mountFACT },
   { code: 'TRAN', cat: 'RESEARCH', title: 'Committee & Earnings Transcripts', desc: '9-Agent Adversarial Debate Transcripts, 5-Layer Audit Trail, Trade Memory & Corporate Earnings Tone', mount: mountTRAN },
   { code: 'TRSC', cat: 'RESEARCH', title: 'Transcripts Archive', desc: 'Committee Debate Logs & SEC/News Catalyst Transcripts', mount: mountTRAN },
-  { code: 'G', cat: 'CHART', title: 'Multi-Chart Studio & PNG Archive', desc: '4-Asset Live Candlestick Wall, Saved Chart PNG Archive & Technical Pattern Schematics', mount: mountSTUDIO },
-  { code: 'SNAP', cat: 'CHART', title: 'Chart PNG Snapshot Archive', desc: 'Archived Institutional Chart PNG Exports & 4-Chart Wall', mount: mountSTUDIO },
+  { code: 'G', cat: 'CHART', title: 'Multi-Chart Studio & PNG Archive', desc: '4-Asset Live Multi-Study Candlestick Wall (EMA20/50 + BB + VPVR), Saved PNG Archive & Pattern Schematics', mount: mountSTUDIO },
+  { code: 'SNAP', cat: 'CHART', title: 'Chart PNG Snapshot Archive', desc: 'Archived Institutional Chart & ROE PNG Exports & 4-Chart Wall', mount: mountSTUDIO },
   { code: 'PATT', cat: 'CHART', title: 'Technical Pattern Schematics', desc: 'Live Structure Detector (BOS/FVG/Golden Pocket) & Execution Architecture Diagrams', mount: mountSTUDIO },
+  { code: 'TECH', cat: 'CHART', title: 'Multi-Timeframe Technical Matrix', desc: '5-Timeframe (5m/15m/1h/4h/1d) x 6-Indicator Confluence Matrix, Consensus Gauge & Daily Floor Pivots', mount: mountTECH },
+  { code: 'MTF', cat: 'CHART', title: 'Multi-Timeframe Signal Scanner', desc: 'Simultaneous 5m–1d RSI, MACD, EMA20/50, SuperTrend, Bollinger & BOS Confluence Rating', mount: mountTECH },
+  { code: 'ROE', cat: 'EXECUTION', title: 'Shareable ROE Card Studio', desc: 'HiDPI Institutional ROE & PnL Card Generator (16:9 Desk & 9:16 Story) with Live Sparkline & Native Share', mount: mountROE },
+  { code: 'PNL', cat: 'EXECUTION', title: 'Execution ROE & P&L Card Generator', desc: 'Generate & Share Verified Futures ROE Cards from Open Positions or Audited Trade History', mount: mountROE },
+  { code: 'BRDT', cat: 'MONITOR', title: 'Market Breadth & Dominance', desc: 'Advancers/Decliners Internals, Dollar-Volume Dominance Share & Cross-Asset Risk-On/Risk-Off Regime', mount: mountBRDT },
+  { code: 'DOMI', cat: 'CRYPTO', title: 'Crypto Volume Dominance & Rotation', desc: 'BTC/ETH/Majors/Altcoin Liquidity Share & Cross-Asset Macro Pulse', mount: mountBRDT },
   { code: 'BI', cat: 'RESEARCH', title: 'Bloomberg Intelligence Dossier', desc: 'Institutional Bull/Bear Thesis, Quantitative Snapshot, Catalysts & HTML Research Export', mount: mountBI },
   { code: 'RES', cat: 'RESEARCH', title: 'Institutional Research Hub', desc: 'Bloomberg Intelligence Research Dossier & Printable Report Export', mount: mountBI },
   { code: 'ETF', cat: 'FLOWS', title: 'Spot Crypto & Macro ETF Flows', desc: 'IBIT/FBTC/GBTC/ETHA/SPY/QQQ/TLT/GLD/EIDO Signed Flows, Futures Crowding & SEC Form-4 Insiders', mount: mountETF },
@@ -252,6 +258,12 @@ const WORKSPACES = {
     { symbol: 'BTCUSDT', fn: 'ETF' },
     { symbol: 'BTCUSDT', fn: 'G' },
     { symbol: 'BTCUSDT', fn: 'TOP' }
+  ],
+  'QUANT CHARTING & ROE': [
+    { symbol: 'BTCUSDT', fn: 'GP' },
+    { symbol: 'BTCUSDT', fn: 'TECH' },
+    { symbol: 'BTCUSDT', fn: 'ROE' },
+    { symbol: 'BTCUSDT', fn: 'BRDT' }
   ],
   'CAPITAL MANAGEMENT (BUFFETT)': [
     { symbol: 'BTCUSDT', fn: 'FIN' },

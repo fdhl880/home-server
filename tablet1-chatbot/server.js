@@ -344,6 +344,7 @@ const PUBLIC_API_GET_EXACT = new Set([
     '/api/terminal/bot-xray',
     '/api/terminal/intelligence',
     '/api/terminal/flows',
+    '/api/terminal/breadth',
     '/api/push/vapid-public-key',
     '/api/widget/summary'
 ]);
