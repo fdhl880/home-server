@@ -1774,6 +1774,47 @@ export function mountFIN(body, ctx) {
     }
   }
 
+  function openFinGuideModal() {
+    const existing = document.getElementById('bbgFinGuideModal');
+    if (existing) existing.remove();
+    const ov = h('div', {
+      id: 'bbgFinGuideModal',
+      style: 'position:fixed;inset:0;z-index:99996;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;padding:12px',
+      onclick: ev => { if (ev.target === ov) ov.remove(); }
+    },
+      h('div', { style: 'width:680px;max-width:96vw;max-height:86vh;overflow:auto;background:#05070a;border:1px solid #ff6600;padding:14px;color:#e6edf3;font-size:11.5px;line-height:1.55' },
+        h('div', { style: 'display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #262e3d;padding-bottom:8px;margin-bottom:10px' },
+          h('span', { style: 'color:#ffb000;font-weight:700;font-size:12.5px', text: 'BLOOMBERG FAMILY OFFICE (FIN) — PANDUAN CEPAT & CHAT TELEGRAM' }),
+          h('button', { style: 'color:#ff5a52;border-color:#ff3b3088', text: 'CLOSE', onclick: () => ov.remove() })
+        ),
+        h('div', { style: 'color:#00d26a;font-weight:700;margin-bottom:4px', text: 'A. CARA TERCEPAT: CHAT LANGSUNG KE TELEGRAM (@idrisginting_bot)' }),
+        h('div', { style: 'background:#0b1018;border:1px solid #1e2736;padding:8px 10px;margin-bottom:10px;font-family:monospace;font-size:11px' },
+          h('div', { text: '1. Catat jajan/makan : ketik "makan 15rb" atau "kopi 12k" atau "bensin 20rb"' }),
+          h('div', { text: '2. Catat pemasukan   : ketik "gaji 1jt" atau "/buffett 1jt" (auto-split 40/60)' }),
+          h('div', { text: '3. Nabung / Transfer : ketik "nabung 150rb darurat" atau "pindah 50rb ke darurat"' }),
+          h('div', { text: '4. Tanya Tim CFO     : ketik "boleh beli sepatu 250rb bulan ini ga?"' }),
+          h('div', { text: '5. Cek & Laporan PDF : ketik "/uang" (ringkasan), "/pdf" (file PDF), "/undo" (batal)' })
+        ),
+        h('div', { style: 'color:#ffb000;font-weight:700;margin-bottom:4px', text: 'B. RUTINITAS 3 LANGKAH DI TERMINAL (FIN <GO>)' }),
+        h('div', { style: 'margin-bottom:10px' },
+          h('div', { text: '• Hari ke-1 tiap bulan: Buka tab BUFFETT PLAN -> isi pemasukan bulanan -> klik BOOK INCOME + AUTO-LOCK 40% SAVINGS. 40% langsung terkunci ke Dana Darurat & Investasi, 60% otomatis jadi jatah belanja harian.' }),
+          h('div', { text: '• Setiap hari (15 detik): Catat pengeluaran di kotak RECORD TRANSACTION (atau lewat chat Telegram). Lihat DYNAMIC SAFE DAILY SPEND sebagai batas aman harianmu.' }),
+          h('div', { text: '• Sebelum beli barang besar: Tulis di kotak ASK CFO TEAM <GO> (atau tanya di Telegram) agar 4 Officer (CFO, Controller, Risk Officer, Strategist) mengecek apakah pembelian aman.' })
+        ),
+        h('div', { style: 'color:#5aa9ff;font-weight:700;margin-bottom:4px', text: 'C. FUNGSI TIAP TAB' }),
+        h('div', { style: 'display:grid;grid-template-columns:130px 1fr;gap:4px 10px;font-size:11px' },
+          h('b', { style: 'color:#ffb000', text: 'CFO DESK' }), h('span', { text: 'Ringkasan utama, 4 Officer Tim Keuangan, kotak tanya CFO, input transaksi/transfer, grafik 14 hari.' }),
+          h('b', { style: 'color:#ffb000', text: 'BALANCE SHEET' }), h('span', { text: 'Neraca sejati: saldo tiap rekening/vault, aset luar (emas/RDPU/barang), hutang/cicilan, rasio utang & risiko Futures.' }),
+          h('b', { style: 'color:#ffb000', text: 'BILLS & STRESS' }), h('span', { text: 'Daftar tagihan rutin bulanan (bayar 1 klik) + simulasi Stress-Test 4 skenario & log hari jebol budget.' }),
+          h('b', { style: 'color:#ffb000', text: 'BUFFETT PLAN' }), h('span', { text: 'Pembagi otomatis 40% Pay-Yourself-First / 60% Operasional + kurva compounding 1–10 tahun.' }),
+          h('b', { style: 'color:#ffb000', text: 'GOALS & LIMITS' }), h('span', { text: 'Atur limit harian/bulanan, kategori amplop belanja, dan target tabungan khusus.' }),
+          h('b', { style: 'color:#ffb000', text: 'LEDGER / PDF' }), h('span', { text: 'Riwayat lengkap seluruh transaksi, ekspor CSV, download CFO REPORT PDF, dan kirim ke Email.' })
+        )
+      )
+    );
+    document.body.appendChild(ov);
+  }
+
   function renderToolbar() {
     tb.textContent = '';
     tb.append(
@@ -1784,6 +1825,7 @@ export function mountFIN(body, ctx) {
       h('button', { class: tab === 'BUFFETT' ? 'on' : '', text: 'BUFFETT PLAN', onclick: () => { tab = 'BUFFETT'; renderToolbar(); renderBody(); } }),
       h('button', { class: tab === 'BUDGET' ? 'on' : '', text: 'GOALS & LIMITS', onclick: () => { tab = 'BUDGET'; renderToolbar(); renderBody(); } }),
       h('button', { class: tab === 'HIST' ? 'on' : '', text: 'LEDGER', onclick: () => { tab = 'HIST'; renderToolbar(); renderBody(); } }),
+      h('button', { style: 'color:#00e5ff;border-color:#00e5ff88;font-weight:700', text: 'GUIDE / TELE', onclick: openFinGuideModal }),
       h('button', { style: 'color:#ffb000;border-color:#ffb00088;font-weight:700', text: 'CFO REPORT PDF', onclick: () => downloadFinPdf('/api/finance/report/pdf') }),
       h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'EMAIL CFO REPORT', onclick: emailCfoReport }),
       h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: 'CSV', onclick: exportCsv }),

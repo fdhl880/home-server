@@ -57,6 +57,12 @@ from market_data import (
     normalize_symbol_to_pair
 )
 from binance_futures import BinanceFuturesClient
+try:
+    from telegram_cfo import parse_finance_chat, handle_finance_action, handle_finance_callback
+except Exception as _cfo_imp_err:
+    parse_finance_chat = None
+    handle_finance_action = None
+    handle_finance_callback = None
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 POSITIONS_FILE = os.path.join(RESULTS_DIR, "active_positions.json")
@@ -1885,7 +1891,16 @@ def start_bot_listener():
                             "• <code>/panic</code> - Emergency Kill-Switch: tutup semua posisi &amp; kunci bot\n"
                             "• <code>/unpanic</code> - Buka kunci Emergency Panic Lock\n"
                             "• <code>/news</code> - AI Crypto News &amp; Macro Sentiment\n"
-                            "• <code>/auto</code> - Status auto-trading background"
+                            "• <code>/auto</code> - Status auto-trading background\n\n"
+                            "<b>🏛️ Tim Keuangan Pribadi (Family Office CFO — Chat Langsung!):</b>\n"
+                            "• <code>/uang</code> - Ringkasan kekayaan, runway, jatah hari ini &amp; saldo vault\n"
+                            "• <code>/panduan</code> - Cara pakai super simpel (contoh chat harian)\n"
+                            "• <code>makan 15rb</code> / <code>bensin 20k</code> / <code>gaji 1jt</code> / <code>nabung 150rb darurat</code>\n"
+                            "• <code>pindah 50rb ke darurat</code> - Transfer antar rekening (tidak dihitung boros)\n"
+                            "• <code>boleh beli barang 200rb ga?</code> - Tanya langsung Tim CFO kamu\n"
+                            "• <code>/tagihan</code> - Cek &amp; bayar tagihan rutin 1 klik\n"
+                            "• <code>/pdf</code> - Kirim laporan keuangan PDF langsung ke chat ini\n"
+                            "• <code>/undo</code> - Batalkan transaksi terakhir jika salah ketik"
                         )
                         send_telegram_message(chat_id, welcome)
 
@@ -2123,25 +2138,37 @@ def start_bot_listener():
                             f"────────────────────────"
                         )
                     
-                    # Catch-all: scan any other coin name (skip reserved/unknown multi-word commands)
-                    elif msg_lower.startswith("/"):
-                        coin_try = msg_lower.lstrip("/").split()[0].strip()
-                        reserved_cmds = {
-                            "start", "help", "login", "auth", "binance", "wallet", "balance", "saldo",
-                            "konfirmasi", "confirm", "approve", "beli", "scan", "sidang", "committee",
-                            "universe", "top", "movers", "status", "audit", "cek", "auto", "limit",
-                            "leverage", "fx", "kurs", "convert", "pnl", "winrate", "performance",
-                            "news", "berita", "sentiment", "panic", "kill", "unpanic", "resume",
-                            "vault", "reset_vault", "resetvault", "health", "diag", "why", "alasan", "positions", "pos",
-                            "reset_breaker", "resetbreaker", "transfer", "digest", "report",
-                        }
-                        if coin_try not in reserved_cmds and coin_try.isalnum() and 2 <= len(coin_try) <= 10:
-                            threading.Thread(target=handle_any_coin_scan, args=(chat_id, coin_try), daemon=True).start()
-                        else:
-                            send_telegram_message(chat_id, 
-                                "❓ Perintah tidak dikenali.\n"
-                                "Ketik <code>/help</code> untuk daftar perintah.\n"
-                                "Atau ketik nama coin langsung: <code>/btc</code> <code>/sol</code> dll.")
+                    # Catch-all: Personal Family Office CFO Chat OR scan any other coin name
+                    else:
+                        cfo_intent = parse_finance_chat(msg_text) if parse_finance_chat else None
+                        if cfo_intent and handle_finance_action:
+                            threading.Thread(
+                                target=handle_finance_action,
+                                args=(cfo_intent, chat_id, send_telegram_message, TELE_API),
+                                daemon=True
+                            ).start()
+                        elif msg_lower.startswith("/"):
+                            coin_try = msg_lower.lstrip("/").split()[0].strip()
+                            reserved_cmds = {
+                                "start", "help", "login", "auth", "binance", "wallet", "balance", "saldo",
+                                "konfirmasi", "confirm", "approve", "beli", "scan", "sidang", "committee",
+                                "universe", "top", "movers", "status", "audit", "cek", "auto", "limit",
+                                "leverage", "fx", "kurs", "convert", "pnl", "winrate", "performance",
+                                "news", "berita", "sentiment", "panic", "kill", "unpanic", "resume",
+                                "vault", "reset_vault", "resetvault", "health", "diag", "why", "alasan", "positions", "pos",
+                                "reset_breaker", "resetbreaker", "transfer", "digest", "report",
+                                "uang", "fin", "keuangan", "neraca", "budget", "dompet", "panduan", "cara",
+                                "pdf", "cfo_pdf", "laporan", "email_cfo", "undo", "tagihan", "bills",
+                                "cfo", "tanya", "buffett", "keluar", "jajan", "spent", "masuk", "gaji",
+                                "nabung", "simpan", "invest", "pindah", "aset", "hutang", "cicilan",
+                            }
+                            if coin_try not in reserved_cmds and coin_try.isalnum() and 2 <= len(coin_try) <= 10:
+                                threading.Thread(target=handle_any_coin_scan, args=(chat_id, coin_try), daemon=True).start()
+                            else:
+                                send_telegram_message(chat_id, 
+                                    "❓ Perintah tidak dikenali.\n"
+                                    "Ketik <code>/help</code> untuk trading atau <code>/panduan</code> untuk Tim Keuangan Pribadi.\n"
+                                    "Atau chat santai: <code>makan 15rb</code>, <code>/uang</code>, <code>/pdf</code>.")
 
                 # Handle inline button click (MUST be at same level as "if message")
                 if "callback_query" in update:
@@ -2160,7 +2187,14 @@ def start_bot_listener():
                         answer_callback(cb_id, "⛔ Akses Ditolak: Tidak terotorisasi.")
                         continue
 
-                    if cb_data.startswith("buy_") or cb_data.startswith("confirm_"):
+                    if cb_data.startswith("cfo_") and handle_finance_callback:
+                        threading.Thread(
+                            target=handle_finance_callback,
+                            args=(cb_data, chat_id, cb_id, answer_callback, send_telegram_message, TELE_API),
+                            daemon=True
+                        ).start()
+
+                    elif cb_data.startswith("buy_") or cb_data.startswith("confirm_"):
                         symbol = cb_data.replace("buy_", "").replace("confirm_", "")
                         answer_callback(cb_id, f"⚡ Mengeksekusi order {symbol}...")
                         # Run in thread for instant response - don't block polling

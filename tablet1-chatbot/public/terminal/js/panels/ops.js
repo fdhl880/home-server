@@ -1,7 +1,7 @@
 import { h, fmtPx, fmtPct, fmtChg, fmtVol, fmtNum, fmtTime, dirCls, LS } from '../util.js';
 import { get, getRaw, tickOk, apiFetch } from '../api.js';
-import { attachTechnicalMasterCanvas } from './charts.js?v=20261127a';
-import { openRoeShareModal } from './intelligence.js?v=20261127a';
+import { attachTechnicalMasterCanvas } from './charts.js?v=20261127b';
+import { openRoeShareModal } from './intelligence.js?v=20261127b';
 
 let liveUsdIdrRate = 18218;
 
