@@ -2,13 +2,13 @@ import { $, h, fmtPx, fmtPct, fmtTime, dirCls, LS } from './util.js';
 import { get, net, startHub, apiFetch, setDashToken, setAuthRequiredHandler } from './api.js';
 import { dev } from './dev-adapter.js';
 
-import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261126h';
-import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261126h';
-import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261126h';
-import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261126h';
-import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261126h';
-import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261126h';
-import { mountFACT, mountTRAN, mountSTUDIO, mountBI, mountETF, mountFIN, mountWDGT, mountROE, mountTECH, mountBRDT } from './panels/intelligence.js?v=20261126h';
+import { mountGP, mountHP, mountCOMP } from './panels/charts.js?v=20261127a';
+import { mountMON, mountWL, mountMOST, mountFXC, mountFXFC, mountFUT, mountIMAP, mountBMAP } from './panels/monitors.js?v=20261127a';
+import { mountOB, mountTRADES, mountFUND, mountVAP, mountLIQ, mountOMST } from './panels/micro.js?v=20261127a';
+import { mountDES, mountFA, mountCF, mountDVD, mountRV, mountEQS, mountMEMB, mountCN, mountANR, mountERN, mountSPLC, mountHDS, mountMGMT, mountMA, mountIPO, mountESG } from './panels/equities.js?v=20261127a';
+import { mountBETA, mountCORR, mountHVT, mountOVME, mountDCF, mountFSCO, mountYAS, mountWIRP, mountBTST, mountECFC, mountWCDS, mountOVDV, mountRRG, mountSEAG, mountDOTS, mountFSTA, mountCRPR, mountBTCA } from './panels/quant.js?v=20261127a';
+import { mountBOT, mountPORT, mountEMSX, mountMARS, mountALRT, mountIB, mountMSG, mountSECF, mountFLDS, mountHELP, mountBLP } from './panels/ops.js?v=20261127a';
+import { mountFACT, mountTRAN, mountSTUDIO, mountBI, mountETF, mountFIN, mountWDGT, mountROE, mountTECH, mountBRDT } from './panels/intelligence.js?v=20261127a';
 
 import { panels as newsPanels } from '../panels/news/index.js';
 import { panels as macroPanels } from '../panels/macro/index.js';

@@ -16,6 +16,7 @@ const agg = require('./aggregator');
 const edgarP = require('./providers/edgar_fundamentals');
 const newsP = require('./providers/news');
 const U = require('./util');
+const { buildPersonalCfoReportPdf } = require('./pdf');
 
 function buildWarrenBuffettPlan(monthlyIncomeRaw = 1000000) {
   const income = Math.max(100000, Math.round(Number(monthlyIncomeRaw) || 1000000));
@@ -77,6 +78,13 @@ function buildWarrenBuffettPlan(monthlyIncomeRaw = 1000000) {
   };
 }
 
+const DEFAULT_ACCOUNTS = [
+  { id: 'ACC-OPS', name: 'Operating Bank Account', institution: 'Primary Bank (IDR)', type: 'CASH', openingBalanceIdr: 0, note: 'Daily operating & monthly allowance account' },
+  { id: 'ACC-EMG', name: 'Emergency Reserve Vault', institution: 'Liquid Cash / Money Market', type: 'RESERVE', openingBalanceIdr: 0, note: '6-month margin of safety buffer' },
+  { id: 'ACC-INV', name: 'Productive Investment Reserve', institution: 'Long-Term Capital Vault', type: 'INVESTMENT', openingBalanceIdr: 0, note: 'Non-leverage compounding capital' },
+  { id: 'ACC-WALLET', name: 'Cash & E-Wallet Pocket', institution: 'QRIS / Cash on Hand', type: 'CASH', openingBalanceIdr: 0, note: 'Daily meals & transport wallet' }
+];
+
 const _DEFAULT_WB = buildWarrenBuffettPlan(1000000);
 const DEFAULT_FINANCE = {
   currency: 'IDR',
@@ -85,6 +93,10 @@ const DEFAULT_FINANCE = {
   monthlyBudgetIdr: _DEFAULT_WB.spendableMonthlyIdr,
   dailyLimitIdr: _DEFAULT_WB.dailyLimitIdr,
   categoryLimits: { ..._DEFAULT_WB.categoryLimits },
+  accounts: JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS)),
+  assets: [],
+  liabilities: [],
+  recurringBills: [],
   goals: [
     { id: 'GOAL-10M', name: 'Milestone I: First Rp 10.000.000', targetIdr: 10000000, savedIdr: 516000, deadline: '2028-11-30', category: 'MILESTONE', autoIntegrate: true },
     { id: 'GOAL-100M', name: 'Milestone II: First Rp 100.000.000', targetIdr: 100000000, savedIdr: 516000, deadline: '2031-11-30', category: 'MILESTONE', autoIntegrate: true },
@@ -340,6 +352,8 @@ function mountTerminalExtensions(app, deps) {
     writeJsonAtomicSync,
     readJsonSafeSync,
     dispatchNativePushAlert,
+    dispatchExternalEmailAlert,
+    escapeHtml,
     isAuthenticatedReq,
     getUsdIdr,
     baseDir
@@ -752,7 +766,8 @@ function mountTerminalExtensions(app, deps) {
   });
 
   // ------------------------------------------------------------------
-  // 5. PERSONAL FINANCE & ANTI-BOROS MONEY MANAGER (/api/finance/*)
+  // ------------------------------------------------------------------
+  // 5. WALL STREET SINGLE FAMILY OFFICE & PERSONAL CFO ENGINE (/api/finance/*)
   // ------------------------------------------------------------------
   function loadFinance() {
     const data = readJsonSafeSync(FINANCE_FILE, null);
@@ -761,6 +776,10 @@ function mountTerminalExtensions(app, deps) {
         ...DEFAULT_FINANCE,
         ...data,
         categoryLimits: (data.categoryLimits && Object.keys(data.categoryLimits).length) ? data.categoryLimits : { ...DEFAULT_FINANCE.categoryLimits },
+        accounts: (Array.isArray(data.accounts) && data.accounts.length) ? data.accounts : JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS)),
+        assets: Array.isArray(data.assets) ? data.assets : [],
+        liabilities: Array.isArray(data.liabilities) ? data.liabilities : [],
+        recurringBills: Array.isArray(data.recurringBills) ? data.recurringBills : [],
         goals: Array.isArray(data.goals) ? data.goals : [...DEFAULT_FINANCE.goals],
         transactions: Array.isArray(data.transactions) ? data.transactions : []
       };
@@ -772,26 +791,49 @@ function mountTerminalExtensions(app, deps) {
     writeJsonAtomicSync(FINANCE_FILE, data, 0o600);
   }
 
+  function fmtIdrShort(v) {
+    const n = Math.round(Number(v) || 0);
+    return (n < 0 ? '-Rp ' : 'Rp ') + Math.abs(n).toLocaleString('id-ID');
+  }
+
   function computeFinanceSummary(fin, liveFxIdr = null) {
     const now = new Date();
     const wibMs = now.getTime() + 7 * 3600 * 1000;
     const wibNow = new Date(wibMs);
     const todayStr = wibNow.toISOString().slice(0, 10);
     const monthPrefix = todayStr.slice(0, 7);
+    const prevMonthDate = new Date(Date.UTC(wibNow.getUTCFullYear(), wibNow.getUTCMonth() - 1, 1));
+    const prevMonthPrefix = prevMonthDate.toISOString().slice(0, 7);
     const daysInMonth = new Date(wibNow.getUTCFullYear(), wibNow.getUTCMonth() + 1, 0).getUTCDate();
     const dayOfMonth = wibNow.getUTCDate();
     const remainingDays = Math.max(1, daysInMonth - dayOfMonth + 1);
 
     let totalIncomeAll = 0, totalExpenseAll = 0, totalSavingsAll = 0;
     let monthIncome = 0, monthExpense = 0, monthSavings = 0;
+    let prevMonthIncome = 0, prevMonthExpense = 0;
     let todayExpense = 0, todayIncome = 0;
     const byCategory = {};
     const dailyMap = {};
+    const monthDailyExpenses = {};
 
     for (let d = 13; d >= 0; d--) {
       const ds = new Date(wibMs - d * 86400000).toISOString().slice(0, 10);
       dailyMap[ds] = { date: ds, income: 0, expense: 0, savings: 0 };
     }
+
+    // Multi-Account Balances Ledger
+    const accountList = (Array.isArray(fin.accounts) && fin.accounts.length) ? fin.accounts : DEFAULT_ACCOUNTS;
+    const acctBalances = new Map();
+    for (const acc of accountList) {
+      if (acc && acc.id) acctBalances.set(acc.id, Number(acc.openingBalanceIdr || 0));
+    }
+    const defaultOpsId = acctBalances.has('ACC-OPS') ? 'ACC-OPS' : (accountList[0] ? accountList[0].id : 'ACC-OPS');
+    const defaultEmgId = acctBalances.has('ACC-EMG') ? 'ACC-EMG' : defaultOpsId;
+    const defaultInvId = acctBalances.has('ACC-INV') ? 'ACC-INV' : defaultOpsId;
+    const creditAcc = (id, delta) => {
+      const target = acctBalances.has(id) ? id : defaultOpsId;
+      acctBalances.set(target, (acctBalances.get(target) || 0) + delta);
+    };
 
     for (const tx of (fin.transactions || [])) {
       if (!tx || typeof tx !== 'object') continue;
@@ -800,9 +842,32 @@ function mountTerminalExtensions(app, deps) {
       const cat = String(tx.category || 'Lainnya');
       const dStr = String(tx.date || new Date((tx.ts || Date.now()) + 7 * 3600000).toISOString().slice(0, 10));
 
-      if (typ === 'INCOME') totalIncomeAll += amt;
-      else if (typ === 'SAVINGS') totalSavingsAll += amt;
-      else totalExpenseAll += amt;
+      if (typ === 'TRANSFER') {
+        const fromId = tx.accountId || defaultOpsId;
+        const toId = tx.toAccountId || defaultEmgId;
+        if (fromId !== toId) {
+          creditAcc(fromId, -amt);
+          creditAcc(toId, +amt);
+        }
+        continue; // Transfers never distort income/expense or trigger budget breach
+      }
+
+      if (typ === 'INCOME') {
+        totalIncomeAll += amt;
+        creditAcc(tx.accountId || defaultOpsId, +amt);
+      } else if (typ === 'SAVINGS') {
+        totalSavingsAll += amt;
+        const isEmg = /emergency|darurat|safety/i.test(cat);
+        const srcAcc = tx.accountId || defaultOpsId;
+        const dstAcc = tx.toAccountId || (isEmg ? defaultEmgId : defaultInvId);
+        if (srcAcc !== dstAcc) {
+          creditAcc(srcAcc, -amt);
+          creditAcc(dstAcc, +amt);
+        }
+      } else {
+        totalExpenseAll += amt;
+        creditAcc(tx.accountId || defaultOpsId, -amt);
+      }
 
       if (dStr.startsWith(monthPrefix)) {
         if (typ === 'INCOME') monthIncome += amt;
@@ -810,7 +875,11 @@ function mountTerminalExtensions(app, deps) {
         else {
           monthExpense += amt;
           byCategory[cat] = (byCategory[cat] || 0) + amt;
+          monthDailyExpenses[dStr] = (monthDailyExpenses[dStr] || 0) + amt;
         }
+      } else if (dStr.startsWith(prevMonthPrefix)) {
+        if (typ === 'INCOME') prevMonthIncome += amt;
+        else if (typ === 'EXPENSE') prevMonthExpense += amt;
       }
       if (dStr === todayStr) {
         if (typ === 'INCOME') todayIncome += amt;
@@ -861,47 +930,241 @@ function mountTerminalExtensions(app, deps) {
       ? Number(liveFxIdr)
       : ((typeof getUsdIdr === 'function' && Number(getUsdIdr()) > 10000) ? Number(getUsdIdr()) : (agg.DEFAULT_USD_IDR || 18218));
     const botWalletIdr = Math.round(botWalletUsd * fxIdr);
+    const openingBalExtra = accountList.reduce((s, a) => s + Number(a.openingBalanceIdr || 0), 0);
     const netCashIdr = totalIncomeAll - totalExpenseAll - totalSavingsAll;
-    const bankTotalIdr = Math.max(0, netCashIdr) + totalSavingsAll;
-    const totalIntegratedWealthIdr = bankTotalIdr + botWalletIdr;
+    const bankTotalIdr = Math.max(0, netCashIdr) + totalSavingsAll + openingBalExtra;
+
+    // External Assets & Liabilities (Balance Sheet)
+    const extAssets = Array.isArray(fin.assets) ? fin.assets : [];
+    const liabilities = Array.isArray(fin.liabilities) ? fin.liabilities : [];
+    const extLiquidIdr = extAssets.filter(a => a.category === 'LIQUID').reduce((s, a) => s + Math.max(0, Number(a.valueIdr || 0)), 0);
+    const extInvestIdr = extAssets.filter(a => a.category === 'INVESTMENT').reduce((s, a) => s + Math.max(0, Number(a.valueIdr || 0)), 0);
+    const extFixedIdr = extAssets.filter(a => a.category === 'FIXED').reduce((s, a) => s + Math.max(0, Number(a.valueIdr || 0)), 0);
+    const extAssetsTotalIdr = extLiquidIdr + extInvestIdr + extFixedIdr;
+    const totalLiabilitiesIdr = liabilities.reduce((s, l) => s + Math.max(0, Number(l.principalIdr || 0)), 0);
+    const monthlyDebtServiceIdr = liabilities.reduce((s, l) => s + Math.max(0, Number(l.monthlyPaymentIdr || 0)), 0);
+
+    const accountsWithBal = accountList.map(a => ({
+      ...a,
+      balanceIdr: Math.round(acctBalances.get(a.id) || 0)
+    }));
+    const liveAccounts = [
+      ...accountsWithBal,
+      {
+        id: 'LIVE-BINANCE-FUTURES',
+        name: 'Binance Futures Desk (Live)',
+        institution: 'Binance Futures USDT-M',
+        type: 'TRADING_RISK',
+        balanceIdr: botWalletIdr,
+        balanceUsd: +botWalletUsd.toFixed(2),
+        readOnly: true,
+        note: `Auto-synced live equity (Vault: $${botVaultUsd.toFixed(2)})`
+      }
+    ];
+
+    const liquidCashIdr = accountsWithBal.filter(a => a.type === 'CASH').reduce((s, a) => s + Math.max(0, a.balanceIdr), 0) + extLiquidIdr;
+    const emergencyFundIdr = accountsWithBal.filter(a => a.type === 'RESERVE').reduce((s, a) => s + Math.max(0, a.balanceIdr), 0);
+    const investmentVaultIdr = accountsWithBal.filter(a => a.type === 'INVESTMENT').reduce((s, a) => s + Math.max(0, a.balanceIdr), 0) + extInvestIdr;
+    const liquidAndEmergencyIdr = liquidCashIdr + emergencyFundIdr;
+    const totalAssetsIdr = bankTotalIdr + extAssetsTotalIdr + botWalletIdr;
+    const trueNetWorthIdr = totalAssetsIdr - totalLiabilitiesIdr;
+    const totalIntegratedWealthIdr = trueNetWorthIdr; // Net Worth across Bank + External Assets + Futures - Liabilities
+
+    // Recurring Bills Calendar & Upcoming Obligations
+    const rawBills = Array.isArray(fin.recurringBills) ? fin.recurringBills : [];
+    const recurringBills = rawBills.map(b => {
+      const dueDay = Math.max(1, Math.min(31, Number(b.dueDay) || 1));
+      const paidThisMonth = b.lastPaidMonth === monthPrefix;
+      const daysUntilDue = dueDay - dayOfMonth;
+      const isOverdue = !paidThisMonth && b.active !== false && daysUntilDue < 0;
+      const isDueSoon = !paidThisMonth && b.active !== false && daysUntilDue >= 0 && daysUntilDue <= 7;
+      return {
+        ...b,
+        dueDay,
+        paidThisMonth,
+        daysUntilDue,
+        isOverdue,
+        isDueSoon
+      };
+    }).sort((a, b) => a.dueDay - b.dueDay);
+
+    const activeBills = recurringBills.filter(b => b.active !== false);
+    const totalMonthlyRecurringIdr = activeBills.reduce((s, b) => s + Math.max(0, Number(b.amountIdr || 0)), 0);
+    const unpaidRecurringMonthIdr = activeBills.filter(b => !b.paidThisMonth).reduce((s, b) => s + Math.max(0, Number(b.amountIdr || 0)), 0);
+    const overdueBillsCount = activeBills.filter(b => b.isOverdue).length;
+    const dueSoonBillsCount = activeBills.filter(b => b.isDueSoon).length;
+
+    // Wall Street Financial Health Ratios & Burn-Rate Forecasting
+    const avgDailyBurnMonth = dayOfMonth > 0 ? (monthExpense / dayOfMonth) : 0;
+    const effectiveMonthlyBurnIdr = Math.max(monthlyBudget, monthExpense + unpaidRecurringMonthIdr + monthlyDebtServiceIdr);
+    const projectedMonthExpenseIdr = Math.round(monthExpense + avgDailyBurnMonth * Math.max(0, remainingDays - 1) + unpaidRecurringMonthIdr);
+    const projectedMonthSurplusIdr = Math.round(Math.max(monthIncome, monthlyIncomeTarget) - projectedMonthExpenseIdr - monthlyDebtServiceIdr);
+    const emergencyRunwayMonths = effectiveMonthlyBurnIdr > 0 ? +(liquidAndEmergencyIdr / effectiveMonthlyBurnIdr).toFixed(2) : 0;
+    const debtToAssetPct = totalAssetsIdr > 0 ? +((totalLiabilitiesIdr / totalAssetsIdr) * 100).toFixed(2) : 0;
+    const debtServiceRatioPct = monthlyIncomeTarget > 0 ? +((monthlyDebtServiceIdr / monthlyIncomeTarget) * 100).toFixed(2) : 0;
+    const riskCapitalPct = totalAssetsIdr > 0 ? +((botWalletIdr / totalAssetsIdr) * 100).toFixed(2) : 0;
+    const freeCashFlowIdr = monthIncome - monthExpense - monthlyDebtServiceIdr;
+    const freeCashFlowMarginPct = monthIncome > 0 ? +((freeCashFlowIdr / monthIncome) * 100).toFixed(1) : 0;
+    const momExpenseDeltaPct = prevMonthExpense > 0 ? +(((monthExpense - prevMonthExpense) / prevMonthExpense) * 100).toFixed(1) : null;
+
+    // Anomaly Detection: breach days & top spending driver
+    const breachDays = Object.entries(monthDailyExpenses)
+      .filter(([, amt]) => amt > dailyLimit)
+      .map(([date, amt]) => ({ date, amountIdr: amt, excessIdr: amt - dailyLimit }))
+      .sort((a, b) => b.excessIdr - a.excessIdr);
+    const topCategoryEntry = Object.entries(byCategory).sort((a, b) => b[1] - a[1])[0] || null;
+    const topSpendCategory = topCategoryEntry ? { category: topCategoryEntry[0], amountIdr: topCategoryEntry[1], sharePct: monthExpense > 0 ? +((topCategoryEntry[1] / monthExpense) * 100).toFixed(1) : 0 } : null;
+
+    // Composite Wall Street Family Office Health Score (0..100) & Credit-Style Grade
+    let healthScore = 100;
+    if (emergencyRunwayMonths < 1) healthScore -= 25;
+    else if (emergencyRunwayMonths < 3) healthScore -= 15;
+    else if (emergencyRunwayMonths < 6) healthScore -= 6;
+    if (dailyUsedPct > 100) healthScore -= 15;
+    if (monthUsedPct > 100) healthScore -= 18;
+    if (debtToAssetPct > 40) healthScore -= 20;
+    else if (debtToAssetPct > 20) healthScore -= 10;
+    if (debtServiceRatioPct > 30) healthScore -= 12;
+    if (riskCapitalPct > 40 && emergencyRunwayMonths < 3) healthScore -= 12;
+    if (overdueBillsCount > 0) healthScore -= Math.min(12, overdueBillsCount * 6);
+    if (monthIncome > 0 && savingsRatePct < 20) healthScore -= 10;
+    healthScore = Math.max(15, Math.min(100, Math.round(healthScore)));
+    const healthGrade = healthScore >= 90 ? 'AAA' : healthScore >= 82 ? 'AA' : healthScore >= 74 ? 'A' : healthScore >= 64 ? 'BBB' : healthScore >= 52 ? 'BB' : 'WATCH';
 
     // Live-Integrated Wealth Milestones (Rp 10M -> Rp 100M -> Rp 1B)
-    // Automatically reflects Bank Cash + Locked Reserves + Live Binance Futures Equity
     const monthlySavePace = Math.max(50000, buffettPlan.payYourselfFirstIdr || 400000);
     const estimateMonthsToTarget = (current, target, monthlyContrib, annualRate = 0.12) => {
       if (current >= target) return 0;
+      const contrib = Math.max(0, monthlyContrib);
+      if (contrib <= 0 && current <= 0) return 600;
       const r = annualRate / 12;
-      let bal = current;
+      let bal = Math.max(0, current);
       let m = 0;
       while (bal < target && m < 600) {
-        bal = bal * (1 + r) + monthlyContrib;
+        bal = bal * (1 + r) + contrib;
         m++;
       }
       return m;
     };
+    const fmtEta = m => (m === 0 ? 'ACHIEVED' : m >= 600 ? '>50 yr' : m < 12 ? `~${m} mo` : `~${(m / 12).toFixed(1)} yr`);
 
     const milestones = [
       { id: 'GOAL-10M', tier: 'TIER I', name: 'First Rp 10.000.000', shortLabel: 'Rp 10 Juta Pertama', targetIdr: 10000000, color: '#00d26a' },
       { id: 'GOAL-100M', tier: 'TIER II', name: 'First Rp 100.000.000', shortLabel: 'Rp 100 Juta Pertama', targetIdr: 100000000, color: '#ffb000' },
       { id: 'GOAL-1B', tier: 'TIER III', name: 'First Rp 1.000.000.000 (1 Miliar)', shortLabel: 'Rp 1 Miliar Pertama', targetIdr: 1000000000, color: '#ff6600' }
     ].map(ms => {
-      const pct = Math.min(100, +((totalIntegratedWealthIdr / ms.targetIdr) * 100).toFixed(2));
-      const rem = Math.max(0, ms.targetIdr - totalIntegratedWealthIdr);
-      const estMonths = estimateMonthsToTarget(totalIntegratedWealthIdr, ms.targetIdr, monthlySavePace, 0.12);
-      const etaLabel = estMonths === 0
-        ? 'ACHIEVED'
-        : estMonths < 12
-        ? `~${estMonths} mo`
-        : `~${(estMonths / 12).toFixed(1)} yr`;
+      const curPos = Math.max(0, totalIntegratedWealthIdr);
+      const pct = Math.min(100, +((curPos / ms.targetIdr) * 100).toFixed(2));
+      const rem = Math.max(0, ms.targetIdr - curPos);
+      const estMonths = estimateMonthsToTarget(curPos, ms.targetIdr, monthlySavePace, 0.12);
       return {
         ...ms,
         currentIdr: totalIntegratedWealthIdr,
         remainingIdr: rem,
         progressPct: pct,
         achieved: totalIntegratedWealthIdr >= ms.targetIdr,
-        etaLabel
+        etaLabel: fmtEta(estMonths)
       };
     });
+
+    // 4-Scenario Wall Street Stress-Test Matrix
+    const stressTests = [
+      {
+        id: 'BASE',
+        name: 'BASE CASE (CURRENT PLAN)',
+        monthlySaveIdr: monthlySavePace,
+        runwayMonths: emergencyRunwayMonths,
+        eta10M: fmtEta(estimateMonthsToTarget(trueNetWorthIdr, 10000000, monthlySavePace, 0.12)),
+        eta100M: fmtEta(estimateMonthsToTarget(trueNetWorthIdr, 100000000, monthlySavePace, 0.12)),
+        verdict: 'Baseline trajectory under 40% Pay-Yourself-First @ 12% p.a.'
+      },
+      {
+        id: 'INCOME_SHOCK',
+        name: 'INCOME SHOCK (-30% INFLOW)',
+        monthlySaveIdr: Math.max(0, Math.round(monthlyIncomeTarget * 0.7 - monthlyBudget)),
+        runwayMonths: +(liquidAndEmergencyIdr / Math.max(1, monthlyBudget + monthlyDebtServiceIdr)).toFixed(2),
+        eta10M: fmtEta(estimateMonthsToTarget(trueNetWorthIdr, 10000000, Math.max(0, monthlyIncomeTarget * 0.7 - monthlyBudget), 0.10)),
+        eta100M: fmtEta(estimateMonthsToTarget(trueNetWorthIdr, 100000000, Math.max(0, monthlyIncomeTarget * 0.7 - monthlyBudget), 0.10)),
+        verdict: emergencyRunwayMonths >= 3 ? 'Buffer absorbs shock cleanly.' : 'Build Emergency Vault to >= 6 months immediately.'
+      },
+      {
+        id: 'INFLATION_SHOCK',
+        name: 'COST INFLATION (+20% SPEND)',
+        monthlySaveIdr: Math.max(0, Math.round(monthlyIncomeTarget - monthlyBudget * 1.2)),
+        runwayMonths: +(liquidAndEmergencyIdr / Math.max(1, monthlyBudget * 1.2 + monthlyDebtServiceIdr)).toFixed(2),
+        eta10M: fmtEta(estimateMonthsToTarget(trueNetWorthIdr, 10000000, Math.max(0, monthlyIncomeTarget - monthlyBudget * 1.2), 0.12)),
+        eta100M: fmtEta(estimateMonthsToTarget(trueNetWorthIdr, 100000000, Math.max(0, monthlyIncomeTarget - monthlyBudget * 1.2), 0.12)),
+        verdict: 'Tightening discretionary leaks protects compounding velocity.'
+      },
+      {
+        id: 'TURBO_DISCIPLINE',
+        name: 'ELITE DISCIPLINE (+10% SAVE RATE)',
+        monthlySaveIdr: Math.round(monthlySavePace + monthlyIncomeTarget * 0.10),
+        runwayMonths: +((liquidAndEmergencyIdr + monthlyIncomeTarget * 0.6) / Math.max(1, effectiveMonthlyBurnIdr)).toFixed(2),
+        eta10M: fmtEta(estimateMonthsToTarget(trueNetWorthIdr, 10000000, monthlySavePace + monthlyIncomeTarget * 0.10, 0.12)),
+        eta100M: fmtEta(estimateMonthsToTarget(trueNetWorthIdr, 100000000, monthlySavePace + monthlyIncomeTarget * 0.10, 0.12)),
+        verdict: `Adds +${fmtIdrShort(monthlyIncomeTarget * 0.10)}/mo compounding power.`
+      }
+    ];
+
+    // 4-Role Virtual Family Office Committee (Personal Finance Team)
+    const emergencyTarget6m = Math.round(monthlyBudget * 6);
+    const emergencyGapIdr = Math.max(0, emergencyTarget6m - emergencyFundIdr);
+    const cfoStatus = (monthUsedPct > 100 || projectedMonthSurplusIdr < 0) ? 'ACTION_REQUIRED' : (monthUsedPct >= 80 || dailyUsedPct >= 75) ? 'WATCH' : 'STRONG';
+    const ctrlStatus = (breachDays.length >= 2 || overdueBillsCount > 0 || dailyUsedPct > 100) ? 'ACTION_REQUIRED' : (breachDays.length === 1 || dueSoonBillsCount > 0) ? 'WATCH' : 'STRONG';
+    const croStatus = (emergencyRunwayMonths < 2 || debtToAssetPct > 35 || (riskCapitalPct > 45 && emergencyRunwayMonths < 3)) ? 'ACTION_REQUIRED' : (emergencyRunwayMonths < 6 || riskCapitalPct > 35) ? 'WATCH' : 'STRONG';
+    const stratStatus = (savingsRatePct >= 40 && emergencyGapIdr === 0) ? 'STRONG' : (savingsRatePct >= 25 || totalIntegratedWealthIdr >= 500000) ? 'WATCH' : 'ACTION_REQUIRED';
+
+    const cfoTeam = [
+      {
+        id: 'CFO',
+        role: 'CHIEF FINANCIAL OFFICER (CFO)',
+        title: 'Cashflow, Burn Rate & Runway',
+        status: cfoStatus,
+        headline: `Projected Month-End Expense ${fmtIdrShort(projectedMonthExpenseIdr)} vs Budget ${fmtIdrShort(monthlyBudget)} (Safe Daily: ${fmtIdrShort(dynamicSafeDaily)}/day).`,
+        metrics: `Savings Rate ${savingsRatePct}% | FCF Margin ${freeCashFlowMarginPct}% | Rem Days ${remainingDays}`,
+        directive: projectedMonthExpenseIdr > monthlyBudget
+          ? `Cap daily spend strictly at ${fmtIdrShort(dynamicSafeDaily)}/day for the next ${remainingDays} days to avoid monthly deficit.`
+          : `Cashflow on plan. Lock ${fmtIdrShort(buffettPlan.payYourselfFirstIdr)}/mo Pay-Yourself-First before discretionary outlays.`
+      },
+      {
+        id: 'CONTROLLER',
+        role: 'FINANCIAL CONTROLLER',
+        title: 'Spending Audit & Bill Governance',
+        status: ctrlStatus,
+        headline: topSpendCategory
+          ? `Top Spend Driver: ${topSpendCategory.category} (${fmtIdrShort(topSpendCategory.amountIdr)}, ${topSpendCategory.sharePct}% of monthly spend). Breach Days: ${breachDays.length}.`
+          : `Zero spending anomalies detected this month. ${activeBills.length} recurring commitments tracked.`,
+        metrics: `Overdue Bills: ${overdueBillsCount} | Due <=7d: ${dueSoonBillsCount} | MoM: ${momExpenseDeltaPct === null ? 'N/A' : (momExpenseDeltaPct >= 0 ? '+' : '') + momExpenseDeltaPct + '%'}`,
+        directive: overdueBillsCount > 0
+          ? `Settle ${overdueBillsCount} overdue recurring bill(s) totaling ${fmtIdrShort(unpaidRecurringMonthIdr)} immediately.`
+          : breachDays.length > 0
+          ? `Audit ${breachDays.length} ceiling-breach day(s) (max overage ${fmtIdrShort(breachDays[0].excessIdr)} on ${breachDays[0].date}).`
+          : `Operating envelopes compliant. Keep logging daily outflows to maintain audit trail.`
+      },
+      {
+        id: 'CRO',
+        role: 'CHIEF RISK & LIQUIDITY OFFICER',
+        title: 'Solvency, Debt & Futures Risk Cap',
+        status: croStatus,
+        headline: `Emergency Runway ${emergencyRunwayMonths.toFixed(1)} months (Target >= 6.0 mo). Debt/Asset ${debtToAssetPct.toFixed(1)}%. Futures Risk Capital ${riskCapitalPct.toFixed(1)}%.`,
+        metrics: `Liquid+Reserve ${fmtIdrShort(liquidAndEmergencyIdr)} | Debt ${fmtIdrShort(totalLiabilitiesIdr)} | DSR ${debtServiceRatioPct.toFixed(1)}%`,
+        directive: emergencyGapIdr > 0
+          ? `Priority #1: Route ${fmtIdrShort(Math.round(buffettPlan.payYourselfFirstIdr * 0.5))}/mo into Emergency Reserve Vault until 6-month floor (${fmtIdrShort(emergencyTarget6m)}) is funded (gap: ${fmtIdrShort(emergencyGapIdr)}).`
+          : riskCapitalPct > 35
+          ? `Cap high-leverage Futures exposure <= 35% of Net Worth by sweeping profits into Emergency/Investment Vault.`
+          : `Liquidity & solvency buffers meet Wall Street Family Office standards.`
+      },
+      {
+        id: 'STRATEGIST',
+        role: 'WEALTH STRATEGIST',
+        title: 'Asset Allocation & Compounding',
+        status: stratStatus,
+        headline: `True Net Worth ${fmtIdrShort(trueNetWorthIdr)} (${milestones[0].progressPct}% to Rp 10M, ETA ${milestones[0].etaLabel} @ 12% p.a.).`,
+        metrics: `Invest Vault ${fmtIdrShort(investmentVaultIdr)} | Futures ${fmtIdrShort(botWalletIdr)} | External ${fmtIdrShort(extAssetsTotalIdr)}`,
+        directive: `Split monthly Pay-Yourself-First (${fmtIdrShort(buffettPlan.payYourselfFirstIdr)}): ${fmtIdrShort(Math.round(buffettPlan.monthlyIncomeIdr * 0.25))} Productive Capital + ${fmtIdrShort(Math.round(buffettPlan.monthlyIncomeIdr * 0.15))} Emergency Reserve.`
+      }
+    ];
 
     // Keep autoIntegrate goals synced with live integrated wealth
     for (const g of (fin.goals || [])) {
@@ -927,6 +1190,8 @@ function mountTerminalExtensions(app, deps) {
       monthIncome,
       monthExpense,
       monthSavings,
+      prevMonthIncome,
+      prevMonthExpense,
       todayIncome,
       todayExpense,
       dailyLimitIdr: dailyLimit,
@@ -950,8 +1215,181 @@ function mountTerminalExtensions(app, deps) {
         walletIdr: botWalletIdr,
         vaultUsd: botVaultUsd,
         vaultIdr: Math.round(botVaultUsd * fxIdr)
+      },
+      familyOffice: {
+        healthScore,
+        healthGrade,
+        accounts: liveAccounts,
+        recurringBills,
+        totalMonthlyRecurringIdr,
+        unpaidRecurringMonthIdr,
+        overdueBillsCount,
+        dueSoonBillsCount,
+        balanceSheet: {
+          liquidCashIdr,
+          emergencyFundIdr,
+          liquidAndEmergencyIdr,
+          investmentVaultIdr,
+          tradingRiskCapitalIdr: botWalletIdr,
+          fixedAssetsIdr: extFixedIdr,
+          externalAssetsIdr: extAssetsTotalIdr,
+          totalAssetsIdr,
+          totalLiabilitiesIdr,
+          monthlyDebtServiceIdr,
+          trueNetWorthIdr,
+          emergencyTarget6mIdr: emergencyTarget6m,
+          emergencyGapIdr
+        },
+        ratios: {
+          emergencyRunwayMonths,
+          debtToAssetPct,
+          debtServiceRatioPct,
+          riskCapitalPct,
+          freeCashFlowIdr,
+          freeCashFlowMarginPct,
+          avgDailyBurnMonth: Math.round(avgDailyBurnMonth),
+          projectedMonthExpenseIdr,
+          projectedMonthSurplusIdr,
+          momExpenseDeltaPct,
+          breachDaysCount: breachDays.length,
+          topSpendCategory
+        },
+        breachDays: breachDays.slice(0, 10),
+        stressTests,
+        cfoTeam
       }
     };
+  }
+
+  function buildCfoEmailHtml(finData) {
+    const s = finData.summary || {};
+    const fo = s.familyOffice || {};
+    const bs = fo.balanceSheet || {};
+    const r = fo.ratios || {};
+    const esc = typeof escapeHtml === 'function'
+      ? escapeHtml
+      : (v => String(v == null ? '' : v).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])));
+    const teamRows = (fo.cfoTeam || []).map(m => {
+      const c = m.status === 'STRONG' ? '#00873e' : (m.status === 'WATCH' ? '#d95300' : '#c62828');
+      return `<tr style="border-bottom:1px solid #e5e9ef">
+        <td style="padding:7px 8px;font-weight:700;color:#d95300">${esc(m.role)}</td>
+        <td style="padding:7px 8px;font-weight:700;color:${c}">${esc(m.status)}</td>
+        <td style="padding:7px 8px;color:#11161c">${esc(m.headline)}<br><span style="color:#4b5563;font-size:10.5px"><b>Directive:</b> ${esc(m.directive)}</span></td>
+      </tr>`;
+    }).join('');
+    return `<div style="background:#ffffff;color:#11161c;font-family:'Helvetica Neue',Arial,sans-serif;max-width:720px;margin:0 auto;border:1px solid #cfd6df">
+      <div style="background:#000000;border-top:4px solid #ff6600;padding:13px 18px;color:#ffffff">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+          <td style="font-size:17px;font-weight:700;color:#ffffff">Bloomberg <span style="color:#9aa0a6;font-weight:400;font-size:12px">| SINGLE FAMILY OFFICE &amp; PERSONAL CFO</span></td>
+          <td align="right" style="font-family:Consolas,'Courier New',monospace;font-size:11px;color:#ffb000;font-weight:700">GRADE: ${esc(fo.healthGrade || 'A')} (${fo.healthScore || 85}/100)</td>
+        </tr></table>
+      </div>
+      <div style="background:#f3f4f6;border-bottom:1px solid #cfd6df;padding:9px 18px;font-family:Consolas,'Courier New',monospace;font-size:11px;color:#374151">
+        <b>PRINCIPAL:</b> FADHIL M. S. LUBIS &nbsp;|&nbsp; <b>PERIOD:</b> ${esc(s.monthPrefix || '')} &nbsp;|&nbsp; <b>NET WORTH:</b> ${esc(fmtIdrShort(bs.trueNetWorthIdr || 0))} &nbsp;|&nbsp; <b>RUNWAY:</b> ${Number(r.emergencyRunwayMonths || 0).toFixed(1)} mo
+      </div>
+      <div style="padding:16px 18px">
+        <div style="font-size:11px;font-weight:700;border-bottom:2px solid #000;padding-bottom:4px;margin-bottom:8px">FAMILY OFFICE COMMITTEE DIRECTIVES</div>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;font-size:11.5px;margin-bottom:14px">
+          <thead><tr style="background:#f3f4f6;color:#4b5563"><th align="left" style="padding:6px 8px">OFFICER</th><th align="left" style="padding:6px 8px">STATUS</th><th align="left" style="padding:6px 8px">ASSESSMENT &amp; ACTION</th></tr></thead>
+          <tbody>${teamRows}</tbody>
+        </table>
+        <div style="font-size:10.5px;color:#4b5563">Full Balance Sheet, Multi-Account Treasury, Stress-Test, and Audit Ledger PDF is attached to this email.</div>
+      </div>
+    </div>`;
+  }
+
+  function buildDeterministicCfoMemo(question, fin, summary) {
+    const q = String(question || '').trim();
+    const fo = summary.familyOffice || {};
+    const bs = fo.balanceSheet || {};
+    const r = fo.ratios || {};
+    const amtMatch = q.match(/(?:rp\.?\s*)?(\d+(?:[.,]\d+)?)\s*(jt|juta|m|miliar|rb|ribu|k)?/i);
+    let parsedAmt = 0;
+    if (amtMatch) {
+      let num = parseFloat(amtMatch[1].replace(/\./g, '').replace(',', '.'));
+      const unit = String(amtMatch[2] || '').toLowerCase();
+      if (unit === 'jt' || unit === 'juta') num *= 1e6;
+      else if (unit === 'm' || unit === 'miliar') num *= 1e9;
+      else if (unit === 'rb' || unit === 'ribu' || unit === 'k') num *= 1e3;
+      if (Number.isFinite(num) && num >= 1000) parsedAmt = Math.round(num);
+    }
+
+    const isPurchaseCheck = /beli|bayar|pengeluaran|jajan|cicil|spend|buy|afford/i.test(q) && parsedAmt > 0;
+    let verdict = 'ADVISORY BRIEF';
+    let recommendation = '';
+    if (isPurchaseCheck) {
+      const exceedsDaily = parsedAmt > Math.max(0, summary.remainingTodayIdr);
+      const exceedsMonth = parsedAmt > Math.max(0, summary.remainingMonthIdr);
+      const exceedsOps = parsedAmt > Math.max(0, bs.liquidCashIdr);
+      if (exceedsOps || exceedsMonth) {
+        verdict = 'REJECT / DEFER PURCHASE';
+        recommendation = `Outlay ${fmtIdrShort(parsedAmt)} exceeds remaining monthly operating budget (${fmtIdrShort(summary.remainingMonthIdr)}) or liquid cash (${fmtIdrShort(bs.liquidCashIdr)}). Defer purchase or fund via a dedicated sinking goal without touching Emergency Reserve (${fmtIdrShort(bs.emergencyFundIdr)}).`;
+      } else if (exceedsDaily) {
+        verdict = 'CONDITIONAL APPROVAL (TIGHTEN NEXT DAYS)';
+        const postMonthRem = Math.max(0, summary.remainingMonthIdr - parsedAmt);
+        const newSafeDaily = Math.floor(postMonthRem / Math.max(1, summary.remainingDays - 1));
+        recommendation = `Outlay ${fmtIdrShort(parsedAmt)} exceeds today's remaining allowance (${fmtIdrShort(summary.remainingTodayIdr)}) but fits monthly budget. Approved ONLY if you cap daily spend at ${fmtIdrShort(newSafeDaily)}/day for the remaining ${summary.remainingDays} days.`;
+      } else {
+        verdict = 'APPROVED WITHIN BUDGET';
+        recommendation = `Outlay ${fmtIdrShort(parsedAmt)} is within today's remaining allowance (${fmtIdrShort(summary.remainingTodayIdr)}) and monthly budget (${fmtIdrShort(summary.remainingMonthIdr)}). Safe to proceed.`;
+      }
+    } else if (/futures|trading|leverage|binance|risiko|risk/i.test(q)) {
+      verdict = r.riskCapitalPct > 35 && r.emergencyRunwayMonths < 3 ? 'RISK REDUCTION ADVISED' : 'RISK EXPOSURE MONITORED';
+      recommendation = `Live Binance Futures accounts for ${r.riskCapitalPct.toFixed(1)}% (${fmtIdrShort(bs.tradingRiskCapitalIdr)}) of Total Assets (${fmtIdrShort(bs.totalAssetsIdr)}), with Emergency Runway at ${r.emergencyRunwayMonths.toFixed(1)} months. Wall Street Family Office rule: keep >= 6 months operating cash (${fmtIdrShort(bs.emergencyTarget6mIdr)}) protected outside leveraged trading and sweep realized trading profits into Emergency/Investment Vaults.`;
+    } else if (/10\s*jt|10\s*juta|100\s*jt|1\s*m|target|kaya|cepat|invest/i.test(q)) {
+      const m10 = (summary.milestones || [])[0] || {};
+      const turbo = (fo.stressTests || []).find(x => x.id === 'TURBO_DISCIPLINE') || {};
+      verdict = 'WEALTH ACCELERATION PLAN';
+      recommendation = `Current Net Worth: ${fmtIdrShort(bs.trueNetWorthIdr)} (${m10.progressPct || 0}% toward Rp 10M, Base ETA ${m10.etaLabel || '-'}). Raising savings rate by +10% (${fmtIdrShort(turbo.monthlySaveIdr || 0)}/mo) accelerates Rp 10M ETA to ${turbo.eta10M || '-'} and Rp 100M ETA to ${turbo.eta100M || '-'}. Lock 40% Pay-Yourself-First on Day 1 every month.`;
+    } else {
+      verdict = `FAMILY OFFICE HEALTH: GRADE ${fo.healthGrade || 'A'} (${fo.healthScore || 85}/100)`;
+      recommendation = `True Net Worth ${fmtIdrShort(bs.trueNetWorthIdr)} | Emergency Runway ${r.emergencyRunwayMonths.toFixed(1)} mo | Safe Daily Spend ${fmtIdrShort(summary.dynamicSafeDailyIdr)}/day | Debt/Asset ${r.debtToAssetPct.toFixed(1)}%. Top priority: ${(fo.cfoTeam && fo.cfoTeam[2] && fo.cfoTeam[2].directive) || 'Maintain 40% Pay-Yourself-First savings discipline.'}`;
+    }
+
+    return {
+      question: q || 'Full Family Office Financial Health Review',
+      generatedAt: new Date().toISOString(),
+      mode: 'QUANTITATIVE_FAMILY_OFFICE',
+      verdict,
+      recommendation,
+      parsedAmountIdr: parsedAmt || null,
+      officers: (fo.cfoTeam || []).map(m => ({ role: m.role, status: m.status, note: m.directive }))
+    };
+  }
+
+  async function tryEnhanceCfoMemoWithAi(memo, summary) {
+    if (testMode) return memo;
+    const rawKeys = String(process.env.GROQ_API_KEYS || process.env.GROQ_API_KEY || '').split(',').map(s => s.trim()).filter(Boolean);
+    const groqKey = rawKeys[0] || '';
+    if (!groqKey) return memo;
+    try {
+      const fo = summary.familyOffice || {};
+      const bs = fo.balanceSheet || {};
+      const r = fo.ratios || {};
+      const sysPrompt = 'You are a Wall Street Single Family Office CFO team (CFO, Controller, Chief Risk Officer, Wealth Strategist). Reply concisely in Indonesian, crisp institutional Bloomberg tone (no emojis, no fluff), strictly grounded in the provided rupiah figures. Max 5 short bullet points.';
+      const userPrompt = `Pertanyaan Klien: ${memo.question}\nData Keuangan Nyata:\n- True Net Worth: ${fmtIdrShort(bs.trueNetWorthIdr)}\n- Total Aset: ${fmtIdrShort(bs.totalAssetsIdr)} | Hutang: ${fmtIdrShort(bs.totalLiabilitiesIdr)}\n- Liquid+Emergency: ${fmtIdrShort(bs.liquidAndEmergencyIdr)} (Runway ${r.emergencyRunwayMonths} bulan)\n- Sisa Budget Hari Ini: ${fmtIdrShort(summary.remainingTodayIdr)} | Sisa Bulan Ini: ${fmtIdrShort(summary.remainingMonthIdr)} | Safe Daily: ${fmtIdrShort(summary.dynamicSafeDailyIdr)}\n- Savings Rate: ${summary.savingsRatePct}% | Futures Risk Exposure: ${r.riskCapitalPct}%\n- Preliminary Quantitative Verdict: ${memo.verdict} — ${memo.recommendation}\nBerikan arahan tim keuangan pribadi yang tegas dan spesifik.`;
+      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        signal: AbortSignal.timeout(7000),
+        headers: { 'Authorization': `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          temperature: 0.25,
+          max_tokens: 360,
+          messages: [
+            { role: 'system', content: sysPrompt },
+            { role: 'user', content: userPrompt }
+          ]
+        })
+      });
+      if (!resp.ok) return memo;
+      const j = await resp.json().catch(() => null);
+      const aiText = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+      if (aiText && aiText.trim().length > 20) {
+        return { ...memo, mode: 'AI_CFO_COMMITTEE_LIVE', aiAdvisory: aiText.trim() };
+      }
+    } catch (_) {}
+    return memo;
   }
 
   app.get('/api/finance', async (req, res) => {
@@ -1002,18 +1440,19 @@ function mountTerminalExtensions(app, deps) {
       const wibToday = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
       const investAmt = Math.round(plan.monthlyIncomeIdr * 0.25);
       const emergAmt = Math.round(plan.monthlyIncomeIdr * 0.15);
-      const mkTx = (type, category, amountIdr, note) => ({
+      const mkTx = (type, category, amountIdr, note, extra = {}) => ({
         id: 'TX-' + Date.now().toString(36) + '-' + crypto.randomBytes(2).toString('hex'),
         ts: Date.now(),
         date: wibToday,
         type,
         category,
         amountIdr,
-        note
+        note,
+        ...extra
       });
-      const txInc = mkTx('INCOME', 'Monthly Fixed Allowance', plan.monthlyIncomeIdr, 'Fixed Monthly Income — Warren Buffett Auto-Cycle');
-      const txInv = mkTx('SAVINGS', 'Productive Investment Capital', investAmt, 'Auto Pay-Yourself-First (25% Productive Capital)');
-      const txEmg = mkTx('SAVINGS', 'Emergency Margin of Safety', emergAmt, 'Auto Pay-Yourself-First (15% Cash Reserve)');
+      const txInc = mkTx('INCOME', 'Monthly Fixed Allowance', plan.monthlyIncomeIdr, 'Fixed Monthly Income — Warren Buffett Auto-Cycle', { accountId: 'ACC-OPS' });
+      const txInv = mkTx('SAVINGS', 'Productive Investment Capital', investAmt, 'Auto Pay-Yourself-First (25% Productive Capital)', { accountId: 'ACC-OPS', toAccountId: 'ACC-INV' });
+      const txEmg = mkTx('SAVINGS', 'Emergency Margin of Safety', emergAmt, 'Auto Pay-Yourself-First (15% Cash Reserve)', { accountId: 'ACC-OPS', toAccountId: 'ACC-EMG' });
       fin.transactions.unshift(txEmg, txInv, txInc);
       fin.transactions = fin.transactions.slice(0, 2000);
       const gInv = fin.goals.find(g => g.id === 'GOAL-INVEST');
@@ -1035,19 +1474,27 @@ function mountTerminalExtensions(app, deps) {
   app.post('/api/finance/tx', async (req, res) => {
     const b = req.body || {};
     const type = String(b.type || 'EXPENSE').toUpperCase();
-    if (!['INCOME', 'EXPENSE', 'SAVINGS'].includes(type)) {
-      return res.status(400).json({ ok: false, error: 'type must be INCOME, EXPENSE, or SAVINGS' });
+    if (!['INCOME', 'EXPENSE', 'SAVINGS', 'TRANSFER'].includes(type)) {
+      return res.status(400).json({ ok: false, error: 'type must be INCOME, EXPENSE, SAVINGS, or TRANSFER' });
     }
     const amountIdr = Math.round(Number(b.amountIdr));
     if (!Number.isFinite(amountIdr) || amountIdr <= 0 || amountIdr > 1e12) {
       return res.status(400).json({ ok: false, error: 'Invalid amountIdr' });
     }
-    const category = String(b.category || (type === 'INCOME' ? 'Monthly Fixed Allowance' : type === 'SAVINGS' ? 'Productive Investment Capital' : 'Food & Refreshments')).trim().slice(0, 60);
+    const fin = loadFinance();
+    const validAccIds = new Set((fin.accounts || []).map(a => a.id));
+    const accountId = (b.accountId && validAccIds.has(String(b.accountId))) ? String(b.accountId) : 'ACC-OPS';
+    let toAccountId = (b.toAccountId && validAccIds.has(String(b.toAccountId))) ? String(b.toAccountId) : '';
+    if (type === 'TRANSFER') {
+      if (!toAccountId || toAccountId === accountId) {
+        return res.status(400).json({ ok: false, error: 'TRANSFER requires distinct source accountId and destination toAccountId' });
+      }
+    }
+    const category = String(b.category || (type === 'TRANSFER' ? 'Internal Treasury Transfer' : type === 'INCOME' ? 'Monthly Fixed Allowance' : type === 'SAVINGS' ? 'Productive Investment Capital' : 'Food & Refreshments')).trim().slice(0, 60);
     const note = String(b.note || '').trim().slice(0, 160);
     const wibToday = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
     const date = /^\d{4}-\d{2}-\d{2}$/.test(String(b.date || '')) ? String(b.date) : wibToday;
 
-    const fin = loadFinance();
     const tx = {
       id: 'TX-' + Date.now().toString(36) + '-' + crypto.randomBytes(2).toString('hex'),
       ts: Date.now(),
@@ -1055,6 +1502,8 @@ function mountTerminalExtensions(app, deps) {
       type,
       category,
       amountIdr,
+      accountId,
+      ...(toAccountId ? { toAccountId } : {}),
       note
     };
     fin.transactions.unshift(tx);
@@ -1096,6 +1545,324 @@ function mountTerminalExtensions(app, deps) {
       res.json({ ok: true, data: { ...fin, summary: computeFinanceSummary(fin) } });
     } catch {
       res.status(500).json({ ok: false, error: 'Failed deleting transaction' });
+    }
+  });
+
+  // Multi-Account Vaults Management
+  app.post('/api/finance/account', async (req, res) => {
+    const b = req.body || {};
+    const name = String(b.name || '').trim().slice(0, 60);
+    const type = String(b.type || 'CASH').toUpperCase();
+    if (!name || !['CASH', 'RESERVE', 'INVESTMENT'].includes(type)) {
+      return res.status(400).json({ ok: false, error: 'Valid account name and type (CASH|RESERVE|INVESTMENT) required' });
+    }
+    const openingBalanceIdr = Math.round(Number(b.openingBalanceIdr || 0));
+    if (!Number.isFinite(openingBalanceIdr) || openingBalanceIdr < -1e11 || openingBalanceIdr > 1e12) {
+      return res.status(400).json({ ok: false, error: 'Invalid openingBalanceIdr' });
+    }
+    const fin = loadFinance();
+    const existing = b.id ? fin.accounts.find(a => a.id === b.id) : null;
+    if (existing) {
+      existing.name = name;
+      existing.type = type;
+      existing.institution = String(b.institution || existing.institution || '').trim().slice(0, 60);
+      existing.openingBalanceIdr = openingBalanceIdr;
+      existing.note = String(b.note || existing.note || '').trim().slice(0, 120);
+    } else {
+      fin.accounts.push({
+        id: 'ACC-' + Date.now().toString(36).toUpperCase(),
+        name,
+        institution: String(b.institution || 'Bank / Vault').trim().slice(0, 60),
+        type,
+        openingBalanceIdr,
+        note: String(b.note || '').trim().slice(0, 120)
+      });
+    }
+    try {
+      saveFinance(fin);
+      const liveFx = await resolveLiveFxIdr();
+      res.json({ ok: true, data: { ...fin, summary: computeFinanceSummary(fin, liveFx) } });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Failed saving account' });
+    }
+  });
+
+  app.delete('/api/finance/account/:id', async (req, res) => {
+    const id = String(req.params.id || '').trim();
+    if (id === 'ACC-OPS') return res.status(400).json({ ok: false, error: 'Primary Operating Bank Account cannot be deleted' });
+    const fin = loadFinance();
+    fin.accounts = fin.accounts.filter(a => a && a.id !== id);
+    try {
+      saveFinance(fin);
+      const liveFx = await resolveLiveFxIdr();
+      res.json({ ok: true, data: { ...fin, summary: computeFinanceSummary(fin, liveFx) } });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Failed deleting account' });
+    }
+  });
+
+  // External Balance Sheet Assets (Gold, RDPU, Equities, Equipment, Property)
+  app.post('/api/finance/asset', async (req, res) => {
+    const b = req.body || {};
+    const name = String(b.name || '').trim().slice(0, 70);
+    const category = String(b.category || 'INVESTMENT').toUpperCase();
+    const valueIdr = Math.round(Number(b.valueIdr));
+    if (!name || !['LIQUID', 'INVESTMENT', 'FIXED'].includes(category) || !Number.isFinite(valueIdr) || valueIdr < 0 || valueIdr > 1e13) {
+      return res.status(400).json({ ok: false, error: 'Valid asset name, category (LIQUID|INVESTMENT|FIXED), and valueIdr required' });
+    }
+    const fin = loadFinance();
+    const existing = b.id ? fin.assets.find(a => a.id === b.id) : null;
+    if (existing) {
+      existing.name = name;
+      existing.category = category;
+      existing.valueIdr = valueIdr;
+      existing.institution = String(b.institution || existing.institution || '').trim().slice(0, 60);
+      existing.note = String(b.note || existing.note || '').trim().slice(0, 140);
+      existing.updatedAt = new Date().toISOString();
+    } else {
+      fin.assets.push({
+        id: 'AST-' + Date.now().toString(36).toUpperCase(),
+        name,
+        category,
+        valueIdr,
+        institution: String(b.institution || 'Custody / Self').trim().slice(0, 60),
+        note: String(b.note || '').trim().slice(0, 140),
+        updatedAt: new Date().toISOString()
+      });
+    }
+    try {
+      saveFinance(fin);
+      const liveFx = await resolveLiveFxIdr();
+      res.json({ ok: true, data: { ...fin, summary: computeFinanceSummary(fin, liveFx) } });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Failed saving balance sheet asset' });
+    }
+  });
+
+  app.delete('/api/finance/asset/:id', async (req, res) => {
+    const id = String(req.params.id || '').trim();
+    const fin = loadFinance();
+    fin.assets = fin.assets.filter(a => a && a.id !== id);
+    try {
+      saveFinance(fin);
+      const liveFx = await resolveLiveFxIdr();
+      res.json({ ok: true, data: { ...fin, summary: computeFinanceSummary(fin, liveFx) } });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Failed deleting asset' });
+    }
+  });
+
+  // Personal Liabilities / Debt / Installments
+  app.post('/api/finance/liability', async (req, res) => {
+    const b = req.body || {};
+    const name = String(b.name || '').trim().slice(0, 70);
+    const principalIdr = Math.round(Number(b.principalIdr));
+    const monthlyPaymentIdr = Math.max(0, Math.round(Number(b.monthlyPaymentIdr || 0)));
+    const aprPct = Math.max(0, Math.min(200, Number(b.aprPct || 0)));
+    const dueDay = Math.max(1, Math.min(31, Math.round(Number(b.dueDay || 1))));
+    if (!name || !Number.isFinite(principalIdr) || principalIdr < 0 || principalIdr > 1e13) {
+      return res.status(400).json({ ok: false, error: 'Valid liability name and principalIdr required' });
+    }
+    const fin = loadFinance();
+    const existing = b.id ? fin.liabilities.find(l => l.id === b.id) : null;
+    if (existing) {
+      existing.name = name;
+      existing.lender = String(b.lender || existing.lender || '').trim().slice(0, 60);
+      existing.principalIdr = principalIdr;
+      existing.monthlyPaymentIdr = monthlyPaymentIdr;
+      existing.aprPct = +aprPct.toFixed(2);
+      existing.dueDay = dueDay;
+      existing.updatedAt = new Date().toISOString();
+    } else {
+      fin.liabilities.push({
+        id: 'LIA-' + Date.now().toString(36).toUpperCase(),
+        name,
+        lender: String(b.lender || 'Lender / Card').trim().slice(0, 60),
+        principalIdr,
+        monthlyPaymentIdr,
+        aprPct: +aprPct.toFixed(2),
+        dueDay,
+        updatedAt: new Date().toISOString()
+      });
+    }
+    try {
+      saveFinance(fin);
+      const liveFx = await resolveLiveFxIdr();
+      res.json({ ok: true, data: { ...fin, summary: computeFinanceSummary(fin, liveFx) } });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Failed saving liability' });
+    }
+  });
+
+  app.delete('/api/finance/liability/:id', async (req, res) => {
+    const id = String(req.params.id || '').trim();
+    const fin = loadFinance();
+    fin.liabilities = fin.liabilities.filter(l => l && l.id !== id);
+    try {
+      saveFinance(fin);
+      const liveFx = await resolveLiveFxIdr();
+      res.json({ ok: true, data: { ...fin, summary: computeFinanceSummary(fin, liveFx) } });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Failed deleting liability' });
+    }
+  });
+
+  // Recurring Monthly Bills & 1-Click Pay
+  app.post('/api/finance/bill', async (req, res) => {
+    const b = req.body || {};
+    const name = String(b.name || '').trim().slice(0, 70);
+    const amountIdr = Math.round(Number(b.amountIdr));
+    const dueDay = Math.max(1, Math.min(31, Math.round(Number(b.dueDay || 1))));
+    if (!name || !Number.isFinite(amountIdr) || amountIdr <= 0 || amountIdr > 1e12) {
+      return res.status(400).json({ ok: false, error: 'Valid bill name and positive amountIdr required' });
+    }
+    const fin = loadFinance();
+    const existing = b.id ? fin.recurringBills.find(x => x.id === b.id) : null;
+    if (existing) {
+      existing.name = name;
+      existing.category = String(b.category || existing.category || 'Fixed Bills').trim().slice(0, 50);
+      existing.amountIdr = amountIdr;
+      existing.dueDay = dueDay;
+      existing.accountId = String(b.accountId || existing.accountId || 'ACC-OPS');
+      existing.active = b.active !== false;
+    } else {
+      fin.recurringBills.push({
+        id: 'BILL-' + Date.now().toString(36).toUpperCase(),
+        name,
+        category: String(b.category || 'Fixed Bills').trim().slice(0, 50),
+        amountIdr,
+        dueDay,
+        accountId: String(b.accountId || 'ACC-OPS'),
+        active: true,
+        lastPaidMonth: ''
+      });
+    }
+    try {
+      saveFinance(fin);
+      const liveFx = await resolveLiveFxIdr();
+      res.json({ ok: true, data: { ...fin, summary: computeFinanceSummary(fin, liveFx) } });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Failed saving recurring bill' });
+    }
+  });
+
+  app.post('/api/finance/bill/:id/pay', async (req, res) => {
+    const id = String(req.params.id || '').trim();
+    const fin = loadFinance();
+    const bill = fin.recurringBills.find(x => x && x.id === id);
+    if (!bill) return res.status(404).json({ ok: false, error: 'Recurring bill not found' });
+    const wibToday = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
+    const curMonth = wibToday.slice(0, 7);
+    if (bill.lastPaidMonth === curMonth) {
+      return res.status(400).json({ ok: false, error: `Bill "${bill.name}" already paid for ${curMonth}` });
+    }
+    const tx = {
+      id: 'TX-' + Date.now().toString(36) + '-' + crypto.randomBytes(2).toString('hex'),
+      ts: Date.now(),
+      date: wibToday,
+      type: 'EXPENSE',
+      category: bill.category || 'Fixed Bills',
+      amountIdr: Math.round(Number(bill.amountIdr || 0)),
+      accountId: bill.accountId || 'ACC-OPS',
+      note: `Recurring Bill Settlement: ${bill.name} (${curMonth})`
+    };
+    fin.transactions.unshift(tx);
+    fin.transactions = fin.transactions.slice(0, 2000);
+    bill.lastPaidMonth = curMonth;
+    try {
+      saveFinance(fin);
+      const liveFx = await resolveLiveFxIdr();
+      res.json({ ok: true, tx, data: { ...fin, summary: computeFinanceSummary(fin, liveFx) } });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Failed settling recurring bill' });
+    }
+  });
+
+  app.delete('/api/finance/bill/:id', async (req, res) => {
+    const id = String(req.params.id || '').trim();
+    const fin = loadFinance();
+    fin.recurringBills = fin.recurringBills.filter(b => b && b.id !== id);
+    try {
+      saveFinance(fin);
+      const liveFx = await resolveLiveFxIdr();
+      res.json({ ok: true, data: { ...fin, summary: computeFinanceSummary(fin, liveFx) } });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Failed deleting recurring bill' });
+    }
+  });
+
+  // Interactive Personal CFO Team Consultation (Quantitative + Optional Live AI CFO Enhancement)
+  app.post('/api/finance/cfo-brief', async (req, res) => {
+    try {
+      const question = String((req.body && req.body.question) || '').trim().slice(0, 400);
+      const fin = loadFinance();
+      const liveFx = await resolveLiveFxIdr();
+      const summary = computeFinanceSummary(fin, liveFx);
+      const baseMemo = buildDeterministicCfoMemo(question, fin, summary);
+      const finalMemo = await tryEnhanceCfoMemoWithAi(baseMemo, summary);
+      res.json({ ok: true, memo: finalMemo, summary });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: 'Failed generating CFO briefing' });
+    }
+  });
+
+  // Personal Family Office CFO Report PDF Download & Email Dispatch
+  app.get('/api/finance/report/pdf', async (req, res) => {
+    try {
+      const fin = loadFinance();
+      const liveFx = await resolveLiveFxIdr();
+      const summary = computeFinanceSummary(fin, liveFx);
+      const pdf = buildPersonalCfoReportPdf({ ...fin, summary });
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${pdf.filename}"`);
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(pdf.buffer);
+    } catch (e) {
+      res.status(500).json({ ok: false, error: 'Failed generating Personal CFO Report PDF' });
+    }
+  });
+
+  app.post('/api/finance/report/email', async (req, res) => {
+    try {
+      const fin = loadFinance();
+      const liveFx = await resolveLiveFxIdr();
+      const summary = computeFinanceSummary(fin, liveFx);
+      const finFull = { ...fin, summary };
+      const fo = summary.familyOffice || {};
+      const bs = fo.balanceSheet || {};
+      const r = fo.ratios || {};
+      const pdf = buildPersonalCfoReportPdf(finFull);
+      const html = buildCfoEmailHtml(finFull);
+      const body = [
+        `BLOOMBERG TERMINAL — SINGLE FAMILY OFFICE & PERSONAL CFO REPORT (${summary.monthPrefix})`,
+        ``,
+        `Health Grade        : ${fo.healthGrade || 'A'} (${fo.healthScore || 85}/100)`,
+        `True Net Worth      : ${fmtIdrShort(bs.trueNetWorthIdr || 0)}`,
+        `Total Assets / Debt : ${fmtIdrShort(bs.totalAssetsIdr || 0)} / ${fmtIdrShort(bs.totalLiabilitiesIdr || 0)}`,
+        `Emergency Runway    : ${Number(r.emergencyRunwayMonths || 0).toFixed(1)} Months (Target >= 6.0 mo)`,
+        `Savings Rate        : ${summary.savingsRatePct}% | Safe Daily Spend: ${fmtIdrShort(summary.dynamicSafeDailyIdr)}/day`,
+        ``,
+        `FAMILY OFFICE COMMITTEE DIRECTIVES:`,
+        ...(fo.cfoTeam || []).map(m => `- [${m.role} | ${m.status}] ${m.directive}`),
+        ``,
+        `Attached PDF Report : ${pdf.filename}`
+      ].join('\n');
+
+      if (typeof dispatchExternalEmailAlert !== 'function') {
+        return res.status(503).json({ ok: false, error: 'Email dispatcher unavailable' });
+      }
+      const out = await dispatchExternalEmailAlert({
+        eventType: 'CFO_REPORT',
+        symbol: 'FIN',
+        attachmentFn: 'BTCUSDT FIN',
+        subject: `Bloomberg Family Office CFO Report (${summary.monthPrefix}) — Grade ${fo.healthGrade} | Net Worth ${fmtIdrShort(bs.trueNetWorthIdr || 0)}`,
+        body,
+        html,
+        attachments: [{ filename: pdf.filename, content: pdf.buffer, contentType: 'application/pdf' }]
+      });
+      res.json({ ok: true, filename: pdf.filename, entry: out.entry });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: 'Failed dispatching CFO Report email' });
     }
   });
 

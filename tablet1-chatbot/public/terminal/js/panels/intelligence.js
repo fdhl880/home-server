@@ -1643,42 +1643,116 @@ export function mountFIN(body, ctx) {
   const sc = h('div', { class: 'pb' });
   body.append(tb, sc);
 
-  let tab = 'DASH';
+  let tab = 'DASH'; // 'DASH' | 'BS' | 'BILLS' | 'BUFFETT' | 'BUDGET' | 'HIST'
   let finData = null;
   let historyFilter = 'ALL';
   let statusNote = '';
+  let cfoMemo = null;
+  let cfoLoading = false;
+  let cfoQueryDraft = '';
   let unmounted = false;
+
+  async function downloadFinPdf(url, fallbackName = 'Bloomberg_FamilyOffice_CFO_Report.pdf') {
+    try {
+      const r = await apiFetch(url, { cache: 'no-store' }, 20000);
+      if (!r.ok) {
+        statusNote = `PDF export error (HTTP ${r.status}).`;
+        renderBody();
+        return;
+      }
+      const cd = r.headers.get('content-disposition') || '';
+      const m = cd.match(/filename="([^"]+)"/i);
+      const filename = (m && m[1]) || fallbackName;
+      const blob = await r.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => { try { URL.revokeObjectURL(objUrl); } catch {} }, 4000);
+      statusNote = `DOWNLOADED: ${filename}`;
+      renderBody();
+    } catch (e) {
+      statusNote = 'PDF export error: ' + e.message;
+      renderBody();
+    }
+  }
+
+  async function emailCfoReport() {
+    statusNote = 'Dispatching Personal Family Office CFO Report (HTML + PDF) to email...';
+    renderBody();
+    try {
+      const r = await apiFetch('/api/finance/report/email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 20000);
+      const j = await r.json();
+      if (r.ok && j.ok) {
+        statusNote = `CFO REPORT DISPATCHED (${j.filename || 'PDF'}) — Status: ${(j.entry && j.entry.status) || 'SENT'}`;
+      } else {
+        statusNote = 'CFO email error: ' + (j.error || ('HTTP ' + r.status));
+      }
+    } catch (e) {
+      statusNote = 'CFO email error: ' + e.message;
+    }
+    renderBody();
+  }
+
+  async function askCfoTeam(question) {
+    const q = String(question || '').trim();
+    cfoQueryDraft = q;
+    cfoLoading = true;
+    renderBody();
+    try {
+      const r = await apiFetch('/api/finance/cfo-brief', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q })
+      }, 15000);
+      const j = await r.json();
+      if (r.ok && j.ok) {
+        cfoMemo = j.memo;
+        if (j.summary && finData) finData.summary = j.summary;
+      } else {
+        statusNote = 'CFO Advisory error: ' + (j.error || ('HTTP ' + r.status));
+      }
+    } catch (e) {
+      statusNote = 'CFO Advisory error: ' + e.message;
+    } finally {
+      cfoLoading = false;
+      renderBody();
+    }
+  }
 
   async function load() {
     try {
       const r = await apiFetch('/api/finance', { cache: 'no-store' }, 10000);
       if (unmounted) return;
       if (!r.ok) {
-        ctx.status({ ok: false, source: 'capital-desk', ts: Date.now(), mode: 'NA' });
+        ctx.status({ ok: false, source: 'family-office', ts: Date.now(), mode: 'NA' });
         sc.textContent = '';
-        sc.append(h('div', { class: 'na', text: `Authentication required to access Personal Capital Desk (HTTP ${r.status}).` }));
+        sc.append(h('div', { class: 'na', text: `Authentication required to access Single Family Office & Personal CFO Desk (HTTP ${r.status}).` }));
         return;
       }
       const j = await r.json();
       finData = j.data;
-      ctx.status({ ok: true, source: 'capital-desk', ts: Date.now(), mode: 'LIVE' });
+      ctx.status({ ok: true, source: 'family-office-cfo', ts: Date.now(), mode: 'LIVE' });
       renderToolbar();
       renderBody();
     } catch (e) {
       if (!unmounted) {
         sc.textContent = '';
-        sc.append(h('div', { class: 'na', text: 'Capital Desk error: ' + e.message }));
+        sc.append(h('div', { class: 'na', text: 'Family Office error: ' + e.message }));
       }
     }
   }
 
   function exportCsv() {
     if (!finData) return;
-    const rows = [['ID', 'Date', 'Type', 'Category', 'Amount_IDR', 'Note']];
+    const rows = [['ID', 'Date', 'Type', 'Account', 'ToAccount', 'Category', 'Amount_IDR', 'Note']];
     (finData.transactions || []).forEach(t => {
-      rows.push([t.id, t.date, t.type, t.category, t.amountIdr, String(t.note || '').replace(/[\r\n,]+/g, ' ')]);
+      rows.push([t.id, t.date, t.type, t.accountId || 'ACC-OPS', t.toAccountId || '', t.category, t.amountIdr, String(t.note || '').replace(/[\r\n,]+/g, ' ')]);
     });
-    downloadBlob(`Bloomberg_Terminal_Capital_${new Date().toISOString().slice(0, 10)}.csv`, rows.map(r => r.join(',')).join('\n'), 'text/csv;charset=utf-8');
+    downloadBlob(`Bloomberg_FamilyOffice_Ledger_${new Date().toISOString().slice(0, 10)}.csv`, rows.map(r => r.join(',')).join('\n'), 'text/csv;charset=utf-8');
   }
 
   async function applyBuffett(monthlyIncomeIdr, recordMonthlyCycle = false) {
@@ -1703,14 +1777,24 @@ export function mountFIN(body, ctx) {
   function renderToolbar() {
     tb.textContent = '';
     tb.append(
-      h('span', { class: 'lbl', text: 'PERSONAL CAPITAL (WARREN BUFFETT):' }),
-      h('button', { class: tab === 'DASH' ? 'on' : '', text: 'DASHBOARD & ENTRY', onclick: () => { tab = 'DASH'; renderToolbar(); renderBody(); } }),
-      h('button', { class: tab === 'BUFFETT' ? 'on' : '', text: 'WARREN BUFFETT AUTO-PLAN', onclick: () => { tab = 'BUFFETT'; renderToolbar(); renderBody(); } }),
+      h('span', { class: 'lbl', text: 'FAMILY OFFICE (FIN):' }),
+      h('button', { class: tab === 'DASH' ? 'on' : '', text: 'CFO DESK', onclick: () => { tab = 'DASH'; renderToolbar(); renderBody(); } }),
+      h('button', { class: tab === 'BS' ? 'on' : '', text: 'BALANCE SHEET', onclick: () => { tab = 'BS'; renderToolbar(); renderBody(); } }),
+      h('button', { class: tab === 'BILLS' ? 'on' : '', text: 'BILLS & STRESS', onclick: () => { tab = 'BILLS'; renderToolbar(); renderBody(); } }),
+      h('button', { class: tab === 'BUFFETT' ? 'on' : '', text: 'BUFFETT PLAN', onclick: () => { tab = 'BUFFETT'; renderToolbar(); renderBody(); } }),
       h('button', { class: tab === 'BUDGET' ? 'on' : '', text: 'GOALS & LIMITS', onclick: () => { tab = 'BUDGET'; renderToolbar(); renderBody(); } }),
-      h('button', { class: tab === 'HIST' ? 'on' : '', text: 'LEDGER & CSV', onclick: () => { tab = 'HIST'; renderToolbar(); renderBody(); } }),
-      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: 'EXPORT CSV', onclick: exportCsv }),
+      h('button', { class: tab === 'HIST' ? 'on' : '', text: 'LEDGER', onclick: () => { tab = 'HIST'; renderToolbar(); renderBody(); } }),
+      h('button', { style: 'color:#ffb000;border-color:#ffb00088;font-weight:700', text: 'CFO REPORT PDF', onclick: () => downloadFinPdf('/api/finance/report/pdf') }),
+      h('button', { style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: 'EMAIL CFO REPORT', onclick: emailCfoReport }),
+      h('button', { style: 'color:#00d26a;border-color:#00d26a66', text: 'CSV', onclick: exportCsv }),
       h('button', { text: 'REFRESH', onclick: load })
     );
+  }
+
+  function officerTone(st) {
+    if (st === 'STRONG') return { cls: 'ok', col: '#00d26a' };
+    if (st === 'WATCH') return { cls: 'warn', col: '#ffb000' };
+    return { cls: 'no', col: '#ff453a' };
   }
 
   function renderBody() {
@@ -1719,6 +1803,12 @@ export function mountFIN(body, ctx) {
     const s = finData.summary || {};
     const wb = s.buffettPlan || {};
     const botSync = s.botSync || {};
+    const fo = s.familyOffice || {};
+    const bs = fo.balanceSheet || {};
+    const ratios = fo.ratios || {};
+    const accounts = Array.isArray(fo.accounts) ? fo.accounts : [];
+    const writableAccounts = accounts.filter(a => !a.readOnly);
+    const accNameById = Object.fromEntries(accounts.map(a => [a.id, a.name]));
 
     const isOver = s.borosStatus === 'BOROS_OVER_BUDGET';
     const isWarn = s.borosStatus === 'WASPADA_HAMPIR_LIMIT';
@@ -1727,7 +1817,7 @@ export function mountFIN(body, ctx) {
       ? 'CAPITAL DISCIPLINE ALERT: DAILY OR MONTHLY OPERATING CEILING EXCEEDED'
       : isWarn
       ? 'CAPITAL CAUTION: OPERATING UTILIZATION ABOVE 75% — MONITOR REMAINING ALLOWANCE'
-      : 'CAPITAL DISCIPLINE: ON TRACK UNDER WARREN BUFFETT PAY-YOURSELF-FIRST FRAMEWORK';
+      : 'SINGLE FAMILY OFFICE GOVERNANCE: ON TRACK UNDER WALL STREET & WARREN BUFFETT STANDARDS';
 
     sc.append(h('div', {
       class: 'xcard',
@@ -1735,103 +1825,152 @@ export function mountFIN(body, ctx) {
     },
       h('div', { style: 'display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px' },
         h('b', { style: `color:${bannerCol};font-size:11.5px`, text: bannerTxt }),
-        h('span', { class: `xpill ${isOver ? 'no' : isWarn ? 'warn' : 'ok'}`, text: `DISCIPLINE INDEX: ${s.disciplineScore || 100}/100` })
+        h('div', { style: 'display:flex;gap:5px;flex-wrap:wrap' },
+          h('span', { class: `xpill ${fo.healthScore >= 80 ? 'ok' : fo.healthScore >= 60 ? 'warn' : 'no'}`, text: `HEALTH GRADE: ${fo.healthGrade || 'A'} (${fo.healthScore || 85}/100)` }),
+          h('span', { class: `xpill ${isOver ? 'no' : isWarn ? 'warn' : 'ok'}`, text: `DISCIPLINE: ${s.disciplineScore || 100}/100` })
+        )
       ),
       statusNote ? h('div', { style: 'margin-top:4px;color:#00e5ff;font-size:11px', text: statusNote }) : null
     ));
 
+    // Top 4 Wall Street Executive KPIs
+    const runwayMo = Number(ratios.emergencyRunwayMonths || 0);
+    const runwayCol = runwayMo >= 6 ? '#00d26a' : runwayMo >= 3 ? '#ffb000' : '#ff453a';
+    const trueNw = Number(bs.trueNetWorthIdr ?? s.totalIntegratedWealthIdr ?? 0);
     sc.append(h('div', { class: 'xgrid4', style: 'margin-bottom:8px' },
       h('div', { class: 'xstat' },
-        h('div', { class: 'xl', text: 'DAILY ALLOWANCE REMAINING' }),
-        h('div', { class: 'xv', style: `color:${(s.remainingTodayIdr || 0) >= 0 ? 'var(--up)' : 'var(--dn)'}`, text: fmtIdr(s.remainingTodayIdr) }),
-        h('div', { class: 'xs', text: `Spent: ${fmtIdr(s.todayExpense)} / ${fmtIdr(s.dailyLimitIdr)} (${s.dailyUsedPct || 0}%)` })
+        h('div', { class: 'xl', text: 'TRUE NET WORTH (ASSETS - DEBT)' }),
+        h('div', { class: 'xv', style: `color:${trueNw >= 0 ? '#00d26a' : '#ff453a'}`, text: fmtIdr(trueNw) }),
+        h('div', { class: 'xs', text: `Assets ${fmtIdr(bs.totalAssetsIdr || trueNw)} | Debt ${fmtIdr(bs.totalLiabilitiesIdr || 0)} | Futures $${Number(botSync.walletUsd || 0).toFixed(2)}` })
+      ),
+      h('div', { class: 'xstat' },
+        h('div', { class: 'xl', text: 'EMERGENCY RUNWAY (SURVIVAL)' }),
+        h('div', { class: 'xv', style: `color:${runwayCol}`, text: `${runwayMo.toFixed(1)} Months` }),
+        h('div', { class: 'xs', text: `Liquid+Reserve ${fmtIdr(bs.liquidAndEmergencyIdr || 0)} | Target >= 6.0 mo` })
       ),
       h('div', { class: 'xstat' },
         h('div', { class: 'xl', text: 'DYNAMIC SAFE DAILY SPEND' }),
         h('div', { class: 'xv', style: 'color:#00e5ff', text: fmtIdr(s.dynamicSafeDailyIdr) }),
-        h('div', { class: 'xs', text: `Remaining Pool ${fmtIdr(s.remainingMonthIdr)} / ${s.remainingDays || 1} days` })
+        h('div', { class: 'xs', text: `Today Rem: ${fmtIdr(s.remainingTodayIdr)} (${s.dailyUsedPct || 0}% of ${fmtIdr(s.dailyLimitIdr)})` })
       ),
       h('div', { class: 'xstat' },
-        h('div', { class: 'xl', text: 'MONTHLY OPERATING BUDGET (60%)' }),
+        h('div', { class: 'xl', text: 'MONTHLY OPERATING / FORECAST' }),
         h('div', { class: 'xv', style: 'color:var(--amber)', text: `${fmtIdr(s.monthExpense)} / ${fmtIdr(s.monthlyBudgetIdr)}` }),
-        h('div', { class: 'xs', text: `Fixed Income: ${fmtIdr(s.monthlyIncomeTarget)} | Saved: ${fmtIdr(s.monthSavings)}` })
-      ),
-      h('div', { class: 'xstat' },
-        h('div', { class: 'xl', text: 'TOTAL INTEGRATED NET WORTH' }),
-        h('div', { class: 'xv', style: 'color:#00d26a', text: fmtIdr(s.totalIntegratedWealthIdr ?? ((s.bankTotalIdr || 0) + (botSync.walletIdr || 0))) }),
-        h('div', { class: 'xs', text: `Bank ${fmtIdr(s.bankTotalIdr || 0)} + Futures $${Number(botSync.walletUsd || 0).toFixed(2)} (FX ${fmtIdr(botSync.fxRateIdr || 18218)})` })
+        h('div', { class: 'xs', text: `Proj Month-End: ${fmtIdr(ratios.projectedMonthExpenseIdr || 0)} | Save: ${s.savingsRatePct || 0}%` })
       )
     ));
 
-    // Integrated Wealth Milestones Roadmap (Rp 10M -> Rp 100M -> Rp 1B)
-    const milestones = s.milestones || [];
-    if (milestones.length && (tab === 'DASH' || tab === 'BUDGET')) {
-      const mCard = h('div', { class: 'xcard', style: 'border-color:#ff6600' },
+    if (tab === 'DASH') {
+      // 1. 4-ROLE VIRTUAL FAMILY OFFICE COMMITTEE (YOUR PERSONAL FINANCE TEAM)
+      const team = Array.isArray(fo.cfoTeam) ? fo.cfoTeam : [];
+      const teamCard = h('div', { class: 'xcard', style: 'border-color:#ff6600' },
         h('div', { class: 'xsec-hd' },
-          h('span', { style: 'color:#ff6600', text: 'INTEGRATED WEALTH MILESTONES (BANK + RESERVES + LIVE BINANCE FUTURES)' }),
-          h('span', { class: 'up', text: `NET WORTH: ${fmtIdr(s.totalIntegratedWealthIdr || 0)}` })
+          h('span', { style: 'color:#ff6600', text: 'PERSONAL FAMILY OFFICE COMMITTEE (4-ROLE EXECUTIVE FINANCE TEAM)' }),
+          h('span', { class: 'am', text: `DEBT/ASSET ${Number(ratios.debtToAssetPct || 0).toFixed(1)}% | FUTURES RISK ${Number(ratios.riskCapitalPct || 0).toFixed(1)}%` })
         )
       );
-      const mGrid = h('div', { class: 'xgrid3', style: 'padding:6px 2px' });
-      milestones.forEach(ms => {
-        mGrid.append(h('div', { style: `padding:7px 8px;border:1px solid #1e2530;border-left:3px solid ${ms.color};background:#05070a` },
-          h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:3px' },
-            h('span', { style: `color:${ms.color};font-size:10px;font-weight:700`, text: `${ms.tier} | ${ms.shortLabel.toUpperCase()}` }),
-            h('span', { class: `xpill ${ms.achieved ? 'ok' : 'info'}`, text: ms.achieved ? 'ACHIEVED' : `${ms.progressPct}%` })
+      const tGrid = h('div', { class: 'xgrid2', style: 'padding:6px 2px;gap:6px' });
+      team.forEach(m => {
+        const tone = officerTone(m.status);
+        tGrid.append(h('div', { style: `padding:7px 9px;border:1px solid #1e2530;border-left:3px solid ${tone.col};background:#05070a` },
+          h('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:4px;margin-bottom:3px' },
+            h('span', { style: 'color:#ffb000;font-size:10.5px;font-weight:700', text: m.role }),
+            h('span', { class: `xpill ${tone.cls}`, text: m.status })
           ),
-          h('div', { style: 'font-size:12px;font-weight:700;color:#fff;margin-bottom:4px', text: `${fmtIdr(ms.currentIdr)} / ${fmtIdr(ms.targetIdr)}` }),
-          h('div', { class: 'xbar-track', style: 'margin-bottom:4px' },
-            h('div', { class: 'xbar-fill', style: `width:${Math.max(1, Math.min(100, ms.progressPct))}%;background:${ms.color}` })
-          ),
-          h('div', { style: 'display:flex;justify-content:space-between;font-size:9.5px;color:var(--muted)' },
-            h('span', { text: `Rem: ${fmtIdr(ms.remainingIdr)}` }),
-            h('span', { text: `Est (12% p.a.): ${ms.etaLabel}` })
-          )
+          h('div', { style: 'font-size:11px;color:#eef1f6;line-height:1.4;margin-bottom:3px', text: m.headline }),
+          h('div', { style: 'font-size:10px;color:#8fa3ba;margin-bottom:4px', text: m.metrics }),
+          h('div', { style: 'font-size:10.5px;color:#00e5ff;border-top:1px solid #17202b;padding-top:3px', text: `DIRECTIVE: ${m.directive}` })
         ));
       });
-      mCard.append(mGrid);
-      sc.append(mCard);
-    }
+      teamCard.append(tGrid);
 
-    if (tab === 'DASH') {
-      // Compact Warren Buffett Auto-Allocation Bar
-      const buckets = wb.buckets || [];
-      if (buckets.length) {
-        const segBar = h('div', { style: 'display:flex;height:14px;width:100%;overflow:hidden;border:1px solid #262e3d;margin:6px 0' });
-        buckets.forEach(b => {
-          segBar.append(h('div', {
-            style: `width:${b.pct}%;background:${b.color};height:100%`,
-            title: `${b.name}: ${b.pct}% (${fmtIdr(b.amountIdr)})`
-          }));
-        });
-        const leg = h('div', { style: 'display:flex;gap:10px;flex-wrap:wrap;font-size:10px;color:#cfd8e3' });
-        buckets.forEach(b => {
-          leg.append(h('span', {},
-            h('span', { style: `display:inline-block;width:8px;height:8px;background:${b.color};margin-right:4px` }),
-            `${b.name}: `,
-            h('b', { style: 'color:#fff', text: `${b.pct}% (${fmtIdr(b.amountIdr)})` })
-          ));
-        });
-        sc.append(h('div', { class: 'xcard xcard-hi' },
-          h('div', { class: 'xsec-hd' },
-            h('span', { text: `WARREN BUFFETT AUTO-ALLOCATION — FIXED MONTHLY INCOME ${fmtIdr(wb.monthlyIncomeIdr)}` }),
-            h('div', { style: 'display:flex;gap:5px' },
-              h('button', { class: 'on', style: 'font-size:10px', text: 'BOOK MONTHLY INCOME + LOCK 40%', onclick: () => applyBuffett(wb.monthlyIncomeIdr, true) }),
-              h('button', { style: 'font-size:10px', text: 'FULL BUFFETT PLAN ->', onclick: () => { tab = 'BUFFETT'; renderToolbar(); renderBody(); } })
-            )
+      // Interactive Ask-Your-Personal-CFO Box
+      const qInp = h('input', {
+        value: cfoQueryDraft,
+        placeholder: 'Ask your Personal CFO Team (e.g. "Boleh beli headset Rp 250rb?", "Apakah modal futures aman?", "Strategi tercepat 10 juta")',
+        style: 'flex:1;min-width:220px;font-size:11.5px;padding:5px 8px'
+      });
+      qInp.addEventListener('keydown', ev => { if (ev.key === 'Enter') askCfoTeam(qInp.value); });
+      const askWrap = h('div', { style: 'padding:6px 4px;border-top:1px solid #1d2430;margin-top:4px' },
+        h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:5px' },
+          qInp,
+          h('button', {
+            class: 'on',
+            disabled: cfoLoading ? 'disabled' : null,
+            style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700;padding:5px 12px',
+            text: cfoLoading ? 'ANALYZING...' : 'ASK CFO TEAM <GO>',
+            onclick: () => askCfoTeam(qInp.value)
+          })
+        ),
+        h('div', { style: 'display:flex;gap:4px;flex-wrap:wrap' },
+          ...[
+            'Boleh aku beli barang Rp 150rb bulan ini?',
+            'Apakah alokasi modal Binance Futures aku aman?',
+            'Strategi tercepat menuju 10 juta pertama?',
+            'Full Monthly Family Office Audit'
+          ].map(p => h('button', { style: 'font-size:10px;padding:2px 6px', text: p, onclick: () => askCfoTeam(p) }))
+        )
+      );
+      teamCard.append(askWrap);
+
+      if (cfoMemo) {
+        const vCol = /REJECT|REDUCTION/i.test(cfoMemo.verdict) ? '#ff453a' : /CONDITIONAL|WATCH/i.test(cfoMemo.verdict) ? '#ffb000' : '#00d26a';
+        teamCard.append(h('div', { style: `margin:6px 4px 2px;padding:8px 10px;background:#080c12;border:1px solid ${vCol};border-left:4px solid ${vCol}` },
+          h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px' },
+            h('b', { style: `color:${vCol};font-size:11.5px`, text: `DECISION MEMO // ${cfoMemo.verdict}` }),
+            h('span', { class: 'mu', style: 'font-size:10px', text: `${cfoMemo.mode} | ${fmtTime(cfoMemo.generatedAt)}` })
           ),
-          h('div', { style: 'padding:4px 4px 2px' }, segBar, leg)
+          h('div', { style: 'font-size:11px;color:#eef1f6;line-height:1.5;margin-bottom:4px', text: cfoMemo.recommendation }),
+          cfoMemo.aiAdvisory ? h('pre', { style: 'margin:6px 0 0;padding:7px 9px;background:#040609;border:1px solid #1e2633;white-space:pre-wrap;font-family:inherit;font-size:10.8px;line-height:1.5;color:#dbe7f5', text: cfoMemo.aiAdvisory }) : null
         ));
       }
+      sc.append(teamCard);
 
-      // Quick Transaction Form + Discipline Gauge
+      // 2. Integrated Wealth Milestones Roadmap (Rp 10M -> Rp 100M -> Rp 1B)
+      const milestones = s.milestones || [];
+      if (milestones.length) {
+        const mCard = h('div', { class: 'xcard' },
+          h('div', { class: 'xsec-hd' },
+            h('span', { style: 'color:#ffb000', text: 'INTEGRATED WEALTH MILESTONES (NET WORTH: BANK + RESERVES + EXTERNAL ASSETS + FUTURES - DEBT)' }),
+            h('span', { class: 'up', text: `NET WORTH: ${fmtIdr(trueNw)}` })
+          )
+        );
+        const mGrid = h('div', { class: 'xgrid3', style: 'padding:6px 2px' });
+        milestones.forEach(ms => {
+          mGrid.append(h('div', { style: `padding:7px 8px;border:1px solid #1e2530;border-left:3px solid ${ms.color};background:#05070a` },
+            h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:3px' },
+              h('span', { style: `color:${ms.color};font-size:10px;font-weight:700`, text: `${ms.tier} | ${ms.shortLabel.toUpperCase()}` }),
+              h('span', { class: `xpill ${ms.achieved ? 'ok' : 'info'}`, text: ms.achieved ? 'ACHIEVED' : `${ms.progressPct}%` })
+            ),
+            h('div', { style: 'font-size:12px;font-weight:700;color:#fff;margin-bottom:4px', text: `${fmtIdr(ms.currentIdr)} / ${fmtIdr(ms.targetIdr)}` }),
+            h('div', { class: 'xbar-track', style: 'margin-bottom:4px' },
+              h('div', { class: 'xbar-fill', style: `width:${Math.max(1, Math.min(100, ms.progressPct))}%;background:${ms.color}` })
+            ),
+            h('div', { style: 'display:flex;justify-content:space-between;font-size:9.5px;color:var(--muted)' },
+              h('span', { text: `Rem: ${fmtIdr(ms.remainingIdr)}` }),
+              h('span', { text: `Est (12% p.a.): ${ms.etaLabel}` })
+            )
+          ));
+        });
+        mCard.append(mGrid);
+        sc.append(mCard);
+      }
+
+      // 3. Quick Transaction / Multi-Account Transfer Form + Discipline Gauge
       const typeSel = h('select', { style: 'width:100%' },
         h('option', { value: 'EXPENSE', text: 'EXPENSE (OPERATING OUTFLOW)' }),
         h('option', { value: 'INCOME', text: 'INCOME (ALLOWANCE / INFLOW)' }),
-        h('option', { value: 'SAVINGS', text: 'SAVINGS / INVESTMENT LOCK' })
+        h('option', { value: 'SAVINGS', text: 'SAVINGS / PAY-YOURSELF-FIRST LOCK' }),
+        h('option', { value: 'TRANSFER', text: 'TRANSFER (BETWEEN ACCOUNTS / VAULTS)' })
       );
       const expenseCats = Object.keys(finData.categoryLimits || {});
       const catSel = h('select', { style: 'width:100%' });
+      const accSel = h('select', { style: 'width:100%' },
+        ...writableAccounts.map(a => h('option', { value: a.id, text: `Account: ${a.name} (${fmtIdr(a.balanceIdr)})` }))
+      );
+      const toAccSel = h('select', { style: 'width:100%;display:none' },
+        ...writableAccounts.map((a, idx) => h('option', { value: a.id, selected: idx === 1 ? 'selected' : null, text: `To Vault: ${a.name} (${fmtIdr(a.balanceIdr)})` }))
+      );
       const goalSel = h('select', { style: 'width:100%;display:none' },
         h('option', { value: '', text: '-- Optional Goal Attribution --' }),
         ...(finData.goals || []).map(g => h('option', { value: g.id, text: `${g.name} (${fmtIdr(g.savedIdr)} / ${fmtIdr(g.targetIdr)})` }))
@@ -1841,20 +1980,22 @@ export function mountFIN(body, ctx) {
         catSel.textContent = '';
         const t = typeSel.value;
         goalSel.style.display = t === 'SAVINGS' ? 'block' : 'none';
+        toAccSel.style.display = (t === 'TRANSFER' || t === 'SAVINGS') ? 'block' : 'none';
+        catSel.style.display = t === 'TRANSFER' ? 'none' : 'block';
         const opts = t === 'INCOME'
           ? ['Monthly Fixed Allowance', 'Trading Realized Profit', 'Additional Income']
           : t === 'SAVINGS'
           ? ['Productive Investment Capital', 'Emergency Margin of Safety']
-          : (expenseCats.length ? expenseCats : ['Food & Refreshments', 'Transportation']);
+          : (expenseCats.length ? [...expenseCats, 'Fixed Bills', 'Other Operating'] : ['Food & Refreshments', 'Transportation', 'Fixed Bills']);
         opts.forEach(c => catSel.append(h('option', { value: c, text: c })));
       };
       typeSel.addEventListener('change', syncCats);
       syncCats();
 
       const amtInp = h('input', { type: 'number', min: '500', step: '500', placeholder: 'Amount in IDR (e.g. 15000)', style: 'width:100%;font-weight:700;font-size:13px' });
-      const noteInp = h('input', { placeholder: 'Description (e.g. Lunch, Fuel, Commute)', style: 'width:100%' });
+      const noteInp = h('input', { placeholder: 'Description (e.g. Lunch, Fuel, Emergency Vault Sweep)', style: 'width:100%' });
       const quickChips = h('div', { style: 'display:flex;gap:4px;flex-wrap:wrap;margin:4px 0' },
-        ...[5000, 10000, 15000, 20000, 50000].map(v => h('button', {
+        ...[5000, 10000, 15000, 20000, 50000, 100000].map(v => h('button', {
           type: 'button',
           style: 'font-size:10px',
           text: `+${v / 1000}k`,
@@ -1865,21 +2006,26 @@ export function mountFIN(body, ctx) {
       const submitTx = async () => {
         const amountIdr = Math.round(Number(amtInp.value));
         if (!amountIdr || amountIdr <= 0) { statusNote = 'Enter a valid IDR amount.'; renderBody(); return; }
+        const tVal = typeSel.value;
         const r = await apiFetch('/api/finance/tx', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            type: typeSel.value,
-            category: catSel.value,
+            type: tVal,
+            category: tVal === 'TRANSFER' ? 'Internal Treasury Transfer' : catSel.value,
             amountIdr,
+            accountId: accSel.value,
+            toAccountId: (tVal === 'TRANSFER' || tVal === 'SAVINGS') ? toAccSel.value : '',
             note: noteInp.value.trim(),
-            goalId: typeSel.value === 'SAVINGS' ? goalSel.value : ''
+            goalId: tVal === 'SAVINGS' ? goalSel.value : ''
           })
         }, 10000);
         const j = await r.json();
         if (r.ok && j.ok) {
           finData = j.data;
-          statusNote = `RECORDED: ${typeSel.value} ${fmtIdr(amountIdr)} (${catSel.value})`;
+          statusNote = tVal === 'TRANSFER'
+            ? `TREASURY TRANSFER SETTLED: ${fmtIdr(amountIdr)} (${accNameById[accSel.value] || accSel.value} -> ${accNameById[toAccSel.value] || toAccSel.value})`
+            : `RECORDED: ${tVal} ${fmtIdr(amountIdr)} (${catSel.value})`;
           renderBody();
         } else {
           statusNote = 'Transaction failed: ' + (j.error || 'error');
@@ -1888,41 +2034,45 @@ export function mountFIN(body, ctx) {
       };
 
       const formCard = h('div', { class: 'xcard', style: 'margin-bottom:0' },
-        h('div', { class: 'xsec-hd' }, h('span', { text: 'RECORD TRANSACTION' }), h('span', { class: 'am', text: s.todayStr || '' })),
+        h('div', { class: 'xsec-hd' }, h('span', { text: 'RECORD TRANSACTION / TREASURY TRANSFER' }), h('span', { class: 'am', text: s.todayStr || '' })),
         h('div', { style: 'padding:6px;display:flex;flex-direction:column;gap:6px' },
           typeSel,
+          accSel,
+          toAccSel,
           catSel,
           goalSel,
           amtInp,
           quickChips,
           noteInp,
-          h('button', { class: 'on', style: 'padding:7px;font-weight:700;background:#ff6600;color:#000;border-color:#ff6600', text: 'POST TRANSACTION <GO>', onclick: submitTx })
+          h('button', { class: 'on', style: 'padding:7px;font-weight:700;background:#ff6600;color:#000;border-color:#ff6600', text: 'POST ENTRY <GO>', onclick: submitTx })
         )
       );
 
       const gaugeCard = h('div', { class: 'xcard', style: 'margin-bottom:0' },
-        h('div', { class: 'xsec-hd' }, h('span', { text: 'CAPITAL DISCIPLINE INDEX' }), h('span', { class: 'up', text: `SAVING RATE ${s.savingsRatePct || 0}%` })),
+        h('div', { class: 'xsec-hd' }, h('span', { text: 'CAPITAL DISCIPLINE & SOLVENCY GAUGE' }), h('span', { class: 'up', text: `SAVING RATE ${s.savingsRatePct || 0}%` })),
         makeSvgBox(buildGaugeSvg(s.disciplineScore || 100, s.statusLabel || 'DISCIPLINED', bannerCol)),
         h('div', { style: 'padding:4px 8px;font-size:10.5px;line-height:1.5;color:#cfd8e3' },
-          h('div', { text: `- Daily Operating Ceiling: ${fmtIdr(s.dailyLimitIdr)} (Food ~${fmtIdr(wb.foodDailyIdr || 15000)} + Transport ~${fmtIdr(wb.transportDailyIdr || 5000)})` }),
-          h('div', { text: `- Pay-Yourself-First Target: ${fmtIdr(wb.payYourselfFirstIdr || 400000)}/month (40% locked first)` }),
-          h('div', { text: `- Synced Futures Desk: Wallet $${Number(botSync.walletUsd || 0).toFixed(2)} | Vault $${Number(botSync.vaultUsd || 0).toFixed(2)}` })
+          h('div', { text: `- Daily Ceiling: ${fmtIdr(s.dailyLimitIdr)} | Dynamic Safe Daily: ${fmtIdr(s.dynamicSafeDailyIdr)}` }),
+          h('div', { text: `- 6M Emergency Target: ${fmtIdr(bs.emergencyTarget6mIdr || 0)} | Gap: ${fmtIdr(bs.emergencyGapIdr || 0)}` }),
+          h('div', { text: `- Synced Futures Desk: Wallet $${Number(botSync.walletUsd || 0).toFixed(2)} (${Number(ratios.riskCapitalPct || 0).toFixed(1)}% of Assets) | Vault $${Number(botSync.vaultUsd || 0).toFixed(2)}` }),
+          h('div', { text: `- Recurring Monthly Bills: ${fmtIdr(fo.totalMonthlyRecurringIdr || 0)} (Unpaid: ${fmtIdr(fo.unpaidRecurringMonthIdr || 0)})` })
         )
       );
 
       sc.append(h('div', { class: 'xgrid2', style: 'margin-bottom:8px' }, formCard, gaugeCard));
 
+      // 4. 14-Day Cashflow & Operating Envelopes
       sc.append(h('div', { class: 'xcard' },
         h('div', { class: 'xsec-hd' },
           h('span', { text: '14-DAY CASHFLOW MONITOR (GREEN = INFLOW | ORANGE/RED = EXPENSE VS DAILY CEILING)' }),
-          h('span', { class: 'am', text: 'DAILY TRACKER' })
+          h('span', { class: 'am', text: `AVG BURN: ${fmtIdr(ratios.avgDailyBurnMonth || 0)}/DAY` })
         ),
         makeSvgBox(buildCashflow14dSvg(s.dailyTrend14d, s.dailyLimitIdr))
       ));
 
       const envCard = h('div', { class: 'xcard' },
         h('div', { class: 'xsec-hd' },
-          h('span', { text: 'MONTHLY OPERATING ENVELOPES (FOOD & TRANSPORTATION)' }),
+          h('span', { text: 'MONTHLY OPERATING ENVELOPES' }),
           h('button', { style: 'font-size:10px', text: 'CONFIGURE LIMITS ->', onclick: () => { tab = 'BUDGET'; renderToolbar(); renderBody(); } })
         )
       );
@@ -1943,6 +2093,228 @@ export function mountFIN(body, ctx) {
       });
       envCard.append(envGrid);
       sc.append(envCard);
+
+    } else if (tab === 'BS') {
+      // WALL STREET PERSONAL BALANCE SHEET (MULTI-ACCOUNT VAULTS + ASSETS + LIABILITIES + SOLVENCY RATIOS)
+      const totalA = Math.max(1, Number(bs.totalAssetsIdr || 0));
+      const slices = [
+        { lbl: 'LIQUID CASH', val: Number(bs.liquidCashIdr || 0), col: '#4da3ff' },
+        { lbl: 'EMERGENCY VAULT', val: Number(bs.emergencyFundIdr || 0), col: '#00e5ff' },
+        { lbl: 'PRODUCTIVE INVEST', val: Number(bs.investmentVaultIdr || 0), col: '#00d26a' },
+        { lbl: 'BINANCE FUTURES', val: Number(bs.tradingRiskCapitalIdr || 0), col: '#ff6600' },
+        { lbl: 'FIXED ASSETS', val: Number(bs.fixedAssetsIdr || 0), col: '#ffb000' }
+      ].filter(x => x.val > 0);
+
+      sc.append(h('div', { class: 'xcard xcard-hi' },
+        h('div', { class: 'xsec-hd' },
+          h('span', { text: 'PERSONAL BALANCE SHEET — ASSET ALLOCATION & SOLVENCY RATIOS' }),
+          h('span', { class: 'up', text: `TRUE NET WORTH: ${fmtIdr(trueNw)}` })
+        ),
+        h('div', { class: 'xgrid4', style: 'padding:6px 2px' },
+          h('div', { class: 'xstat' }, h('div', { class: 'xl', text: 'TOTAL ASSETS' }), h('div', { class: 'xv up', text: fmtIdr(bs.totalAssetsIdr || 0) })),
+          h('div', { class: 'xstat' }, h('div', { class: 'xl', text: 'TOTAL LIABILITIES' }), h('div', { class: 'xv dn', text: fmtIdr(bs.totalLiabilitiesIdr || 0) })),
+          h('div', { class: 'xstat' }, h('div', { class: 'xl', text: 'DEBT-TO-ASSET / DSR' }), h('div', { class: 'xv am', text: `${Number(ratios.debtToAssetPct || 0).toFixed(1)}% / ${Number(ratios.debtServiceRatioPct || 0).toFixed(1)}%` })),
+          h('div', { class: 'xstat' }, h('div', { class: 'xl', text: 'FUTURES RISK EXPOSURE' }), h('div', { class: 'xv', style: `color:${Number(ratios.riskCapitalPct || 0) > 35 ? '#ff453a' : '#00d26a'}`, text: `${Number(ratios.riskCapitalPct || 0).toFixed(1)}%` }))
+        ),
+        slices.length ? h('div', { style: 'padding:4px 4px 2px' },
+          h('div', { style: 'display:flex;height:12px;width:100%;overflow:hidden;border:1px solid #262e3d;margin-bottom:5px' },
+            ...slices.map(sl => h('div', { style: `width:${((sl.val / totalA) * 100).toFixed(2)}%;background:${sl.col};height:100%`, title: `${sl.lbl}: ${fmtIdr(sl.val)}` }))
+          ),
+          h('div', { style: 'display:flex;gap:10px;flex-wrap:wrap;font-size:10px;color:#cfd8e3' },
+            ...slices.map(sl => h('span', {},
+              h('span', { style: `display:inline-block;width:8px;height:8px;background:${sl.col};margin-right:4px` }),
+              `${sl.lbl}: `, h('b', { style: 'color:#fff', text: `${((sl.val / totalA) * 100).toFixed(1)}% (${fmtIdr(sl.val)})` })
+            ))
+          )
+        ) : null
+      ));
+
+      // Multi-Account Vaults Table + Add Account
+      const accCard = h('div', { class: 'xcard' },
+        h('div', { class: 'xsec-hd' }, h('span', { text: `MULTI-ACCOUNT TREASURY & VAULTS (${accounts.length} ACCOUNTS)` }), h('span', { class: 'am', text: 'USE TRANSFER IN CFO DESK TO MOVE FUNDS' })),
+        h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Account / Vault', 'Type', 'Institution', 'Balance (IDR)', 'Notes', ''].map(x => h('th', { text: x })))),
+          h('tbody', null, accounts.map(a => h('tr', null,
+            h('td', { class: 'l am sym', text: a.name }),
+            h('td', { class: 'l lb', text: a.type }),
+            h('td', { class: 'l', text: a.institution || '-' }),
+            h('td', { class: (a.balanceIdr >= 0 ? 'up' : 'dn') + ' sym', text: fmtIdr(a.balanceIdr) }),
+            h('td', { class: 'l mu', text: a.note || '-' }),
+            h('td', null, (!a.readOnly && a.id !== 'ACC-OPS') ? h('button', { style: 'font-size:10px;color:#ff5a52', text: 'DEL', onclick: async () => {
+              const r = await apiFetch(`/api/finance/account/${encodeURIComponent(a.id)}`, { method: 'DELETE' }, 10000);
+              const j = await r.json();
+              if (r.ok && j.ok) { finData = j.data; renderBody(); }
+            } }) : h('span', { class: 'mu', style: 'font-size:9.5px', text: a.readOnly ? 'LIVE' : 'CORE' }))
+          )))
+        )
+      );
+      const aName = h('input', { placeholder: 'Account name (e.g. BCA Savings / Bibit RDPU)', style: 'width:100%' });
+      const aInst = h('input', { placeholder: 'Institution (e.g. BCA / Mandiri / Bibit)', style: 'width:100%' });
+      const aType = h('select', { style: 'width:100%' }, h('option', { value: 'CASH', text: 'CASH' }), h('option', { value: 'RESERVE', text: 'RESERVE (EMERGENCY)' }), h('option', { value: 'INVESTMENT', text: 'INVESTMENT' }));
+      const aBal = h('input', { type: 'number', placeholder: 'Opening Balance (IDR)', value: '0', style: 'width:100%' });
+      accCard.append(
+        h('div', { class: 'xgrid4', style: 'padding:6px 4px' }, aName, aInst, aType, aBal),
+        h('div', { style: 'padding:0 4px 6px' }, h('button', { class: 'on', text: '+ ADD TREASURY ACCOUNT', onclick: async () => {
+          if (!aName.value.trim()) return;
+          const r = await apiFetch('/api/finance/account', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: aName.value.trim(), institution: aInst.value.trim(), type: aType.value, openingBalanceIdr: Number(aBal.value || 0) }) }, 10000);
+          const j = await r.json();
+          if (r.ok && j.ok) { finData = j.data; statusNote = `Account "${aName.value.trim()}" added.`; renderBody(); }
+        } }))
+      );
+      sc.append(accCard);
+
+      // External Assets + Liabilities side by side
+      const astList = Array.isArray(finData.assets) ? finData.assets : [];
+      const astCard = h('div', { class: 'xcard', style: 'margin-bottom:0' },
+        h('div', { class: 'xsec-hd' }, h('span', { text: `EXTERNAL ASSETS (${astList.length})` }), h('span', { class: 'up', text: fmtIdr(bs.externalAssetsIdr || 0) })),
+        astList.length ? h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Asset', 'Class', 'Value (IDR)', ''].map(x => h('th', { text: x })))),
+          h('tbody', null, astList.map(a => h('tr', null,
+            h('td', { class: 'l', text: `${a.name} (${a.institution || '-'})` }),
+            h('td', { class: 'lb', text: a.category }),
+            h('td', { class: 'up sym', text: fmtIdr(a.valueIdr) }),
+            h('td', null, h('button', { style: 'font-size:10px;color:#ff5a52', text: 'DEL', onclick: async () => {
+              const r = await apiFetch(`/api/finance/asset/${encodeURIComponent(a.id)}`, { method: 'DELETE' }, 10000);
+              const j = await r.json();
+              if (r.ok && j.ok) { finData = j.data; renderBody(); }
+            } }))
+          )))
+        ) : h('div', { class: 'empty', text: 'No external assets added yet (Gold, RDPU, Spot Stocks, Hardware).' })
+      );
+      const eaName = h('input', { placeholder: 'Asset (e.g. Gold Antam 5g / RDPU / Laptop)', style: 'width:100%' });
+      const eaCat = h('select', { style: 'width:100%' }, h('option', { value: 'INVESTMENT', text: 'INVESTMENT' }), h('option', { value: 'LIQUID', text: 'LIQUID' }), h('option', { value: 'FIXED', text: 'FIXED' }));
+      const eaVal = h('input', { type: 'number', placeholder: 'Market Value (IDR)', style: 'width:100%' });
+      astCard.append(
+        h('div', { class: 'xgrid3', style: 'padding:6px 4px' }, eaName, eaCat, eaVal),
+        h('div', { style: 'padding:0 4px 6px' }, h('button', { class: 'on', text: '+ ADD ASSET', onclick: async () => {
+          if (!eaName.value.trim() || Number(eaVal.value) < 0) return;
+          const r = await apiFetch('/api/finance/asset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: eaName.value.trim(), category: eaCat.value, valueIdr: Number(eaVal.value || 0) }) }, 10000);
+          const j = await r.json();
+          if (r.ok && j.ok) { finData = j.data; statusNote = `Asset "${eaName.value.trim()}" recorded on Balance Sheet.`; renderBody(); }
+        } }))
+      );
+
+      const liaList = Array.isArray(finData.liabilities) ? finData.liabilities : [];
+      const liaCard = h('div', { class: 'xcard', style: 'margin-bottom:0' },
+        h('div', { class: 'xsec-hd' }, h('span', { text: `LIABILITIES / DEBT (${liaList.length})` }), h('span', { class: 'dn', text: fmtIdr(bs.totalLiabilitiesIdr || 0) })),
+        liaList.length ? h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Liability', 'Principal', 'Monthly', 'APR', ''].map(x => h('th', { text: x })))),
+          h('tbody', null, liaList.map(l => h('tr', null,
+            h('td', { class: 'l', text: `${l.name} (${l.lender || '-'})` }),
+            h('td', { class: 'dn sym', text: fmtIdr(l.principalIdr) }),
+            h('td', { class: 'am', text: fmtIdr(l.monthlyPaymentIdr) }),
+            h('td', { class: 'mu', text: `${l.aprPct || 0}%` }),
+            h('td', null, h('button', { style: 'font-size:10px;color:#ff5a52', text: 'DEL', onclick: async () => {
+              const r = await apiFetch(`/api/finance/liability/${encodeURIComponent(l.id)}`, { method: 'DELETE' }, 10000);
+              const j = await r.json();
+              if (r.ok && j.ok) { finData = j.data; renderBody(); }
+            } }))
+          )))
+        ) : h('div', { class: 'empty', text: 'Debt-Free Balance Sheet (Rp 0 Liabilities). Optimal Wall Street solvency.' })
+      );
+      const liName = h('input', { placeholder: 'Liability (e.g. PayLater / Installment)', style: 'width:100%' });
+      const liPrin = h('input', { type: 'number', placeholder: 'Principal Owed (IDR)', style: 'width:100%' });
+      const liMon = h('input', { type: 'number', placeholder: 'Monthly Payment (IDR)', style: 'width:100%' });
+      liaCard.append(
+        h('div', { class: 'xgrid3', style: 'padding:6px 4px' }, liName, liPrin, liMon),
+        h('div', { style: 'padding:0 4px 6px' }, h('button', { style: 'color:#ff5a52;border-color:#ff3b3088', text: '+ ADD LIABILITY', onclick: async () => {
+          if (!liName.value.trim()) return;
+          const r = await apiFetch('/api/finance/liability', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: liName.value.trim(), principalIdr: Number(liPrin.value || 0), monthlyPaymentIdr: Number(liMon.value || 0) }) }, 10000);
+          const j = await r.json();
+          if (r.ok && j.ok) { finData = j.data; statusNote = `Liability "${liName.value.trim()}" recorded on Balance Sheet.`; renderBody(); }
+        } }))
+      );
+
+      sc.append(h('div', { class: 'xgrid2', style: 'margin-bottom:8px' }, astCard, liaCard));
+
+    } else if (tab === 'BILLS') {
+      // RECURRING BILLS CALENDAR + 4-SCENARIO STRESS-TEST + CONTROLLER ANOMALY LOG
+      const bills = Array.isArray(fo.recurringBills) ? fo.recurringBills : [];
+      const bCard = h('div', { class: 'xcard xcard-hi' },
+        h('div', { class: 'xsec-hd' },
+          h('span', { text: `FIXED MONTHLY COMMITMENTS & RECURRING BILLS (${bills.length})` }),
+          h('span', { class: 'am', text: `TOTAL: ${fmtIdr(fo.totalMonthlyRecurringIdr || 0)}/mo | UNPAID THIS MONTH: ${fmtIdr(fo.unpaidRecurringMonthIdr || 0)}` })
+        ),
+        bills.length ? h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Bill / Commitment', 'Category', 'Due Day', 'Amount (IDR)', 'Status', 'Action'].map(x => h('th', { text: x })))),
+          h('tbody', null, bills.map(b => {
+            const stTxt = b.paidThisMonth ? 'PAID' : b.isOverdue ? 'OVERDUE' : b.isDueSoon ? `DUE IN ${b.daysUntilDue}D` : 'UPCOMING';
+            const stCls = b.paidThisMonth ? 'ok' : (b.isOverdue ? 'no' : 'warn');
+            return h('tr', null,
+              h('td', { class: 'l am sym', text: b.name }),
+              h('td', { class: 'l lb', text: b.category || 'Fixed Bills' }),
+              h('td', { text: `Day ${b.dueDay}` }),
+              h('td', { class: 'sym', text: fmtIdr(b.amountIdr) }),
+              h('td', null, h('span', { class: `xpill ${stCls}`, text: stTxt })),
+              h('td', null,
+                !b.paidThisMonth ? h('button', { class: 'on', style: 'background:#00d26a;color:#000;border-color:#00d26a;margin-right:4px;font-size:10px', text: 'PAY NOW', onclick: async () => {
+                  const r = await apiFetch(`/api/finance/bill/${encodeURIComponent(b.id)}/pay`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 10000);
+                  const j = await r.json();
+                  if (r.ok && j.ok) { finData = j.data; statusNote = `SETTLED RECURRING BILL: ${b.name} (${fmtIdr(b.amountIdr)})`; renderBody(); }
+                  else { statusNote = 'Bill pay error: ' + (j.error || 'failed'); renderBody(); }
+                } }) : null,
+                h('button', { style: 'font-size:10px;color:#ff5a52', text: 'DEL', onclick: async () => {
+                  const r = await apiFetch(`/api/finance/bill/${encodeURIComponent(b.id)}`, { method: 'DELETE' }, 10000);
+                  const j = await r.json();
+                  if (r.ok && j.ok) { finData = j.data; renderBody(); }
+                } })
+              )
+            );
+          }))
+        ) : h('div', { class: 'empty', text: 'No recurring bills configured yet. Add fixed monthly obligations (Data Plan, Wi-Fi, Subscriptions, Rent) below.' })
+      );
+      const bName = h('input', { placeholder: 'Bill Name (e.g. Telkomsel Data / Cloud / Gym)', style: 'width:100%' });
+      const bCat = h('input', { placeholder: 'Category', value: 'Fixed Bills', style: 'width:100%' });
+      const bAmt = h('input', { type: 'number', placeholder: 'Monthly Amount (IDR)', style: 'width:100%' });
+      const bDay = h('input', { type: 'number', min: '1', max: '31', placeholder: 'Due Day (1-31)', value: '1', style: 'width:100%' });
+      bCard.append(
+        h('div', { class: 'xgrid4', style: 'padding:6px 4px' }, bName, bCat, bAmt, bDay),
+        h('div', { style: 'padding:0 4px 6px' }, h('button', { class: 'on', style: 'background:#ff6600;color:#000;border-color:#ff6600;font-weight:700', text: '+ ADD RECURRING BILL', onclick: async () => {
+          if (!bName.value.trim() || !Number(bAmt.value)) return;
+          const r = await apiFetch('/api/finance/bill', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: bName.value.trim(), category: bCat.value.trim() || 'Fixed Bills', amountIdr: Number(bAmt.value), dueDay: Number(bDay.value || 1) }) }, 10000);
+          const j = await r.json();
+          if (r.ok && j.ok) { finData = j.data; statusNote = `Recurring bill "${bName.value.trim()}" scheduled on Day ${bDay.value || 1}.`; renderBody(); }
+        } }))
+      );
+      sc.append(bCard);
+
+      // 4-Scenario Wall Street Stress-Test Matrix
+      const stList = Array.isArray(fo.stressTests) ? fo.stressTests : [];
+      sc.append(h('div', { class: 'xcard' },
+        h('div', { class: 'xsec-hd' },
+          h('span', { text: 'WALL STREET CASHFLOW & WEALTH STRESS-TEST MATRIX (4 SCENARIOS)' }),
+          h('span', { class: 'up', text: 'SHOCK RESILIENCE' })
+        ),
+        h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Scenario', 'Monthly Save', 'Runway', 'ETA Rp 10M', 'ETA Rp 100M', 'CFO Assessment'].map(x => h('th', { text: x })))),
+          h('tbody', null, stList.map(st => h('tr', null,
+            h('td', { class: 'l am sym', text: st.name }),
+            h('td', { class: 'up sym', text: fmtIdr(st.monthlySaveIdr) }),
+            h('td', { class: st.runwayMonths >= 6 ? 'up' : st.runwayMonths >= 3 ? 'am' : 'dn', text: `${Number(st.runwayMonths || 0).toFixed(1)} mo` }),
+            h('td', { class: 'sym', text: st.eta10M }),
+            h('td', { class: 'sym', text: st.eta100M }),
+            h('td', { class: 'l mu', text: st.verdict })
+          )))
+        )
+      ));
+
+      // Controller Anomaly / Ceiling Breach Days
+      const breaches = Array.isArray(fo.breachDays) ? fo.breachDays : [];
+      sc.append(h('div', { class: 'xcard' },
+        h('div', { class: 'xsec-hd' },
+          h('span', { text: `CONTROLLER SPENDING ANOMALY LOG (DAILY CEILING BREACHES THIS MONTH: ${breaches.length})` }),
+          h('span', { class: breaches.length ? 'dn' : 'up', text: breaches.length ? 'AUDIT REQUIRED' : 'ZERO BREACHES' })
+        ),
+        breaches.length ? h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Date', 'Actual Spend', 'Daily Ceiling', 'Excess Over Limit'].map(x => h('th', { text: x })))),
+          h('tbody', null, breaches.map(br => h('tr', null,
+            h('td', { class: 'l', text: br.date }),
+            h('td', { class: 'dn sym', text: fmtIdr(br.amountIdr) }),
+            h('td', { class: 'mu', text: fmtIdr(s.dailyLimitIdr) }),
+            h('td', { class: 'dn sym', text: '+' + fmtIdr(br.excessIdr) })
+          )))
+        ) : h('div', { class: 'empty', text: 'Zero daily operating ceiling breaches recorded this month.' })
+      ));
 
     } else if (tab === 'BUFFETT') {
       const incInp = h('input', { type: 'number', value: String(wb.monthlyIncomeIdr || 1000000), min: '100000', step: '50000', style: 'width:170px;font-weight:700;font-size:13px' });
@@ -2108,8 +2480,8 @@ export function mountFIN(body, ctx) {
       sc.append(gCard);
 
     } else if (tab === 'HIST') {
-      const fBar = h('div', { style: 'display:flex;gap:4px;margin-bottom:8px' },
-        ...['ALL', 'EXPENSE', 'INCOME', 'SAVINGS'].map(f => h('button', {
+      const fBar = h('div', { style: 'display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap' },
+        ...['ALL', 'EXPENSE', 'INCOME', 'SAVINGS', 'TRANSFER'].map(f => h('button', {
           class: historyFilter === f ? 'on' : '',
           text: f,
           onclick: () => { historyFilter = f; renderBody(); }
@@ -2126,6 +2498,7 @@ export function mountFIN(body, ctx) {
         h('thead', {}, h('tr', {},
           h('th', { text: 'DATE' }),
           h('th', { text: 'TYPE' }),
+          h('th', { text: 'ACCOUNT' }),
           h('th', { text: 'CATEGORY' }),
           h('th', { text: 'DESCRIPTION' }),
           h('th', { class: 'r', text: 'AMOUNT' }),
@@ -2134,13 +2507,17 @@ export function mountFIN(body, ctx) {
       );
       const tbdy = h('tbody');
       list.slice(0, 150).forEach(t => {
-        const cls = t.type === 'INCOME' ? 'up' : t.type === 'SAVINGS' ? 'am' : 'dn';
+        const cls = t.type === 'INCOME' ? 'up' : (t.type === 'SAVINGS' || t.type === 'TRANSFER') ? 'am' : 'dn';
+        const accLbl = t.type === 'TRANSFER'
+          ? `${accNameById[t.accountId] || t.accountId || 'OPS'} -> ${accNameById[t.toAccountId] || t.toAccountId || '-'}`
+          : (accNameById[t.accountId] || t.accountId || 'Operating Bank');
         tbdy.append(h('tr', {},
           h('td', { text: t.date || '-' }),
-          h('td', {}, h('span', { class: `xpill ${t.type === 'INCOME' ? 'ok' : t.type === 'SAVINGS' ? 'warn' : 'no'}`, text: t.type })),
+          h('td', {}, h('span', { class: `xpill ${t.type === 'INCOME' ? 'ok' : (t.type === 'SAVINGS' || t.type === 'TRANSFER') ? 'warn' : 'no'}`, text: t.type })),
+          h('td', { class: 'l lb', style: 'font-size:10px', text: accLbl }),
           h('td', { style: 'color:#e6edf3', text: t.category }),
           h('td', { style: 'color:var(--muted)', text: t.note || '-' }),
-          h('td', { class: `r ${cls}`, style: 'font-weight:700', text: (t.type === 'EXPENSE' ? '-' : '+') + fmtIdr(t.amountIdr) }),
+          h('td', { class: `r ${cls}`, style: 'font-weight:700', text: (t.type === 'EXPENSE' ? '-' : t.type === 'TRANSFER' ? '' : '+') + fmtIdr(t.amountIdr) }),
           h('td', {}, h('button', { style: 'font-size:10px;color:#ff5a52', text: 'DELETE', onclick: async () => {
             const r = await apiFetch(`/api/finance/tx/${encodeURIComponent(t.id)}`, { method: 'DELETE' }, 10000);
             const j = await r.json();

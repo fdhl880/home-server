@@ -49,6 +49,31 @@ function truncateText(str, maxWidth, font, size) {
     return s.length > maxChars ? s.slice(0, maxChars) + '..' : s;
 }
 
+function wrapLines(str, maxWidth, font, size, maxLines = 3) {
+    const clean = sanitizePdfText(str);
+    if (!clean) return [];
+    const avg = size * (FONT_CHAR_W[font] || 0.55);
+    const limit = Math.max(12, Math.floor(maxWidth / avg));
+    const words = clean.split(' ');
+    const lines = [];
+    let cur = '';
+    for (const w of words) {
+        const candidate = cur ? `${cur} ${w}` : w;
+        if (candidate.length <= limit) {
+            cur = candidate;
+        } else {
+            if (cur) lines.push(cur);
+            cur = w;
+            if (lines.length >= maxLines - 1) break;
+        }
+    }
+    if (cur && lines.length < maxLines) lines.push(cur);
+    if (lines.length === maxLines) {
+        lines[maxLines - 1] = truncateText(lines[maxLines - 1], maxWidth, font, size);
+    }
+    return lines;
+}
+
 function rgbStr(rgb) {
     const [r, g, b] = rgb;
     return `${(r / 255).toFixed(3)} ${(g / 255).toFixed(3)} ${(b / 255).toFixed(3)}`;
@@ -675,8 +700,191 @@ function buildEmsxBlotterPdf(portSnap = {}) {
     };
 }
 
+// 4. Single Family Office & Personal CFO Monthly Financial Report PDF (FIN <GO>)
+function buildPersonalCfoReportPdf(finData = {}) {
+    const s = (finData && finData.summary) || {};
+    const fo = s.familyOffice || {};
+    const bs = fo.balanceSheet || {};
+    const ratios = fo.ratios || {};
+    const team = Array.isArray(fo.cfoTeam) ? fo.cfoTeam : [];
+    const accounts = Array.isArray(fo.accounts) ? fo.accounts : [];
+    const bills = Array.isArray(fo.recurringBills) ? fo.recurringBills : [];
+    const txs = Array.isArray(finData.transactions) ? finData.transactions.slice(0, 18) : [];
+    const monthKey = s.monthPrefix || new Date().toISOString().slice(0, 7);
+
+    const doc = new BloombergPdfDoc(
+        `Bloomberg Family Office Personal CFO Report - ${monthKey}`,
+        'Bloomberg Terminal * FIN <GO> Single Family Office & Personal CFO Report * Confidential'
+    );
+
+    doc.drawBloombergHeader(
+        'SINGLE FAMILY OFFICE & PERSONAL CFO',
+        `FIN <GO> EXECUTIVE REPORT (${fo.healthGrade || 'A'})`,
+        [
+            'PRINCIPAL: FADHIL MUHAMMAD SYAFIQ LUBIS (UUID: 38492018)',
+            `Framework: Warren Buffett 40/60 + Wall Street Family Office Governance | FX USD/IDR: ${fmtIdr((s.botSync && s.botSync.fxRateIdr) || 18218)}`
+        ],
+        [
+            `REPORTING MONTH: ${monthKey}`,
+            `Health Grade: ${fo.healthGrade || 'A'} (${fo.healthScore || 85}/100)`
+        ]
+    );
+
+    const netWorth = Number(bs.trueNetWorthIdr ?? s.totalIntegratedWealthIdr ?? 0);
+    const runway = Number(ratios.emergencyRunwayMonths || 0);
+    const saveRate = Number(s.savingsRatePct || 0);
+    const dta = Number(ratios.debtToAssetPct || 0);
+    doc.drawKpiRow([
+        { label: 'TRUE NET WORTH', value: fmtIdr(netWorth), sub: `Assets ${fmtIdr(bs.totalAssetsIdr || netWorth)} | Debt ${fmtIdr(bs.totalLiabilitiesIdr || 0)}`, color: netWorth >= 0 ? GREEN : RED, accent: [255, 102, 0] },
+        { label: 'EMERGENCY RUNWAY', value: `${runway.toFixed(1)} Months`, sub: `Target >= 6.0 mo (${fmtIdr(bs.liquidAndEmergencyIdr || 0)})`, color: runway >= 6 ? GREEN : (runway >= 3 ? ORANGE : RED), accent: [0, 135, 62] },
+        { label: 'SAVINGS / DISCIPLINE', value: `${saveRate.toFixed(1)}% | ${s.disciplineScore || 100}/100`, sub: `Safe Daily: ${fmtIdr(s.dynamicSafeDailyIdr || 0)}/day`, color: saveRate >= 30 ? GREEN : ORANGE, accent: [255, 176, 0] },
+        { label: 'SOLVENCY & RISK CAP', value: `Debt ${dta.toFixed(1)}%`, sub: `Futures Risk: ${Number(ratios.riskCapitalPct || 0).toFixed(1)}% of Assets`, color: dta <= 20 ? GREEN : RED, accent: [77, 163, 255] }
+    ]);
+
+    // Section 1: Personal Balance Sheet & Multi-Account Vaults
+    doc.drawSectionTitle('1. PERSONAL BALANCE SHEET & MULTI-ACCOUNT TREASURY');
+    const bsRows = accounts.map(a => [
+        { text: a.name, font: 'F4', color: DARK },
+        a.type || 'CASH',
+        a.institution || '-',
+        { text: fmtIdr(a.balanceIdr || 0), font: 'F4', color: (a.balanceIdr || 0) >= 0 ? GREEN : RED }
+    ]);
+    for (const ast of (finData.assets || [])) {
+        bsRows.push([
+            { text: ast.name, font: 'F4', color: DARK },
+            `ASSET:${ast.category || 'INVEST'}`,
+            ast.institution || '-',
+            { text: fmtIdr(ast.valueIdr || 0), font: 'F4', color: GREEN }
+        ]);
+    }
+    for (const lb of (finData.liabilities || [])) {
+        bsRows.push([
+            { text: lb.name, font: 'F4', color: RED },
+            'LIABILITY',
+            `${lb.lender || '-'} (${lb.aprPct || 0}% APR)`,
+            { text: '-' + fmtIdr(lb.principalIdr || 0), font: 'F4', color: RED }
+        ]);
+    }
+    doc.drawTable(
+        [
+            { label: 'ACCOUNT / BALANCE SHEET LINE', w: 185, align: 'left', font: 'F4' },
+            { label: 'CLASSIFICATION', w: 92, align: 'left', font: 'F3' },
+            { label: 'INSTITUTION / COUNTERPARTY', w: 130, align: 'left', font: 'F1' },
+            { label: 'CURRENT BALANCE (IDR)', w: CONTENT_W - 407, align: 'right', font: 'F4' }
+        ],
+        bsRows,
+        'No balance sheet accounts configured.'
+    );
+
+    // Section 2: 4-Role Virtual Family Office Committee Memo (Wrapped Executive Cards — Zero Truncation)
+    doc.drawSectionTitle('2. FAMILY OFFICE COMMITTEE BRIEFING (YOUR PERSONAL FINANCE TEAM)');
+    if (team.length) {
+        for (const m of team) {
+            const stCol = m.status === 'STRONG' ? GREEN : (m.status === 'WATCH' ? ORANGE : RED);
+            const headLines = wrapLines(m.headline || '', CONTENT_W - 22, 'F1', 7.8, 2);
+            const dirLines = wrapLines(`DIRECTIVE: ${m.directive || ''}`, CONTENT_W - 22, 'F2', 7.6, 2);
+            const cardH = 18 + headLines.length * 10.5 + dirLines.length * 10.5 + 8;
+            doc.ensureSpace(cardH + 6);
+            doc.fillRect(MARGIN, doc.y, CONTENT_W, cardH, [249, 250, 252]);
+            doc.strokeRect(MARGIN, doc.y, CONTENT_W, cardH, [209, 213, 219], 0.6);
+            doc.fillRect(MARGIN, doc.y, 3.5, cardH, stCol);
+            doc.text(m.role || 'OFFICER', MARGIN + 10, doc.y + 12, { font: 'F2', size: 8.2, color: ORANGE });
+            doc.text(m.status || 'ACTIVE', MARGIN + CONTENT_W - 10, doc.y + 12, { font: 'F4', size: 7.8, color: stCol, align: 'right' });
+            let cy = doc.y + 23;
+            for (const hl of headLines) {
+                doc.text(hl, MARGIN + 10, cy, { font: 'F1', size: 7.8, color: DARK });
+                cy += 10.5;
+            }
+            for (const dl of dirLines) {
+                doc.text(dl, MARGIN + 10, cy, { font: 'F2', size: 7.6, color: [15, 76, 129] });
+                cy += 10.5;
+            }
+            doc.y += cardH + 6;
+        }
+        doc.y += 4;
+    } else {
+        doc.drawTable(
+            [{ label: 'OFFICER ROLE', w: CONTENT_W, align: 'left', font: 'F1' }],
+            [],
+            'Committee briefing unavailable.'
+        );
+    }
+
+    // Section 3: Monthly Cashflow Statement & Operating Envelopes
+    doc.drawSectionTitle(`3. MONTHLY CASHFLOW & OPERATING ENVELOPES (${monthKey})`);
+    const envCats = Array.from(new Set([...Object.keys(s.categoryLimits || {}), ...Object.keys(s.byCategory || {})]));
+    doc.drawTable(
+        [
+            { label: 'OPERATING CATEGORY', w: 180, align: 'left', font: 'F4' },
+            { label: 'BUDGET CEILING', w: 110, align: 'right', font: 'F3' },
+            { label: 'ACTUAL SPENT', w: 110, align: 'right', font: 'F4' },
+            { label: 'UTILIZATION', w: CONTENT_W - 400, align: 'right', font: 'F4' }
+        ],
+        envCats.map(cat => {
+            const spent = Number((s.byCategory && s.byCategory[cat]) || 0);
+            const lim = Number((s.categoryLimits && s.categoryLimits[cat]) || 0);
+            const util = lim > 0 ? (spent / lim) * 100 : (spent > 0 ? 100 : 0);
+            return [
+                cat,
+                lim > 0 ? fmtIdr(lim) : 'Unallocated',
+                fmtIdr(spent),
+                { text: `${util.toFixed(1)}%`, color: util > 100 ? RED : (util >= 75 ? ORANGE : GREEN), font: 'F4' }
+            ];
+        }),
+        'No operating category spending recorded this month.'
+    );
+
+    // Section 4: Recurring Bills & Stress-Test Summary
+    if (bills.length) {
+        doc.drawSectionTitle(`4. FIXED MONTHLY COMMITMENTS & RECURRING BILLS (${bills.length})`);
+        doc.drawTable(
+            [
+                { label: 'COMMITMENT / BILL', w: 160, align: 'left', font: 'F4' },
+                { label: 'CATEGORY', w: 100, align: 'left', font: 'F1' },
+                { label: 'DUE DAY', w: 62, align: 'right', font: 'F3' },
+                { label: 'AMOUNT (IDR)', w: 100, align: 'right', font: 'F4' },
+                { label: 'STATUS', w: CONTENT_W - 422, align: 'right', font: 'F4' }
+            ],
+            bills.map(b => [
+                b.name,
+                b.category || 'Fixed',
+                `Day ${b.dueDay || 1}`,
+                fmtIdr(b.amountIdr || 0),
+                { text: b.paidThisMonth ? 'PAID' : (b.isDueSoon ? 'DUE SOON' : 'UPCOMING'), color: b.paidThisMonth ? GREEN : (b.isDueSoon ? RED : ORANGE), font: 'F4' }
+            ])
+        );
+    }
+
+    // Section 5: Recent Ledger Entries
+    doc.drawSectionTitle(`5. GENERAL LEDGER AUDIT TRAIL (RECENT ${txs.length} ENTRIES)`);
+    doc.drawTable(
+        [
+            { label: 'DATE', w: 62, align: 'left', font: 'F3' },
+            { label: 'TYPE', w: 58, align: 'left', font: 'F4' },
+            { label: 'CATEGORY', w: 112, align: 'left', font: 'F1' },
+            { label: 'DESCRIPTION', w: 185, align: 'left', font: 'F1' },
+            { label: 'AMOUNT (IDR)', w: CONTENT_W - 417, align: 'right', font: 'F4' }
+        ],
+        txs.map(t => [
+            t.date || '-',
+            { text: t.type || '-', color: t.type === 'INCOME' ? GREEN : (t.type === 'EXPENSE' ? RED : ORANGE), font: 'F4' },
+            t.category || '-',
+            t.note || '-',
+            { text: `${t.type === 'EXPENSE' ? '-' : (t.type === 'TRANSFER' ? '' : '+')}${fmtIdr(t.amountIdr || 0)}`, color: t.type === 'EXPENSE' ? RED : (t.type === 'INCOME' ? GREEN : DARK), font: 'F4' }
+        ]),
+        'No ledger transactions recorded.'
+    );
+
+    const safeMonth = String(monthKey).replace(/[^0-9A-Za-z_-]/g, '');
+    return {
+        filename: `Bloomberg_FamilyOffice_CFO_Report_${safeMonth}.pdf`,
+        buffer: doc.buildBuffer()
+    };
+}
+
 module.exports = {
     buildMonthlyStatementPdf,
     buildDmaTradeConfirmPdf,
-    buildEmsxBlotterPdf
+    buildEmsxBlotterPdf,
+    buildPersonalCfoReportPdf
 };

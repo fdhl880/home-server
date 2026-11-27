@@ -7082,6 +7082,8 @@ try {
         writeJsonAtomicSync,
         readJsonSafeSync,
         dispatchNativePushAlert,
+        dispatchExternalEmailAlert,
+        escapeHtml,
         isAuthenticatedReq: (req) => tokensMatch(extractRequestToken(req), activeDashToken),
         getUsdIdr,
         baseDir: opts.baseDir || (opts.bmailFile ? path.dirname(opts.bmailFile) : __dirname)
